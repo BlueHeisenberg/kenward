@@ -133,6 +133,18 @@ type Options struct {
 // A field left empty takes the same default the interactive question offers, with
 // two exceptions that have no safe default and are errors when missing: at least one
 // member, and at least one endpoint.
+//
+// There is deliberately no file or credential form here, though the runtime reads
+// both. A path field would be the wrong shape for the deployment that wants it: on a
+// systemd host the best configuration names no source at all, because the credential
+// lookup is automatic and making the operator repeat the name in kenward.yaml only
+// creates a second place for the unit and the configuration to disagree. So the
+// answer that would earn its place is not "here is a path" but "state no source, the
+// unit supplies credentials" — and that one cannot be validated at setup time
+// without inventing a credentials directory on a machine that has none, which is a
+// larger claim than this package should make on somebody's behalf. Whoever adds it
+// should add that answer, print the LoadCredential= lines the household needs, and
+// not a BotTokenFile string.
 type Answers struct {
 	// Mode is simple or isolated. Empty means simple.
 	Mode config.Mode

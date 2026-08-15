@@ -883,18 +883,68 @@ func TestSystemdNoteAppearsWhereTheUnitDoes(t *testing.T) {
 	}
 }
 
-// TestSystemdNoteDoesNotTellAnybodyToBreakTheirNode: removing the *_env line in
-// favour of a credential is the right shape under that unit, but nothing in the run
-// path resolves credentials yet. The note may point at the unit's comments; it may
-// not instruct a change that would stop the node starting today.
-func TestSystemdNoteDoesNotTellAnybodyToBreakTheirNode(t *testing.T) {
-	for _, instruction := range []string{"remove the", "delete the", "instead of bot_token_env"} {
-		if strings.Contains(strings.ToLower(systemdNote), instruction) {
-			t.Errorf("the systemd note says %q, but the run path still reads only the *_env form", instruction)
-		}
+// TestSystemdNoteAdviceActuallyWorks does what the note tells the operator to do,
+// to the configuration the wizard just wrote, and checks kenward can still read its
+// secrets afterwards.
+//
+// This replaces an earlier test that asserted the note contained no instruction at
+// all, which was the right guard while only the environment form was resolved at
+// run time. Now that all three sources work, the guard that is worth keeping is not
+// "say nothing" but "recommend only a mechanism the runtime actually reads" — and
+// the way to keep that honest is to carry the recommendation out rather than to
+// pattern-match the prose. If the resolution order changes, or the credential
+// naming convention moves, this fails on the sentence that would have misled
+// somebody.
+func TestSystemdNoteAdviceActuallyWorks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
+	_, cfg, io, err := runWizard(t, "linux", Options{ConfigPath: path}, simpleAnswers()...)
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, io.Transcript())
+	}
+
+	// The note names a credential. It must be the one config looks for, not a copy
+	// of the name that can drift away from it.
+	if !strings.Contains(systemdNote, config.CredentialBotToken) {
+		t.Fatalf("the note does not name the credential config actually looks up (%s)", config.CredentialBotToken)
 	}
 	if !strings.Contains(systemdNote, "deploy/kenward.service") {
-		t.Error("the note does not say where the authoritative explanation is")
+		t.Error("the note does not say which unit it is talking about")
+	}
+
+	// Exactly what the note says: delete the bot_token_env line, and let the
+	// credential supply the value.
+	cfg.Telegram.BotTokenEnv = ""
+
+	credsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(credsDir, config.CredentialBotToken), []byte(realToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The API key still comes from the environment here, which is the mixed state a
+	// household is actually in halfway through moving to credentials.
+	secrets := config.NewSecrets(config.SecretOptions{
+		LookupEnv: func(name string) (string, bool) {
+			if name == "OPENROUTER_API_KEY" {
+				return "sk-secret", true
+			}
+			return "", false
+		},
+		CredentialsDir: credsDir,
+	})
+
+	if err := cfg.ValidateWithSecrets(secrets); err != nil {
+		t.Fatalf("the note tells operators to make this change; after making it kenward will not start: %v", err)
+	}
+	token, err := cfg.BotToken(secrets)
+	if err != nil {
+		t.Fatalf("the credential the note names does not resolve: %v", err)
+	}
+	if token.Value() != realToken {
+		t.Error("the resolved token is not the one in the credential file")
+	}
+	// The note promises `kenward doctor` will show where the value came from, which
+	// is only worth promising if the source is actually recorded.
+	if !strings.Contains(token.Source(), "systemd credential") {
+		t.Errorf("Source() = %q, so doctor cannot report the provenance the note promises", token.Source())
 	}
 }
 

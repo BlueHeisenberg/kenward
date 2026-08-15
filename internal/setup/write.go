@@ -40,7 +40,11 @@ const (
 // DefaultLoreCommand starts lore's MCP server. It is written into every generated
 // configuration rather than asked about, because there is no useful answer an
 // operator could give that they would not have to look up first.
-var DefaultLoreCommand = []string{"lore", "mcp"}
+//
+// The value itself lives in internal/config, which also applies it as the default for a
+// configuration that omits the key; the wizard writes the same argv out explicitly so
+// the generated file says what it is doing.
+var DefaultLoreCommand = config.DefaultLoreCommand()
 
 // configHeader is the first thing anybody opening kenward.yaml reads.
 const configHeader = `# kenward.yaml — written by ` + "`kenward setup`" + `.
@@ -68,13 +72,18 @@ const envFileHeader = `# Written by ` + "`kenward setup`" + `. This file holds s
 // It carries the *_env half of every secret and never the *_file half. A secret may
 // name exactly one source — file, environment variable, or a systemd credential
 // found without configuration — and naming two is a validation error rather than an
-// order of preference, so this is a choice rather than an omission. The environment
-// form is written because it is the only one the run path reads today
-// (internal/supervisor takes Telegram.BotTokenEnv and Members[].BotTokenEnv
-// directly), and because which mechanism delivers a secret is not a question a
-// household can answer. An operator who has a better answer — a systemd unit, a
-// mounted secret — is editing this file by hand, and the closing block points them
-// at the unit that explains it.
+// order of preference, so this is a choice rather than an omission.
+//
+// The environment form is written because it is the one form that works in every
+// deployment: a shell, a compose file's env_file, a systemd unit with an
+// EnvironmentFile. The file form needs a path that already exists with mode 0600,
+// which the wizard would have to ask for and could not sensibly create; the
+// credential form needs systemd. All three run — the runtime resolves each secret
+// through config's accessors at the point of use — but which mechanism delivers a
+// secret is not a question a household can answer, and asking it would trade the
+// one answer that always works for three that sometimes do. An operator who has a
+// better answer is editing this file by hand, and the closing block tells them
+// exactly what to change.
 //
 // It mirrors config.Config rather than being it, for one reason: omitempty. A
 // generated file that spells out group_chat_id: 0 and bot_token_env: "" for every

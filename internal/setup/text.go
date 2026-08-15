@@ -265,17 +265,31 @@ func groupCloudOptIn(tiers []string) string {
 // misread one of the two. Naming the difference costs four lines and answers the
 // question before it is asked.
 //
-// It stops short of telling them to make the change. Removing the *_env line in
-// favour of a credential is the right shape under that unit, but the run path does
-// not resolve credentials yet, so an operator who followed that instruction today
-// would get a node that will not start. Pointing at the unit's own comments is both
-// true now and still true afterwards, which an instruction would not be.
-const systemdNote = `If you are going to run this under the unit in deploy/kenward.service, note
-that it supplies secrets with LoadCredential= rather than an environment file.
-kenward can take a secret from a variable, from a file, or from a systemd
-credential — but from exactly one of them, and naming two is an error rather
-than an order of preference. Read the comments in that unit before changing
-how the token above is supplied.`
+// It tells them what to change rather than only that something differs, because the
+// change now works end to end: the runtime resolves every secret through config's
+// accessors, so a credential-sourced token runs. An earlier version of this note
+// stopped at "read the unit's comments", which was the honest thing to print while
+// only the environment form was actually read.
+//
+// The last sentence is the one that makes the advice safe to follow. Editing the
+// file that supplies your bot token, on a machine you may be sitting at over ssh,
+// is the kind of change people put off because verifying it seems to mean sending a
+// message and waiting to see whether a reply comes back. It does not: `kenward
+// doctor` names the source each secret was read from.
+//
+// The credential name is the constant config uses to look one up, not a copy of it,
+// so a change to the naming convention cannot leave this paragraph telling somebody
+// to create a credential nothing will read.
+const systemdNote = `If you are going to run this under the unit in deploy/kenward.service, it
+supplies secrets with LoadCredential= rather than an environment file. Under
+that unit, delete the bot_token_env line from kenward.yaml and let the
+systemd credential ` + config.CredentialBotToken + ` supply the value instead — kenward reads a
+secret from a variable, from a file, or from a credential, but from exactly
+one of them, and naming two is an error rather than an order of preference.
+
+kenward doctor prints where each secret was read from, and flags a token file
+other people on the machine can read, so you can check the change took effect
+without sending a message and waiting to see what happens.`
 
 // stoppedForLinux is printed when somebody chooses to go and do this properly.
 const stoppedForLinux = `Nothing has been written. Copy kenward to a Linux machine and run setup there;

@@ -19,17 +19,19 @@ import (
 // that will silently never appear in a generated configuration.
 //
 // All three entries are the *_file half of a secret source. The wizard writes the
-// *_env half, for two reasons that both have to hold:
+// *_env half, for two reasons:
 //
-//   - It is the only form anything reads today. internal/supervisor reads
-//     Telegram.BotTokenEnv and Members[].BotTokenEnv directly rather than going
-//     through config.Secrets, so a configuration naming a file would validate and
-//     then fail to start every unit in the household. A wizard that emits a file
-//     kenward cannot run has failed at the only thing it is for.
+//   - It is the one form that works in every deployment. The file form needs a path
+//     that already exists with mode 0600 — which the wizard would have to ask for,
+//     and could not sensibly create on the operator's behalf — and the credential
+//     form needs systemd.
 //   - Choosing between three secret-delivery mechanisms is not a question a
 //     household can answer. The file and credential forms exist for operators who
 //     have chosen a deployment that offers something better — a systemd unit, a
 //     mounted secret — and those people are editing this file by hand anyway.
+//
+// All three forms are read by the runtime, so this is a choice about what to ask a
+// person standing at a kitchen table, not a limit on what kenward supports.
 //
 // Stating both forms for one secret is a validation error rather than a precedence
 // (see config/secret.go), so emitting the file form "as well" is not an option
@@ -86,9 +88,10 @@ func TestNotWrittenNamesRealFields(t *testing.T) {
 }
 
 // TestTheWizardWritesTheEnvFormOfEverySecret states the other half of the decision
-// above as an assertion rather than a comment. The wizard names each secret by
-// environment variable, and never by file, because that is the form the run path
-// reads; if this ever stops being true, the supervisors have to change first.
+// above as an assertion rather than a comment: every secret is named by environment
+// variable, and none by file, in both modes and for members whose token does not
+// exist yet. The runtime reads all three forms, so what this pins is the wizard's
+// answer to a question it declines to ask.
 func TestTheWizardWritesTheEnvFormOfEverySecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
 	answers := []string{
@@ -113,7 +116,7 @@ func TestTheWizardWritesTheEnvFormOfEverySecret(t *testing.T) {
 	}
 	for _, unwanted := range []string{"bot_token_file", "api_key_file"} {
 		if strings.Contains(body, unwanted) {
-			t.Errorf("the wizard wrote %q, which nothing in the run path reads yet", unwanted)
+			t.Errorf("the wizard wrote %q; it has no path to write there and no question that would get it one", unwanted)
 		}
 	}
 }
