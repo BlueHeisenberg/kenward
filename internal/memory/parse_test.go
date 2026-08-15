@@ -34,70 +34,87 @@ func TestParseSearchGolden(t *testing.T) {
 	tests := []struct {
 		name    string
 		fixture string
-		want    []Entry
+		want    []Excerpt
 	}{
 		{
 			name:    "two results",
 			fixture: "search_basic.txt",
-			want: []Entry{
+			want: []Excerpt{
 				{
-					ID:         "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f",
-					Domain:     "home/routine",
-					Title:      "Bin day is Tuesday",
-					Confidence: "validated",
-					Body:       "the green [bin] goes out Tuesday night, recycling…",
+					Entry: Entry{
+						ID:         "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f",
+						Domain:     "home/routine",
+						Title:      "Bin day is Tuesday",
+						Confidence: "validated",
+						Body:       "the green bin goes out Tuesday night, recycling…",
+					},
+					Snippet: "the green [bin] goes out Tuesday night, recycling…",
 				},
 				{
-					ID:         "7b2d4c11-9e88-4d31-b0aa-1f2e3d4c5b6a",
-					Domain:     "home/routine",
-					Title:      "Recycling collection",
-					Confidence: "provisional",
-					Body:       "…[recycling] is fortnightly on the same [day]",
+					Entry: Entry{
+						ID:         "7b2d4c11-9e88-4d31-b0aa-1f2e3d4c5b6a",
+						Domain:     "home/routine",
+						Title:      "Recycling collection",
+						Confidence: "provisional",
+						Body:       "…recycling is fortnightly on the same day",
+					},
+					Snippet: "…[recycling] is fortnightly on the same [day]",
 				},
 			},
 		},
 		{
 			name:    "markers are joined with no separator",
 			fixture: "search_markers.txt",
-			want: []Entry{{
-				ID:         "a1b2c3d4-0000-4000-8000-000000000001",
-				Domain:     "home/heating",
-				Title:      "Boiler service window",
-				Confidence: "hardened",
-				Markers:    []string{"[CONTEXT]", "[NON-NEGOTIABLE]"},
-				Body:       "the [boiler] must be serviced before…",
+			want: []Excerpt{{
+				Entry: Entry{
+					ID:         "a1b2c3d4-0000-4000-8000-000000000001",
+					Domain:     "home/heating",
+					Title:      "Boiler service window",
+					Confidence: "hardened",
+					Markers:    []string{"[CONTEXT]", "[NON-NEGOTIABLE]"},
+					Body:       "the boiler must be serviced before…",
+				},
+				Snippet: "the [boiler] must be serviced before…",
 			}},
 		},
 		{
 			name:    "an empty snippet is still a line",
 			fixture: "search_empty_snippet.txt",
-			want: []Entry{
+			want: []Excerpt{
 				{
-					ID:         "a1b2c3d4-0000-4000-8000-000000000002",
-					Domain:     "home/kitchen",
-					Title:      "Kettle",
-					Confidence: "experimental",
+					Entry: Entry{
+						ID:         "a1b2c3d4-0000-4000-8000-000000000002",
+						Domain:     "home/kitchen",
+						Title:      "Kettle",
+						Confidence: "experimental",
+					},
 				},
 				{
-					ID:         "a1b2c3d4-0000-4000-8000-000000000003",
-					Domain:     "home/kitchen",
-					Title:      "Kettle descaling",
-					Confidence: "validated",
-					Markers:    []string{"[UPDATED]"},
-					Body:       "descale the [kettle] monthly",
+					Entry: Entry{
+						ID:         "a1b2c3d4-0000-4000-8000-000000000003",
+						Domain:     "home/kitchen",
+						Title:      "Kettle descaling",
+						Confidence: "validated",
+						Markers:    []string{"[UPDATED]"},
+						Body:       "descale the kettle monthly",
+					},
+					Snippet: "descale the [kettle] monthly",
 				},
 			},
 		},
 		{
 			name:    "a parenthesised title does not steal the confidence",
 			fixture: "search_title_parens.txt",
-			want: []Entry{{
-				ID:         "a1b2c3d4-0000-4000-8000-000000000004",
-				Domain:     "home/network",
-				Title:      "Router reset (the one in the hall)",
-				Confidence: "provisional",
-				Markers:    []string{"[IMPORTANT]"},
-				Body:       "hold the [router] reset pin for ten…",
+			want: []Excerpt{{
+				Entry: Entry{
+					ID:         "a1b2c3d4-0000-4000-8000-000000000004",
+					Domain:     "home/network",
+					Title:      "Router reset (the one in the hall)",
+					Confidence: "provisional",
+					Markers:    []string{"[IMPORTANT]"},
+					Body:       "hold the router reset pin for ten…",
+				},
+				Snippet: "hold the [router] reset pin for ten…",
 			}},
 		},
 		{
@@ -114,22 +131,74 @@ func TestParseSearchGolden(t *testing.T) {
 				t.Fatalf("parseSearch: %v", err)
 			}
 			if len(got) != len(tc.want) {
-				t.Fatalf("got %d entries, want %d: %+v", len(got), len(tc.want), got)
+				t.Fatalf("got %d excerpts, want %d: %+v", len(got), len(tc.want), got)
 			}
 			for i := range got {
-				if got[i].ID != tc.want[i].ID ||
-					got[i].Domain != tc.want[i].Domain ||
-					got[i].Title != tc.want[i].Title ||
-					got[i].Confidence != tc.want[i].Confidence ||
-					got[i].Body != tc.want[i].Body ||
-					!slices.Equal(got[i].Markers, tc.want[i].Markers) {
-					t.Errorf("entry %d:\n got %+v\nwant %+v", i, got[i], tc.want[i])
+				g, w := got[i].Entry, tc.want[i].Entry
+				if g.ID != w.ID || g.Domain != w.Domain || g.Title != w.Title ||
+					g.Confidence != w.Confidence || g.Body != w.Body ||
+					!slices.Equal(g.Markers, w.Markers) {
+					t.Errorf("excerpt %d:\n got %+v\nwant %+v", i, g, w)
 				}
-				if !got[i].UpdatedAt.IsZero() || !got[i].CreatedAt.IsZero() || got[i].Origin != "" {
-					t.Errorf("entry %d: lore_search reports no origin or timestamps, got %+v", i, got[i])
+				if got[i].Snippet != tc.want[i].Snippet {
+					t.Errorf("excerpt %d raw snippet:\n got %q\nwant %q", i, got[i].Snippet, tc.want[i].Snippet)
+				}
+				if strings.ContainsAny(g.Body, "[]") {
+					t.Errorf("excerpt %d body still carries FTS5 highlighting: %q", i, g.Body)
+				}
+				if !g.UpdatedAt.IsZero() || !g.CreatedAt.IsZero() || g.Origin != "" {
+					t.Errorf("excerpt %d: lore_search reports no origin or timestamps, got %+v", i, g)
+				}
+				if !IsExcerpt(g) {
+					t.Errorf("excerpt %d must be recognisable as partial: %+v", i, g)
 				}
 			}
 		})
+	}
+}
+
+func TestStripHighlights(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"", ""},
+		{"plain text", "plain text"},
+		{"the green [bin] goes out", "the green bin goes out"},
+		// The elision marker says text was dropped and must survive.
+		{"…[recycling] is fortnightly…", "…recycling is fortnightly…"},
+		{"[a] and [b]", "a and b"},
+		// A phrase match arrives as one bracketed span.
+		{"the [bin day] rule", "the bin day rule"},
+		// Unbalanced brackets are left alone rather than guessed at.
+		{"an unclosed [bracket", "an unclosed [bracket"},
+	}
+	for _, tc := range tests {
+		if got := stripHighlights(tc.in); got != tc.want {
+			t.Errorf("stripHighlights(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestIsExcerpt pins the discriminator prompt rendering relies on: an entry from
+// lore_get always carries an origin and a timestamp, an excerpt never does.
+func TestIsExcerpt(t *testing.T) {
+	xs, err := parseSearch(golden(t, "search_basic.txt"))
+	if err != nil {
+		t.Fatalf("parseSearch: %v", err)
+	}
+	for _, x := range xs {
+		if !IsExcerpt(x.Entry) {
+			t.Errorf("a search hit must report as an excerpt: %+v", x.Entry)
+		}
+	}
+	for _, fixture := range []string{"get_minimal.txt", "get_full.txt", "get_empty_body.txt", "get_copy.txt"} {
+		r, err := parseEntry(golden(t, fixture))
+		if err != nil {
+			t.Fatalf("parseEntry(%s): %v", fixture, err)
+		}
+		if IsExcerpt(r.Entry) {
+			t.Errorf("%s: a whole entry must not report as an excerpt: %+v", fixture, r.Entry)
+		}
 	}
 }
 

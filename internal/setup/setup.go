@@ -185,13 +185,15 @@ type Wizard struct {
 	goos  string
 	probe Probe
 
-	mode       config.Mode
-	household  config.HouseholdConfig
-	telegram   config.TelegramConfig
-	members    []config.MemberConfig
-	endpoints  []config.EndpointConfig
-	env        []EnvVar
-	wantEnvFil bool
+	mode      config.Mode
+	household config.HouseholdConfig
+	telegram  config.TelegramConfig
+	members   []config.MemberConfig
+	endpoints []config.EndpointConfig
+	env       []EnvVar
+	// wantEnvFile records that the operator asked for the collected secrets to be
+	// written beside the configuration.
+	wantEnvFile bool
 
 	configPath  string
 	envFilePath string
@@ -323,7 +325,7 @@ func (w *Wizard) finish() (*config.Config, error) {
 // writeEnvFile writes the collected secrets beside the configuration, if that is
 // what was asked for and there is anything to write.
 func (w *Wizard) writeEnvFile() error {
-	if !w.wantEnvFil {
+	if !w.wantEnvFile {
 		return nil
 	}
 	var withValues []EnvVar

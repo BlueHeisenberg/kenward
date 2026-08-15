@@ -73,16 +73,16 @@ const envFileHeader = `# Written by ` + "`kenward setup`" + `. This file holds s
 // configuration the wizard built, so a field added to the schema and forgotten here
 // fails the build rather than going quietly missing.
 type document struct {
-	Mode      config.Mode     `yaml:"mode"`
-	DataDir   string          `yaml:"data_dir,omitempty"`
-	Household householdDoc    `yaml:"household"`
-	Telegram  telegramDoc     `yaml:"telegram"`
-	Members   []memberDoc     `yaml:"members"`
-	Endpoints []endpointDoc   `yaml:"endpoints"`
-	Memory    memoryDoc       `yaml:"memory"`
-	Session   sessionDoc      `yaml:"session"`
-	Capture   captureDoc      `yaml:"capture"`
-	Update    updateDoc       `yaml:"update"`
+	Mode      config.Mode   `yaml:"mode"`
+	DataDir   string        `yaml:"data_dir,omitempty"`
+	Household householdDoc  `yaml:"household"`
+	Telegram  telegramDoc   `yaml:"telegram"`
+	Members   []memberDoc   `yaml:"members"`
+	Endpoints []endpointDoc `yaml:"endpoints"`
+	Memory    memoryDoc     `yaml:"memory"`
+	Session   sessionDoc    `yaml:"session"`
+	Capture   captureDoc    `yaml:"capture"`
+	Update    updateDoc     `yaml:"update"`
 }
 
 type householdDoc struct {

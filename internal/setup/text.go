@@ -154,7 +154,7 @@ What is needed now is the household's own bot — the one for the group chat.`
 	tokenLooksWrong = `  That does not look like a bot token. They are a number, a colon, and about
   thirty-five more characters — BotFather's message has it on a line of its own.`
 
-	questionUseTokenAnyway = "Use it anyway?"
+	questionUseTokenAnyway  = "Use it anyway?"
 	questionLeaveTokenUnset = "Leave it unset for now?"
 )
 
@@ -246,6 +246,52 @@ func groupDefaultNote(chain []string) string {
 func groupCloudOptIn(tiers []string, hosts []string) string {
 	return fmt.Sprintf("Also allow %s, so group messages can be sent to %s when no local machine answers?",
 		formatChain(tiers), formatList(hosts))
+}
+
+// stoppedForLinux is printed when somebody chooses to go and do this properly.
+const stoppedForLinux = `Nothing has been written. Copy kenward to a Linux machine and run setup there;
+the questions will be the same ones.`
+
+// stoppedNoLocal is printed when the only endpoints configured are outside the
+// house and the operator would rather not send private conversations to them.
+const stoppedNoLocal = `Nothing has been written. Add a machine on your own network — a desktop with a
+GPU, a small server, anything that speaks the OpenAI API — and run setup again.`
+
+// memberSummary shows what each name turned into, because the id and the space
+// names appear in the file, in log lines and on the `kenward run --member` command
+// line, and somebody should see them before they are written rather than after.
+func memberSummary(members []config.MemberConfig) string {
+	width := 0
+	for _, m := range members {
+		if len(m.Name) > width {
+			width = len(m.Name)
+		}
+	}
+	var b strings.Builder
+	for _, m := range members {
+		fmt.Fprintf(&b, "  %-*s  id %s, private memory %s\n", width, m.Name, m.ID, m.PrivateSpace)
+	}
+	b.WriteString("\n  Nobody else in the household can read a private memory, and kenward will\n")
+	b.WriteString("  not bring one up in the group chat.")
+	return b.String()
+}
+
+// memberTokenNote explains, in isolated mode, the variables that do not exist yet.
+//
+// It says plainly that kenward will not start until they do. That is not an
+// inconvenience to apologise for: a household that is missing a member's token and
+// starts anyway would be a household quietly running one bot for everybody, which is
+// simple mode wearing isolated mode's name.
+func memberTokenNote(members []config.MemberConfig) string {
+	var b strings.Builder
+	b.WriteString("  Each member also needs a bot of their own. They make it themselves when\n")
+	b.WriteString("  they enrol, and kenward reads each token from its own variable:\n\n")
+	for _, m := range members {
+		fmt.Fprintf(&b, "      %s\n", m.BotTokenEnv)
+	}
+	b.WriteString("\n  kenward will not start until those exist. That is the point of the mode: an\n")
+	b.WriteString("  isolated household missing a token does not quietly become a shared one.")
+	return b.String()
 }
 
 // PrivacyStatement is what setup prints once the mode is settled: the honest

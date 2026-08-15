@@ -535,6 +535,9 @@ const deadGrace = 200 * time.Millisecond
 // idempotent marks a call that may be replayed on a fresh subprocess. Writes are
 // not idempotent: a lore_put whose response was lost may already have landed, so
 // it is reported rather than repeated, and the next call restarts the subprocess.
+// A non-idempotent call that fails after the request went out is wrapped in
+// ErrWriteUncertain; a rejection lore itself sent back is not, because lore
+// rejecting a call means it did not apply it.
 func (c *Client) callTool(ctx context.Context, tool string, args map[string]any, idempotent bool) (string, error) {
 	select {
 	case c.sem <- struct{}{}:

@@ -219,6 +219,16 @@ func isLocal(baseURL string) bool {
 	return false
 }
 
+// hostOf returns the host part of a base URL, for naming where a tier's traffic
+// would actually go.
+func hostOf(baseURL string) string {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
 // localSuffixes are the DNS suffixes that only ever name a machine the household
 // controls.
 var localSuffixes = []string{".local", ".lan", ".home", ".internal", ".ts.net", ".tail", ".home.arpa"}

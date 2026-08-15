@@ -108,6 +108,71 @@ func TestSearchGroupsInCallerOrder(t *testing.T) {
 	}
 }
 
+// TestSearchReturnsExcerptsNotEntries covers the distinction the assistant's
+// prompt renderer depends on: a search hit is an excerpt with the match
+// highlighting stripped, and it must announce itself as partial.
+func TestSearchReturnsExcerptsNotEntries(t *testing.T) {
+	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSearch: {{Text: golden(t, "search_basic.txt")}},
+	}}, nil)
+
+	xs, err := f.SearchExcerpts(ctxT(t), SearchQuery{
+		Text: "bin day", Spaces: []domain.SpaceID{spacePrivate},
+	})
+	if err != nil {
+		t.Fatalf("SearchExcerpts: %v", err)
+	}
+	if len(xs) != 2 {
+		t.Fatalf("got %d excerpts, want 2", len(xs))
+	}
+	for _, x := range xs {
+		if x.Entry.Space != spacePrivate {
+			t.Errorf("excerpt in the wrong space: %+v", x.Entry)
+		}
+		if strings.ContainsAny(x.Entry.Body, "[]") {
+			t.Errorf("the rendered body still carries FTS5 highlighting: %q", x.Entry.Body)
+		}
+		if x.Snippet == "" {
+			t.Errorf("the raw snippet must be kept for diagnosis: %+v", x)
+		}
+		if !IsExcerpt(x.Entry) {
+			t.Errorf("a search hit must report as partial: %+v", x.Entry)
+		}
+	}
+	if !strings.Contains(xs[0].Snippet, "[bin]") {
+		t.Errorf("the raw snippet should be untouched, got %q", xs[0].Snippet)
+	}
+
+	// The interface method returns the same values, still partial.
+	es, err := f.Search(ctxT(t), SearchQuery{Text: "bin day", Spaces: []domain.SpaceID{spacePrivate}})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(es) != 2 || es[0].Body != xs[0].Entry.Body {
+		t.Fatalf("Search and SearchExcerpts disagree: %+v vs %+v", es, xs)
+	}
+	for _, e := range es {
+		if !IsExcerpt(e) {
+			t.Errorf("Search must not hand out entries that look complete: %+v", e)
+		}
+	}
+}
+
+// TestGetIsNotAnExcerpt is the other half of the discriminator.
+func TestGetIsNotAnExcerpt(t *testing.T) {
+	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
+		toolGet:    {{Text: golden(t, "get_minimal.txt")}},
+	}}, nil)
+	got, err := f.Get(ctxT(t), spacePrivate, "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if IsExcerpt(got) {
+		t.Fatalf("an entry from Get must not report as partial: %+v", got)
+	}
+}
+
 func TestSearchDeduplicatesSpaces(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
 		toolSearch: {{Text: golden(t, "search_markers.txt")}},
@@ -500,6 +565,11 @@ func TestWritesAreNotReplayedAfterADeath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "subprocess ended") {
 		t.Errorf("the error should say the subprocess ended, got %v", err)
+	}
+	// lore has no delete, so the caller has to be able to say "this may not have
+	// saved" instead of inviting a retry that duplicates the entry permanently.
+	if !errors.Is(err, ErrWriteUncertain) {
+		t.Errorf("want ErrWriteUncertain, got %v", err)
 	}
 	if n := len(callsTo(f.calls(t), toolPut)); n != 1 {
 		t.Fatalf("a write must not be retried, saw %d attempts", n)
