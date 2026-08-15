@@ -169,6 +169,16 @@ Version, commit, build date, Go version, platform. One line.
 
 ---
 
+## Not in this binary
+
+Release tooling — key generation, manifest construction, signing — lives in a separate
+`kenward-release` binary that is not shipped to households. See
+[RELEASING.md](RELEASING.md). A household's copy has no reason to be able to sign
+anything, and a capability present in a widely-installed binary is one an attacker
+inherits.
+
+---
+
 ## Conventions
 
 - Exit codes: `0` success, `1` runtime failure, `2` configuration or usage error.

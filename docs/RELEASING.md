@@ -7,6 +7,13 @@ handling below is not ceremony.
 
 ---
 
+Release tooling is a **separate binary**, `cmd/kenward-release`, and is deliberately not
+shipped in the container image or the release artifacts. A household's copy of kenward
+has no reason to be able to generate signing keys or sign manifests, and every capability
+present in a widely-installed binary is one an attacker gets to use.
+
+---
+
 ## The signing key
 
 An Ed25519 keypair. The **public** half is compiled into the binary; the **private** half
@@ -16,7 +23,7 @@ repository.
 Generate once:
 
 ```sh
-kenward release keygen --out ~/.kenward-release/
+kenward-release keygen --out ~/.kenward-release/
 ```
 
 This writes `release-<id>.key` (0600) and `release-<id>.pub`. The id goes into the
@@ -56,12 +63,12 @@ except by hand.
 
 ```sh
 task cross                                   # build every platform into dist/
-kenward release manifest --version v0.2.0 \
+kenward-release manifest --version v0.2.0 \
     --channel edge \
     --dist dist/ \
     --notes "..." \
     --out manifest.json
-kenward release sign --key ~/.kenward-release/release-1.key --in manifest.json --out signed.json
+kenward-release sign --key ~/.kenward-release/release-1.key --in manifest.json --out signed.json
 ```
 
 Then publish `signed.json` at the manifest URL and the artifacts at the URLs it names.
