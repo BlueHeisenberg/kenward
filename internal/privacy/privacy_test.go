@@ -27,6 +27,13 @@ func TestStatementsAreGolden(t *testing.T) {
 		mustContain(t, s, "separate",
 			"member-to-member separation is real in this mode and should be claimed")
 
+		// ARCHITECTURE.md's key-custody section says the operator's reach in this
+		// mode covers memory at rest *and* in flight, because one bot token carries
+		// every conversation. A statement that admitted only the disk would leave a
+		// reader believing the channel was protected.
+		mustContain(t, s, "in flight",
+			"the single household bot exposes conversations in flight, not only at rest")
+
 		// The sealing vocabulary belongs to isolated mode alone. If it appears here,
 		// the two modes' promises have been conflated, which is the specific error
 		// the product documentation warns about repeatedly.
@@ -50,10 +57,30 @@ func TestStatementsAreGolden(t *testing.T) {
 		mustContain(t, s, "never travels over Telegram",
 			"the passphrase channel decision must be visible to the member")
 
+		// The first thing a privacy-minded reader checks: the node can read the
+		// private space at all, because it is the second member of it. Leaving that
+		// implicit would make the rest of the claim read as stronger than it is.
+		mustContain(t, s, "second member of your private space",
+			"the node's own access to a private space must be stated, not implied")
+
 		// The claim that was removed because it could not be honoured. If it ever
 		// returns, the statement is promising idle-locking that does not exist.
 		mustNotContain(t, s, "while you are away",
 			"this claim was withdrawn in D-019 and must not reappear")
+	})
+
+	t.Run("both modes state the guarantees that do not depend on topology", func(t *testing.T) {
+		t.Parallel()
+		for _, m := range []Mode{ModeSimple, ModeIsolated} {
+			s := Statement(m)
+			// Routing is the one privacy property a reader can check against their
+			// own configuration, and it holds in both modes. If a statement stops
+			// making the promise, either routing has changed or the statement has.
+			mustContain(t, s, "never reaches a provider",
+				"the local-only routing guarantee must be stated in "+m.String()+" mode")
+			mustContain(t, s, "nothing is written to memory without the member",
+				"capture consent must be stated in "+m.String()+" mode")
+		}
 	})
 
 	t.Run("an unknown mode has no statement", func(t *testing.T) {

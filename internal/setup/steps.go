@@ -483,7 +483,9 @@ func (w *Wizard) askTiers(ctx context.Context) error {
 		chain := append([]string(nil), plan.local...)
 		if len(plan.cloud) > 0 {
 			w.blank()
-			yes, err := w.io.AskYesNo(cloudOptIn(m.Name, plan.cloud, plan.cloudHosts), false)
+			w.io.Print(cloudConsequence(m.Name+"'s private messages", plan.cloud, plan.cloudHosts))
+			w.blank()
+			yes, err := w.io.AskYesNo(cloudOptIn(m.Name, plan.cloud), false)
 			if err != nil {
 				return err
 			}
@@ -499,7 +501,9 @@ func (w *Wizard) askTiers(ctx context.Context) error {
 	chain := append([]string(nil), plan.local...)
 	if len(plan.cloud) > 0 {
 		w.blank()
-		yes, err := w.io.AskYesNo(groupCloudOptIn(plan.cloud, plan.cloudHosts), false)
+		w.io.Print(cloudConsequence("group messages", plan.cloud, plan.cloudHosts))
+		w.blank()
+		yes, err := w.io.AskYesNo(groupCloudOptIn(plan.cloud), false)
 		if err != nil {
 			return err
 		}

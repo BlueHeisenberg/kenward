@@ -100,9 +100,9 @@ func TestHappyPathDirect(t *testing.T) {
 	}
 	sys := req.Messages[0].Content
 	for _, want := range []string{
-		"## From David's private memory",
+		"## Excerpts from David's private memory",
 		"- Coffee order [validated]",
-		"## From the household's shared memory",
+		"## Excerpts from the household's shared memory",
 		"- Bin day [hardened] (UPDATED)",
 	} {
 		if !strings.Contains(sys, want) {
@@ -154,7 +154,7 @@ func TestGroupScopeNeverSearchesPrivateSpaces(t *testing.T) {
 	if strings.Contains(sys, "private conversation") {
 		t.Error("direct disclosure leaked into a group prompt")
 	}
-	if got := strings.Count(sys, "## From"); got != 1 {
+	if got := strings.Count(sys, "## "); got != 1 {
 		t.Errorf("group prompt has %d memory sections, want exactly the shared one", got)
 	}
 	if strings.Contains(sys, "'s private memory\n") {
@@ -295,6 +295,14 @@ func TestEmptyRetrievalRendersExplicitStatement(t *testing.T) {
 	sys := req.Messages[0].Content
 	if got := strings.Count(sys, "(nothing relevant found)"); got != 2 {
 		t.Errorf("empty-group statement appears %d times, want 2 (both spaces empty)\n%s", got, sys)
+	}
+	// Nothing was shown, so nothing is labelled as an excerpt and the excerpt note
+	// has nothing to describe.
+	if strings.Contains(sys, "Excerpts from") {
+		t.Error("an empty section is headed as excerpts")
+	}
+	if strings.Contains(sys, "search excerpts") {
+		t.Error("excerpt note rendered with no excerpts shown")
 	}
 }
 

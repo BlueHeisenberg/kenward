@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 )
@@ -381,42 +382,45 @@ func (w *Wizard) closing() string {
 	b.WriteString("Written\n\n")
 	fmt.Fprintf(&b, "  %s\n", w.configPath)
 	if w.envFilePath != "" {
-		fmt.Fprintf(&b, "  %s   holds your secrets, readable only by you, already in .gitignore\n", w.envFilePath)
+		fmt.Fprintf(&b, "  %s\n", w.envFilePath)
+		b.WriteString("      your secrets, readable only by you, already excluded by .gitignore\n")
 	}
 
 	if len(w.env) > 0 {
 		b.WriteString("\nkenward will not start until these are set\n\n")
 		width := 0
 		for _, v := range w.env {
-			if len(v.Name) > width {
-				width = len(v.Name)
+			if n := utf8.RuneCountInString(v.Name); n > width {
+				width = n
 			}
 		}
 		for _, v := range w.env {
-			fmt.Fprintf(&b, "  %-*s   %s\n", width, v.Name, v.Note)
+			fmt.Fprintf(&b, "  %s   %s\n", pad(v.Name, width), v.Note)
 		}
 	}
 
 	b.WriteString("\nNext\n\n")
-	fmt.Fprintf(&b, "  kenward doctor%s   checks every part of this and says what is not working\n", strings.Repeat(" ", inviteWidth(w.members)-len("kenward doctor")))
-	for _, m := range w.members {
-		cmd := "kenward invite --name " + m.Name
-		fmt.Fprintf(&b, "  %s%s   gives %s a code to claim their account\n",
-			cmd, strings.Repeat(" ", inviteWidth(w.members)-len(cmd)), m.Name)
+	commands := [][2]string{
+		{"kenward doctor", "checks every part of this and says what is not working"},
 	}
-	fmt.Fprintf(&b, "  kenward run%s   starts the node\n", strings.Repeat(" ", inviteWidth(w.members)-len("kenward run")))
-	return strings.TrimRight(b.String(), "\n")
-}
+	for _, m := range w.members {
+		commands = append(commands, [2]string{
+			"kenward invite --name " + m.Name,
+			fmt.Sprintf("gives %s a code to claim their account", m.Name),
+		})
+	}
+	commands = append(commands, [2]string{"kenward run", "starts the node"})
 
-// inviteWidth is the column the descriptions in the closing block line up at.
-func inviteWidth(members []config.MemberConfig) int {
-	width := len("kenward doctor")
-	for _, m := range members {
-		if n := len("kenward invite --name " + m.Name); n > width {
+	width := 0
+	for _, c := range commands {
+		if n := utf8.RuneCountInString(c[0]); n > width {
 			width = n
 		}
 	}
-	return width
+	for _, c := range commands {
+		fmt.Fprintf(&b, "  %s   %s\n", pad(c[0], width), c[1])
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // validationEnv is the environment the finished configuration is judged against.

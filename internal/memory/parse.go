@@ -112,6 +112,9 @@ func parseSearch(text string) ([]Excerpt, error) {
 		}
 		raw := strings.Join(body, "\n")
 		cur.Body = stripHighlights(raw)
+		// A search hit is an excerpt: the body is elided and lore reports no
+		// origin and no timestamps for it.
+		cur.Partial = true
 		out = append(out, Excerpt{Entry: *cur, Snippet: raw})
 		cur, body = nil, nil
 	}
@@ -214,7 +217,8 @@ func parseEntryBlock(block string) (rendered, error) {
 	if !strings.HasPrefix(lines[0], "# ") {
 		return rendered{}, parseErrf(toolGet, 1, lines[0], "expected a %q title line", "# ")
 	}
-	r := rendered{Entry: Entry{Title: strings.TrimPrefix(lines[0], "# ")}}
+	// lore_get renders the whole entry, so this is never partial.
+	r := rendered{Entry: Entry{Title: strings.TrimPrefix(lines[0], "# "), Partial: false}}
 	if err := parseEntryMeta(lines[1], &r); err != nil {
 		return rendered{}, err
 	}

@@ -149,8 +149,8 @@ func TestParseSearchGolden(t *testing.T) {
 				if !g.UpdatedAt.IsZero() || !g.CreatedAt.IsZero() || g.Origin != "" {
 					t.Errorf("excerpt %d: lore_search reports no origin or timestamps, got %+v", i, g)
 				}
-				if !IsExcerpt(g) {
-					t.Errorf("excerpt %d must be recognisable as partial: %+v", i, g)
+				if !g.Partial {
+					t.Errorf("excerpt %d must be marked Partial: %+v", i, g)
 				}
 			}
 		})
@@ -179,16 +179,21 @@ func TestStripHighlights(t *testing.T) {
 	}
 }
 
-// TestIsExcerpt pins the discriminator prompt rendering relies on: an entry from
-// lore_get always carries an origin and a timestamp, an excerpt never does.
-func TestIsExcerpt(t *testing.T) {
-	xs, err := parseSearch(golden(t, "search_basic.txt"))
-	if err != nil {
-		t.Fatalf("parseSearch: %v", err)
-	}
-	for _, x := range xs {
-		if !IsExcerpt(x.Entry) {
-			t.Errorf("a search hit must report as an excerpt: %+v", x.Entry)
+// TestPartialIsSetByTheParsers pins the flag at the point it is written: every
+// search hit is partial, every rendered entry is not.
+func TestPartialIsSetByTheParsers(t *testing.T) {
+	for _, fixture := range []string{"search_basic.txt", "search_markers.txt", "search_empty_snippet.txt"} {
+		xs, err := parseSearch(golden(t, fixture))
+		if err != nil {
+			t.Fatalf("parseSearch(%s): %v", fixture, err)
+		}
+		for _, x := range xs {
+			if !x.Entry.Partial {
+				t.Errorf("%s: a search hit must be Partial: %+v", fixture, x.Entry)
+			}
+			if !IsExcerpt(x.Entry) {
+				t.Errorf("%s: IsExcerpt must agree with Partial: %+v", fixture, x.Entry)
+			}
 		}
 	}
 	for _, fixture := range []string{"get_minimal.txt", "get_full.txt", "get_empty_body.txt", "get_copy.txt"} {
@@ -196,8 +201,11 @@ func TestIsExcerpt(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parseEntry(%s): %v", fixture, err)
 		}
+		if r.Entry.Partial {
+			t.Errorf("%s: a rendered entry must not be Partial: %+v", fixture, r.Entry)
+		}
 		if IsExcerpt(r.Entry) {
-			t.Errorf("%s: a whole entry must not report as an excerpt: %+v", fixture, r.Entry)
+			t.Errorf("%s: IsExcerpt must agree with Partial: %+v", fixture, r.Entry)
 		}
 	}
 }

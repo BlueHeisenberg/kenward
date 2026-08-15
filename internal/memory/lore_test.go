@@ -158,19 +158,117 @@ func TestSearchReturnsExcerptsNotEntries(t *testing.T) {
 	}
 }
 
-// TestGetIsNotAnExcerpt is the other half of the discriminator.
-func TestGetIsNotAnExcerpt(t *testing.T) {
+// TestPartialInvariantAcrossTheAPI asserts the invariant directly, on every
+// method that hands out an Entry, so that Entry.Partial and the Excerpt type
+// cannot drift apart: a search hit is always partial and everything else never
+// is.
+func TestPartialInvariantAcrossTheAPI(t *testing.T) {
+	check := func(t *testing.T, source string, want bool, entries ...Entry) {
+		t.Helper()
+		if len(entries) == 0 {
+			t.Fatalf("%s returned nothing to check", source)
+		}
+		for _, e := range entries {
+			if e.Partial != want {
+				t.Errorf("%s: Partial = %v, want %v: %+v", source, e.Partial, want, e)
+			}
+			if IsExcerpt(e) != e.Partial {
+				t.Errorf("%s: IsExcerpt disagrees with Partial: %+v", source, e)
+			}
+		}
+	}
+
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
 		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
-		toolGet:    {{Text: golden(t, "get_minimal.txt")}},
+		toolSearch: {{Text: golden(t, "search_basic.txt")}},
+		toolGet: {
+			{Match: "3f1c9e2a", Text: golden(t, "get_minimal.txt")},
+			{Match: "5f5f0000", Text: golden(t, "get_copy.txt")},
+		},
+		toolPut:   {{Text: golden(t, "put_stored.txt")}},
+		toolShare: {{Text: golden(t, "share_copied.txt")}},
 	}}, nil)
-	got, err := f.Get(ctxT(t), spacePrivate, "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f")
+	ctx := ctxT(t)
+	id := "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f"
+
+	found, err := f.Search(ctx, SearchQuery{Text: "bin day", Spaces: []domain.SpaceID{spacePrivate}})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	check(t, "Search", true, found...)
+
+	xs, err := f.SearchExcerpts(ctx, SearchQuery{Text: "bin day", Spaces: []domain.SpaceID{spacePrivate}})
+	if err != nil {
+		t.Fatalf("SearchExcerpts: %v", err)
+	}
+	for _, x := range xs {
+		check(t, "SearchExcerpts", true, x.Entry)
+	}
+
+	got, err := f.Get(ctx, spacePrivate, id)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if IsExcerpt(got) {
-		t.Fatalf("an entry from Get must not report as partial: %+v", got)
+	check(t, "Get", false, got)
+
+	put, err := f.Put(ctx, spacePrivate, Draft{Domain: "home/routine", Title: "t", Body: "b"})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
 	}
+	check(t, "Put", false, put)
+
+	shared, err := f.Share(ctx, spacePrivate, spaceHousehold, id)
+	if err != nil {
+		t.Fatalf("Share: %v", err)
+	}
+	check(t, "Share", false, shared)
+}
+
+// TestPartialSurvivesTheWriteFallbacks: the reconstructed entries returned when a
+// read-back fails are whole, not excerpts. Their bodies are the caller's own text.
+func TestPartialSurvivesTheWriteFallbacks(t *testing.T) {
+	t.Run("put", func(t *testing.T) {
+		f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+			toolPut: {{Text: golden(t, "put_stored.txt")}},
+			// Every read-back fails, so Put must fall back to the draft.
+			toolGet: {{Text: `no entry with id "x"`, IsError: true}},
+		}}, nil)
+		put, err := f.Put(ctxT(t), spacePrivate, Draft{Domain: "home/routine", Title: "t", Body: "b"})
+		if err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if put.Body != "b" {
+			t.Fatalf("expected the draft's own body in the fallback, got %q", put.Body)
+		}
+		if put.Partial {
+			t.Errorf("the reconstructed put entry has a real body and must not be Partial: %+v", put)
+		}
+	})
+
+	t.Run("share", func(t *testing.T) {
+		f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+			toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
+			toolGet: {
+				{Match: "3f1c9e2a", Text: golden(t, "get_minimal.txt")},
+				// The read-back of the new copy fails.
+				{Match: "5f5f0000", Text: `no entry with id "x"`, IsError: true},
+			},
+			toolShare: {{Text: golden(t, "share_copied.txt")}},
+		}}, nil)
+		shared, err := f.Share(ctxT(t), spacePrivate, spaceHousehold, "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f")
+		if err != nil {
+			t.Fatalf("Share: %v", err)
+		}
+		if shared.ID != "5f5f0000-0000-4000-8000-000000000000" || shared.Space != spaceHousehold {
+			t.Fatalf("expected the source-derived copy, got %+v", shared)
+		}
+		if !shared.UpdatedAt.IsZero() {
+			t.Errorf("the copy's own timestamp is unknown and must not be the source's: %v", shared.UpdatedAt)
+		}
+		if shared.Partial {
+			t.Errorf("the source-derived share entry must not be Partial: %+v", shared)
+		}
+	})
 }
 
 func TestSearchDeduplicatesSpaces(t *testing.T) {
@@ -387,6 +485,11 @@ func TestPutSucceedsWhenTheReadBackFails(t *testing.T) {
 	if got.Confidence != "provisional" || got.Origin != "evidence" {
 		t.Errorf("defaults must come from the receipt, got %+v", got)
 	}
+	// The body is the draft's own, so this is a whole entry even though its
+	// timestamp is unknown; it must not be mistaken for a search excerpt.
+	if IsExcerpt(got) {
+		t.Errorf("the reconstructed entry has a real body and must not report as partial: %+v", got)
+	}
 }
 
 func TestPutRejectsBadDrafts(t *testing.T) {
@@ -581,6 +684,74 @@ func TestWritesAreNotReplayedAfterADeath(t *testing.T) {
 	if n := len(pids(f.calls(t))); n != 2 {
 		t.Fatalf("want a second subprocess, saw %d pids", n)
 	}
+}
+
+// TestUncertainWrites separates the two write outcomes a member has to be told
+// apart. lore has no delete: a duplicate is permanent, so "this may not have
+// saved" and "this did not save" must never be conflated.
+func TestUncertainWrites(t *testing.T) {
+	t.Run("timed out after the request went out", func(t *testing.T) {
+		f := newFake(t, fakeScript{
+			HangOnCall: 1,
+			Replies:    map[string][]fakeReply{toolPut: {{Text: golden(t, "put_stored.txt")}}},
+		}, func(c *Config) { c.CallTimeout = 250 * time.Millisecond })
+		_, err := f.Put(ctxT(t), spacePrivate, Draft{Domain: "d", Title: "t", Body: "b"})
+		if !errors.Is(err, ErrWriteUncertain) {
+			t.Fatalf("want ErrWriteUncertain, got %v", err)
+		}
+	})
+
+	t.Run("receipt in an unknown format", func(t *testing.T) {
+		f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+			toolPut: {{Text: golden(t, "bad_put_line.txt")}},
+		}}, nil)
+		_, err := f.Put(ctxT(t), spacePrivate, Draft{Domain: "d", Title: "t", Body: "b"})
+		if !errors.Is(err, ErrWriteUncertain) {
+			t.Fatalf("lore answered, so the entry exists; want ErrWriteUncertain, got %v", err)
+		}
+		var pe *ParseError
+		if !errors.As(err, &pe) {
+			t.Errorf("the underlying cause must still be inspectable, got %T", err)
+		}
+	})
+
+	t.Run("share whose answer was lost", func(t *testing.T) {
+		f := newFake(t, fakeScript{
+			DieOnCall: 3, // lore_spaces, lore_get, then the share itself
+			Replies: map[string][]fakeReply{
+				toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
+				toolGet:    {{Text: golden(t, "get_minimal.txt")}},
+				toolShare:  {{Text: golden(t, "share_copied.txt")}},
+			},
+		}, nil)
+		_, err := f.Share(ctxT(t), spacePrivate, spaceHousehold, "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f")
+		if !errors.Is(err, ErrWriteUncertain) {
+			t.Fatalf("want ErrWriteUncertain, got %v", err)
+		}
+	})
+
+	t.Run("rejections and reads are certain", func(t *testing.T) {
+		f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+			toolPut:    {{Text: "put: space household: this account is not a writer/owner of the space", IsError: true}},
+			toolSearch: {{Text: "search: database is locked", IsError: true}},
+		}}, func(c *Config) { c.BusyRetries = 1 })
+
+		// lore rejecting a write means it did not apply it.
+		_, err := f.Put(ctxT(t), spaceHousehold, Draft{Domain: "d", Title: "t", Body: "b"})
+		if errors.Is(err, ErrWriteUncertain) {
+			t.Errorf("a rejection from lore must not be reported as uncertain: %v", err)
+		}
+		// So does exhausting the contention retries: nothing was committed.
+		_, err = f.Search(ctxT(t), SearchQuery{Text: "x", Spaces: []domain.SpaceID{spacePrivate}})
+		if errors.Is(err, ErrWriteUncertain) {
+			t.Errorf("a read must never be reported as an uncertain write: %v", err)
+		}
+		// And a draft this client refuses never reaches lore at all.
+		_, err = f.Put(ctxT(t), spacePrivate, Draft{Domain: "d", Title: "t", Body: "b", Confidence: "nope"})
+		if errors.Is(err, ErrWriteUncertain) {
+			t.Errorf("a rejected draft must not be reported as uncertain: %v", err)
+		}
+	})
 }
 
 // TestHungSubprocessDoesNotHangTheCaller bounds a wedged lore.

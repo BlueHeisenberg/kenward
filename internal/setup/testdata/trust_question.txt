@@ -1,0 +1,8 @@
+Does everyone in this household trust whoever runs this machine to be able to
+read their private conversations?
+
+  [1] Yes — it is our own family machine.      (Simple)
+  [2] No, or I would rather it were sealed.    (Isolated — needs Linux with
+                                                Podman or Docker)
+
+Choose 1 or 2: 

@@ -90,6 +90,44 @@ func TestHistoryRendersOldestFirstAndIsBounded(t *testing.T) {
 	}
 }
 
+func TestCompleteEntriesAreNotLabelledExcerpts(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A complete entry — Partial unset, as every non-search path guarantees — is
+	// genuinely whole, and memory.IsExcerpt is the discriminator this package
+	// obeys instead of assuming everything it renders is a fragment.
+	whole := entry("david-private", "Coffee order", "David drinks oat-milk flat whites.", "validated")
+	whole.Partial = false
+	whole.Origin = "evidence"
+	rig.mem.bySpace["david-private"] = []memory.Entry{whole}
+	rig.mem.bySpace["household"] = []memory.Entry{
+		entry("household", "Bin day", "Bins go out Thursday night.", "hardened"),
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("coffee?")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	req, _ := rig.router.lastRequest()
+	sys := req.Messages[0].Content
+
+	if !strings.Contains(sys, "## From David's private memory") {
+		t.Error("a section of complete entries lost its completeness heading")
+	}
+	if strings.Contains(sys, "## Excerpts from David's private memory") {
+		t.Error("complete entries labelled as excerpts")
+	}
+	// The shared group is still a search excerpt and keeps saying so, and the note
+	// renders because at least one excerpt is shown.
+	if !strings.Contains(sys, "## Excerpts from the household's shared memory") {
+		t.Error("excerpt section lost its excerpt heading")
+	}
+	if !strings.Contains(sys, "search excerpts") {
+		t.Error("excerpt note missing although an excerpt is shown")
+	}
+}
+
 func TestRetrievalErrorRendersUnreadableNotEmpty(t *testing.T) {
 	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
 	if err != nil {

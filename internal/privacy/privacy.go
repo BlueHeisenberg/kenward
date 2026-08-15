@@ -49,13 +49,17 @@ const simpleStatement = `Every member's memory is separate: what you tell kenwar
 stored in your own space, and the household group can never read it.
 
 What this mode does NOT do is seal anything against whoever runs this machine.
-All members' keys live in one process here, so the person operating this
-computer can read every member's private memory. For most households that is
-fine — it is your own family machine, and you already trust whoever set it up.
+All members' keys live in one process here, and one bot token carries every
+conversation, so the person operating this computer can read every member's
+private memory — on the disk, and in flight on its way to and from Telegram.
+For most households that is fine — it is your own family machine, and you
+already trust whoever set it up.
 
 If that is not the arrangement you want, isolated mode gives each member their
 own sealed process, their own key and their own bot. It needs Linux with Podman
-or Docker.`
+or Docker.
+
+` + bothModes
 
 // isolatedStatement states a strong claim and then immediately bounds it. The bound is
 // not a disclaimer to be skimmed: a model must see plaintext to answer, so no
@@ -82,11 +86,28 @@ worse than the problem it solved. The consequence is that once your assistant
 is unlocked and running, your key stays in that process's memory until it
 stops or you lock it.
 
-The honest limit: kenward has to see your words in plain text to answer them.
-Someone with root access to this machine, while your assistant is running,
-could reach your key. There is no way around that for any assistant that runs
-on a server and answers questions — what changes is that reaching it means
-deliberately attacking your own household, rather than opening a file.`
+The honest limit: kenward has to see your words in plain text to answer them,
+and it is the second member of your private space. That is the price of an
+assistant that answers when your laptop is shut. Someone with root access to
+this machine, while your assistant is running, could reach your key. There is
+no way around that for any assistant that runs on a server and answers
+questions — what changes is that reaching it means deliberately attacking your
+own household, rather than opening a file.
+
+` + bothModes
+
+// bothModes states the two guarantees that do not depend on the topology, and it is
+// appended to both statements for that reason.
+//
+// They belong here rather than in the wizard because they are the same kind of claim as
+// everything else in this file: checkable, and worth nothing if the two places that make
+// it disagree. The routing sentence in particular is the one an operator can verify
+// against their own configuration in ten seconds, which is what makes the rest credible.
+const bothModes = `Two things hold whichever mode you are in. A conversation whose tier chain
+names only machines in the house never reaches a provider: when none of them
+answers, kenward refuses rather than reaching further, and there is no setting
+that changes that. And nothing is written to memory without the member seeing
+the exact words first and saying yes.`
 
 // Statement returns the privacy claim for a mode, as prose, with no leading or trailing
 // blank lines.

@@ -166,32 +166,31 @@ func (c *Client) Close() error {
 // written out (see Excerpt.Entry) rather than happening by assignment.
 type Excerpt struct {
 	// Entry carries what lore_search reports: ID, Space, Domain, Title,
-	// Confidence and Markers. Body holds the excerpt with lore's match
-	// highlighting removed. Origin, CreatedAt and UpdatedAt are always zero,
-	// which is what IsExcerpt keys on.
+	// Confidence and Markers, with Partial set. Body holds the excerpt with
+	// lore's match highlighting removed. Origin, CreatedAt and UpdatedAt are
+	// always zero, because lore_search does not report them.
 	Entry Entry
 	// Snippet is lore's snippet verbatim, with the FTS5 match brackets still in
 	// it. It is kept for diagnosing retrieval, not for showing to anyone.
 	Snippet string
 }
 
-// IsExcerpt reports whether e is a search excerpt rather than a whole entry.
+// IsExcerpt reports whether e is a search excerpt rather than a whole entry. It
+// is Entry.Partial under a name that states the question being asked.
 //
-// The distinction is guaranteed by construction, not guessed: lore_search reports
-// no origin and no timestamp and this client never invents either, while lore_get
-// always reports both and fails to parse if it does not. Prompt rendering and
-// anything else that presents an entry as a complete memory should check this.
-func IsExcerpt(e Entry) bool {
-	return e.Origin == "" || e.UpdatedAt.IsZero()
-}
+// Prompt rendering, and anything else that presents an entry to the model as a
+// complete memory, should check this: an excerpt is about twelve tokens of the
+// body, and presenting it as the whole thing tells the model something false.
+func IsExcerpt(e Entry) bool { return e.Partial }
 
 // Search implements Memory. It is a thin wrapper over SearchExcerpts, kept
 // because the interface is expressed in entries; prefer SearchExcerpts, whose
 // type says what these values actually are.
 //
-// Every Entry it returns is partial: Body is an excerpt of about twelve tokens,
-// and Origin, CreatedAt and UpdatedAt are zero. Call Get with the id for the real
-// entry before presenting one as a memory.
+// Every Entry it returns has Partial set: Body is an excerpt of about twelve
+// tokens, and Origin, CreatedAt and UpdatedAt are zero. The flag is what survives
+// into a []Entry, where the Excerpt type no longer can. Call Get with the id for
+// the real entry before presenting one as a memory.
 func (c *Client) Search(ctx context.Context, q SearchQuery) ([]Entry, error) {
 	xs, err := c.SearchExcerpts(ctx, q)
 	if err != nil {
@@ -394,6 +393,9 @@ func (c *Client) Put(ctx context.Context, space domain.SpaceID, d Draft) (Entry,
 		Confidence: st.Confidence,
 		Origin:     st.Origin,
 		Markers:    normalizeMarkers(d.Markers),
+		// Whole, not partial: Body is the draft's own text. Only UpdatedAt is
+		// missing, and that is absence of a timestamp, not elision of content.
+		Partial: false,
 	}
 	r, err := c.getRendered(ctx, st.ID)
 	if err != nil {

@@ -62,6 +62,14 @@ const confidenceText = `Memory entries carry a confidence: experimental, provisi
 Treat provisional entries as things that were true once and may have changed. Markers
 in brackets are notes from whoever recorded the entry; honour them.`
 
+// excerptNote accompanies the confidence paragraph whenever the sections above show
+// search excerpts. lore's search returns a snippet, not the entry — the body may be
+// elided in the middle — and a model shown a fragment under a heading claiming
+// completeness will answer confidently from the part it can see. It is rendered only
+// when an excerpt is actually shown, so it never describes entries that are not there.
+const excerptNote = `The entries shown above are search excerpts: an entry may continue beyond what is
+shown.`
+
 // captureText is the capture instruction block, verbatim.
 const captureText = `If this conversation contains something worth remembering — a durable fact, a
 preference, a decision, something the household will want recalled later — you may
@@ -113,12 +121,17 @@ type promptInput struct {
 	hasPrivate     bool
 	privateErr     bool
 	privateDropped int
+	// privateHadExcerpts remembers whether the group held search excerpts before
+	// the budget loop trimmed it, so a section whose entries were all dropped is
+	// still labelled by what retrieval actually found.
+	privateHadExcerpts bool
 
 	// shared is the household's group.
-	shared        []memory.Entry
-	hasShared     bool
-	sharedErr     bool
-	sharedDropped int
+	shared            []memory.Entry
+	hasShared         bool
+	sharedErr         bool
+	sharedDropped     int
+	sharedHadExcerpts bool
 }
 
 // assemble renders the turn's request within the context budget.
@@ -189,11 +202,13 @@ func (u *Unit) promptInput(sc domain.Scope, groups []spaceGroup) promptInput {
 			inp.hasPrivate = true
 			inp.private = groups[0].entries
 			inp.privateErr = groups[0].err != nil
+			inp.privateHadExcerpts = anyExcerpt(groups[0].entries)
 		}
 		if len(groups) > 1 {
 			inp.hasShared = true
 			inp.shared = groups[1].entries
 			inp.sharedErr = groups[1].err != nil
+			inp.sharedHadExcerpts = anyExcerpt(groups[1].entries)
 		}
 		return inp
 	}
@@ -202,8 +217,23 @@ func (u *Unit) promptInput(sc domain.Scope, groups []spaceGroup) promptInput {
 		inp.hasShared = true
 		inp.shared = groups[0].entries
 		inp.sharedErr = groups[0].err != nil
+		inp.sharedHadExcerpts = anyExcerpt(groups[0].entries)
 	}
 	return inp
+}
+
+// anyExcerpt reports whether any entry is a search excerpt rather than a complete
+// entry. The distinction is the memory package's, not a guess made here: search
+// results are partial by construction and memory.IsExcerpt marks them, while a
+// complete entry — a Get result — is genuinely whole and must not be labelled as a
+// fragment.
+func anyExcerpt(entries []memory.Entry) bool {
+	for _, e := range entries {
+		if memory.IsExcerpt(e) {
+			return true
+		}
+	}
+	return false
 }
 
 // renderSystem produces the system prompt in the fixed assembly order: identity,
@@ -236,15 +266,21 @@ func renderSystem(inp promptInput) string {
 
 	if inp.hasPrivate {
 		sections = append(sections, renderMemorySection(
-			fmt.Sprintf("## From %s's private memory", inp.memberName),
-			inp.private, inp.privateErr, inp.privateDropped))
+			fmt.Sprintf("%s's private memory", inp.memberName),
+			inp.private, inp.privateHadExcerpts, inp.privateErr, inp.privateDropped))
 	}
 	if inp.hasShared {
 		sections = append(sections, renderMemorySection(
-			"## From the household's shared memory",
-			inp.shared, inp.sharedErr, inp.sharedDropped))
+			"the household's shared memory",
+			inp.shared, inp.sharedHadExcerpts, inp.sharedErr, inp.sharedDropped))
 	}
-	sections = append(sections, confidenceText)
+	confidence := confidenceText
+	if anyExcerpt(inp.private) || anyExcerpt(inp.shared) {
+		// The note renders only when an excerpt is actually shown, so it never
+		// describes entries that are not there.
+		confidence += "\n\n" + excerptNote
+	}
+	sections = append(sections, confidence)
 
 	captureSection := fill.Replace(captureText)
 	if group {
@@ -255,12 +291,28 @@ func renderSystem(inp promptInput) string {
 	return strings.Join(sections, "\n\n")
 }
 
-// renderMemorySection renders one space's group: header, entries with confidence and
-// markers passed through verbatim, an explicit statement when there is nothing to
-// show, and an explicit statement when entries were dropped for budget.
-func renderMemorySection(header string, entries []memory.Entry, unreadable bool, dropped int) string {
+// renderMemorySection renders one space's group: heading, entries with confidence
+// and markers passed through verbatim, an explicit statement when there is nothing
+// to show, and an explicit statement when entries were dropped for budget.
+//
+// The heading is honest about partiality. Search results are excerpts — a body that
+// may be elided in the middle — so a section showing any is headed "Excerpts from
+// …"; a heading claiming the memory itself would have the model answer confidently
+// from a fragment, the same lie as rendering a failed lookup as nothing found. A
+// section whose entries are all complete keeps "From …", because labelling a whole
+// entry as a fragment is false in the other direction. A mixed section is headed as
+// excerpts: treating complete information as possibly partial is the harmless error,
+// and the reverse is not. Empty and failed sections keep "From …" — there is nothing
+// shown whose partiality needs disclosing.
+func renderMemorySection(subject string, entries []memory.Entry, hadExcerpts, unreadable bool, dropped int) string {
+	partial := anyExcerpt(entries) || (dropped > 0 && hadExcerpts)
 	var b strings.Builder
-	b.WriteString(header)
+	if !unreadable && partial {
+		b.WriteString("## Excerpts from ")
+	} else {
+		b.WriteString("## From ")
+	}
+	b.WriteString(subject)
 	switch {
 	case unreadable:
 		b.WriteString("\n")

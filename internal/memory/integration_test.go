@@ -75,20 +75,23 @@ func TestIntegrationRoundTrip(t *testing.T) {
 		t.Errorf("body round-trip:\n got %q\nwant %q", got.Body, body)
 	}
 
-	found, err := c.Search(ctx, SearchQuery{
+	found, err := c.SearchExcerpts(ctx, SearchQuery{
 		Text:   "kenward integration probe",
 		Spaces: []domain.SpaceID{space},
 		Limit:  5,
 	})
 	if err != nil {
-		t.Fatalf("Search: %v", err)
+		t.Fatalf("SearchExcerpts: %v", err)
 	}
 	if len(found) == 0 {
 		t.Fatal("the entry just written was not found by search")
 	}
-	for _, e := range found {
-		if e.Space != space {
-			t.Errorf("search result in the wrong space: %+v", e)
+	for _, x := range found {
+		if x.Entry.Space != space {
+			t.Errorf("search result in the wrong space: %+v", x.Entry)
+		}
+		if !IsExcerpt(x.Entry) {
+			t.Errorf("a real lore search hit must still report as partial: %+v", x.Entry)
 		}
 	}
 }

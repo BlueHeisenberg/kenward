@@ -306,6 +306,9 @@ func groupInbound(text string) transport.Inbound {
 	return in
 }
 
+// entry fabricates one search hit. Partial is set because that is what the real
+// lore client guarantees for everything Search returns: a search result is an
+// excerpt, and the fakes model that contract rather than a friendlier one.
 func entry(space domain.SpaceID, title, body, confidence string, markers ...string) memory.Entry {
 	return memory.Entry{
 		ID:         "id-" + title,
@@ -314,5 +317,6 @@ func entry(space domain.SpaceID, title, body, confidence string, markers ...stri
 		Body:       body,
 		Confidence: confidence,
 		Markers:    markers,
+		Partial:    true,
 	}
 }

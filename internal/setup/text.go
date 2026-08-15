@@ -3,8 +3,10 @@ package setup
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/privacy"
 )
 
 // The copy in this file is the product. Setup is the first thing a person touches,
@@ -222,30 +224,36 @@ not quietly reach further.`
 // privateDefaultNote states what the local-only default means, for one member, in
 // the words the member would use.
 func privateDefaultNote(name string, chain []string) string {
-	return fmt.Sprintf(`  %s's private conversations will use %s and nothing else. Nothing %s says
-  in private leaves the house; if no local machine answers, kenward refuses
-  rather than sending it to a provider.`, name, formatChain(chain), name)
+	return fmt.Sprintf(`  %s's private conversations will use %s and nothing else.
+  Nothing said in there leaves the house: if no local machine answers, kenward
+  refuses rather than sending it to a provider.`, name, formatChain(chain))
 }
 
-// cloudOptIn is the question that widens a private chain. Its one sentence carries
-// the whole consequence, because it is the sentence somebody will read while
-// reaching for the y key.
-func cloudOptIn(name string, tiers []string, hosts []string) string {
-	return fmt.Sprintf("Also allow %s, so %s's private messages can be sent to %s when no local machine answers?",
-		formatChain(tiers), name, formatList(hosts))
+// cloudConsequence is the sentence somebody reads while reaching for the y key. It
+// says where the messages would actually go, by name, because "enable cloud
+// fallback" is a phrase that hides the whole decision.
+func cloudConsequence(what string, tiers []string, hosts []string) string {
+	return fmt.Sprintf(`  Adding %s means %s can be sent to
+  %s whenever no local machine answers.
+  That is a deliberate choice, and it is not the default.`,
+		formatChain(tiers), what, formatList(hosts))
+}
+
+// cloudOptIn is the question that widens a private chain.
+func cloudOptIn(name string, tiers []string) string {
+	return fmt.Sprintf("Allow %s for %s?", formatChain(tiers), name)
 }
 
 // groupDefaultNote is the same statement for the household's shared conversations.
 func groupDefaultNote(chain []string) string {
-	return fmt.Sprintf(`  The group chat will use %s and nothing else. It is shared memory — everyone
-  in the household can read it — but shared inside the house is not the same as
-  sent out of it, so it defaults local too.`, formatChain(chain))
+	return fmt.Sprintf(`  The group chat will use %s and nothing else. It is shared memory:
+  everyone in the household can read it. But shared inside the house is not the
+  same as sent out of it, so it defaults local too.`, formatChain(chain))
 }
 
 // groupCloudOptIn widens the household chain.
-func groupCloudOptIn(tiers []string, hosts []string) string {
-	return fmt.Sprintf("Also allow %s, so group messages can be sent to %s when no local machine answers?",
-		formatChain(tiers), formatList(hosts))
+func groupCloudOptIn(tiers []string) string {
+	return fmt.Sprintf("Allow %s for the group chat?", formatChain(tiers))
 }
 
 // stoppedForLinux is printed when somebody chooses to go and do this properly.
@@ -263,13 +271,13 @@ GPU, a small server, anything that speaks the OpenAI API — and run setup again
 func memberSummary(members []config.MemberConfig) string {
 	width := 0
 	for _, m := range members {
-		if len(m.Name) > width {
-			width = len(m.Name)
+		if n := utf8.RuneCountInString(m.Name); n > width {
+			width = n
 		}
 	}
 	var b strings.Builder
 	for _, m := range members {
-		fmt.Fprintf(&b, "  %-*s  id %s, private memory %s\n", width, m.Name, m.ID, m.PrivateSpace)
+		fmt.Fprintf(&b, "  %s  id %s, private memory %s\n", pad(m.Name, width), m.ID, m.PrivateSpace)
 	}
 	b.WriteString("\n  Nobody else in the household can read a private memory, and kenward will\n")
 	b.WriteString("  not bring one up in the group chat.")
@@ -294,75 +302,55 @@ func memberTokenNote(members []config.MemberConfig) string {
 	return b.String()
 }
 
-// PrivacyStatement is what setup prints once the mode is settled: the honest
-// description of what that mode does and does not protect against.
+// privacyBlock is what setup prints once the mode is settled.
 //
-// It is golden-tested, and it is the most important output the program produces,
-// because it is where a claim becomes checkable. The simple-mode text says that
-// whoever runs the machine can read every member's private memory, in those words,
-// before it says anything reassuring. Softening it — "logical separation",
-// "trusted operator model", any phrasing that lets a reader come away with the
-// wrong belief — is a defect, not a wording preference.
+// The statement itself belongs to internal/privacy and is printed verbatim. It is
+// the most important output this product produces — the point at which a claim
+// becomes checkable — and it is written once so that the wizard and `kenward
+// doctor` cannot drift apart, because the way a promise like this decays is one
+// copy being softened while the other is not.
 //
-// The sentences it shares with `kenward doctor` are shared deliberately: the same
-// claim, in the same words, at setup and at every check afterwards.
-func PrivacyStatement(mode config.Mode) string {
+// What belongs to the wizard is the framing around it: the heading, and the line
+// telling somebody where they will see this text again. Softening the statement is
+// not this package's to do, and the golden tests in internal/privacy make sure it
+// is nobody's to do by accident.
+func privacyBlock(mode config.Mode) string {
+	heading := "Privacy, in simple mode"
 	if mode == config.ModeIsolated {
-		return privacyIsolated
+		heading = "Privacy, in isolated mode"
 	}
-	return privacySimple
+	return heading + "\n\n" + privacy.Statement(privacyMode(mode)) + "\n\n" + privacyTrailer
 }
 
-const privacySimple = `Privacy, in simple mode
+// privacyTrailer tells the reader this paragraph is not a one-off reassurance at the
+// end of an installer. It is the same text `kenward doctor` prints, which is what
+// makes it worth reading rather than skipping.
+const privacyTrailer = `kenward doctor prints this same statement, in the same words, every time it
+runs. If the two ever differ, one of them is wrong.`
 
-  Every member's key lives in one process, and one bot token carries every
-  conversation. Whoever runs this machine can read every member's private
-  memory — on disk and in flight. Separation between members is real; sealing
-  against the operator is not. Isolated mode provides that.
+// privacyMode maps the configured mode onto the privacy package's own.
+//
+// The two enumerations are kept separate deliberately: internal/privacy must not
+// depend on the shape of a configuration file to state what a topology protects.
+func privacyMode(mode config.Mode) privacy.Mode {
+	if mode == config.ModeIsolated {
+		return privacy.ModeIsolated
+	}
+	return privacy.ModeSimple
+}
 
-  This is the mode's known limitation, not a fault in it, and ` + "`kenward doctor`" + `
-  will say the same thing every time it runs. Most households are fine with it,
-  because the person running the machine is a member of their own family. If
-  that is not true here, stop now and set this up again on a Linux machine in
-  isolated mode.
-
-  What holds in both modes: a space whose tier chain names only local endpoints
-  never reaches a provider. When nothing local answers, kenward refuses. It does
-  not widen the chain, and there is no setting that makes it.
-
-  What holds in both modes: nothing is written to memory without the member
-  saying yes to the exact text first, and no configuration option turns that
-  off.`
-
-const privacyIsolated = `Privacy, in isolated mode
-
-  Each member runs in their own container, with their own bot token, their own
-  memory and their own key. The key is derived from that member's passphrase and
-  unwrapped into memory only while they have an active session; it is never
-  written to disk. A stolen disk or a backup yields nothing.
-
-  The claim is not that the operator cannot read your memory. It is that the
-  operator cannot read it from disk, from a backup, or while you are not in
-  session, and that doing so means deliberately attacking their own family. That
-  is strong, checkable and true. The stronger version is not.
-
-  Two limits, stated plainly, because they are the first things worth checking:
-
-    kenward can read private memory at all. That is what being the second
-    member of a two-member space means, and it is the price of an assistant
-    that answers when your laptop is shut.
-
-    Root always wins. Someone with root on this host, while a member is in
-    session, can read that member's unwrapped key out of memory. Isolated mode
-    raises the cost. It does not create an impossibility.
-
-  What holds in both modes: a space whose tier chain names only local endpoints
-  never reaches a provider. When nothing local answers, kenward refuses. It does
-  not widen the chain, and there is no setting that makes it.
-
-  What holds in both modes: nothing is written to memory without the member
-  saying yes to the exact text first, and no configuration option turns that
-  off.`
+// pad right-pads a string to a width counted in runes rather than bytes.
+//
+// Go's %-*s counts bytes, so a household with a María in it would come out of an
+// aligned column one space short of everybody else. It is a small thing, and it is
+// the kind of small thing that tells somebody whether this program was written with
+// their family in mind.
+func pad(s string, width int) string {
+	if n := utf8.RuneCountInString(s); n < width {
+		return s + strings.Repeat(" ", width-n)
+	}
+	return s
+}
 
 // formatChain renders a tier chain the way the configuration file writes it.
 func formatChain(tiers []string) string {

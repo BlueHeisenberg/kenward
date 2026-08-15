@@ -286,11 +286,11 @@ func writeFile(path string, data []byte, mode os.FileMode, force bool) error {
 func renderEnvFile(vars []EnvVar) []byte {
 	var b bytes.Buffer
 	b.WriteString(envFileHeader)
+	b.WriteString("\n")
 	for _, v := range vars {
 		if v.value == "" {
 			continue
 		}
-		b.WriteString("\n")
 		fmt.Fprintf(&b, "%s=%s\n", v.Name, quoteEnvValue(v.value))
 	}
 	return b.Bytes()
