@@ -60,6 +60,25 @@ recorded in `docs/ARCHITECTURE.md`, not a `go get`.
 than here, the test is whether its signature needs a domain noun — if it does, it stays
 in kenward.
 
+## Verifying
+
+`go.work` links this repository to a local keel checkout, which makes cross-repo work
+painless and makes this build depend on keel's *working tree*. While keel is being edited,
+kenward will not build through the workspace even though nothing here is wrong.
+
+So verify the way CI does, against the published module:
+
+```sh
+GOWORK=off go build ./... && GOWORK=off go test ./...
+```
+
+`-race` needs cgo, which the Windows development machine lacks. Run it on Linux:
+
+```sh
+docker run --rm -v "$PWD:/src" -w /src -e CGO_ENABLED=1 -e GOWORK=off \
+    golang:1.25-bookworm go test -race ./...
+```
+
 ## Working style
 
 - Tests come with the code, table-driven, no network in unit tests. Integration tests
