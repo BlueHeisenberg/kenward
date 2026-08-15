@@ -34,9 +34,14 @@ type Message struct {
 
 // Request is a completion request, independent of which endpoint serves it.
 type Request struct {
-	Messages    []Message
-	MaxTokens   int
-	Temperature float64
+	Messages  []Message
+	MaxTokens int
+	// Temperature is a pointer so that zero can be expressed. Temperature 0 is
+	// meaningful — it is what a turn wants when it is about to make a tool call and
+	// determinism matters more than variety — and a plain float64 makes it
+	// indistinguishable from "unset", which serialises as the provider's default of
+	// roughly 1.0. Nil means unset.
+	Temperature *float64
 }
 
 // Completion is what came back, plus which endpoint produced it.

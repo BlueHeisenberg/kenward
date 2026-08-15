@@ -1,0 +1,4 @@
+# Bin day is Tuesday
+id 3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f (v1) | space hearth-private | domain home/routine | provisional | origin evidence | updated 2026-08-01T09:15:00.000000000Z
+
+The green bin goes out Tuesday night.

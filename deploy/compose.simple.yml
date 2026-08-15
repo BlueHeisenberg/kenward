@@ -1,0 +1,62 @@
+# kenward — Simple mode (docs/README.md's "Two modes, one binary" table).
+#
+# One process, one container, one household Telegram bot. Separation between
+# members is real (separate lore spaces); sealing against whoever runs this
+# machine is not — that operator can read anyone's private memory. That is
+# Simple mode's stated, honest limitation, not a bug. If your household needs
+# to seal private memory against the machine's owner, use
+# compose.isolated.yml instead.
+#
+# Before running:
+#   1. Write kenward.yaml next to this file (mode: simple) — see
+#      docs/IMPLEMENTATION.md §4 for the schema. Do NOT commit it.
+#   2. Create a `.env` file next to this compose file — also NOT committed,
+#      see deploy/README.md — defining KENWARD_BOT_TOKEN and one variable per
+#      `api_key_env` referenced by an endpoint in kenward.yaml.
+#   3. Supply a `lore` binary for kenward to spawn (`lore mcp`) — see the note
+#      at the top of ../Dockerfile. The bind mount below assumes you've built
+#      or copied one to ./bin/lore on the host.
+#
+# Secrets never appear in this file: every token/key is named by environment
+# variable only, sourced from `.env`, exactly as kenward.yaml itself only ever
+# names an env var (`bot_token_env`, `api_key_env`) and never a literal value.
+
+services:
+  kenward:
+    # Swap for `build: { context: .. }` to build from source instead of a
+    # published tag.
+    image: ghcr.io/blueheisenberg/kenward:latest
+    container_name: kenward
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      # Must match telegram.bot_token_env in kenward.yaml.
+      KENWARD_BOT_TOKEN: ${KENWARD_BOT_TOKEN}
+      # Add one line here (and in .env) per api_key_env your endpoints
+      # reference, e.g.:
+      # OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+
+    volumes:
+      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
+      - kenward-data:/var/lib/kenward
+      # Supply lore — see ../Dockerfile's note. Replace the host path with
+      # wherever you keep a `lore` binary built for linux/<arch matching the
+      # image>.
+      - ./bin/lore:/usr/local/bin/lore:ro
+
+    # --- hardening ---
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      # Writable scratch space only; the data directory is the one place
+      # kenward actually persists anything.
+      - /tmp
+    cap_drop:
+      - ALL
+
+volumes:
+  kenward-data:

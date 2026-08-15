@@ -1,0 +1,6 @@
+# Boiler service window
+id a1b2c3d4-0000-4000-8000-000000000001 (v7) | space household | domain home/heating | hardened | origin constraint | [CONTEXT] [NON-NEGOTIABLE] | copied from 9f8e7d6c-0000-4000-8000-00000000000a | updated 2026-08-14T22:04:11.123456789Z
+
+The boiler must be serviced before the first frost.
+
+Two paragraphs, and a line that looks like metadata: id x (v1) | space y.

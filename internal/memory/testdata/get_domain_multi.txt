@@ -1,0 +1,11 @@
+# First entry
+id a1b2c3d4-0000-4000-8000-00000000000b (v1) | space household | domain home/routine | provisional | origin evidence | updated 2026-08-01T09:15:00.000000000Z
+
+Body of the first.
+
+---
+
+# Second entry
+id a1b2c3d4-0000-4000-8000-00000000000c (v4) | space hearth-private | domain home/routine | validated | origin directive | [IMPORTANT] | updated 2026-08-02T09:15:00.000000000Z
+
+Body of the second.

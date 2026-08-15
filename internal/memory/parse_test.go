@@ -1,0 +1,426 @@
+package memory
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+)
+
+// golden loads a fixture. Line endings are normalised so that a checkout with
+// autocrlf still exercises the parser the way lore feeds it.
+func golden(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("reading fixture: %v", err)
+	}
+	return strings.ReplaceAll(string(b), "\r\n", "\n")
+}
+
+func mustTime(t *testing.T, s string) time.Time {
+	t.Helper()
+	ts, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		t.Fatalf("bad test timestamp %q: %v", s, err)
+	}
+	return ts.UTC()
+}
+
+func TestParseSearchGolden(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+		want    []Entry
+	}{
+		{
+			name:    "two results",
+			fixture: "search_basic.txt",
+			want: []Entry{
+				{
+					ID:         "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f",
+					Domain:     "home/routine",
+					Title:      "Bin day is Tuesday",
+					Confidence: "validated",
+					Body:       "the green [bin] goes out Tuesday night, recycling…",
+				},
+				{
+					ID:         "7b2d4c11-9e88-4d31-b0aa-1f2e3d4c5b6a",
+					Domain:     "home/routine",
+					Title:      "Recycling collection",
+					Confidence: "provisional",
+					Body:       "…[recycling] is fortnightly on the same [day]",
+				},
+			},
+		},
+		{
+			name:    "markers are joined with no separator",
+			fixture: "search_markers.txt",
+			want: []Entry{{
+				ID:         "a1b2c3d4-0000-4000-8000-000000000001",
+				Domain:     "home/heating",
+				Title:      "Boiler service window",
+				Confidence: "hardened",
+				Markers:    []string{"[CONTEXT]", "[NON-NEGOTIABLE]"},
+				Body:       "the [boiler] must be serviced before…",
+			}},
+		},
+		{
+			name:    "an empty snippet is still a line",
+			fixture: "search_empty_snippet.txt",
+			want: []Entry{
+				{
+					ID:         "a1b2c3d4-0000-4000-8000-000000000002",
+					Domain:     "home/kitchen",
+					Title:      "Kettle",
+					Confidence: "experimental",
+				},
+				{
+					ID:         "a1b2c3d4-0000-4000-8000-000000000003",
+					Domain:     "home/kitchen",
+					Title:      "Kettle descaling",
+					Confidence: "validated",
+					Markers:    []string{"[UPDATED]"},
+					Body:       "descale the [kettle] monthly",
+				},
+			},
+		},
+		{
+			name:    "a parenthesised title does not steal the confidence",
+			fixture: "search_title_parens.txt",
+			want: []Entry{{
+				ID:         "a1b2c3d4-0000-4000-8000-000000000004",
+				Domain:     "home/network",
+				Title:      "Router reset (the one in the hall)",
+				Confidence: "provisional",
+				Markers:    []string{"[IMPORTANT]"},
+				Body:       "hold the [router] reset pin for ten…",
+			}},
+		},
+		{
+			name:    "no matches is not an error",
+			fixture: "search_none.txt",
+			want:    nil,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseSearch(golden(t, tc.fixture))
+			if err != nil {
+				t.Fatalf("parseSearch: %v", err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %d entries, want %d: %+v", len(got), len(tc.want), got)
+			}
+			for i := range got {
+				if got[i].ID != tc.want[i].ID ||
+					got[i].Domain != tc.want[i].Domain ||
+					got[i].Title != tc.want[i].Title ||
+					got[i].Confidence != tc.want[i].Confidence ||
+					got[i].Body != tc.want[i].Body ||
+					!slices.Equal(got[i].Markers, tc.want[i].Markers) {
+					t.Errorf("entry %d:\n got %+v\nwant %+v", i, got[i], tc.want[i])
+				}
+				if !got[i].UpdatedAt.IsZero() || !got[i].CreatedAt.IsZero() || got[i].Origin != "" {
+					t.Errorf("entry %d: lore_search reports no origin or timestamps, got %+v", i, got[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseEntryGolden(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture string
+		want    rendered
+	}{
+		{
+			name:    "minimal",
+			fixture: "get_minimal.txt",
+			want: rendered{
+				Entry: Entry{
+					ID:         "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f",
+					Domain:     "home/routine",
+					Title:      "Bin day is Tuesday",
+					Body:       "The green bin goes out Tuesday night.",
+					Confidence: "provisional",
+					Origin:     "evidence",
+					UpdatedAt:  mustTime(t, "2026-08-01T09:15:00.000000000Z"),
+				},
+				SpaceName: "hearth-private",
+				Version:   1,
+			},
+		},
+		{
+			name:    "markers, provenance and a body that looks like metadata",
+			fixture: "get_full.txt",
+			want: rendered{
+				Entry: Entry{
+					ID:         "a1b2c3d4-0000-4000-8000-000000000001",
+					Domain:     "home/heating",
+					Title:      "Boiler service window",
+					Body:       "The boiler must be serviced before the first frost.\n\nTwo paragraphs, and a line that looks like metadata: id x (v1) | space y.",
+					Confidence: "hardened",
+					Origin:     "constraint",
+					Markers:    []string{"[CONTEXT]", "[NON-NEGOTIABLE]"},
+					UpdatedAt:  mustTime(t, "2026-08-14T22:04:11.123456789Z"),
+				},
+				SpaceName:   "household",
+				Version:     7,
+				SourceEntry: "9f8e7d6c-0000-4000-8000-00000000000a",
+			},
+		},
+		{
+			name:    "empty body",
+			fixture: "get_empty_body.txt",
+			want: rendered{
+				Entry: Entry{
+					ID:         "a1b2c3d4-0000-4000-8000-000000000005",
+					Domain:     "home/misc",
+					Title:      "Just a title",
+					Confidence: "experimental",
+					Origin:     "directive",
+					UpdatedAt:  mustTime(t, "2026-01-02T03:04:05.000000000Z"),
+				},
+				SpaceName: "household",
+				Version:   2,
+			},
+		},
+		{
+			name:    "clock-skew padding on updated_at",
+			fixture: "get_clock_skew.txt",
+			want: rendered{
+				Entry: Entry{
+					ID:         "a1b2c3d4-0000-4000-8000-000000000006",
+					Domain:     "home/misc",
+					Title:      "Rewritten twice in the same nanosecond",
+					Body:       "Body.",
+					Confidence: "validated",
+					Origin:     "convention",
+					UpdatedAt:  mustTime(t, "2026-03-04T05:06:07.000000000Z"),
+				},
+				SpaceName: "household",
+				Version:   3,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseEntry(golden(t, tc.fixture))
+			if err != nil {
+				t.Fatalf("parseEntry: %v", err)
+			}
+			if got.SpaceName != tc.want.SpaceName || got.Version != tc.want.Version || got.SourceEntry != tc.want.SourceEntry {
+				t.Errorf("envelope:\n got %+v\nwant %+v", got, tc.want)
+			}
+			g, w := got.Entry, tc.want.Entry
+			if g.ID != w.ID || g.Domain != w.Domain || g.Title != w.Title || g.Body != w.Body ||
+				g.Confidence != w.Confidence || g.Origin != w.Origin ||
+				!g.UpdatedAt.Equal(w.UpdatedAt) || !slices.Equal(g.Markers, w.Markers) {
+				t.Errorf("entry:\n got %+v\nwant %+v", g, w)
+			}
+			if !g.CreatedAt.IsZero() {
+				t.Errorf("lore never reports created_at, got %v", g.CreatedAt)
+			}
+			if g.Space != "" {
+				t.Errorf("the parser must not invent a space id, got %q", g.Space)
+			}
+		})
+	}
+}
+
+func TestParseRenderedDomainMode(t *testing.T) {
+	got, err := parseRendered(golden(t, "get_domain_multi.txt"))
+	if err != nil {
+		t.Fatalf("parseRendered: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want 2", len(got))
+	}
+	if got[0].Entry.Body != "Body of the first." || got[1].Entry.Body != "Body of the second." {
+		t.Errorf("bodies: %q / %q", got[0].Entry.Body, got[1].Entry.Body)
+	}
+	if got[0].SpaceName != "household" || got[1].SpaceName != "hearth-private" {
+		t.Errorf("space names: %q / %q", got[0].SpaceName, got[1].SpaceName)
+	}
+
+	empty, err := parseRendered(golden(t, "get_domain_none.txt"))
+	if err != nil {
+		t.Fatalf("parseRendered on an empty domain: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("got %d entries, want none", len(empty))
+	}
+}
+
+func TestParseStoredGolden(t *testing.T) {
+	got, err := parseStored(golden(t, "put_stored.txt"))
+	if err != nil {
+		t.Fatalf("parseStored: %v", err)
+	}
+	want := stored{
+		ID: "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f", Version: 1, SpaceName: "hearth-private",
+		Domain: "home/routine", Confidence: "provisional", Origin: "evidence",
+	}
+	if got != want {
+		t.Errorf("\n got %+v\nwant %+v", got, want)
+	}
+
+	got, err = parseStored(golden(t, "put_stored_version.txt"))
+	if err != nil {
+		t.Fatalf("parseStored: %v", err)
+	}
+	if got.Version != 7 || got.Confidence != "hardened" || got.Origin != "constraint" {
+		t.Errorf("got %+v", got)
+	}
+}
+
+func TestParseCopiedGolden(t *testing.T) {
+	got, err := parseCopied(golden(t, "share_copied.txt"))
+	if err != nil {
+		t.Fatalf("parseCopied: %v", err)
+	}
+	want := copied{
+		NewID:     "5f5f0000-0000-4000-8000-000000000000",
+		ToSpace:   "household",
+		SourceID:  "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f",
+		FromSpace: "hearth-private",
+	}
+	if got != want {
+		t.Errorf("\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// TestParseCopiedRejectsPreview guards the two-phase share: a preview means the
+// call was built without confirm, and must never be mistaken for a completed copy.
+func TestParseCopiedRejectsPreview(t *testing.T) {
+	if _, err := parseCopied(golden(t, "share_preview.txt")); err == nil {
+		t.Fatal("preview output parsed as a completed copy")
+	} else if pe := (*ParseError)(nil); !errors.As(err, &pe) {
+		t.Fatalf("want a *ParseError, got %T: %v", err, err)
+	}
+}
+
+func TestParseSpacesGolden(t *testing.T) {
+	got, err := parseSpaces(golden(t, "spaces_list.txt"))
+	if err != nil {
+		t.Fatalf("parseSpaces: %v", err)
+	}
+	want := []spaceRow{
+		{Name: "personal", Kind: "personal", Entries: 42, ID: "1c0a0000-0000-4000-8000-000000000000"},
+		{Name: "hearth-private", Kind: "shared", Entries: 7, ID: "2d1b0000-0000-4000-8000-000000000000"},
+		{Name: "household", Kind: "shared", Entries: 19, Pinned: true, ID: "3e2c0000-0000-4000-8000-000000000000"},
+		{Name: "kenward", Kind: "shared", Entries: 3, Project: true, Pinned: true, ID: "4f3d0000-0000-4000-8000-000000000000"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("\n got %+v\nwant %+v", got, want)
+	}
+
+	empty, err := parseSpaces(golden(t, "spaces_empty.txt"))
+	if err != nil {
+		t.Fatalf("parseSpaces on an empty store: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("got %d rows, want none", len(empty))
+	}
+}
+
+// TestParseRejectsChangedFormat is the safety net the whole design rests on: when
+// lore's output stops matching, every parser must say so rather than return an
+// Entry with holes in it.
+func TestParseRejectsChangedFormat(t *testing.T) {
+	tests := []struct {
+		fixture string
+		parse   func(string) error
+		reason  string
+	}{
+		{"bad_search_header.txt", func(s string) error { _, err := parseSearch(s); return err }, "header line"},
+		{"bad_search_title.txt", func(s string) error { _, err := parseSearch(s); return err }, "title line"},
+		{"bad_get_meta.txt", func(s string) error { _, err := parseEntry(s); return err }, "metadata fields"},
+		{"bad_get_confidence.txt", func(s string) error { _, err := parseEntry(s); return err }, "confidence enum"},
+		{"bad_get_origin.txt", func(s string) error { _, err := parseEntry(s); return err }, "origin enum"},
+		{"bad_get_timestamp.txt", func(s string) error { _, err := parseEntry(s); return err }, "timestamp"},
+		{"bad_put_line.txt", func(s string) error { _, err := parseStored(s); return err }, "put receipt"},
+		{"bad_spaces_row.txt", func(s string) error { _, err := parseSpaces(s); return err }, "space row"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.fixture, func(t *testing.T) {
+			err := tc.parse(golden(t, tc.fixture))
+			if err == nil {
+				t.Fatalf("%s parsed cleanly; a format change must be an error", tc.reason)
+			}
+			var pe *ParseError
+			if !errors.As(err, &pe) {
+				t.Fatalf("want a *ParseError for %s, got %T: %v", tc.reason, err, err)
+			}
+			if pe.Tool == "" || pe.Reason == "" {
+				t.Errorf("a ParseError must name the tool and the expectation: %+v", pe)
+			}
+		})
+	}
+}
+
+func TestParseMarkers(t *testing.T) {
+	tests := []struct {
+		name string
+		run  string
+		want []string
+	}{
+		{"none", "", nil},
+		{"one", "[CONTEXT]", []string{"[CONTEXT]"}},
+		{"several", "[CONTEXT][UPDATED][NON-NEGOTIABLE]", []string{"[CONTEXT]", "[UPDATED]", "[NON-NEGOTIABLE]"}},
+		// Markers are free-form strings in lore; the eight-marker set is a
+		// convention, so an unbracketed marker is carried through whole rather
+		// than rejected or split on a guess.
+		{"unbracketed", "custom-marker", []string{"custom-marker"}},
+		{"partly bracketed", "[CONTEXT]trailing", []string{"[CONTEXT]trailing"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseMarkerRun(tc.run); !slices.Equal(got, tc.want) {
+				t.Errorf("parseMarkerRun(%q) = %v, want %v", tc.run, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseLoreTime(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{in: "2026-08-01T09:15:00.000000000Z", want: "2026-08-01T09:15:00Z"},
+		{in: "2026-08-01T09:15:00.123456789Z", want: "2026-08-01T09:15:00.123456789Z"},
+		// lore appends literal "0"s to force updated_at strictly greater than
+		// the previous version when the clock has not advanced.
+		{in: "2026-08-01T09:15:00.000000000Z0", want: "2026-08-01T09:15:00Z"},
+		{in: "2026-08-01T09:15:00.000000000Z000", want: "2026-08-01T09:15:00Z"},
+		{in: "2026-08-01T11:15:00.000000000+02:00", want: "2026-08-01T09:15:00Z"},
+		{in: "last Tuesday", wantErr: true},
+		{in: "", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := parseLoreTime(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want an error, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseLoreTime: %v", err)
+			}
+			if got.Format(time.RFC3339Nano) != tc.want {
+				t.Errorf("got %s, want %s", got.Format(time.RFC3339Nano), tc.want)
+			}
+		})
+	}
+}

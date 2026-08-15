@@ -1,0 +1,51 @@
+# Keep the build context small and never let a household's own configuration
+# or secrets ride into an image layer. This list mirrors the "never commit"
+# section of .gitignore deliberately — anything that must not enter git must
+# not enter a Docker layer either.
+
+# VCS / CI
+.git/
+.github/
+
+# Build outputs (rebuilt inside the image; a stale host binary must never be
+# copied in by accident)
+/bin/
+/dist/
+
+# Docs — not needed at build time, and IMPLEMENTATION.md/ARCHITECTURE.md are
+# large enough to slow the build-context upload for no benefit
+docs/
+
+# Test fixtures
+testdata/
+**/testdata/
+
+# --- Household configuration and secrets: NEVER bake into an image ---
+kenward.yaml
+kenward.yml
+config.yaml
+config.yml
+*.local.yaml
+*.local.yml
+.env
+.env.*
+*.token
+*.key
+*.pem
+/data/
+/state/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local scratch
+/tmp/
+/scratch/
+
+# Deploy artifacts reference secrets/paths but hold none themselves; excluding
+# them just keeps the context minimal since they're never needed inside a build
+deploy/

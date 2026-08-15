@@ -1,0 +1,126 @@
+# kenward — systemd unit for the Linux binary install (not the container
+# path; see ../Dockerfile and compose.*.yml for that). Install to
+# /etc/systemd/system/kenward.service, then:
+#
+#   sudo mkdir -p /etc/kenward
+#   sudo $EDITOR /etc/kenward/kenward.yaml       # mode: simple | isolated
+#   sudo $EDITOR /etc/kenward/kenward.env        # bot token(s) + provider keys
+#   sudo chmod 600 /etc/kenward/kenward.env      # holds secrets — not committed anywhere
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now kenward
+#
+# This unit holds key material (session keys unwrapped in memory, Telegram
+# bot tokens, provider API keys) for a service that also needs to reach the
+# public internet (Telegram, cloud providers) and spawn a subprocess (`lore
+# mcp`). Every hardening line below is there because of one of those three
+# facts. Comments explain each so an operator can loosen a specific one
+# knowingly rather than disabling hardening wholesale.
+
+[Unit]
+Description=kenward household assistant
+Documentation=https://github.com/BlueHeisenberg/kenward
+# Telegram and any cloud provider tier need a working network before the
+# first turn; wait for it rather than starting into a guaranteed failure.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kenward run --config /etc/kenward/kenward.yaml --data-dir /var/lib/kenward
+# Bot tokens and provider API keys are named by env var only in kenward.yaml
+# (bot_token_env, api_key_env) — this file supplies their values, kept out of
+# both the unit file and version control, mode 600.
+EnvironmentFile=/etc/kenward/kenward.env
+
+Restart=on-failure
+RestartSec=5s
+
+# --- Identity ---
+# DynamicUser allocates a throwaway, unprivileged uid/gid for this unit only
+# at start, never reused elsewhere, with no shell and no home directory —
+# there is no static "kenward" account for an attacker to already know the
+# name of. Loosen to a dedicated static user (comment this out and set
+# `User=kenward`/`Group=kenward` instead, after `useradd --system kenward`)
+# only if something outside systemd's management needs a stable uid, e.g.
+# matching ownership of a `lore` binary or LORE_HOME laid down by another
+# tool.
+DynamicUser=yes
+
+# Persistent, writable state (session key material while unlocked stays in
+# memory only and is never written here; this is for enrolment claim-code
+# storage and, if memory.lore_command points LORE_HOME under it, lore's own
+# on-disk store). Resolves to /var/lib/kenward, created and owned correctly
+# for the DynamicUser above regardless of which uid that turns out to be.
+StateDirectory=kenward
+StateDirectoryMode=0700
+
+# --- Filesystem ---
+# Makes the entire filesystem read-only except /dev, /proc, /sys and the
+# paths explicitly granted (StateDirectory above). /etc/kenward stays
+# readable — ProtectSystem does not block reads, only writes outside the
+# granted paths.
+ProtectSystem=strict
+# This service has no legitimate reason to read a user's home directory;
+# hides them entirely rather than merely denying writes.
+ProtectHome=yes
+# Private, unshared /tmp — the scratch space kenward or a spawned `lore`
+# process might use disappears with the unit rather than lingering or being
+# visible to other services.
+PrivateTmp=yes
+
+# --- Privilege ---
+# No process this unit starts (including the spawned `lore mcp` subprocess)
+# may gain privileges it didn't start with, e.g. via a setuid binary.
+NoNewPrivileges=yes
+# Strip every Linux capability; kenward binds no privileged port and needs
+# none of them.
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Blocks the (S)UID/(S)GID bits from taking effect on any binary this unit
+# executes, closing the usual privilege-escalation path NoNewPrivileges
+# doesn't cover by itself.
+RestrictSUIDSGID=yes
+
+# --- Kernel / system surface ---
+# Read-only view of kernel tunables (/proc/sys, /sys) — kenward never needs
+# to write one.
+ProtectKernelTunables=yes
+# Kernel module loading is irrelevant to a userspace HTTPS client; deny it.
+ProtectKernelModules=yes
+# No cgroup writes needed; the unit only ever reads its own resource usage.
+ProtectControlGroups=yes
+# No need to create new namespaces of any kind.
+RestrictNamespaces=yes
+# Locks the process's execution domain (personality) — an obscure but
+# free hardening knob with no legitimate use here.
+LockPersonality=yes
+# Refuses to mark writable memory executable afterwards, closing off a class
+# of exploit primitive. Pure Go binaries (kenward has no cgo) don't need a
+# JIT and are unaffected; loosen only if a future dependency needs one.
+MemoryDenyWriteExecute=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+# No System V / POSIX IPC objects are needed; ensures none it might create
+# outlive it either.
+RemoveIPC=yes
+
+# Sockets only, restricted to what outbound HTTPS to Telegram/providers and
+# local name resolution need. AF_UNIX is for the system resolver (e.g.
+# systemd-resolved's NSS socket); kenward opens no listening socket at all.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Broad allow-list covering ordinary network service behaviour (connect,
+# read/write, basic process management for the spawned `lore` subprocess)
+# without the dangerous syscall groups (@raw-io, @reboot, @swap, @module,
+# etc). Loosen only with a specific syscall added via a second
+# SystemCallFilter= line, never by removing this one.
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+# Files this process creates (state directory contents, temp files) are not
+# group/world-readable by default.
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

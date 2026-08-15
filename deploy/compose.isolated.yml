@@ -1,0 +1,128 @@
+# kenward — Isolated mode (docs/README.md's "Two modes, one binary" table).
+#
+# One container per member, plus one for the household group — each with its
+# own bot token, its own lore instance (own LORE_HOME), its own key, and its
+# own data volume. No two services here may share a data volume or a
+# LORE_HOME: that separation is the entire point of Isolated mode. If the
+# operator running this machine can read a member's private memory anyway,
+# Isolated mode has failed at its one job — use Simple mode instead and be
+# honest about the trade-off rather than half-isolating.
+#
+# NOTE: this file is normally GENERATED — from kenward.yaml's `members:` list,
+# by `kenward setup` or an operator tool built on it — not hand-maintained.
+# It is written out here as a worked example for a two-member household
+# (david, jordan) so the shape is clear; a comment at the bottom shows the
+# block to copy when adding a third member by hand. Before hand-editing a
+# generated copy, diff it against kenward.yaml — a member added to the config
+# but not to this file simply has no container.
+#
+# Isolated mode is Linux-only (docs/IMPLEMENTATION.md §8, `supervisor/isolated`).
+#
+# Before running:
+#   1. Write kenward.yaml next to this file (mode: isolated), with one
+#      `bot_token_env` per member plus one for the household group — see
+#      docs/IMPLEMENTATION.md §4. Do NOT commit it.
+#   2. Create a `.env` file next to this compose file (NOT committed — see
+#      deploy/README.md) defining every bot token and provider key below.
+#   3. Supply a `lore` binary per service (see ../Dockerfile's note) — each
+#      service gets its OWN copy/mount, never a shared one, since sharing the
+#      binary is fine but sharing the *instance* (same LORE_HOME) is not.
+
+services:
+  # --- per-member pod: david ---
+  kenward-david:
+    image: ghcr.io/blueheisenberg/kenward:latest
+    container_name: kenward-david
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Must match this member's bot_token_env in kenward.yaml.
+      KENWARD_BOT_TOKEN_DAVID: ${KENWARD_BOT_TOKEN_DAVID}
+      # This pod's own lore instance. Distinct per service even though the
+      # in-container path is the same string everywhere below — it resolves
+      # against this service's own volume, never another's.
+      LORE_HOME: /var/lib/kenward/lore
+    volumes:
+      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
+      - kenward-david-data:/var/lib/kenward
+      - ./bin/lore:/usr/local/bin/lore:ro
+    command:
+      - "--config=/etc/kenward/kenward.yaml"
+      - "--data-dir=/var/lib/kenward"
+      - "--member=david"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+
+  # --- per-member pod: jordan ---
+  kenward-jordan:
+    image: ghcr.io/blueheisenberg/kenward:latest
+    container_name: kenward-jordan
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      KENWARD_BOT_TOKEN_JORDAN: ${KENWARD_BOT_TOKEN_JORDAN}
+      LORE_HOME: /var/lib/kenward/lore
+    volumes:
+      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
+      - kenward-jordan-data:/var/lib/kenward
+      - ./bin/lore:/usr/local/bin/lore:ro
+    command:
+      - "--config=/etc/kenward/kenward.yaml"
+      - "--data-dir=/var/lib/kenward"
+      - "--member=jordan"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+
+  # --- household group pod (shared space; never touches a private space) ---
+  kenward-household:
+    image: ghcr.io/blueheisenberg/kenward:latest
+    container_name: kenward-household
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      KENWARD_BOT_TOKEN_HOUSEHOLD: ${KENWARD_BOT_TOKEN_HOUSEHOLD}
+      LORE_HOME: /var/lib/kenward/lore
+    volumes:
+      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
+      - kenward-household-data:/var/lib/kenward
+      - ./bin/lore:/usr/local/bin/lore:ro
+    command:
+      - "--config=/etc/kenward/kenward.yaml"
+      - "--data-dir=/var/lib/kenward"
+      - "--group"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+
+  # --- to add a third member (e.g. "sam") ---
+  # 1. Copy one of the per-member blocks above (david or jordan).
+  # 2. Rename the service key, container_name, and both volume references to
+  #    kenward-sam / kenward-sam-data.
+  # 3. Set --member=sam in `command:` and swap the environment line for
+  #    KENWARD_BOT_TOKEN_SAM (add it to kenward.yaml's members[].bot_token_env
+  #    and to .env — never reuse another member's token variable).
+  # 4. Add a `kenward-sam-data:` entry under `volumes:` below.
+  # 5. Do NOT point sam's LORE_HOME or data volume at david's or jordan's —
+  #    each member's lore instance must be exclusive to their own container.
+
+volumes:
+  kenward-david-data:
+  kenward-jordan-data:
+  kenward-household-data:

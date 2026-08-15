@@ -1,0 +1,19 @@
+# lore's isError messages, verbatim from internal/mcpserver/tools.go and
+# internal/store. Format: <expected sentinel><TAB><message>. "none" means the
+# message is carried through as an opaque ToolError with no sentinel.
+invalid	`query` is required
+unknown-space	unknown space "nope" (try lore_spaces)
+invalid	pass exactly one of `id` or `domain`
+not-found	no entry with id "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f"
+invalid	`title`, `body` and `domain` are required
+invalid	`entry_id` and `to_space` are required
+invalid	put: invalid confidence "extremely"
+invalid	put: invalid origin "vibes"
+not-writer	put: space household: this account is not a writer/owner of the space
+none	put: entry belongs to a different space
+user-model	refused: "profile/preferences" is a user-model entry (profile/, feedback/); those never leave the personal space
+user-model	refused: user-model entries (profile/, feedback/) never leave the personal space
+busy	search: database is locked (5) (SQLITE_BUSY)
+busy	spaces: SQLITE_BUSY: database is locked
+none	no personal space (run `lore init`): store closed
+none	share: context canceled

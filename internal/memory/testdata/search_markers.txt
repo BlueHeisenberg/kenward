@@ -1,0 +1,5 @@
+1 result(s) for "boiler" (full entry: lore_get with the id)
+
+a1b2c3d4-0000-4000-8000-000000000001  space:household  domain:home/heating
+  Boiler service window (hardened) [CONTEXT][NON-NEGOTIABLE]
+  the [boiler] must be serviced before…

@@ -1,0 +1,71 @@
+version: '3'
+
+vars:
+  MODULE: github.com/BlueHeisenberg/kenward
+  VERSION_PKG: '{{.MODULE}}/internal/version'
+  # Falls back to the short commit hash when the repo has no tags.
+  GIT_VERSION:
+    sh: git describe --tags --always --dirty
+  GIT_COMMIT:
+    sh: git rev-parse --short HEAD
+  BUILD_DATE:
+    sh: date -u +%Y-%m-%dT%H:%M:%SZ
+  LDFLAGS: >-
+    -X '{{.VERSION_PKG}}.Version={{.GIT_VERSION}}'
+    -X '{{.VERSION_PKG}}.Commit={{.GIT_COMMIT}}'
+    -X '{{.VERSION_PKG}}.Date={{.BUILD_DATE}}'
+  CROSS_TARGETS: linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+
+tasks:
+  default:
+    desc: Lint then test.
+    cmds:
+      - task: lint
+      - task: test
+
+  build:
+    desc: Build the kenward binary into ./bin, with version metadata injected via -ldflags.
+    cmds:
+      - go build -ldflags "{{.LDFLAGS}}" -o ./bin/kenward ./cmd/kenward
+
+  test:
+    desc: Run the test suite.
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run the test suite with the race detector enabled.
+    cmds:
+      - go test -race ./...
+
+  lint:
+    desc: Check gofmt and go vet cleanliness.
+    cmds:
+      - |
+        unformatted="$(gofmt -l .)"
+        if [ -n "$unformatted" ]; then
+          echo "$unformatted"
+          echo "gofmt: the above files are not formatted" >&2
+          exit 1
+        fi
+      - go vet ./...
+
+  tidy:
+    desc: Tidy go.mod and go.sum.
+    cmds:
+      - go mod tidy
+
+  cross:
+    desc: Cross-compile release binaries into ./dist for all supported platforms.
+    cmds:
+      - mkdir -p ./dist
+      - |
+        for target in {{.CROSS_TARGETS}}; do
+          os="${target%/*}"
+          arch="${target#*/}"
+          ext=""
+          if [ "$os" = "windows" ]; then ext=".exe"; fi
+          out="./dist/kenward_${os}_${arch}${ext}"
+          echo "building $out"
+          GOOS="$os" GOARCH="$arch" go build -ldflags "{{.LDFLAGS}}" -o "$out" ./cmd/kenward
+        done

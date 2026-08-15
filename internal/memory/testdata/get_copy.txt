@@ -1,0 +1,4 @@
+# Bin day is Tuesday
+id 5f5f0000-0000-4000-8000-000000000000 (v1) | space household | domain home/routine | provisional | origin evidence | copied from 3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f | updated 2026-08-15T12:00:00.000000000Z
+
+The green bin goes out Tuesday night.
