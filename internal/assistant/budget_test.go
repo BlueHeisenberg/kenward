@@ -154,8 +154,12 @@ func TestBudgetExhaustedKeepsNonNegotiableParts(t *testing.T) {
 		}
 	}
 	// The dropped entries were excerpts, so the sections stay labelled by what
-	// retrieval found even though nothing of it is visible any more.
+	// retrieval found even though nothing of it is visible any more — and the note
+	// explaining what an excerpt is moves with the headings.
 	if got := strings.Count(sys, "## Excerpts from"); got != 2 {
 		t.Errorf("%d sections headed as excerpts, want 2", got)
+	}
+	if !strings.Contains(sys, "search excerpts") {
+		t.Error("sections headed as excerpts but the excerpt note is missing")
 	}
 }

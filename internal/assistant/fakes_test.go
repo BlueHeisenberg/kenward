@@ -20,6 +20,7 @@ type fakeMemory struct {
 	puts     []putCall
 	bySpace  map[domain.SpaceID][]memory.Entry
 	errFor   map[domain.SpaceID]error
+	putErr   error
 }
 
 type putCall struct {
@@ -54,6 +55,9 @@ func (f *fakeMemory) Get(ctx context.Context, space domain.SpaceID, id string) (
 func (f *fakeMemory) Put(ctx context.Context, space domain.SpaceID, d memory.Draft) (memory.Entry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.putErr != nil {
+		return memory.Entry{}, f.putErr
+	}
 	f.puts = append(f.puts, putCall{space: space, draft: d})
 	return memory.Entry{ID: "e-1", Space: space, Title: d.Title, Body: d.Body}, nil
 }
@@ -80,12 +84,15 @@ func (f *fakeMemory) putCount() int {
 	return len(f.puts)
 }
 
-// fakeTransport records sends and answers questions with a canned answer.
+// fakeTransport records sends and answers questions with a canned answer. A non-nil
+// askGate makes Ask block until the gate is closed, standing in for a member who
+// has not tapped a button yet.
 type fakeTransport struct {
-	mu     sync.Mutex
-	sent   []transport.Outbound
-	asked  []transport.Question
-	answer transport.Answer
+	mu      sync.Mutex
+	sent    []transport.Outbound
+	asked   []transport.Question
+	answer  transport.Answer
+	askGate chan struct{}
 }
 
 func (f *fakeTransport) Updates(ctx context.Context) (<-chan transport.Inbound, error) {
@@ -101,9 +108,18 @@ func (f *fakeTransport) Send(ctx context.Context, o transport.Outbound) error {
 
 func (f *fakeTransport) Ask(ctx context.Context, q transport.Question) (transport.Answer, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.asked = append(f.asked, q)
-	return f.answer, nil
+	gate := f.askGate
+	answer := f.answer
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return transport.Answer{}, ctx.Err()
+		}
+	}
+	return answer, nil
 }
 
 func (f *fakeTransport) Close() error { return nil }

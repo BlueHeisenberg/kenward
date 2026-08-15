@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/capture"
@@ -217,6 +218,11 @@ const (
 // queued concurrently is not guaranteed — Telegram's own delivery makes no such
 // promise either — but no message is ever processed twice and no state is touched
 // outside the running turn.
+//
+// The turn slot covers the work the node does — retrieval, routing, the reply — and
+// deliberately not the capture question, which waits on the member. A member who
+// ignores the buttons and asks something else must get an answer, not a queue notice
+// blaming them for a turn that is really waiting on their own tap.
 type Unit struct {
 	deps Deps
 	opts Options
@@ -226,6 +232,12 @@ type Unit struct {
 	// waitersMu guards waiters, the count of messages queued behind the slot.
 	waitersMu sync.Mutex
 	waiters   int
+
+	// turnSeq makes every turn token unique. Telegram message ids alone are not
+	// trusted for this: a repeated or zero MessageID would repeat the token, and a
+	// repeated token reads to the capture engine as the same turn, silently
+	// spending a budget that should have been fresh.
+	turnSeq atomic.Uint64
 
 	// history is the unit-local turn ring. It is only written by the running turn
 	// but carries its own lock so a snapshot is always consistent.
@@ -242,6 +254,13 @@ func New(deps Deps, opts Options) (*Unit, error) {
 		deps.Logger = slog.New(slog.DiscardHandler)
 	}
 	opts = opts.normalized()
+	// The completion is reserved out of the context budget, so a reservation the
+	// budget cannot hold is a configuration contradiction: honouring it would leave
+	// nothing for the prompt, and ignoring it would assemble prompts that fill the
+	// whole window and starve the answer. Failing here is the only honest option.
+	if opts.MaxTokens >= opts.ContextBudget {
+		return nil, fmt.Errorf("assistant: MaxTokens (%d) must be smaller than ContextBudget (%d): the completion is reserved out of the context window", opts.MaxTokens, opts.ContextBudget)
+	}
 	return &Unit{
 		deps:    deps,
 		opts:    opts,
@@ -274,16 +293,34 @@ func (u *Unit) Handle(ctx context.Context, in transport.Inbound) error {
 	}
 	defer release()
 
-	return u.turn(ctx, sc, in)
+	followup, err := u.turn(ctx, sc, in)
+	if err != nil {
+		return err
+	}
+	if followup != nil {
+		// The capture question waits on the member, not on the node, so it must
+		// not hold the turn slot: a member who ignores the buttons and asks
+		// something else gets an answer, not a frozen assistant. release is
+		// idempotent; the deferred call becomes a no-op.
+		release()
+		followup(ctx)
+	}
+	return nil
 }
 
-// admit serialises the turn. It returns a release function once the turn slot is
-// held, or (nil, nil) when the message was dropped because the queue was full. The
-// scope is already resolved when admit runs, so its notices never reach a stranger.
+// admit serialises the turn. It returns an idempotent release function once the
+// turn slot is held, or (nil, nil) when the message was dropped because the queue
+// was full. The scope is already resolved when admit runs, so its notices never
+// reach a stranger.
 func (u *Unit) admit(ctx context.Context, sc domain.Scope, in transport.Inbound) (func(), error) {
+	release := func() func() {
+		var once sync.Once
+		return func() { once.Do(func() { <-u.slot }) }
+	}
+
 	select {
 	case u.slot <- struct{}{}:
-		return func() { <-u.slot }, nil
+		return release(), nil
 	default:
 	}
 
@@ -309,7 +346,7 @@ func (u *Unit) admit(ctx context.Context, sc domain.Scope, in transport.Inbound)
 	for {
 		select {
 		case u.slot <- struct{}{}:
-			return func() { <-u.slot }, nil
+			return release(), nil
 		case <-notice.C:
 			// The wait is long enough to be felt; say so, once, then keep waiting.
 			if err := u.send(ctx, sc, in, queuedText); err != nil {
@@ -322,27 +359,31 @@ func (u *Unit) admit(ctx context.Context, sc domain.Scope, in transport.Inbound)
 }
 
 // turn is one full pass of the sequence in docs/IMPLEMENTATION.md section 5. The
-// caller holds the turn slot.
-func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) error {
+// caller holds the turn slot. The returned followup, when non-nil, is the capture
+// question; the caller runs it after releasing the slot, because it waits on the
+// member rather than on the node.
+func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) (func(context.Context), error) {
 	// Session. Only a member has a key; the group conversation has no session of
 	// its own, so a group turn proceeds without one.
 	if sc.Member != nil {
 		if _, ok := u.deps.Sessions.Key(sc.Member.ID); !ok {
-			return u.send(ctx, sc, in, lockedText)
+			return nil, u.send(ctx, sc, in, lockedText)
 		}
 		u.deps.Sessions.Touch(sc.Member.ID)
 	}
 
 	// The capture engine ages its decline window per turn whether or not this turn
-	// proposes anything.
-	u.deps.Capture.BeginTurn(sc, fmt.Sprintf("%d:%d", in.ChatID, in.MessageID))
+	// proposes anything. The sequence number makes the token unique even when the
+	// transport repeats a message id, because a repeated token would read as the
+	// same turn and silently spend a budget that should have been fresh.
+	u.deps.Capture.BeginTurn(sc, fmt.Sprintf("%d:%d:%d", in.ChatID, in.MessageID, u.turnSeq.Add(1)))
 
 	// Retrieve, one search per space in scope order, concurrently. The groups stay
 	// grouped: ranking a private space against the shared one is a policy decision
 	// this package makes only by keeping scope order, never by re-ranking.
 	groups := u.retrieve(ctx, sc, in.Text)
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	for _, g := range groups {
 		if g.err != nil {
@@ -358,11 +399,20 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	req := u.assemble(sc, groups, in.Text)
 	comp, err := u.deps.Router.Complete(ctx, sc.Tiers, req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		var nbe *routing.NoBackendError
 		if errors.As(err, &nbe) {
-			return u.send(ctx, sc, in, refusalText(sc, nbe))
+			return nil, u.send(ctx, sc, in, refusalText(sc, nbe))
 		}
-		return fmt.Errorf("assistant: completing turn: %w", err)
+		// Every other failure still gets the member a reply. A member who sends a
+		// message always gets one — a stack trace in a log the operator reads next
+		// week is not an answer, and silence teaches a household the assistant is
+		// broken and unpredictable. The error goes to the log; a short classified
+		// notice goes to the chat.
+		u.deps.Logger.Warn("assistant: turn failed", "error", err)
+		return nil, u.send(ctx, sc, in, completionFailureText(err))
 	}
 
 	// A content filter is the model declining, which is a final answer: the member
@@ -370,7 +420,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// no history. The routing seam already guarantees the refused content was not
 	// re-offered to another machine.
 	if comp.FinishReason == routing.FinishContentFilter {
-		return u.send(ctx, sc, in, contentFilterText)
+		return nil, u.send(ctx, sc, in, contentFilterText)
 	}
 
 	proposal, warn := extractProposal(comp.ToolCalls)
@@ -386,28 +436,36 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	}
 
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if reply != "" {
 		if err := u.send(ctx, sc, in, reply); err != nil {
-			return fmt.Errorf("assistant: sending reply: %w", err)
+			return nil, fmt.Errorf("assistant: sending reply: %w", err)
 		}
+		// Record only a turn with both sides delivered. A turn whose reply was
+		// empty — a bare tool call — is not recorded at all: an empty assistant
+		// side would leave two consecutive user messages in the next request,
+		// which several local chat templates reject or silently merge. History is
+		// unit-local, bounded and in memory only; it is never written to lore.
+		u.history.add(in.Text, reply)
 	} else if proposal == nil {
 		u.deps.Logger.Warn("assistant: model returned an empty reply", "chat", in.ChatID)
 	}
 
-	if proposal != nil {
-		// The member who spoke is the member who decides; in the group chat the
-		// transport ignores taps from anyone else.
-		if _, err := u.deps.Capture.Offer(ctx, sc, *proposal, in.UserID); err != nil {
+	if proposal == nil {
+		return nil, nil
+	}
+	// The member who spoke is the member who decides; in the group chat the
+	// transport ignores taps from anyone else. The question runs after the caller
+	// releases the turn slot — it waits on a button, not on the node.
+	p := *proposal
+	return func(fctx context.Context) {
+		if _, err := u.deps.Capture.Offer(fctx, sc, p, in.UserID); err != nil {
+			// The capture engine has already told the member what happened on
+			// every path where they saw anything; this is for the operator.
 			u.deps.Logger.Warn("assistant: capture failed", "error", err)
 		}
-	}
-
-	// Record only a delivered turn. History is unit-local, bounded and in memory
-	// only; it is never written to lore.
-	u.history.add(in.Text, reply)
-	return nil
+	}, nil
 }
 
 // spaceGroup is one space's retrieval result, kept in scope order.

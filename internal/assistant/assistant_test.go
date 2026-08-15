@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/BlueHeisenberg/keel/llm"
 
 	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
@@ -517,6 +520,300 @@ func TestQueueOverflowDropsWithNotice(t *testing.T) {
 	// Exactly two turns actually ran.
 	if got := len(rig.router.chains); got != 2 {
 		t.Fatalf("%d turns ran, want 2 (third was dropped)", got)
+	}
+}
+
+// TestContentFilterErrorFormBecomesNotice covers the common shape of a content
+// filter: the endpoint sends finish_reason "content_filter" with empty content,
+// which arrives from routing as an *llm.EmptyResponseError rather than a Completion.
+// The member sees the same notice either way.
+func TestContentFilterErrorFormBecomesNotice(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{}, fmt.Errorf("wrapped: %w", &llm.EmptyResponseError{
+			Endpoint:     "monster",
+			FinishReason: llm.FinishContentFilter,
+			Detail:       "empty choice",
+		})
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("hi")); err != nil {
+		t.Fatalf("a decline is the product answering, not an error: %v", err)
+	}
+	texts := rig.tr.sentTexts()
+	if len(texts) != 1 {
+		t.Fatalf("sent %v, want exactly the decline notice", texts)
+	}
+	golden(t, "content_filter.golden", texts[0])
+	if rig.tr.askCount() != 0 || rig.mem.putCount() != 0 {
+		t.Error("a declined turn ran capture or wrote memory")
+	}
+	if len(rig.unit.history.snapshot()) != 0 {
+		t.Error("a declined turn was recorded in history")
+	}
+}
+
+// TestRouterFailuresGetReplies: a member who sends a message always gets a reply.
+// Every router failure that is not a NoBackendError maps to a short classified
+// notice; none of them may end in silence.
+func TestRouterFailuresGetReplies(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		golden string
+	}{
+		{
+			name:   "rate limited",
+			err:    &llm.APIError{StatusCode: 429, Status: "429 Too Many Requests", Endpoint: "openrouter"},
+			golden: "model_busy.golden",
+		},
+		{
+			name:   "rotated key",
+			err:    &llm.APIError{StatusCode: 401, Status: "401 Unauthorized", Endpoint: "openrouter"},
+			golden: "misconfigured.golden",
+		},
+		{
+			name:   "unknown model",
+			err:    &llm.APIError{StatusCode: 404, Status: "404 Not Found", Endpoint: "monster"},
+			golden: "misconfigured.golden",
+		},
+		{
+			name:   "invalid request",
+			err:    fmt.Errorf("building request: %w", llm.ErrInvalidRequest),
+			golden: "misconfigured.golden",
+		},
+		{
+			name:   "unclassified failure",
+			err:    errors.New("routing: endpoint monster: environment variable MONSTER_KEY is not set"),
+			golden: "turn_failed.golden",
+		},
+		{
+			name:   "empty response without a finish reason",
+			err:    &llm.EmptyResponseError{Endpoint: "monster", Detail: "no choices"},
+			golden: "turn_failed.golden",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{}, tc.err
+			}
+			if err := rig.unit.Handle(context.Background(), directInbound("hi")); err != nil {
+				t.Fatalf("the notice is the product answering, not an error: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 {
+				t.Fatalf("sent %v, want exactly one notice — silence is the one wrong answer", texts)
+			}
+			golden(t, tc.golden, texts[0])
+			if len(rig.unit.history.snapshot()) != 0 {
+				t.Error("a failed turn was recorded in history")
+			}
+		})
+	}
+}
+
+// TestPutFailureUncertaintyReachesMember tests the join the packages' own tests
+// miss: the member taps Save, the store fails, and the member — not just the log —
+// hears that the write is uncertain.
+func TestPutFailureUncertaintyReachesMember(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.putErr = errors.New("lore is down")
+	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoicePersonal, UserID: testUserID}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{
+			Text: "I'll remember that.",
+			ToolCalls: []routing.ToolCall{{
+				ID:        "tc-1",
+				Name:      "remember",
+				Arguments: json.RawMessage(`{"title": "Coffee order", "body": "Oat milk.", "target": "personal"}`),
+			}},
+			FinishReason: routing.FinishToolCalls,
+		}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("remember this")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	var uncertain bool
+	for _, txt := range rig.tr.sentTexts() {
+		if strings.Contains(txt, "can't confirm") && strings.Contains(txt, "Check before saving it again") {
+			uncertain = true
+		}
+		if strings.Contains(txt, "Saved") {
+			t.Errorf("member saw a confirmation for a write that failed: %q", txt)
+		}
+	}
+	if !uncertain {
+		t.Fatalf("member never told the write is uncertain; sent: %v", rig.tr.sentTexts())
+	}
+}
+
+// TestCaptureQuestionDoesNotBlockNextTurn: the turn slot covers the node's work, not
+// the member's tap. A member who ignores the buttons and asks something else gets an
+// answer, not a queue notice.
+func TestCaptureQuestionDoesNotBlockNextTurn(t *testing.T) {
+	opts := testOptions()
+	opts.QueueNoticeAfter = time.Millisecond
+	rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := make(chan struct{})
+	rig.tr.askGate = gate
+	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoicePersonal, UserID: testUserID}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		last := req.Messages[len(req.Messages)-1].Content
+		if last == "remember this" {
+			return routing.Completion{
+				Text: "Noted.",
+				ToolCalls: []routing.ToolCall{{
+					ID:        "tc-1",
+					Name:      "remember",
+					Arguments: json.RawMessage(`{"title": "T", "body": "B", "target": "personal"}`),
+				}},
+				FinishReason: routing.FinishToolCalls,
+			}, nil
+		}
+		return routing.Completion{Text: "Thursday."}, nil
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := rig.unit.Handle(context.Background(), directInbound("remember this")); err != nil {
+			t.Errorf("first Handle: %v", err)
+		}
+	}()
+	waitFor(t, func() bool { return rig.tr.askCount() == 1 })
+
+	// The question is open and unanswered. The next message must run as a normal
+	// turn: answered, and never told it was queued.
+	in := directInbound("when do the bins go out?")
+	in.MessageID = 2
+	if err := rig.unit.Handle(context.Background(), in); err != nil {
+		t.Fatalf("second Handle: %v", err)
+	}
+	var answered bool
+	for _, txt := range rig.tr.sentTexts() {
+		if txt == "Thursday." {
+			answered = true
+		}
+		if txt == queuedText || txt == droppedText {
+			t.Errorf("member blamed for a turn that was waiting on their own tap: %q", txt)
+		}
+	}
+	if !answered {
+		t.Fatalf("second message never answered while a question was open; sent: %v", rig.tr.sentTexts())
+	}
+
+	close(gate)
+	wg.Wait()
+	if rig.mem.putCount() != 1 {
+		t.Errorf("puts = %d, want the answered question's write", rig.mem.putCount())
+	}
+}
+
+// TestToolCallOnlyTurnIsNotRecorded: a turn whose reply was empty must not leave an
+// empty assistant side in history — two consecutive user messages break several
+// local chat templates.
+func TestToolCallOnlyTurnIsNotRecorded(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoiceDecline, UserID: testUserID}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{
+			ToolCalls: []routing.ToolCall{{
+				ID:        "tc-1",
+				Name:      "remember",
+				Arguments: json.RawMessage(`{"title": "T", "body": "B", "target": "personal"}`),
+			}},
+			FinishReason: routing.FinishToolCalls,
+		}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("remember this")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := len(rig.unit.history.snapshot()); got != 0 {
+		t.Fatalf("history holds %d turns, want 0 for a turn with no assistant side", got)
+	}
+}
+
+// TestRepeatedMessageIDStillCaptures: turn tokens are unique per turn even when the
+// transport repeats a message id, so the capture budget is fresh each turn.
+func TestRepeatedMessageIDStillCaptures(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoicePersonal, UserID: testUserID}
+	titles := []string{"First thing", "Second thing"}
+	turn := 0
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		title := titles[turn]
+		turn++
+		return routing.Completion{
+			Text: "Noted.",
+			ToolCalls: []routing.ToolCall{{
+				ID:        "tc-1",
+				Name:      "remember",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"title": %q, "body": "B", "target": "personal"}`, title)),
+			}},
+			FinishReason: routing.FinishToolCalls,
+		}, nil
+	}
+
+	for i := 0; i < 2; i++ {
+		in := directInbound("remember this")
+		in.MessageID = 0 // a degenerate transport that never numbers messages
+		if err := rig.unit.Handle(context.Background(), in); err != nil {
+			t.Fatalf("Handle %d: %v", i, err)
+		}
+	}
+	if got := rig.tr.askCount(); got != 2 {
+		t.Fatalf("asked %d questions, want 2 — a repeated turn token spent the budget", got)
+	}
+	if got := rig.mem.putCount(); got != 2 {
+		t.Fatalf("puts = %d, want 2", got)
+	}
+}
+
+// TestNewRejectsReservationLargerThanBudget: a completion reservation the context
+// budget cannot hold is a configuration contradiction, refused at construction
+// rather than silently unreserved at assembly.
+func TestNewRejectsReservationLargerThanBudget(t *testing.T) {
+	mem := newFakeMemory()
+	tr := &fakeTransport{}
+	deps := Deps{
+		Resolve:   fixedResolver(testDirectScope()),
+		Memory:    mem,
+		Router:    &fakeRouter{},
+		Transport: tr,
+		Sessions:  newFakeSessions(),
+		Capture:   capture.New(mem, tr, capture.Options{}),
+	}
+	if _, err := New(deps, Options{ContextBudget: 2048, MaxTokens: 2048}); err == nil {
+		t.Fatal("New accepted MaxTokens == ContextBudget")
+	}
+	if _, err := New(deps, Options{ContextBudget: 2048, MaxTokens: 4096}); err == nil {
+		t.Fatal("New accepted MaxTokens > ContextBudget")
+	}
+	if _, err := New(deps, Options{ContextBudget: 2048, MaxTokens: 512}); err != nil {
+		t.Fatalf("New rejected a valid reservation: %v", err)
 	}
 }
 

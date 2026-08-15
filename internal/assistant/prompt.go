@@ -146,10 +146,9 @@ type promptInput struct {
 func (u *Unit) assemble(sc domain.Scope, groups []spaceGroup, text string) routing.Request {
 	inp := u.promptInput(sc, groups)
 	hist := u.history.snapshot()
+	// Positive by construction: New refuses a MaxTokens that meets or exceeds
+	// ContextBudget, so the completion reservation always leaves room for a prompt.
 	budget := u.opts.ContextBudget - u.opts.MaxTokens
-	if budget < 1 {
-		budget = u.opts.ContextBudget
-	}
 
 	for {
 		msgs := buildMessages(renderSystem(inp), hist, text)
@@ -236,6 +235,13 @@ func anyExcerpt(entries []memory.Entry) bool {
 	return false
 }
 
+// groupPartial reports whether a group's section is about excerpts: it shows one, or
+// it showed only a drop note for excerpts the budget trimmed away. The heading and
+// the excerpt note both key on this, and on nothing else, so they always agree.
+func groupPartial(entries []memory.Entry, hadExcerpts bool, dropped int) bool {
+	return anyExcerpt(entries) || (dropped > 0 && hadExcerpts)
+}
+
 // renderSystem produces the system prompt in the fixed assembly order: identity,
 // scope disclosure, retrieved memory, capture instructions.
 func renderSystem(inp promptInput) string {
@@ -275,9 +281,12 @@ func renderSystem(inp promptInput) string {
 			inp.shared, inp.sharedHadExcerpts, inp.sharedErr, inp.sharedDropped))
 	}
 	confidence := confidenceText
-	if anyExcerpt(inp.private) || anyExcerpt(inp.shared) {
-		// The note renders only when an excerpt is actually shown, so it never
-		// describes entries that are not there.
+	if groupPartial(inp.private, inp.privateHadExcerpts, inp.privateDropped) ||
+		groupPartial(inp.shared, inp.sharedHadExcerpts, inp.sharedDropped) {
+		// The note moves with the headings: whenever any section is headed
+		// "Excerpts from" — visible excerpts, or excerpts dropped for budget — the
+		// paragraph saying what an excerpt is renders too, and when no section is,
+		// it never describes entries that are not there.
 		confidence += "\n\n" + excerptNote
 	}
 	sections = append(sections, confidence)
@@ -305,7 +314,7 @@ func renderSystem(inp promptInput) string {
 // and the reverse is not. Empty and failed sections keep "From …" — there is nothing
 // shown whose partiality needs disclosing.
 func renderMemorySection(subject string, entries []memory.Entry, hadExcerpts, unreadable bool, dropped int) string {
-	partial := anyExcerpt(entries) || (dropped > 0 && hadExcerpts)
+	partial := groupPartial(entries, hadExcerpts, dropped)
 	var b strings.Builder
 	if !unreadable && partial {
 		b.WriteString("## Excerpts from ")

@@ -7,7 +7,10 @@
 package assistant
 
 import (
+	"errors"
 	"strings"
+
+	"github.com/BlueHeisenberg/keel/llm"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
@@ -30,9 +33,16 @@ func refusalText(sc domain.Scope, e *routing.NoBackendError) string {
 	if len(e.Chain) == 1 {
 		tierWord = "that tier"
 	}
-	tried := "I tried " + naturalJoin(backtickAll(e.Tried)) + "."
-	if len(e.Tried) == 0 {
+	// "Unavailable" is chosen over "I tried": Tried lists endpoints that were
+	// attempted and endpoints skipped for cooldown or a failed probe, and claiming
+	// an attempt that never happened is a small untruth in a message whose whole
+	// value is being accurate.
+	tried := naturalJoin(backtickAll(e.Tried)) + " were unavailable."
+	switch len(e.Tried) {
+	case 0:
 		tried = "I found no endpoints to try."
+	case 1:
+		tried = backtickAll(e.Tried)[0] + " was unavailable."
 	}
 
 	var b strings.Builder
@@ -46,6 +56,53 @@ func refusalText(sc domain.Scope, e *routing.NoBackendError) string {
 	b.WriteString(tierWord)
 	b.WriteString(", so I won't send it anywhere else. Wake one of them and ask again.")
 	return b.String()
+}
+
+// Notices for turns the model could not answer. Like the refusals they are emitted
+// by the node — there is no model to phrase them — and they exist because a member
+// who sends a message always gets a reply: silence is the one response that teaches
+// a household the assistant is broken and unpredictable. Golden-tested.
+const (
+	// modelBusyText covers rate limiting: transient, and retrying is genuinely the
+	// right advice.
+	modelBusyText = "The model is busy right now. Try again in a moment."
+	// misconfiguredText covers failures no retry will fix — a rejected key, an
+	// unknown model, a request the endpoint refuses to parse. The member cannot
+	// repair any of these; the operator can.
+	misconfiguredText = "Something is wrong with this household's setup — tell whoever runs it."
+	// turnFailedText covers everything else. It promises nothing it does not know:
+	// the message arrived, no answer was produced.
+	turnFailedText = "Something went wrong reaching the model, and your message wasn't answered. Try again in a moment."
+)
+
+// completionFailureText classifies a router failure that is not a *NoBackendError
+// into the notice the member sees. Every error maps to something — the caller sends
+// the result unconditionally — because a message that produced no reply must at
+// least produce the news that it didn't.
+//
+// The classification reads keel/llm's error vocabulary, which the routing seam
+// passes through unchanged: a content-filter refusal arrives as an
+// *llm.EmptyResponseError rather than a Completion whenever the declining endpoint
+// sent no text alongside the finish reason, which is the common form.
+func completionFailureText(err error) string {
+	var ee *llm.EmptyResponseError
+	if errors.As(err, &ee) && ee.FinishReason == llm.FinishContentFilter {
+		return contentFilterText
+	}
+	var ae *llm.APIError
+	if errors.As(err, &ae) {
+		switch ae.StatusCode {
+		case 429:
+			return modelBusyText
+		case 401, 403, 404:
+			return misconfiguredText
+		}
+		return turnFailedText
+	}
+	if errors.Is(err, llm.ErrInvalidRequest) {
+		return misconfiguredText
+	}
+	return turnFailedText
 }
 
 // backtickAll wraps each name in backticks so tier and machine names read as names,
