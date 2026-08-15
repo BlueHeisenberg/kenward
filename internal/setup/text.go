@@ -256,6 +256,27 @@ func groupCloudOptIn(tiers []string) string {
 	return fmt.Sprintf("Allow %s for the group chat?", formatChain(tiers))
 }
 
+// systemdNote is printed on Linux, where the documented install uses the unit in
+// deploy/kenward.service — and that unit supplies secrets with LoadCredential=
+// rather than an environment file.
+//
+// Without this, an operator who has just been told to set KENWARD_BOT_TOKEN opens
+// the unit, finds no EnvironmentFile= anywhere in it, and concludes they have
+// misread one of the two. Naming the difference costs four lines and answers the
+// question before it is asked.
+//
+// It stops short of telling them to make the change. Removing the *_env line in
+// favour of a credential is the right shape under that unit, but the run path does
+// not resolve credentials yet, so an operator who followed that instruction today
+// would get a node that will not start. Pointing at the unit's own comments is both
+// true now and still true afterwards, which an instruction would not be.
+const systemdNote = `If you are going to run this under the unit in deploy/kenward.service, note
+that it supplies secrets with LoadCredential= rather than an environment file.
+kenward can take a secret from a variable, from a file, or from a systemd
+credential — but from exactly one of them, and naming two is an error rather
+than an order of preference. Read the comments in that unit before changing
+how the token above is supplied.`
+
 // stoppedForLinux is printed when somebody chooses to go and do this properly.
 const stoppedForLinux = `Nothing has been written. Copy kenward to a Linux machine and run setup there;
 the questions will be the same ones.`

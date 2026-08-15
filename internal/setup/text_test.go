@@ -190,6 +190,7 @@ func TestLinesAreReadable(t *testing.T) {
 		"endpointTiersNote":      endpointTiersNote,
 		"householdIntro":         householdIntro,
 		"privacyTrailer":         privacyTrailer,
+		"systemdNote":            systemdNote,
 		"tokenLooksWrongMessage": tokenLooksWrong,
 	}
 	const limit = 82

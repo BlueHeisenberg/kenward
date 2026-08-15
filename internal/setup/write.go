@@ -65,6 +65,17 @@ const envFileHeader = `# Written by ` + "`kenward setup`" + `. This file holds s
 
 // document is the YAML shape setup writes.
 //
+// It carries the *_env half of every secret and never the *_file half. A secret may
+// name exactly one source — file, environment variable, or a systemd credential
+// found without configuration — and naming two is a validation error rather than an
+// order of preference, so this is a choice rather than an omission. The environment
+// form is written because it is the only one the run path reads today
+// (internal/supervisor takes Telegram.BotTokenEnv and Members[].BotTokenEnv
+// directly), and because which mechanism delivers a secret is not a question a
+// household can answer. An operator who has a better answer — a systemd unit, a
+// mounted secret — is editing this file by hand, and the closing block points them
+// at the unit that explains it.
+//
 // It mirrors config.Config rather than being it, for one reason: omitempty. A
 // generated file that spells out group_chat_id: 0 and bot_token_env: "" for every
 // member is a file that reads as machine output, and the first thing an operator

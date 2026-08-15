@@ -440,6 +440,15 @@ func (w *Wizard) closing() string {
 		}
 	}
 
+	// Only on Linux: the unit this refers to is a systemd unit, and a note about
+	// systemd on a Windows machine is noise in the one block somebody actually
+	// reads to the end.
+	if w.goos == "linux" && len(w.env) > 0 {
+		b.WriteString("\n")
+		b.WriteString(systemdNote)
+		b.WriteString("\n")
+	}
+
 	b.WriteString("\nNext\n\n")
 	commands := [][2]string{
 		{"kenward doctor", "checks every part of this and says what is not working"},

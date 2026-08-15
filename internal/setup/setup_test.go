@@ -862,6 +862,42 @@ func TestEnvVarsAreListedWithoutValues(t *testing.T) {
 	}
 }
 
+// TestSystemdNoteAppearsWhereTheUnitDoes covers the operator who finishes setup and
+// immediately opens deploy/kenward.service, which supplies secrets with
+// LoadCredential= and no environment file at all.
+func TestSystemdNoteAppearsWhereTheUnitDoes(t *testing.T) {
+	for _, goos := range []string{"linux", "windows", "darwin"} {
+		t.Run(goos, func(t *testing.T) {
+			_, _, io, err := runWizard(t, goos, Options{}, simpleAnswers()...)
+			if err != nil {
+				t.Fatalf("run: %v\n%s", err, io.Transcript())
+			}
+			mentioned := strings.Contains(io.Transcript(), "LoadCredential=")
+			if goos == "linux" && !mentioned {
+				t.Error("nothing warned a Linux operator that the shipped unit supplies secrets differently")
+			}
+			if goos != "linux" && mentioned {
+				t.Errorf("a systemd note was printed on %s", goos)
+			}
+		})
+	}
+}
+
+// TestSystemdNoteDoesNotTellAnybodyToBreakTheirNode: removing the *_env line in
+// favour of a credential is the right shape under that unit, but nothing in the run
+// path resolves credentials yet. The note may point at the unit's comments; it may
+// not instruct a change that would stop the node starting today.
+func TestSystemdNoteDoesNotTellAnybodyToBreakTheirNode(t *testing.T) {
+	for _, instruction := range []string{"remove the", "delete the", "instead of bot_token_env"} {
+		if strings.Contains(strings.ToLower(systemdNote), instruction) {
+			t.Errorf("the systemd note says %q, but the run path still reads only the *_env form", instruction)
+		}
+	}
+	if !strings.Contains(systemdNote, "deploy/kenward.service") {
+		t.Error("the note does not say where the authoritative explanation is")
+	}
+}
+
 // TestTierSummaryReadsThePolicyBack checks the closing summary uses the same
 // rendering `kenward doctor` uses, so that the claim made at setup and the claim
 // checked afterwards are the same sentence.
