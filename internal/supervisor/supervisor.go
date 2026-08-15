@@ -35,6 +35,14 @@ const (
 	// StateFailed means the unit exited unexpectedly and, in isolated mode, is
 	// subject to restart.
 	StateFailed
+	// StateNotEnrolled means the member is declared in the configuration but has
+	// not claimed an invite, so there is no unit to run and nothing has gone wrong.
+	//
+	// It exists because the alternatives both lie. Reporting StateFailed would tell
+	// an operator something is broken when the household simply has not finished
+	// onboarding; reporting StateUnknown would say there is no information when in
+	// fact the situation is known precisely.
+	StateNotEnrolled
 )
 
 func (s State) String() string {

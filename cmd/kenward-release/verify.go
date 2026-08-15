@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/ed25519"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -55,7 +54,8 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 
 	type keyResult struct {
 		path   string
-		id     string
+		id     string // the key file's own id, so the operator recognises it
+		key    ed25519.PublicKey
 		signed bool
 	}
 	results := make([]keyResult, 0, len(pubs))
@@ -65,27 +65,39 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return &usageError{err: err}
 		}
+		results = append(results, keyResult{path: path, id: id, key: pub})
 		trusted = append(trusted, pub)
-		// keel's verifier reports only "some trusted key signed this", so
-		// ask it once per key to find out which ones did.
-		_, err = update.VerifyManifest(data, []ed25519.PublicKey{pub})
-		results = append(results, keyResult{path: path, id: id, signed: err == nil})
 	}
 
+	// The trust decision is keel's, made over the whole envelope with the
+	// same code the updater runs. Everything below only explains it.
 	m, err := update.VerifyManifest(data, trusted)
 	if err != nil {
 		return err
 	}
+	env, err := update.ParseEnvelope(data)
+	if err != nil {
+		return err
+	}
 
-	// Key ids as declared in the envelope. They are advisory — keel tries
-	// every trusted key regardless — but a mislabelled one is worth seeing.
-	var declared []string
-	var env envelope
-	if err := json.Unmarshal(data, &env); err == nil {
-		for _, s := range env.Signatures {
-			if s.KeyID != "" {
-				declared = append(declared, s.KeyID)
+	// Attribution is by verification, never by label: a signature belongs to
+	// a key only if it verifies under that key.
+	for i := range results {
+		for _, sig := range env.Signatures {
+			if update.VerifyPayload(env.Payload, sig, results[i].key) {
+				results[i].signed = true
+				break
 			}
+		}
+	}
+
+	// The ids the envelope declares are producer-supplied labels, not proof
+	// of anything. They are printed because a mislabelled one is worth
+	// noticing, and never used to decide who signed.
+	var declared []string
+	for _, id := range env.SignerIDs() {
+		if id != "" {
+			declared = append(declared, id)
 		}
 	}
 
@@ -109,9 +121,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 
 	fmt.Fprintln(stdout, "keys")
 	for _, r := range results {
-		mark, note := "x", "  did not sign this manifest"
+		mark, note := "✗", "  did not sign this manifest"
 		if r.signed {
-			mark, note = "*", ""
+			mark, note = "✓", ""
 		}
 		fmt.Fprintf(stdout, "  %s %-10s %s%s\n", mark, r.id, r.path, note)
 	}

@@ -16,12 +16,6 @@ import (
 	"github.com/BlueHeisenberg/keel/update"
 )
 
-// manifestSchema is the payload schema keel/update accepts. keel does not
-// export it (it refuses any other value at verification time), so it is
-// restated here; if keel's schema ever moves, this constant and the shape of
-// update.Manifest move together and the mismatch surfaces at verify.
-const manifestSchema = 1
-
 // defaultPlatforms is the set of targets a release is expected to carry. It
 // mirrors CROSS_TARGETS in Taskfile.yml. A manifest published without one of
 // these silently strands every installation on that platform — it will fetch
@@ -137,7 +131,7 @@ func cmdManifest(args []string, stdout, stderr io.Writer) error {
 		Artifacts:         artifacts,
 	}
 	m := update.Manifest{
-		Schema:      manifestSchema,
+		Schema:      update.ManifestSchema,
 		GeneratedAt: published,
 		Channels:    map[string]update.Release{},
 	}
@@ -250,9 +244,11 @@ func platformFromFilename(name string) (string, bool) {
 	isExe := strings.HasSuffix(strings.ToLower(base), ".exe")
 	if isExe {
 		base = base[:len(base)-len(".exe")]
-	} else if ext := filepath.Ext(base); ext != "" {
-		return "", false // .sha256, .txt, .tar.gz: not a build
 	}
+	// Any other extension survives into the last field and fails the GOARCH
+	// check there: "kenward_linux_amd64.sha256" ends in "amd64.sha256",
+	// which is not an architecture, so checksum and note files alongside the
+	// builds are ignored rather than published as artifacts.
 	parts := strings.Split(base, "_")
 	if len(parts) < 3 {
 		return "", false

@@ -61,7 +61,7 @@ func cmdSign(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("%s: %w", *in, err)
 	}
 
-	var signed []byte
+	var signedEnvelope []byte
 	var total int
 	switch kind {
 	case kindManifest:
@@ -72,19 +72,19 @@ func cmdSign(args []string, stdout, stderr io.Writer) error {
 		if err := checkManifest(m); err != nil {
 			return fmt.Errorf("%s: %w", *in, err)
 		}
-		if signed, err = update.SignManifest(m, signer); err != nil {
+		if signedEnvelope, err = update.SignManifest(m, signer); err != nil {
 			return err
 		}
 		total = 1
 	case kindEnvelope:
-		if signed, total, err = addSignature(data, signer); err != nil {
+		if signedEnvelope, total, err = addSignature(data, signer); err != nil {
 			return err
 		}
 	default:
 		return fmt.Errorf("%s: unrecognised file", *in)
 	}
 
-	if err := writeOut(*out, append(signed, '\n'), stdout); err != nil {
+	if err := writeOut(*out, append(signedEnvelope, '\n'), stdout); err != nil {
 		return err
 	}
 	fmt.Fprintf(stderr, "signed with key %s (%d %s on this manifest)\n",
@@ -93,22 +93,22 @@ func cmdSign(args []string, stdout, stderr io.Writer) error {
 }
 
 // addSignature adds signer's signature to an already-signed envelope, leaving
-// every existing signature intact and byte-identical.
+// every existing signature intact.
 //
-// The signature covers exact payload bytes, not a canonical form of the
-// manifest, so the existing signatures stay valid only if the payload is
-// preserved verbatim. keel does not expose a way to sign given bytes, so the
-// new signature is obtained by re-signing the decoded manifest and then
-// checking that keel produced the very same payload; if it did not, the file
-// was not written by this tooling and re-wrapping it would invalidate the
-// signature already on it. Refusing is the only safe answer there.
+// A signature covers exact payload bytes, not a canonical form of the
+// manifest, so the payload is signed and re-encoded verbatim: keel's
+// ParseEnvelope and Encode carry it through untouched, and SignPayload signs
+// those same bytes. Nothing here re-serialises the manifest, so a signature
+// already on the envelope cannot be invalidated by adding another — which is
+// the whole basis of the key rotation procedure in docs/RELEASING.md.
+//
+// An envelope carrying a structurally malformed signature is rejected by
+// ParseEnvelope and stays rejected: this tool does not repair one. The
+// remedy is to sign the payload again from a good manifest.
 func addSignature(data []byte, signer update.Signer) (out []byte, total int, err error) {
-	var env envelope
-	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, 0, fmt.Errorf("parse signed envelope: %w", err)
-	}
-	if len(env.Payload) == 0 {
-		return nil, 0, fmt.Errorf("signed envelope has an empty payload")
+	env, err := update.ParseEnvelope(data)
+	if err != nil {
+		return nil, 0, err
 	}
 	var m update.Manifest
 	if err := json.Unmarshal(env.Payload, &m); err != nil {
@@ -118,27 +118,13 @@ func addSignature(data []byte, signer update.Signer) (out []byte, total int, err
 		return nil, 0, err
 	}
 
-	fresh, err := update.SignManifest(m, signer)
+	add, err := update.SignPayload(env.Payload, signer.Key, signer.KeyID)
 	if err != nil {
 		return nil, 0, err
 	}
-	var freshEnv envelope
-	if err := json.Unmarshal(fresh, &freshEnv); err != nil {
-		return nil, 0, fmt.Errorf("decode freshly signed envelope: %w", err)
-	}
-	if !bytes.Equal(freshEnv.Payload, env.Payload) {
-		return nil, 0, fmt.Errorf("cannot add a signature: the payload in this envelope is not " +
-			"byte-identical to the one this tooling would produce, so adding a signature would " +
-			"invalidate the signature already on it. Rebuild the manifest and sign it with each key in turn")
-	}
-	if len(freshEnv.Signatures) != 1 {
-		return nil, 0, fmt.Errorf("expected exactly one new signature, got %d", len(freshEnv.Signatures))
-	}
-	add := freshEnv.Signatures[0]
-
 	for _, existing := range env.Signatures {
 		// Ed25519 is deterministic, so an identical signature means this
-		// key has already signed this exact payload.
+		// key has already signed these exact bytes.
 		if bytes.Equal(existing.Sig, add.Sig) {
 			return nil, 0, usagef("this manifest is already signed by key %s", signer.KeyID)
 		}
@@ -148,7 +134,7 @@ func addSignature(data []byte, signer update.Signer) (out []byte, total int, err
 	}
 	env.Signatures = append(env.Signatures, add)
 
-	out, err = json.Marshal(env)
+	out, err = env.Encode()
 	if err != nil {
 		return nil, 0, fmt.Errorf("encode signed envelope: %w", err)
 	}
