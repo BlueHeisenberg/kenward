@@ -90,7 +90,11 @@ privacy and having it.
 
 ## Licence
 
-Business Source License 1.1 — see [LICENSE](LICENSE). Free for personal,
-household, internal and non-competing production use; each version converts to
-Apache 2.0 on 2030-08-14. Operating it as a hosted or managed service for third
-parties requires a separate licence — get in touch.
+Business Source License 1.1 — see [LICENSE](LICENSE) for the exact terms.
+
+You may run kenward in production for yourself, your household, or within a single
+organization. What the licence gates is offering kenward, or a derivative of it, to
+third parties as a hosted or managed service — that needs a separate licence, so get in
+touch. Each version converts to Apache 2.0 on 2030-08-14.
+
+BSL is source-available rather than OSI open source. That is understood and deliberate.
