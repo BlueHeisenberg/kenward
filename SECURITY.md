@@ -37,6 +37,11 @@ Anything that breaks one of these:
   plaintext.
 - **An update cannot be applied without a valid signature** from a key the running binary
   already trusts.
+- **A secret value never reaches a log line, an error message or a formatted
+  configuration.** Names, paths, variable names and file modes are printed freely,
+  because that is what makes a fault fixable; values are not, and a resolved secret is
+  held behind an accessor rather than in a struct field so that `%+v` has nothing to
+  find.
 
 Also in scope: anything that causes kenward to *claim* one of the above while not doing
 it. A privacy product that misreports its own posture is worse than one that reports it
@@ -63,6 +68,16 @@ configuration of it changes that.
 
 **Whoever holds a bot token can read that bot's messages.** This is Telegram's model, not
 kenward's. It is why isolated mode gives each member their own token.
+
+**A secret supplied as an environment variable is visible to the whole process tree.**
+It sits in the environment for the life of the process, is readable through `/proc` by
+anything with access to it, and is inherited by every child — including the `lore mcp`
+subprocess, which has no business holding a Telegram token. This is why the shipped
+systemd unit uses `LoadCredential=` rather than `EnvironmentFile=`, and why
+`bot_token_file` and `api_key_file` exist. The compose path stays on environment
+variables because Compose has no portable equivalent, scoped as tightly as per-service
+`environment:` blocks allow; that gap is documented in `deploy/README.md` rather than
+defended.
 
 **A leaked release signing key compromises every installation that updates.** There is no
 revocation mechanism, deliberately — a revocation channel is one more thing an attacker

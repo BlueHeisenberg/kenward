@@ -66,6 +66,14 @@ in kenward.
 painless and makes this build depend on keel's *working tree*. While keel is being edited,
 kenward will not build through the workspace even though nothing here is wrong.
 
+`go.work` is gitignored and local, so it is nobody's else's copy — and the one on this
+machine declares a **newer Go than either module needs**: `go 1.26.5`, against `go 1.25.0`
+in both `kenward/go.mod` and `keel/go.mod`. A toolchain older than the workspace's
+declared version refuses to use the workspace at all, with an error that reads as though
+the module were at fault. It is not: 1.25 is the floor, set by the MCP SDK, and it is what
+the Dockerfile and CI build with. If you hit that error, lower the line in your own
+`go.work` or set `GOWORK=off`.
+
 So verify the way CI does, against the published module:
 
 ```sh

@@ -53,6 +53,8 @@ ARG TARGETOS
 ARG TARGETARCH
 
 ENV CGO_ENABLED=0
+# Belt and braces: even if a workspace file reaches the context, ignore it.
+ENV GOWORK=off
 
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -trimpath \
@@ -103,8 +105,18 @@ VOLUME ["/var/lib/kenward"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD ["/usr/local/bin/kenward", "doctor", "--config", "/etc/kenward/kenward.yaml", "--data-dir", "/var/lib/kenward"]
 
-# ENTRYPOINT fixes the subcommand; CMD supplies the default flags so an
-# operator can override just the config path (`docker run image --config
-# /other/kenward.yaml`) without repeating "run".
-ENTRYPOINT ["/usr/local/bin/kenward", "run"]
-CMD ["--config", "/etc/kenward/kenward.yaml", "--data-dir", "/var/lib/kenward"]
+# ENTRYPOINT is the bare binary, not "kenward run": pinning the subcommand
+# here would make every other one unreachable, since anything passed after
+# the image name becomes a positional argument to whatever ENTRYPOINT names
+# rather than a replacement for it — `docker run <image> version` would try
+# to run "version" as a bogus argument to `run` instead of invoking the
+# version subcommand. CMD supplies the default full command (run against the
+# standard config/data paths), so a bare `docker run <image>` still starts
+# the node, while `docker run <image> version`, `... doctor ...`, or
+# `... invite --name David` all reach cmd/kenward's other subcommands
+# directly. The one cost: overriding just the config path now means
+# repeating `run` (`docker run <image> run --config /other/kenward.yaml`)
+# rather than only the flag — a fair trade for keeping every subcommand
+# reachable.
+ENTRYPOINT ["/usr/local/bin/kenward"]
+CMD ["run", "--config", "/etc/kenward/kenward.yaml", "--data-dir", "/var/lib/kenward"]

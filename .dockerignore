@@ -49,3 +49,10 @@ Thumbs.db
 # Deploy artifacts reference secrets/paths but hold none themselves; excluding
 # them just keeps the context minimal since they're never needed inside a build
 deploy/
+
+# The Go workspace file is a local development artefact that links this checkout
+# to a sibling keel checkout. It must never enter the build context: it pins a Go
+# version chosen for one developer's machine, and the builder image has its own.
+# Copying it in makes the image build fail with an error that blames the module.
+go.work
+go.work.sum

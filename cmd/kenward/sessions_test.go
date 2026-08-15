@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +86,38 @@ func TestReadPassphrasePrecedence(t *testing.T) {
 			t.Fatalf("err = %v, want errNoPassphrase: a pipe is not somebody standing there", err)
 		}
 	})
+}
+
+// TestNoOperatorAtACharacterDevice is a regression test from the container.
+//
+// `docker run` without -i hands the process /dev/null on standard input, and
+// /dev/null is a character device — so the "is anyone there" check passed, kenward
+// prompted, the read hit end-of-input immediately, and the operator got the setup
+// wizard's "input ended before the wizard finished" and exit 1 instead of the refusal
+// that lists the three ways to supply a passphrase and exit 2. The character-device
+// test is necessary but not sufficient, and an immediate end-of-input is the rest of
+// the answer.
+func TestNoOperatorAtACharacterDevice(t *testing.T) {
+	t.Parallel()
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Skipf("no %s on this platform: %v", os.DevNull, err)
+	}
+	t.Cleanup(func() { devNull.Close() })
+
+	// Precondition: this is the shape that fooled the check in the first place.
+	if !isTerminal(devNull) {
+		t.Skip("this platform's null device is not a character device, so the case cannot arise")
+	}
+
+	e := &env{
+		stdin:     devNull,
+		stderr:    &bytes.Buffer{},
+		lookupEnv: lookup(nil),
+	}
+	if _, err := readPassphrase(e); !errors.Is(err, errNoPassphrase) {
+		t.Fatalf("err = %v, want errNoPassphrase: nothing was there to answer the prompt", err)
+	}
 }
 
 // TestPassphraseZeroed: the buffer this process read is overwritten once it has been
@@ -245,6 +279,90 @@ func TestRunStartsPastTheSessionGateWithAPassphrase(t *testing.T) {
 		t.Errorf("no session summary was logged:\n%s", h.stderr())
 	}
 	h.assertNoSecrets(t)
+}
+
+// TestAPodProvisionsOnlyItsOwnMembersKey.
+//
+// This is the isolation the mode exists for, at the point it would be easiest to lose.
+// unlockSessions provisions and unlocks whoever it is handed, so passing a pod the
+// household's member list — the obvious convenience, and what the simple path
+// legitimately does — would have david's pod generate and wrap jordan's key under
+// david's passphrase. The pod would then hold a key it must never have, and the mode
+// would be a lie while every test about bot tokens still passed.
+func TestAPodProvisionsOnlyItsOwnMembersKey(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoad(t, isolatedYAML)
+	david := mustMember(t, cfg, "david")
+
+	store := session.NewMemStore()
+	mgr := newFastManager(t, session.ModeIsolated, store)
+	pass := &passphrase{b: []byte("davids-own-passphrase"), source: "a test"}
+
+	rep, err := unlockSessions(context.Background(), mgr, store, []domain.Member{david}, pass)
+	if err != nil {
+		t.Fatalf("unlocking david's pod: %v", err)
+	}
+	if len(rep.Provisioned) != 1 || rep.Provisioned[0] != "david" {
+		t.Fatalf("provisioned %v, want only david", rep.Provisioned)
+	}
+
+	held, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(held) != 1 || held[0] != "david" {
+		t.Fatalf("the pod's key store holds %v; a pod must hold exactly its own member's key", held)
+	}
+	if _, ok := mgr.Key("jordan"); ok {
+		t.Fatal("david's pod has jordan's key unwrapped in memory")
+	}
+}
+
+// TestMemberPodUnlocksBeforeStarting.
+//
+// The TODO left when the single-unit constructor did not exist: a pod that never
+// unlocks answers every message its one member sends with the locked notice. It is
+// the same bug the end-to-end test caught in simple mode and strictly harder to spot
+// here, because there is no group chat alongside it working fine to contrast against
+// — the pod simply goes quiet.
+func TestMemberPodUnlocksBeforeStarting(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, isolatedYAML, fullEnvironment())
+	cfg := mustLoad(t, isolatedYAML)
+	logger := slog.New(slog.NewTextHandler(h.e.stderr, nil))
+
+	_, err := newSingleUnitSupervisor(h.e, cfg, runOptions{
+		selection: unitSelection{member: "david"},
+	}, logger)
+	if !errors.Is(err, errNoPassphrase) {
+		t.Fatalf("err = %v, want errNoPassphrase: a member's pod must unlock before it serves", err)
+	}
+}
+
+// TestGroupPodNeedsNoPassphrase.
+//
+// The household group's unit serves the shared space and holds no member key, so
+// demanding a passphrase for it would be asking for a secret that unwraps nothing —
+// and would stop the group pod starting for no reason.
+//
+// The configuration here has no group chat, so construction stops immediately on that
+// instead: reaching that error at all proves the session gate did not refuse first.
+func TestGroupPodNeedsNoPassphrase(t *testing.T) {
+	t.Parallel()
+	noGroup := strings.Replace(isolatedYAML, "  group_chat_id: -1001234567890\n", "", 1)
+	h := newHarness(t, noGroup, fullEnvironment())
+	cfg := mustLoad(t, noGroup)
+	logger := slog.New(slog.NewTextHandler(h.e.stderr, nil))
+
+	_, err := newSingleUnitSupervisor(h.e, cfg, runOptions{
+		selection: unitSelection{group: true},
+	}, logger)
+	if errors.Is(err, errNoPassphrase) {
+		t.Fatal("the group pod was refused for want of a passphrase it has no use for")
+	}
+	if err == nil || !strings.Contains(err.Error(), "group chat") {
+		t.Fatalf("err = %v, want the missing group chat", err)
+	}
 }
 
 // TestDoctorReportsMembersWithNoKey. The operator has to be able to see this without

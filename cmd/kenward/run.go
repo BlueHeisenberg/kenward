@@ -7,11 +7,15 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
+
+	keelupdate "github.com/BlueHeisenberg/keel/update"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
+	"github.com/BlueHeisenberg/kenward/internal/updater"
 	"github.com/BlueHeisenberg/kenward/internal/version"
 )
 
@@ -54,7 +58,7 @@ func cmdRun(e *env, args []string) int {
 	}
 
 	path := resolveConfigPath(e, *configPath)
-	cfg, cfgErr := loadConfig(path, resolveDataDir(e, *dataDir), e.env())
+	cfg, cfgErr := loadConfig(path, resolveDataDir(e, *dataDir), e.secrets())
 	if cfgErr != nil {
 		fmt.Fprint(e.stderr, renderConfigError(path, cfgErr))
 		return exitUsage
@@ -78,15 +82,26 @@ func cmdRun(e *env, args []string) int {
 		}
 	}
 
+	// internal/config neither defaults nor validates memory.lore_command, so a
+	// hand-written file that omits the memory: block validates and then fails deep
+	// inside the wiring with whatever the client says about spawning nothing. The
+	// right place for this is validation; until it moves there, the failure at
+	// least names the key and the file it is missing from.
+	if len(cfg.Memory.LoreCommand) == 0 {
+		e.errorf("%s does not say how to start lore: memory.lore_command is missing or empty.\n\n"+
+			"lore is where everything kenward remembers lives, and kenward starts it as a\n"+
+			"subprocess rather than talking to a server. Without it there is no retrieval, no\n"+
+			"capture and no enrolment history. Add:\n\n"+
+			"  memory:\n"+
+			"    lore_command: [lore, mcp]\n\n"+
+			"which is what `kenward setup` writes, and make sure a `lore` binary is on PATH.", path)
+		return exitUsage
+	}
+
 	logger := slog.New(slog.NewTextHandler(e.stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	for _, line := range startupSummary(cfg, sel) {
 		logger.Info("kenward", line...)
 	}
-
-	// Before anything is served: finish whatever update was in flight when this
-	// process last stopped, so a swapped binary is committed or rolled back rather
-	// than left in a half-applied state nothing ever resolves.
-	resumeUpdate(e, cfg, logger)
 
 	factory := e.supervisors
 	if factory == nil {
@@ -121,26 +136,128 @@ func cmdRun(e *env, args []string) int {
 		}
 	}
 
-	return serve(e, sup, logger)
+	// The updater is built after the supervisor because its drain is the
+	// supervisor's own Stop, and it is never allowed to prevent kenward starting:
+	// a household whose update configuration is wrong should still have a working
+	// assistant. A nil *Scheduler is safe to Run and Resume.
+	restart := newRestartSignal()
+	sched, err := newScheduler(e, cfg, sel, updater.DrainFunc(func(ctx context.Context) error {
+		return sup.Stop(ctx)
+	}), restart, logger)
+	if err != nil {
+		logger.Warn("kenward", "event", "update",
+			"detail", "auto-update is off for this run; the assistant is unaffected",
+			"err", err.Error())
+	}
+
+	// Before anything is served: finish whatever update was in flight when this
+	// process last stopped, so a swapped binary is committed or rolled back rather
+	// than left half-applied with nothing ever deciding its fate. This runs even
+	// when the channel is off — it fetches nothing, and an update in flight when
+	// updates were turned off still deserves an answer.
+	if code, done := resumeUpdate(e, sched, logger); done {
+		return code
+	}
+
+	return serve(e, sup, sched, restart, logger)
 }
 
-// serve starts the supervisor and drains it on SIGINT or SIGTERM.
+// resumeUpdate finishes a pending update. The bool reports whether the process
+// should stop now rather than serve.
+func resumeUpdate(e *env, sched *updater.Scheduler, logger *slog.Logger) (int, bool) {
+	report, err := sched.Resume(e.context())
+	switch {
+	case errors.Is(err, keelupdate.ErrRestartPending):
+		// A rollback restored the previous binary. This process is the wrong
+		// build to go on running.
+		logger.Info("kenward", "event", "update",
+			"detail", "the previous version has been restored; stopping so the service manager restarts onto it")
+		return exitRestartRequested, true
+	case errors.Is(err, keelupdate.ErrLocked):
+		// A sibling process off the same install path is resuming. Serving is
+		// still correct; it will be finished by whoever holds the lock.
+		logger.Info("kenward", "event", "update", "detail", "another process is finishing an update on this install path")
+	case err != nil:
+		logger.Warn("kenward", "event", "update", "detail", "could not finish a pending update", "err", err.Error())
+	case report.Outcome != keelupdate.OutcomeNone:
+		logger.Info("kenward", "event", "update",
+			"outcome", outcomeName(report.Outcome),
+			"from", report.From, "to", report.To, "reason", report.Reason)
+	}
+	return exitOK, false
+}
+
+// serve runs the household and the update loop together, and drains both on SIGINT
+// or SIGTERM.
 //
-// Start blocks. When the process signal context is cancelled, Start returns and Stop
-// is called with a fresh, bounded context: the signal context is already dead, and a
+// Start blocks. When the signal context is cancelled, Start returns and Stop is
+// called with a fresh, bounded context: the signal context is already dead, and a
 // drain that inherits a cancelled context finishes no turns at all, which is the
 // opposite of draining.
-func serve(e *env, sup supervisor.Supervisor, logger *slog.Logger) int {
-	ctx := e.context()
+func serve(e *env, sup supervisor.Supervisor, sched *updater.Scheduler, restart *restartSignal, logger *slog.Logger) int {
+	ctx, cancel := context.WithCancel(e.context())
+	defer cancel()
+
+	// A restart request stops intake: the scheduler asks for one after it has
+	// drained and swapped (or drained and failed to swap), and either way this
+	// process has to go down.
+	go func() {
+		select {
+		case <-restart.waitCh():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	schedDone := make(chan struct{})
+	go func() {
+		defer close(schedDone)
+		err := sched.Run(ctx)
+		switch {
+		case err == nil, errors.Is(err, context.Canceled):
+		case errors.Is(err, keelupdate.ErrRestartPending):
+			// Belt and braces: this only happens if the Restart hook was not
+			// honoured, and the process still has to come back.
+			restart.request()
+		default:
+			// The loop is not supposed to end for any other reason, and the
+			// household keeps working on the version it has either way.
+			logger.Warn("kenward", "event", "update", "detail", "the update loop stopped", "err", err.Error())
+		}
+	}()
+
 	startErr := sup.Start(ctx)
 
-	drainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), supervisor.DefaultDrainTimeout)
-	defer cancel()
+	// Deliberately no cancel() here. Start returns as soon as the supervisor
+	// stops, and one of the ways it stops is the scheduler's own drain hook
+	// calling Stop immediately before a swap. Cancelling the scheduler's context
+	// at this point would abort that update between the drain and the swap,
+	// leaving a household whose intake is already stopped on the version it had
+	// and nothing to bring it back. So the update is given its bounded chance to
+	// finish first; the signal path is unaffected, because a signal has already
+	// cancelled this context and Run has already returned.
+	if ctx.Err() == nil {
+		select {
+		case <-schedDone:
+		case <-time.After(updateFinishGrace):
+			logger.Warn("kenward", "event", "update",
+				"detail", "an update was still in flight when the household stopped; giving up on it")
+		}
+	}
+	cancel()
+
+	drainCtx, drainCancel := context.WithTimeout(context.WithoutCancel(e.context()), supervisor.DefaultDrainTimeout)
+	defer drainCancel()
 	logger.Info("kenward", "event", "draining",
 		"detail", "no new messages; in-flight turns finish, then every session is locked")
 	stopErr := sup.Stop(drainCtx)
+	<-schedDone
 
 	switch {
+	case restart.wanted():
+		logger.Info("kenward", "event", "stopped",
+			"detail", "all sessions locked; exiting so the service manager restarts this node")
+		return exitRestartRequested
 	case startErr != nil && !errors.Is(startErr, context.Canceled) && !errors.Is(startErr, context.DeadlineExceeded):
 		e.errorf("%v", startErr)
 		return exitFailure
@@ -152,6 +269,15 @@ func serve(e *env, sup supervisor.Supervisor, logger *slog.Logger) int {
 	logger.Info("kenward", "event", "stopped", "detail", "all sessions locked")
 	return exitOK
 }
+
+// updateFinishGrace bounds how long a shutdown waits for an update that is already
+// past its drain.
+//
+// What happens in that window is a binary swap and a rename of the retained previous
+// version — local filesystem work, not a download, which happened before the drain.
+// A minute is far more than it needs and short enough that a wedged updater cannot
+// hold a shutdown open indefinitely.
+const updateFinishGrace = time.Minute
 
 // startupSummary is the one thing an operator reads to know what this node will and
 // will not do.

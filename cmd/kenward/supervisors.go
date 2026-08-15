@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/enrol"
 	"github.com/BlueHeisenberg/kenward/internal/session"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
@@ -52,7 +53,11 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 			image = defaultPodImageRepo + ":" + v
 		}
 		return supervisor.NewIsolated(cfg, supervisor.IsolatedOptions{
-			Image:     image,
+			Image: image,
+			// The same resolver this command's own checks use, so a pod's token
+			// is read from whichever source the configuration names rather than
+			// from the environment alone.
+			Secrets:   e.secrets(),
 			Logger:    logger,
 			LookupEnv: e.env(),
 			Now:       e.now,
@@ -68,7 +73,7 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 		// nothing ever unlocks holds no key, and a node holding no key answers
 		// every direct message with the locked notice while its group chat works
 		// perfectly — which is the shape of failure nobody diagnoses.
-		sessions, err := startSessions(e, cfg, logger)
+		sessions, err := startSessions(e, cfg, logger, cfg.DomainMembers())
 		if err != nil {
 			return nil, err
 		}
@@ -76,18 +81,25 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 			// Enrol is supplied so claim codes work while the household runs:
 			// without it a member who has been handed a code has nothing to
 			// present it to until the operator restarts the node.
-			Enrol:     claimer,
-			Sessions:  sessions,
-			Logger:    logger,
-			LookupEnv: e.env(),
-			Now:       e.now,
+			Enrol:       claimer,
+			Sessions:    sessions,
+			TierWindows: tierWindows(cfg),
+			Secrets:     e.secrets(),
+			Logger:      logger,
+			LookupEnv:   e.env(),
+			Now:         e.now,
 		})
 	}
 }
 
-// startSessions reads the passphrase, provisions any member who has no key yet,
-// unlocks everybody, and hands back the manager the units will use.
-func startSessions(e *env, cfg *config.Config, logger *slog.Logger) (session.Sessions, error) {
+// startSessions reads the passphrase, provisions any of the given members who has no
+// key yet, unlocks them, and hands back the manager the units will use.
+//
+// members is passed in rather than read from cfg because the two callers serve
+// different sets: simple mode serves the whole household from one process, and a pod
+// serves exactly one member. Handing a pod the household's member list would have it
+// provision keys for people it must never hold.
+func startSessions(e *env, cfg *config.Config, logger *slog.Logger, members []domain.Member) (session.Sessions, error) {
 	pass, err := readPassphrase(e)
 	if err != nil {
 		if errors.Is(err, errNoPassphrase) {
@@ -104,7 +116,7 @@ func startSessions(e *env, cfg *config.Config, logger *slog.Logger) (session.Ses
 		return nil, fmt.Errorf("building the session manager: %w", err)
 	}
 
-	rep, err := unlockSessions(e.context(), mgr, store, cfg.DomainMembers(), pass)
+	rep, err := unlockSessions(e.context(), mgr, store, members, pass)
 	if err != nil {
 		mgr.Close()
 		// session.ErrBadPassphrase is deliberately indistinguishable from an

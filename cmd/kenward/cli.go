@@ -25,6 +25,19 @@ const (
 	// exitUsage means the fault is in the configuration or on the command line.
 	// Nothing was attempted.
 	exitUsage = 2
+
+	// exitRestartRequested is what `run` exits with after an update has been
+	// installed, or a failed one rolled back, and the process has to come back on
+	// a different binary.
+	//
+	// It is deliberately the runtime-failure code rather than a fourth one.
+	// deploy/kenward.service sets Restart=on-failure, so exiting 0 here would
+	// install a new version and then leave the household with nothing running
+	// until somebody noticed. Compose's restart: unless-stopped restarts on any
+	// exit, so it is unaffected either way. The log line immediately before says
+	// what happened, which is what an operator reading journalctl actually needs;
+	// a distinct code that systemd ignored would not be.
+	exitRestartRequested = exitFailure
 )
 
 // env is everything a command needs from the world outside it.
@@ -42,7 +55,12 @@ type env struct {
 	// the missing-variable path without mutating global state shared with every
 	// other test in the binary.
 	lookupEnv config.LookupEnvFunc
-	now       func() time.Time
+	// secretOpts seams the secret resolver: the filesystem secret files are read
+	// from, and the credentials directory. LookupEnv is filled from lookupEnv when
+	// it is left nil, so a caller that only cares about the environment sets
+	// nothing here.
+	secretOpts config.SecretOptions
+	now        func() time.Time
 	// goos is runtime.GOOS, overridable so the isolated-mode-on-Windows refusal
 	// can be exercised on any machine.
 	goos string
@@ -89,6 +107,26 @@ func (e *env) env() config.LookupEnvFunc {
 		return os.LookupEnv
 	}
 	return e.lookupEnv
+}
+
+// secrets builds the resolver that turns a SecretRef into a value.
+//
+// A fresh resolver each time is deliberate and matches what internal/config does:
+// it caches nothing, so a rotated credential file is picked up without a restart,
+// and no resolved value is held anywhere in this process longer than the call that
+// asked for it.
+//
+// Nothing in this package reads a `_env` variable itself any more. The order —
+// `_file`, then `_env`, then the systemd credential — and the rule that stating two
+// sources is an error rather than a precedence win are internal/config's, and a
+// second implementation of them here is how a household ends up passing validation
+// and then finding no token where it is needed.
+func (e *env) secrets() *config.Secrets {
+	opts := e.secretOpts
+	if opts.LookupEnv == nil {
+		opts.LookupEnv = e.env()
+	}
+	return config.NewSecrets(opts)
 }
 
 func (e *env) os() string {

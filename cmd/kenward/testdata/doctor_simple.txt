@@ -3,7 +3,7 @@ kenward <VERSION> — mode: simple
 Configuration
   ✓ kenward.yaml parses and validates
       <CONFIG>
-  ✓ all referenced environment variables are set
+  ✓ every secret the configuration names can be read
 
 Memory
   ✓ lore mcp responds
@@ -25,6 +25,8 @@ Sessions
 
 Transport
   ✓ household: Telegram authorises as @our_household_bot
+      token from environment variable KENWARD_BOT_TOKEN
+  ✓ openrouter: key from environment variable OPENROUTER_API_KEY
 
 Endpoints
   ✓ monster     local  answered in 412ms

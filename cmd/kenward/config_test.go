@@ -96,6 +96,32 @@ func TestRunListsEveryMissingEnvironmentVariableByName(t *testing.T) {
 	}
 }
 
+// TestRunNamesAMissingLoreCommand.
+//
+// internal/config neither defaults nor validates memory.lore_command, so a
+// hand-written file that omits the memory: block validates cleanly and then fails
+// deep in the wiring with whatever the client says about spawning nothing. The right
+// place for this is validation, which is internal/config's to add; until then the
+// failure has to name the key and the file rather than the symptom.
+func TestRunNamesAMissingLoreCommand(t *testing.T) {
+	t.Parallel()
+	without := strings.Replace(simpleYAML, "memory:\n  lore_command: [lore, mcp]\n", "", 1)
+	if strings.Contains(without, "lore_command") {
+		t.Fatal("the fixture still has a lore_command; this test is not testing anything")
+	}
+	h := newHarness(t, without, fullEnvironment())
+
+	if code := h.run("run"); code != exitUsage {
+		t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h.both())
+	}
+	out := h.stderr()
+	for _, want := range []string{h.config, "memory.lore_command", "lore_command: [lore, mcp]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the failure does not name %q:\n%s", want, out)
+		}
+	}
+}
+
 // TestDataDirOverrideIsAppliedBeforeStateIsRead.
 //
 // The state file lives under the data directory. Reading it from the configured
@@ -106,7 +132,7 @@ func TestDataDirOverrideIsAppliedBeforeStateIsRead(t *testing.T) {
 	h := newHarness(t, simpleYAML, fullEnvironment())
 	elsewhere := t.TempDir()
 
-	cfg, err := loadConfig(h.config, elsewhere, lookup(fullEnvironment()))
+	cfg, err := loadConfig(h.config, elsewhere, testSecrets(fullEnvironment()))
 	if err != nil {
 		t.Fatalf("loading configuration: %v", err)
 	}

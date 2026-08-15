@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -100,12 +101,17 @@ func readPassphrase(e *env) (*passphrase, error) {
 	if isTerminal(e.stdin) {
 		// internal/setup already suppresses echo on every platform kenward runs
 		// on; a second implementation here is a second one to get wrong.
-		io := setup.NewConsoleIO(e.stdin, e.stderr)
-		v, err := io.AskSecret("Passphrase for this node's member keys")
-		if err != nil {
+		console := setup.NewConsoleIO(e.stdin, e.stderr)
+		v, err := console.AskSecret("Passphrase for this node's member keys")
+		switch {
+		case errors.Is(err, setup.ErrInputClosed), errors.Is(err, io.EOF):
+			// Nobody was there after all — see isTerminal for why this is
+			// reachable. Fall through to the refusal, which explains the three
+			// ways to supply a passphrase, rather than reporting the wizard's
+			// "input ended" at somebody who never opted into a prompt.
+		case err != nil:
 			return nil, err
-		}
-		if v != "" {
+		case v != "":
 			return &passphrase{b: []byte(v), source: "the terminal"}, nil
 		}
 	}
@@ -119,11 +125,19 @@ func trimNewline(b []byte) []byte {
 	return b
 }
 
-// isTerminal reports whether somebody is there to be asked.
+// isTerminal reports whether somebody might be there to be asked.
 //
-// A character device on standard input is a terminal; a pipe, a file, a socket and a
-// container with no tty are not. Prompting into any of those blocks a service that
-// nobody is watching, which is a worse failure than refusing to start.
+// A pipe, a file and a socket are definitely not a terminal, and prompting into one
+// would block a service nobody is watching — a worse failure than refusing to start.
+// A character device usually is one.
+//
+// "Usually" is the catch, and it is worth stating because it cost a confusing failure
+// in the container: `docker run` without -i gives the process /dev/null on standard
+// input, and /dev/null is a character device. So this is a necessary condition, not a
+// sufficient one, and the caller must also treat an immediate end-of-input as nobody
+// being there. Deciding it properly needs a terminal ioctl per platform, which
+// internal/setup already implements and does not export; a second copy of that here
+// is not worth it when the caller has to handle end-of-input anyway.
 func isTerminal(r any) bool {
 	f, ok := r.(*os.File)
 	if !ok {

@@ -116,7 +116,8 @@ func runDoctor(e *env, path, dataDir string) doctorReport {
 		Exit:       exitOK,
 	}
 
-	cfg, cfgErr := loadConfig(path, dataDir, e.env())
+	secrets := e.secrets()
+	cfg, cfgErr := loadConfig(path, dataDir, secrets)
 	var ve *config.ValidationError
 	switch {
 	case cfgErr != nil && !errors.As(cfgErr, &ve):
@@ -146,26 +147,29 @@ func runDoctor(e *env, path, dataDir string) doctorReport {
 
 	rep.Mode = string(cfg.Mode)
 
-	// Environment variables get their own check with the names listed, because "set
-	// these and start again" is the single most common first-run failure. Names
-	// only: nothing here ever prints a value.
-	if missing := cfg.MissingEnvNames(e.env()); len(missing) > 0 {
+	// Secrets get their own check, listed by the configuration path an operator has
+	// to fix rather than by variable name — a household may supply a token as a
+	// file or a systemd credential, and "KENWARD_BOT_TOKEN is unset" would be a
+	// confusing thing to tell somebody who never intended to use a variable.
+	// Paths only: nothing here ever prints a value.
+	if missing := cfg.MissingSecretNames(secrets); len(missing) > 0 {
 		rep.Configuration = append(rep.Configuration, check{
 			Status: statusFail,
-			Text:   fmt.Sprintf("%s referenced but not set", plural(len(missing), "1 environment variable is", fmt.Sprintf("%d environment variables are", len(missing)))),
+			Text:   fmt.Sprintf("%s no readable value", plural(len(missing), "1 secret has", fmt.Sprintf("%d secrets have", len(missing)))),
 			Detail: missing,
 		})
 		rep.Exit = exitUsage
 	} else {
 		rep.Configuration = append(rep.Configuration, check{
 			Status: statusOK,
-			Text:   "all referenced environment variables are set",
+			Text:   "every secret the configuration names can be read",
 		})
 	}
 
 	rep.Memory = doctorMemory(ctx, e, cfg, &rep)
 	rep.Sessions = doctorSessions(ctx, e, cfg)
-	rep.Transport = doctorTransport(ctx, e, cfg, &rep)
+	rep.Transport = doctorTransport(ctx, e, cfg, secrets, &rep)
+	rep.Transport = append(rep.Transport, doctorEndpointKeys(cfg, secrets, &rep)...)
 	rep.Endpoints = doctorEndpoints(ctx, e, cfg)
 	rep.Statement = privacy.Statement(privacyModeFor(cfg.Mode))
 	rep.TierNotes = tierNotes(cfg)
@@ -290,29 +294,52 @@ func doctorSessions(ctx context.Context, e *env, cfg *config.Config) []check {
 // A token Telegram refuses is a failure: the node has no way to receive or send
 // anything, which is not a household machine being asleep but a deployment that
 // cannot work.
-func doctorTransport(ctx context.Context, e *env, cfg *config.Config, rep *doctorReport) []check {
+func doctorTransport(ctx context.Context, e *env, cfg *config.Config, secrets *config.Secrets, rep *doctorReport) []check {
 	probe := e.probes.telegramProbe()
 	var checks []check
 
-	add := func(label, envName string) {
-		token, ok := e.env()(envName)
-		if !ok || token == "" {
-			// Already reported as a missing environment variable; repeat it here
-			// so the Transport section is not silently empty.
+	// add resolves one bot token and authorises with it. Where the value came from
+	// is reported and the value itself never is: Secret.Source() is written for
+	// exactly this, and "token from systemd credential bot_token" versus "token
+	// from environment variable KENWARD_BOT_TOKEN" is the line that settles an
+	// argument about why a node will not start.
+	add := func(label string, ref config.SecretRef, resolve func() (config.Secret, error)) {
+		sec, err := resolve()
+		switch {
+		case err != nil:
+			// Stated but unreadable: a token file at 0644, a credential that is
+			// not there, or two sources named at once. The refusal carries the
+			// mode and the path, and it is a finding rather than a crash.
+			if rep.Exit == exitOK {
+				rep.Exit = exitFailure
+			}
 			checks = append(checks, check{
 				Status: statusFail,
-				Text:   fmt.Sprintf("%s: %s is not set", label, envName),
+				Text:   fmt.Sprintf("%s: the bot token could not be read", label),
+				Detail: []string{err.Error()},
+			})
+			return
+		case !sec.IsSet():
+			if rep.Exit == exitOK {
+				rep.Exit = exitFailure
+			}
+			checks = append(checks, check{
+				Status: statusFail,
+				Text:   fmt.Sprintf("%s: no bot token is configured", label),
+				Detail: []string{fmt.Sprintf("set %s_file or %s_env, or supply the %s systemd credential",
+					ref.Where, ref.Where, ref.Credential)},
 			})
 			return
 		}
-		res := probe(ctx, token)
+
+		res := probe(ctx, sec.Value())
 		if res.Err != nil {
 			if rep.Exit == exitOK {
 				rep.Exit = exitFailure
 			}
 			checks = append(checks, check{
 				Status: statusFail,
-				Text:   fmt.Sprintf("%s: Telegram did not authorise %s", label, envName),
+				Text:   fmt.Sprintf("%s: Telegram did not authorise the token from %s", label, sec.Source()),
 				Detail: []string{res.Err.Error()},
 			})
 			return
@@ -326,29 +353,49 @@ func doctorTransport(ctx context.Context, e *env, cfg *config.Config, rep *docto
 		checks = append(checks, check{
 			Status: statusOK,
 			Text:   fmt.Sprintf("%s: Telegram authorises as %s", label, name),
+			Detail: []string{"token from " + sec.Source()},
 		})
 	}
 
 	if cfg.Mode == config.ModeIsolated {
 		for _, m := range cfg.Members {
-			if m.BotTokenEnv == "" {
-				continue
-			}
-			add(m.Name, m.BotTokenEnv)
+			add(m.Name, m.BotTokenRef(), func() (config.Secret, error) { return m.BotToken(secrets) })
 		}
-		if cfg.Telegram.BotTokenEnv != "" {
-			add("household group", cfg.Telegram.BotTokenEnv)
-		}
-		if len(checks) == 0 {
-			checks = append(checks, check{Status: statusWarn, Text: "no bot token is configured"})
-		}
+		add("household group", cfg.BotTokenRef(), func() (config.Secret, error) { return cfg.BotToken(secrets) })
 		return checks
 	}
+	add("household", cfg.BotTokenRef(), func() (config.Secret, error) { return cfg.BotToken(secrets) })
+	return checks
+}
 
-	if cfg.Telegram.BotTokenEnv == "" {
-		return []check{{Status: statusWarn, Text: "no bot token is configured"}}
+// doctorEndpointKeys reports on the API keys the endpoints name.
+//
+// An endpoint on the household's own network usually needs none, and absence is
+// therefore not a fault. What is worth surfacing is a key that was stated and cannot
+// be read — a file with the wrong mode, a credential that is not there — because that
+// endpoint will refuse every request while looking configured, and the tier chain
+// will fall through it silently.
+func doctorEndpointKeys(cfg *config.Config, secrets *config.Secrets, rep *doctorReport) []check {
+	var checks []check
+	for _, ep := range cfg.Endpoints {
+		sec, err := ep.APIKey(secrets)
+		switch {
+		case err != nil:
+			if rep.Exit == exitOK {
+				rep.Exit = exitUsage
+			}
+			checks = append(checks, check{
+				Status: statusFail,
+				Text:   fmt.Sprintf("%s: the API key could not be read", ep.Name),
+				Detail: []string{err.Error()},
+			})
+		case sec.IsSet():
+			checks = append(checks, check{
+				Status: statusOK,
+				Text:   fmt.Sprintf("%s: key from %s", ep.Name, sec.Source()),
+			})
+		}
 	}
-	add("household", cfg.Telegram.BotTokenEnv)
 	return checks
 }
 

@@ -62,7 +62,7 @@ func resolveDataDir(e *env, flagValue string) string {
 // validate — with the override applied in the middle, because the state file lives
 // under the data directory and reading it from the configured location before
 // applying --data-dir would merge the wrong household's bindings.
-func loadConfig(path, dataDir string, lookupEnv config.LookupEnvFunc) (*config.Config, error) {
+func loadConfig(path, dataDir string, secrets *config.Secrets) (*config.Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("opening %s: %w", path, err)
@@ -83,7 +83,10 @@ func loadConfig(path, dataDir string, lookupEnv config.LookupEnvFunc) (*config.C
 	}
 
 	mergeErr := cfg.MergeState(st)
-	validateErr := cfg.Validate(lookupEnv)
+	// ValidateWithSecrets rather than Validate: a household may supply its token as
+	// a file or a systemd credential, and judging it against the environment alone
+	// would refuse a configuration that is in fact complete.
+	validateErr := cfg.ValidateWithSecrets(secrets)
 	if joined := joinValidation(mergeErr, validateErr); joined != nil {
 		return cfg, joined
 	}

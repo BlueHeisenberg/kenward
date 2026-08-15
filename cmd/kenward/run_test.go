@@ -335,7 +335,7 @@ func mustLoad(t *testing.T, yaml string) *config.Config {
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := loadConfig(path, filepath.Join(dir, "data"), lookup(fullEnvironment()))
+	cfg, err := loadConfig(path, filepath.Join(dir, "data"), testSecrets(fullEnvironment()))
 	if err != nil {
 		t.Fatalf("loading configuration: %v", err)
 	}

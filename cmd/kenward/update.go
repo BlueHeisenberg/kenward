@@ -11,6 +11,8 @@ import (
 	keelupdate "github.com/BlueHeisenberg/keel/update"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/updater"
 	"github.com/BlueHeisenberg/kenward/internal/version"
 )
 
@@ -28,7 +30,7 @@ func cmdUpdate(e *env, args []string) int {
 	}
 
 	path := resolveConfigPath(e, *configPath)
-	cfg, err := loadConfig(path, resolveDataDir(e, *dataDir), e.env())
+	cfg, err := loadConfig(path, resolveDataDir(e, *dataDir), e.secrets())
 	if err != nil {
 		fmt.Fprint(e.stderr, renderConfigError(path, err))
 		return exitUsage
@@ -60,25 +62,40 @@ func cmdUpdate(e *env, args []string) int {
 		return exitFailure
 	}
 
-	updater, err := keelupdate.New(keelupdate.Config{
+	// The manual command and the scheduled path must judge a manifest and a build
+	// by the same rules. A `kenward update` that skipped the health check, or
+	// accepted a replayed manifest the scheduler refuses, would be two behaviours
+	// wearing one name — and the one somebody runs by hand is the one they would
+	// reach for precisely when the automatic path has already refused.
+	probes := nodeHealthProbes(e, cfg, unitSelection{})
+	up, err := keelupdate.New(keelupdate.Config{
 		ManifestURL: releaseManifestURL,
 		Keys:        keys,
 		Channel:     keelupdate.Channel(channel),
 		Current:     version.Version,
 		// The staged binary is executed with these before the swap and must exit
 		// 0. `version` touches nothing: no configuration, no lore, no network.
-		PreflightArgs: []string{"version"},
-		CheckInterval: cfg.Update.CheckInterval.Duration(),
-		Health:        func(context.Context) error { return nil },
-		Drain:         func(context.Context) error { return nil },
-		Consent:       consentPrompt(e),
+		PreflightArgs:  []string{"version"},
+		CheckInterval:  cfg.Update.CheckInterval.Duration(),
+		MaxManifestAge: updater.DefaultMaxManifestAge,
+		StableDelay:    updater.DefaultStableDelay,
+		Health: func(ctx context.Context) error {
+			if err := probes.Lore(ctx); err != nil {
+				return err
+			}
+			return probes.Telegram(ctx)
+		},
+		// Drain is nil: a CLI invocation is not serving anybody, so there is no
+		// turn in flight to wait for. The running node does its own draining when
+		// the service manager stops it.
+		Consent: consentPrompt(e),
 	})
 	if err != nil {
 		e.errorf("%v", err)
 		return exitFailure
 	}
 
-	status, err := updater.Check(e.context())
+	status, err := up.Check(e.context())
 	if err != nil {
 		if errors.Is(err, keelupdate.ErrChannelOff) {
 			return exitOK
@@ -111,7 +128,7 @@ func cmdUpdate(e *env, args []string) int {
 		return exitOK
 	}
 
-	err = updater.Apply(e.context(), *status.Release)
+	err = up.Apply(e.context(), *status.Release)
 	switch {
 	case err == nil:
 		e.printf("\nUpdated to %s.\n", status.Latest)
@@ -138,77 +155,124 @@ func cmdUpdate(e *env, args []string) int {
 	}
 }
 
-// resumeUpdate finishes whatever update was in flight when this process last
-// stopped. It runs early in `run`, before anything is served.
+// newScheduler builds the periodic update checker `run` starts.
 //
-// Without it an update swaps the binary and then nothing ever commits or rolls it
-// back: the journal keel/update wrote sits there, the health check that decides
-// between keeping and reverting never runs, and a bad build stays installed. That is
-// the wedged installation the automatic rollback exists to prevent.
+// It is never a reason to refuse to start. internal/updater says so in its own
+// documentation and makes a nil *Scheduler safe to Run and Resume for exactly this
+// reason: a household whose update configuration is wrong should still have a working
+// assistant. The caller logs the error and carries on serving.
 //
-// Health is exactly what docs/IMPLEMENTATION.md §9 says it is — the process started,
-// lore answers, Telegram authorises — and deliberately not endpoint reachability. A
-// household's machines are legitimately powered off; making them part of health
-// would roll back a good update, re-apply it, and roll it back again forever.
-func resumeUpdate(e *env, cfg *config.Config, logger *slog.Logger) {
-	if cfg.Update.Channel == config.UpdateOff {
-		return
-	}
+// drain is the supervisor's own drain rather than a second mechanism. The supervisor
+// is the one component that actually knows whether a turn is in flight, and two
+// sources of that truth would eventually disagree — at which point a restart lands in
+// the middle of somebody's conversation.
+func newScheduler(e *env, cfg *config.Config, sel unitSelection, drain updater.Drainer, restart *restartSignal, logger *slog.Logger) (*updater.Scheduler, error) {
 	keys, err := trustedKeys()
-	if err != nil || len(keys) == 0 {
-		// A build with no compiled-in release key never applied an update, so
-		// there is nothing in flight to finish.
-		return
+	if err != nil {
+		return nil, err
 	}
-	updater, err := keelupdate.New(keelupdate.Config{
+	return updater.New(updater.Options{
+		Channel:       keelupdate.Channel(cfg.Update.Channel),
+		CheckInterval: cfg.Update.CheckInterval.Duration(),
 		ManifestURL:   releaseManifestURL,
 		Keys:          keys,
-		Channel:       keelupdate.Channel(cfg.Update.Channel),
-		Current:       version.Version,
-		PreflightArgs: []string{"version"},
-		CheckInterval: cfg.Update.CheckInterval.Duration(),
-		Health:        nodeHealth(e, cfg),
-		Drain:         func(context.Context) error { return nil },
-		// No Consent hook: consent is asked over Telegram by the automatic path
-		// and at a terminal by `kenward update`. Resume only finishes a decision
-		// somebody already made.
-		Logger: logger,
+		Health:        nodeHealthProbes(e, cfg, sel),
+		Drain:         drain,
+		// Consent is deliberately nil, which means this scheduler never applies a
+		// major version or a release flagged as changing security-relevant
+		// defaults — it logs the refusal once per version and leaves it — while
+		// patch and minor releases keep applying.
+		//
+		// The intended implementation is a question in the household chat over
+		// kenward's own transport, and it is not wired because this layer cannot
+		// reach that transport cleanly. The supervisor owns the bot and does not
+		// expose it, and Telegram long-polling admits one consumer per token: a
+		// second transport built here would either never see the member's tap
+		// (so every request would time out, which internal/updater correctly
+		// treats as a refusal anyway) or would steal updates from the units and
+		// break the assistant to ask a question about updating it.
+		//
+		// Refusing is the safe failure and it is what the documentation
+		// promises. Wiring it properly means the supervisor exposing a way to
+		// ask the household group something; that is its decision, not this
+		// layer's.
+		Consent: nil,
+		// Restart records the request and lets the serve loop finish its own
+		// shutdown before the process exits; the service manager then brings
+		// kenward back on whichever binary is now installed. It is supplied
+		// rather than left nil because the scheduler calls it after a failed
+		// swap too — see restartSignal for why that case is the important one.
+		Restart: restart.hook(),
+		Logger:  logger,
 	})
-	if err != nil {
-		logger.Warn("kenward", "event", "update", "detail", "could not build the updater", "err", err.Error())
-		return
-	}
-	report, err := updater.Resume(e.context())
-	if err != nil {
-		logger.Warn("kenward", "event", "update", "detail", "resuming a pending update", "err", err.Error())
-		return
-	}
-	if report.Outcome == keelupdate.OutcomeNone {
-		return
-	}
-	logger.Info("kenward",
-		"event", "update",
-		"outcome", outcomeName(report.Outcome),
-		"from", report.From,
-		"to", report.To,
-		"reason", report.Reason)
 }
 
-// nodeHealth is the health check a freshly swapped binary has to pass.
-func nodeHealth(e *env, cfg *config.Config) keelupdate.HealthCheck {
-	return func(ctx context.Context) error {
-		if res := e.probes.loreProbe()(ctx, cfg); res.Err != nil {
-			return fmt.Errorf("lore did not respond: %w", res.Err)
-		}
-		token, ok := e.env()(cfg.Telegram.BotTokenEnv)
-		if !ok || token == "" {
-			return fmt.Errorf("%s is not set", cfg.Telegram.BotTokenEnv)
-		}
-		if res := e.probes.telegramProbe()(ctx, token); res.Err != nil {
-			return fmt.Errorf("telegram did not authorise: %w", res.Err)
-		}
-		return nil
+// nodeHealthProbes is the health check a freshly swapped binary has to pass.
+//
+// It is what docs/IMPLEMENTATION.md §9 says health is — the process started, lore
+// answers, this node's bot token authorises — and deliberately not endpoint
+// reachability. A household's inference machines are legitimately powered off; making
+// them part of health would roll a good update back, re-apply it on the next check,
+// and roll it back again, forever. It is the same set of checks `doctor` exits
+// non-zero for, minus the endpoints, which is not a coincidence: they are the
+// conditions under which this process cannot do its job at all.
+func nodeHealthProbes(e *env, cfg *config.Config, sel unitSelection) updater.HealthProbes {
+	return updater.HealthProbes{
+		Lore: func(ctx context.Context) error {
+			if res := e.probes.loreProbe()(ctx, cfg); res.Err != nil {
+				return fmt.Errorf("lore did not respond: %w", res.Err)
+			}
+			return nil
+		},
+		Telegram: func(ctx context.Context) error {
+			// Resolved here rather than captured when the probes were built, so
+			// a rotated credential file is read as it stands at the moment health
+			// is judged — which, after a binary swap, is a different moment.
+			sec, err := healthToken(cfg, sel, e.secrets())
+			if err != nil {
+				return fmt.Errorf("the bot token could not be read: %w", err)
+			}
+			if !sec.IsSet() {
+				return errors.New("no bot token is configured")
+			}
+			if res := e.probes.telegramProbe()(ctx, sec.Value()); res.Err != nil {
+				return fmt.Errorf("telegram did not authorise the token from %s: %w", sec.Source(), res.Err)
+			}
+			return nil
+		},
 	}
+}
+
+// healthToken resolves the bot token whose authorisation is this process's health.
+//
+// A member's pod holds that member's own token and nothing else, so checking the
+// household's token there would test a credential the process does not have — and
+// would fail health on a perfectly good pod, which, since health decides rollback,
+// would roll that pod back forever.
+func healthToken(cfg *config.Config, sel unitSelection, secrets *config.Secrets) (config.Secret, error) {
+	if sel.member != "" {
+		if m, ok := cfg.MemberByID(domain.MemberID(sel.member)); ok {
+			for _, mc := range cfg.Members {
+				if domain.MemberID(mc.ID) == m.ID {
+					return mc.BotToken(secrets)
+				}
+			}
+		}
+	}
+	return cfg.BotToken(secrets)
+}
+
+// healthTokenRef names, without resolving, the secret healthToken would read. It is
+// for messages and tests; the value is never fetched through it.
+func healthTokenRef(cfg *config.Config, sel unitSelection) config.SecretRef {
+	if sel.member != "" {
+		for _, mc := range cfg.Members {
+			if mc.ID == sel.member {
+				return mc.BotTokenRef()
+			}
+		}
+	}
+	return cfg.BotTokenRef()
 }
 
 func outcomeName(o keelupdate.Outcome) string {
@@ -239,30 +303,48 @@ func displayVersion(v string) string {
 // a release that may move routing or privacy defaults is exactly the one that must
 // not slip through because nothing was listening.
 func consentPrompt(e *env) keelupdate.Consent {
-	return func(_ context.Context, from, to keelupdate.Version, notes string) (bool, error) {
+	return func(_ context.Context, req keelupdate.ConsentRequest) (keelupdate.Decision, error) {
 		fmt.Fprintf(e.stdout, "\nThis update needs your agreement before it is applied.\n")
-		fmt.Fprintf(e.stdout, "  from: %s\n  to:   %s\n", from, to)
-		if strings.TrimSpace(notes) != "" {
-			fmt.Fprintf(e.stdout, "\n%s\n", indent(strings.TrimSpace(notes), "  "))
+		fmt.Fprintf(e.stdout, "  from: %s\n  to:   %s\n", req.From, req.To)
+		if strings.TrimSpace(req.Notes) != "" {
+			fmt.Fprintf(e.stdout, "\n%s\n", indent(strings.TrimSpace(req.Notes), "  "))
 		}
-		fmt.Fprintf(e.stdout, "\nIt is a major version or it changes security-relevant defaults. A release may\n")
-		fmt.Fprintf(e.stdout, "never silently change routing policy or tier configuration, so this is asked\n")
-		fmt.Fprintf(e.stdout, "rather than assumed.\n\nApply it? [y/N] ")
+		// Say which of the two reasons this is. "There is a major version" and
+		// "this release changes security-relevant behaviour" call for different
+		// amounts of thought, and collapsing them into one sentence would hide
+		// the one that matters.
+		if req.SecuritySensitive {
+			fmt.Fprintf(e.stdout, "\nThis release is flagged as changing security-relevant behaviour — which can\n")
+			fmt.Fprintf(e.stdout, "include routing policy or tier defaults, the settings that decide whether a\n")
+			fmt.Fprintf(e.stdout, "private conversation may reach a provider. Read the notes above before\n")
+			fmt.Fprintf(e.stdout, "agreeing.\n")
+		} else {
+			fmt.Fprintf(e.stdout, "\nThis is a major version. A release may never silently change routing policy or\n")
+			fmt.Fprintf(e.stdout, "tier configuration, so it is asked rather than assumed.\n")
+		}
+		fmt.Fprintf(e.stdout, "\nApply it? [y/N] ")
 
+		// Unanswered rather than declined wherever nobody actually said no: keel
+		// re-asks on the next cycle for the first and remembers the second, and a
+		// pipe that ended is not somebody deciding.
 		if e.stdin == nil {
-			fmt.Fprintf(e.stdout, "\nNo input available; taking that as no.\n")
-			return false, nil
+			fmt.Fprintf(e.stdout, "\nNo input available; not applying, and this will be asked again.\n")
+			return keelupdate.DecisionUnanswered, nil
 		}
 		line, err := bufio.NewReader(e.stdin).ReadString('\n')
 		if err != nil && strings.TrimSpace(line) == "" {
-			fmt.Fprintf(e.stdout, "\nNo answer; taking that as no.\n")
-			return false, nil
+			fmt.Fprintf(e.stdout, "\nNo answer; not applying, and this will be asked again.\n")
+			return keelupdate.DecisionUnanswered, nil
 		}
 		switch strings.ToLower(strings.TrimSpace(line)) {
 		case "y", "yes":
-			return true, nil
+			return keelupdate.DecisionApproved, nil
+		case "n", "no":
+			return keelupdate.DecisionDeclined, nil
 		default:
-			return false, nil
+			// Anything else is not a yes, and is not a considered no either.
+			fmt.Fprintf(e.stdout, "\nThat was not a yes or a no; not applying.\n")
+			return keelupdate.DecisionUnanswered, nil
 		}
 	}
 }

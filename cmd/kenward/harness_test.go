@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,8 @@ endpoints:
     model: anthropic/claude-sonnet-5
     api_key_env: OPENROUTER_API_KEY
     tags: [cloud]
+memory:
+  lore_command: [lore, mcp]
 `
 
 const isolatedYAML = `mode: isolated
@@ -84,6 +87,8 @@ endpoints:
     model: anthropic/claude-sonnet-5
     api_key_env: OPENROUTER_API_KEY
     tags: [cloud]
+memory:
+  lore_command: [lore, mcp]
 `
 
 // Secrets the fake environment holds. Every test that renders anything asserts these
@@ -118,6 +123,35 @@ func lookup(vars map[string]string) config.LookupEnvFunc {
 		v, ok := vars[name]
 		return v, ok
 	}
+}
+
+// testSecrets builds a resolver over a fake environment and nothing else, which is
+// what most tests want: no filesystem, no credentials directory.
+func testSecrets(vars map[string]string) *config.Secrets {
+	return config.NewSecrets(config.SecretOptions{LookupEnv: lookup(vars)})
+}
+
+// fakeSecretFS is a filesystem of secret files, each with the mode it would have on
+// disk. It exists because a developer's machine cannot portably hold a 0644 secret
+// for a test to object to — on Windows the bits mean something else entirely.
+type fakeSecretFS map[string]fakeSecretFile
+
+type fakeSecretFile struct {
+	data string
+	mode fs.FileMode
+}
+
+func (f fakeSecretFS) ReadSecretFile(path string) ([]byte, fs.FileMode, error) {
+	// Keys are written with forward slashes because that is how the paths read in
+	// a unit file and in a test; internal/config joins the credentials directory
+	// with filepath.Join, which uses backslashes on Windows. Normalising here keeps
+	// the same test meaningful on both, rather than silently matching nothing and
+	// asserting the not-found path by accident.
+	file, ok := f[filepath.ToSlash(path)]
+	if !ok {
+		return nil, 0, fs.ErrNotExist
+	}
+	return []byte(file.data), file.mode, nil
 }
 
 // harness is one command invocation's world.

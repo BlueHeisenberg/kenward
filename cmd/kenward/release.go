@@ -33,12 +33,20 @@ var (
 )
 
 // trustedKeys decodes the compiled-in release public keys.
-//
-// The encoding is a comma-separated list of base64 Ed25519 public keys, which is the
-// form `kenward-release keygen` prints for pasting into the source of the binary that
-// trusts it.
 func trustedKeys() ([]ed25519.PublicKey, error) {
-	raw := strings.TrimSpace(releaseTrustedKeys)
+	return parseTrustedKeys(releaseTrustedKeys)
+}
+
+// parseTrustedKeys decodes a comma-separated list of base64 Ed25519 public keys,
+// which is the form `kenward-release keygen` prints for pasting into the source of
+// the binary that trusts it.
+//
+// It takes the list as an argument rather than reading the package variable so that
+// it can be tested without writing to a global. That is not tidiness: the variable is
+// read by every parallel test that touches the update path, and a test that assigned
+// to it was a real data race the race detector caught.
+func parseTrustedKeys(list string) ([]ed25519.PublicKey, error) {
+	raw := strings.TrimSpace(list)
 	if raw == "" {
 		return nil, nil
 	}

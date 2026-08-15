@@ -186,7 +186,7 @@ func TestDoctorTierNotesComeFromPrivacy(t *testing.T) {
 	h.run("doctor")
 	out := normalize(h.stdout())
 
-	cfg, err := loadConfig(h.config, filepath.Join(h.dir, "data"), lookup(fullEnvironment()))
+	cfg, err := loadConfig(h.config, filepath.Join(h.dir, "data"), testSecrets(fullEnvironment()))
 	if err != nil {
 		t.Fatalf("loading configuration: %v", err)
 	}
