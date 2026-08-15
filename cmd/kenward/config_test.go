@@ -1,9 +1,11 @@
 package main
 
 import (
-	"fmt"
+	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 )
@@ -123,16 +125,34 @@ func TestRunNamesAnUnrunnableLoreCommand(t *testing.T) {
 		t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h.both())
 	}
 	out := h.stderr()
-	// The file, the key, why it is wrong, and what to write instead.
-	for _, want := range []string{
-		h.config,
-		"memory.lore_command",
-		"the program to run and it is empty",
-		fmt.Sprint(config.DefaultLoreCommand()),
-	} {
+	// The file, the key, and why it is wrong.
+	for _, want := range []string{h.config, "memory.lore_command", "the program to run and it is empty"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the failure does not name %q:\n%s", want, out)
 		}
+	}
+
+	// And what to write instead, still typable after this command has rendered it.
+	// internal/config owns how the suggestion is spelled and has its own test that it
+	// parses; what is this package's to keep true is that the report reaches an
+	// operator's terminal with the suggestion intact — indenting it into a problem
+	// list, wrapping it or quoting it would break the copy-paste this line exists for.
+	// So parse whatever it printed rather than matching a copy of a format that lives
+	// in another package.
+	const marker = "write it as "
+	i := strings.Index(out, marker)
+	if i < 0 {
+		t.Fatalf("the failure does not suggest what to write instead:\n%s", out)
+	}
+	suggestion, _, _ := strings.Cut(out[i+len(marker):], "\n")
+	suggestion = strings.TrimSpace(suggestion)
+
+	var got config.MemoryConfig
+	if err := yaml.Unmarshal([]byte("lore_command: "+suggestion), &got); err != nil {
+		t.Fatalf("the suggested %s is not YAML an operator could paste back: %v", suggestion, err)
+	}
+	if want := config.DefaultLoreCommand(); !slices.Equal(got.LoreCommand, want) {
+		t.Errorf("the suggested %s parses as %v, want %v", suggestion, got.LoreCommand, want)
 	}
 }
 
