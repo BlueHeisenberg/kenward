@@ -52,9 +52,18 @@ full — and the path it wrote.
 
 ---
 
-## `kenward run [--config PATH]`
+## `kenward run [--config PATH] [--data-dir PATH] [--member ID | --group]`
 
 Runs the node. This is what the container entrypoint and the systemd unit call.
+
+`--data-dir` overrides the per-OS default and is what the container image sets, since a
+container's home directory is not where anyone expects state to live.
+
+`--member` and `--group` exist for **isolated mode only**, where each pod runs exactly
+one unit: a member's pod is started with `--member david`, the household's with
+`--group`. In simple mode both are omitted and one process runs every unit. Passing
+either in simple mode is a usage error rather than a silently ignored flag — a flag that
+does nothing is how someone ends up believing they are isolated when they are not.
 
 - Loads and validates the config; refuses to start on any validation error, printing all
   of them at once.

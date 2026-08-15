@@ -1,0 +1,12 @@
+# Normalise to LF in the repository regardless of the checkout platform. Development
+# happens on Windows; CI and every deployment target are Linux.
+* text=auto eol=lf
+
+# Golden files are compared byte for byte — a line-ending conversion would make them
+# fail on one platform and pass on another, which is the worst possible failure mode
+# for a fixture whose whole job is to catch unintended change.
+**/testdata/** -text
+
+*.png binary
+*.jpg binary
+*.gz  binary
