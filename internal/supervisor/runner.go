@@ -50,6 +50,11 @@ type runnerConfig struct {
 	loreHome    string
 	lookupEnv   config.LookupEnvFunc
 
+	// tierWindows names the smallest context window of any endpoint tagged with
+	// each tier. A unit's budget is the minimum across its own chain; see
+	// unitOptions.
+	tierWindows map[string]int
+
 	unitOpts          assistant.Options
 	logger            *slog.Logger
 	drainTimeout      time.Duration
@@ -88,6 +93,12 @@ type runner struct {
 	turnCancel context.CancelFunc
 	// draining tells unit pumps to stop after the turn they are in.
 	draining chan struct{}
+	// turnWg tracks in-flight turns. Turns run on their own goroutines — the
+	// Unit serialises them itself, and calling Handle concurrently is what lets
+	// a member who ignores a capture question's buttons still get their next
+	// message answered — so the drain waits on this after the pumps have stopped
+	// dispatching.
+	turnWg sync.WaitGroup
 	// allDone closes when the last pump goroutine exits.
 	allDone     chan struct{}
 	allDoneOnce sync.Once
@@ -104,6 +115,7 @@ type runner struct {
 	startCtx context.Context
 	pending  []pendingUnit
 	served   map[int64]struct{}
+	units    map[unitKey]struct{}
 }
 
 // pendingUnit is a constructed unit waiting for start to give it a goroutine.
@@ -128,6 +140,7 @@ func newRunner(cfg *config.Config, rc runnerConfig) (*runner, error) {
 		allDone:    make(chan struct{}),
 		stoppedCh:  make(chan struct{}),
 		served:     make(map[int64]struct{}),
+		units:      make(map[unitKey]struct{}),
 	}
 
 	if err := r.buildDeps(); err != nil {
@@ -232,15 +245,17 @@ func (r *runner) buildMemberUnit(m domain.Member) error {
 	view := r.mux.View(func(in transport.Inbound) bool {
 		return !in.IsGroup && in.UserID == telegramID
 	})
-	u, err := r.buildUnit(view, "member:"+string(m.ID))
+	u, err := r.buildUnit(view, "member:"+string(m.ID), m.Tiers)
 	if err != nil {
 		return err
 	}
+	k := unitKey{member: m.ID}
 	r.mu.Lock()
-	r.pending = append(r.pending, pendingUnit{key: unitKey{member: m.ID}, unit: u, view: view})
+	r.pending = append(r.pending, pendingUnit{key: k, unit: u, view: view})
 	r.served[telegramID] = struct{}{}
+	r.units[k] = struct{}{}
 	r.mu.Unlock()
-	r.tracker.add(unitKey{member: m.ID})
+	r.tracker.add(k)
 	return nil
 }
 
@@ -251,29 +266,25 @@ func (r *runner) buildGroupUnit() error {
 	view := r.mux.View(func(in transport.Inbound) bool {
 		return in.IsGroup && in.ChatID == groupChatID
 	})
-	u, err := r.buildUnit(view, "group")
+	u, err := r.buildUnit(view, "group", r.cfg.Household.Tiers)
 	if err != nil {
 		return err
 	}
+	k := unitKey{group: true}
 	r.mu.Lock()
-	r.pending = append(r.pending, pendingUnit{key: unitKey{group: true}, unit: u, view: view})
+	r.pending = append(r.pending, pendingUnit{key: k, unit: u, view: view})
+	r.units[k] = struct{}{}
 	r.mu.Unlock()
-	r.tracker.add(unitKey{group: true})
+	r.tracker.add(k)
 	return nil
 }
 
-func (r *runner) buildUnit(view transport.Transport, name string) (*assistant.Unit, error) {
+func (r *runner) buildUnit(view transport.Transport, name string, tiers []string) (*assistant.Unit, error) {
 	engine := capture.New(r.memory, view, capture.Options{
 		MaxProposalsPerTurn: r.cfg.Capture.MaxProposalsPerTurn,
 		Shared:              domain.SpaceID(r.cfg.Household.SharedSpace),
 	})
-	unitOpts := r.rc.unitOpts
-	if unitOpts.HouseholdName == "" {
-		unitOpts.HouseholdName = r.cfg.Household.Name
-	}
-	if unitOpts.SearchLimit == 0 {
-		unitOpts.SearchLimit = r.cfg.Memory.SearchLimit
-	}
+	unitOpts := r.unitOptions(tiers)
 	u, err := assistant.New(assistant.Deps{
 		Resolve:   r.resolve,
 		Memory:    r.memory,
@@ -287,6 +298,48 @@ func (r *runner) buildUnit(view transport.Transport, name string) (*assistant.Un
 		return nil, fmt.Errorf("supervisor: building unit %s: %w", name, err)
 	}
 	return u, nil
+}
+
+// unitOptions resolves one unit's options from the shared seed and the unit's own
+// tier chain.
+//
+// The context budget is per unit because it is per scope: the assistant assembles
+// the prompt before the router picks an endpoint, so the budget must be the
+// smallest window reachable through this conversation's chain — the group's cloud
+// chain and a member's local-only chain are legitimately different sizes, and one
+// household-wide number gets one of them wrong. An explicit seed value wins; when
+// it is zero the budget is derived as the minimum of tierWindows across the
+// chain's tiers, and a chain with no listed tier falls back to the assistant's
+// default.
+func (r *runner) unitOptions(tiers []string) assistant.Options {
+	o := r.rc.unitOpts
+	if o.HouseholdName == "" {
+		o.HouseholdName = r.cfg.Household.Name
+	}
+	if o.SearchLimit == 0 {
+		o.SearchLimit = r.cfg.Memory.SearchLimit
+	}
+	if o.ContextBudget == 0 {
+		o.ContextBudget = minWindow(r.rc.tierWindows, tiers)
+	}
+	return o
+}
+
+// minWindow is the smallest window named for any tier in the chain, or zero when
+// none is named — the turn might land on any tier in the chain, so the budget
+// must hold at the smallest of them.
+func minWindow(windows map[string]int, tiers []string) int {
+	min := 0
+	for _, t := range tiers {
+		w, ok := windows[t]
+		if !ok || w <= 0 {
+			continue
+		}
+		if min == 0 || w < min {
+			min = w
+		}
+	}
+	return min
 }
 
 // start launches every unit's goroutine, begins fanning updates out, and blocks
@@ -323,6 +376,10 @@ func (r *runner) start(ctx context.Context) error {
 			r.shutdown(r.drainContext())
 			return err
 		}
+	}
+	if err := r.launchBackstop(ctx); err != nil {
+		r.shutdown(r.drainContext())
+		return err
 	}
 	r.mu.Lock()
 	r.launched = true
@@ -401,57 +458,76 @@ func (r *runner) launch(ctx context.Context, pu pendingUnit) error {
 	return nil
 }
 
-// runUnit supervises one unit's goroutine. unitLoop returning an error means the
-// unit panicked mid-turn; restarting it here means exactly what the package doc
-// promises — run the loop again after a backoff — because a Unit holds no state a
-// crash can corrupt beyond the turn that crashed.
+// runUnit is one unit's pump. Each message is dispatched to Handle on its own
+// goroutine — the Unit serialises turns itself, and concurrent Handle calls are
+// what let a member whose capture question is still waiting get their next
+// message answered instead of a frozen assistant. A turn that panics reports
+// back here; restarting the unit then means exactly what the package doc
+// promises — pause intake for a backoff and dispatch again — because a Unit
+// holds no state a crash can corrupt beyond the turn that crashed.
 func (r *runner) runUnit(k unitKey, u *assistant.Unit, ch <-chan transport.Inbound) {
 	defer r.workerDone()
 	r.tracker.set(k, StateReady)
 	bo := newBackoff(r.rc.restartBackoff, r.rc.maxRestartBackoff)
-	for {
-		err := r.unitLoop(u, ch)
-		if err == nil {
-			r.tracker.set(k, StateStopped)
-			return
-		}
-		r.logger.Error("supervisor: unit crashed, restarting", "unit", k.member, "group", k.group, "error", err)
-		r.tracker.fail(k, err)
-		if !r.sleep(bo.next()) {
-			r.tracker.set(k, StateStopped)
-			return
-		}
-		r.tracker.set(k, StateReady)
-	}
-}
-
-// unitLoop feeds one unit until its stream closes or a drain begins. It returns
-// nil for both of those and an error only when a turn panicked.
-func (r *runner) unitLoop(u *assistant.Unit, ch <-chan transport.Inbound) (err error) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			err = fmt.Errorf("supervisor: unit panicked: %v", rec)
-		}
-	}()
+	panicCh := make(chan error, 1)
 	for {
 		// Prefer the drain signal over queued backlog: drained means "stop
 		// accepting", and a message accepted but not yet started is not a turn
-		// the household is owed.
+		// the household is owed. A pending panic likewise outranks new intake.
 		select {
 		case <-r.draining:
-			return nil
+			r.tracker.set(k, StateStopped)
+			return
+		case <-panicCh:
+			if !r.sleep(bo.next()) {
+				r.tracker.set(k, StateStopped)
+				return
+			}
+			r.tracker.set(k, StateReady)
+			continue
 		default:
 		}
 		select {
 		case <-r.draining:
-			return nil
+			r.tracker.set(k, StateStopped)
+			return
+		case <-panicCh:
+			if !r.sleep(bo.next()) {
+				r.tracker.set(k, StateStopped)
+				return
+			}
+			r.tracker.set(k, StateReady)
 		case in, ok := <-ch:
 			if !ok {
-				return nil
+				r.tracker.set(k, StateStopped)
+				return
 			}
-			r.handleErr(u.Handle(r.turnCtx, in), in)
+			r.dispatchTurn(k, u, in, panicCh)
 		}
 	}
+}
+
+// dispatchTurn runs one message's turn on its own goroutine, tracked for the
+// drain. A panic is contained to the turn that raised it: it is recorded against
+// the unit and reported to the pump, which pauses intake and restarts.
+func (r *runner) dispatchTurn(k unitKey, u *assistant.Unit, in transport.Inbound, panicCh chan<- error) {
+	r.turnWg.Add(1)
+	go func() {
+		defer r.turnWg.Done()
+		defer func() {
+			if rec := recover(); rec != nil {
+				err := fmt.Errorf("supervisor: unit panicked: %v", rec)
+				r.logger.Error("supervisor: unit crashed, restarting",
+					"unit", k.member, "group", k.group, "error", err)
+				r.tracker.fail(k, err)
+				select {
+				case panicCh <- err:
+				default:
+				}
+			}
+		}()
+		r.handleErr(u.Handle(r.turnCtx, in), in)
+	}()
 }
 
 // handleErr triages one turn's error. Not-enrolled is answered with the silence it
@@ -496,6 +572,85 @@ func (r *runner) servesUser(id int64) bool {
 	defer r.mu.Unlock()
 	_, ok := r.served[id]
 	return ok
+}
+
+func (r *runner) hasUnit(k unitKey) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.units[k]
+	return ok
+}
+
+// launchBackstop registers the catch-all view that makes scope resolution — not
+// Mux matching — the authority over every inbound message. The unit views and the
+// enrolment view are registered before it, so anything arriving here matched
+// nothing; instead of the Mux silently dropping it, the backstop resolves it and
+// acts on what resolution says. The Mux is thereby an optimisation: were its
+// matching ever wrong, the message still meets scope.Resolve, and a unit meeting
+// a message resolves it again inside Handle — the boundary holds even for a
+// message that never passed through a view at all.
+//
+// Its match declines direct messages from users a unit serves, rather than
+// relying on registration order, because units enrolled mid-run register their
+// views after this one.
+func (r *runner) launchBackstop(ctx context.Context) error {
+	view := r.mux.View(func(in transport.Inbound) bool {
+		return in.IsGroup || !r.servesUser(in.UserID)
+	})
+	ch, err := view.Updates(ctx)
+	if err != nil {
+		return fmt.Errorf("supervisor: opening updates for scope backstop: %w", err)
+	}
+	r.mu.Lock()
+	if r.stopping {
+		r.mu.Unlock()
+		return errors.New("supervisor: stopping")
+	}
+	r.active++
+	r.mu.Unlock()
+	go r.runBackstop(ch)
+	return nil
+}
+
+// runBackstop resolves every unrouted message and answers with what the
+// authorization boundary decided — which is silence on every path, but three
+// different silences: a stranger is refused by resolution exactly as the design
+// describes; a scope served by another process (a sibling pod's member, say) is
+// simply not this process's conversation; and a scope this process runs a unit
+// for reaching the backstop means Mux matching has drifted from scope resolution,
+// which is logged as the bug it is rather than quietly absorbed.
+func (r *runner) runBackstop(ch <-chan transport.Inbound) {
+	defer r.workerDone()
+	for {
+		select {
+		case <-r.draining:
+			return
+		case in, ok := <-ch:
+			if !ok {
+				return
+			}
+			sc, err := r.resolve(in)
+			switch {
+			case err != nil:
+				// The designed outcome: unrecognised means silence, decided by
+				// the authorization boundary, not by routing.
+				r.logger.Debug("supervisor: refused by scope resolution", "chat", in.ChatID)
+			case r.hasUnit(scopeUnitKey(sc)):
+				r.logger.Error("supervisor: BUG: message resolved to a unit this process runs but no view matched; dropped",
+					"chat", in.ChatID, "group", sc.Kind == domain.ScopeGroup)
+			default:
+				r.logger.Debug("supervisor: message for a unit served elsewhere", "chat", in.ChatID)
+			}
+		}
+	}
+}
+
+// scopeUnitKey names the unit a resolved scope belongs to.
+func scopeUnitKey(sc domain.Scope) unitKey {
+	if sc.Kind == domain.ScopeGroup || sc.Member == nil {
+		return unitKey{group: true}
+	}
+	return unitKey{member: sc.Member.ID}
 }
 
 // runEnrol hands each stranger's message to the Claimer and sends back exactly the
@@ -627,8 +782,30 @@ func (r *runner) shutdown(ctx context.Context) error {
 				select {
 				case <-r.allDone:
 				case <-time.After(5 * time.Second):
-					r.logger.Error("supervisor: turns did not exit after cancellation")
+					r.logger.Error("supervisor: pumps did not exit after cancellation")
 				}
+			}
+		}
+
+		// The pumps have stopped dispatching; now wait for the turns they already
+		// dispatched, capture questions included. No pump is left to add more, so
+		// this wait is against a closed set.
+		turnsDone := make(chan struct{})
+		go func() {
+			r.turnWg.Wait()
+			close(turnsDone)
+		}()
+		select {
+		case <-turnsDone:
+		case <-ctx.Done():
+			if r.stopErr == nil {
+				r.stopErr = ctx.Err()
+			}
+			r.turnCancel()
+			select {
+			case <-turnsDone:
+			case <-time.After(5 * time.Second):
+				r.logger.Error("supervisor: turns did not exit after cancellation")
 			}
 		}
 

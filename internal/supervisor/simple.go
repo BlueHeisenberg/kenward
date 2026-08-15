@@ -57,8 +57,20 @@ type SimpleOptions struct {
 	// whatever onboarding a successful claim produced.
 	Enrol *enrol.Claimer
 	// Unit seeds every unit's options. HouseholdName and SearchLimit are filled
-	// from the configuration when zero.
+	// from the configuration when zero. Leave Unit.ContextBudget zero and supply
+	// TierWindows instead unless every conversation in the household genuinely
+	// shares one window.
 	Unit assistant.Options
+	// TierWindows names the smallest context window, in the assistant's estimated
+	// tokens, of any endpoint tagged with each tier. Each unit's context budget
+	// is derived from it as the minimum across that unit's own tier chain — the
+	// budget is per scope, because the prompt is assembled before the router
+	// picks an endpoint and must fit the smallest machine this conversation's
+	// chain can reach. A member on a local-only chain and a group on a cloud
+	// chain legitimately get different budgets. Tiers not named here don't
+	// constrain the budget; a chain with none named falls back to the
+	// assistant's default. Ignored when Unit.ContextBudget is set explicitly.
+	TierWindows map[string]int
 	// Logger receives lifecycle events and per-message failures. Nil discards.
 	Logger *slog.Logger
 	// LookupEnv resolves bot tokens and API keys. Nil means os.LookupEnv.
@@ -110,6 +122,7 @@ func NewSimple(cfg *config.Config, opts SimpleOptions) (*Simple, error) {
 		botTokenEnv:       cfg.Telegram.BotTokenEnv,
 		sessionMode:       session.ModeSimple,
 		lookupEnv:         opts.LookupEnv,
+		tierWindows:       opts.TierWindows,
 		unitOpts:          opts.Unit,
 		logger:            opts.Logger,
 		drainTimeout:      opts.DrainTimeout,

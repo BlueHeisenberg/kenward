@@ -1,0 +1,67 @@
+kenward <VERSION> — mode: isolated
+
+Configuration
+  ✓ kenward.yaml parses and validates
+      <CONFIG>
+  ✓ all referenced environment variables are set
+
+Memory
+  ✓ lore mcp responds
+  ✓ space "household" reachable
+  ✓ space "david-private" reachable
+  ✓ space "jordan-private" reachable
+  ! `lore mcp` does not sync on its own
+      run `lore serve` on the same LORE_HOME if this store should reach another
+      machine
+
+Sessions
+  ✓ key custody: isolated mode. Each member's key (members: david, jordan) is
+    wrapped by that member's own passphrase; no single passphrase unlocks more
+    than one member. While a member is in session their unwrapped key is in that
+    pod's memory — root on the host still wins.
+      whether a key is unwrapped right now is not visible from here: unwrapped
+      keys live in the running node's memory and this is a different process
+  ✓ 2 members have a wrapped key on disk
+
+Transport
+  ✓ David: Telegram authorises as @david_kenward_bot
+  ✓ Jordan: Telegram authorises as @jordan_kenward_bot
+  ✓ household group: Telegram authorises as @casa_household_bot
+
+Endpoints
+  ✓ monster     local  answered in 412ms
+  ✓ openrouter  cloud  answered in 412ms
+
+Privacy
+
+Your assistant runs in its own process, with its own key and its own Telegram
+bot. Nobody else in the household can read your private memory, and neither can
+the person who runs this machine — not from the disk, not from a backup, and
+not before your process has been unlocked.
+
+Your passphrase is given to your own process when it starts, and never travels
+over Telegram. That is deliberate: sending it in a chat message would hand it
+to Telegram's servers and leave it in your message history, which would be
+worse than the problem it solved. The consequence is that once your assistant
+is unlocked and running, your key stays in that process's memory until it
+stops or you lock it.
+
+The honest limit: kenward has to see your words in plain text to answer them,
+and it is the second member of your private space. That is the price of an
+assistant that answers when your laptop is shut. Someone with root access to
+this machine, while your assistant is running, could reach your key. There is
+no way around that for any assistant that runs on a server and answers
+questions — what changes is that reaching it means deliberately attacking your
+own household, rather than opening a file.
+
+Two things hold whichever mode you are in. A conversation whose tier chain
+names only machines in the house never reaches a provider: when none of them
+answers, kenward refuses rather than reaching further, and there is no setting
+that changes that. And nothing is written to memory without the member seeing
+the exact words first and saying yes.
+
+Where each conversation may go
+
+  David: [local] — will refuse rather than use a provider
+  Jordan: [local, cloud] — may use a provider
+  Casa: [local] — will refuse rather than use a provider

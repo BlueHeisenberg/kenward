@@ -1,0 +1,59 @@
+kenward <VERSION> — mode: simple
+
+Configuration
+  ✓ kenward.yaml parses and validates
+      <CONFIG>
+  ✓ all referenced environment variables are set
+
+Memory
+  ✓ lore mcp responds
+  ✓ space "household" reachable
+  ✓ space "david-private" reachable
+  ✓ space "jordan-private" reachable
+  ! `lore mcp` does not sync on its own
+      run `lore serve` on the same LORE_HOME if this store should reach another
+      machine
+
+Sessions
+  ✓ key custody: simple mode. One node passphrase, held by the operator, wraps
+    every member's key (members: david, jordan). The operator can unlock any
+    member's key and with it that member's private memory. That is this mode's
+    stated limitation, not a bug.
+      whether a key is unwrapped right now is not visible from here: unwrapped
+      keys live in the running node's memory and this is a different process
+  ✓ 2 members have a wrapped key on disk
+
+Transport
+  ✓ household: Telegram authorises as @our_household_bot
+
+Endpoints
+  ✓ monster     local  answered in 412ms
+  ✓ openrouter  cloud  answered in 412ms
+
+Privacy
+
+Every member's memory is separate: what you tell kenward in a private chat is
+stored in your own space, and the household group can never read it.
+
+What this mode does NOT do is seal anything against whoever runs this machine.
+All members' keys live in one process here, and one bot token carries every
+conversation, so the person operating this computer can read every member's
+private memory — on the disk, and in flight on its way to and from Telegram.
+For most households that is fine — it is your own family machine, and you
+already trust whoever set it up.
+
+If that is not the arrangement you want, isolated mode gives each member their
+own sealed process, their own key and their own bot. It needs Linux with Podman
+or Docker.
+
+Two things hold whichever mode you are in. A conversation whose tier chain
+names only machines in the house never reaches a provider: when none of them
+answers, kenward refuses rather than reaching further, and there is no setting
+that changes that. And nothing is written to memory without the member seeing
+the exact words first and saying yes.
+
+Where each conversation may go
+
+  David: [local] — will refuse rather than use a provider
+  Jordan: [local, cloud] — may use a provider
+  Casa: [local, cloud] — may use a provider

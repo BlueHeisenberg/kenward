@@ -133,10 +133,25 @@ for configuration faults, an unreachable lore, or a Telegram authorisation failu
 
 ## Updating
 
-kenward updates itself: signed, verified against a key compiled into the binary, applied
-atomically, health-checked afterwards, and rolled back automatically if the new version
-does not come up. It waits for a quiet moment rather than restarting mid-conversation,
-and a major version asks you first.
+**Updating is something you do, not something that happens to you — today.** Run:
 
-Set `update.channel: off` in the config if you would rather do it yourself. That path is
-fully supported and kenward works indefinitely without ever updating.
+```sh
+kenward update --check     # what is available; changes nothing
+kenward update             # apply it
+```
+
+What that does is signed and careful: the manifest is verified against a key compiled
+into the binary, the new build is run once before it is installed, the swap is atomic,
+and a version that does not come up is rolled back automatically the next time kenward
+starts. A major version, or a release flagged as changing anything security-relevant,
+asks you first — and if there is nobody at the terminal to ask, the answer is no.
+
+The part that is not built yet is the automatic half. Nothing checks on a timer, so
+until you run the command, nothing is fetched and nothing is applied. **Do not read this
+section as a promise that a security fix will reach your household on its own.** It will
+not, yet. Until it does, either run `kenward update` when you think of it, or watch the
+releases page. `docs/IMPLEMENTATION.md` section 9 records precisely which requirements
+are wired and which are still ahead.
+
+Set `update.channel: off` in the config if you would rather never update at all. That
+path is fully supported and kenward works indefinitely without ever updating.

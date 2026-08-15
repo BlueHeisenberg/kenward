@@ -101,18 +101,24 @@ memory — it structurally cannot, since the retrieval never happened — but th
 ## Rendering retrieved memory
 
 ```
-## From {{.MemberName}}'s private memory
+## {{if .PrivatePartial}}Excerpts from{{else}}From{{end}} {{.MemberName}}'s private memory
 {{range .Private}}
 - {{.Title}} [{{.Confidence}}]{{if .Markers}} ({{join .Markers ", "}}){{end}}
   {{.Body}}
 {{end}}
 
-## From the household's shared memory
+## {{if .SharedPartial}}Excerpts from{{else}}From{{end}} the household's shared memory
 {{range .Shared}}
 - {{.Title}} [{{.Confidence}}]{{if .Markers}} ({{join .Markers ", "}}){{end}}
   {{.Body}}
 {{end}}
 ```
+
+The heading is conditional because it is a claim about what is underneath it, and the
+rule it follows is set out under *Retrieved items are excerpts* below: a section showing
+any excerpt is headed **Excerpts from**, a section whose entries are all complete keeps
+**From**, and a mixed section counts as excerpts. Treating complete information as
+possibly partial is the harmless error; the reverse is not.
 
 Empty groups are rendered as an explicit statement, not omitted:
 
@@ -142,7 +148,12 @@ rather than a full entry — no origin, no timestamps, and a body that may be el
 middle. Presenting that as the whole memory teaches the model to answer confidently from
 a fragment. The section heading therefore reads *"Excerpts from …"* rather than *"From
 …"*, and the instruction block states that these are search results and that an entry may
-continue beyond what is shown.
+continue beyond what is shown. That note renders whenever any section is headed as
+excerpts and never otherwise, so it cannot describe entries that are not there.
+
+The empty and failed cases above keep *"From …"*, deliberately: nothing is shown, so
+there is no partiality to disclose, and calling an absent section a set of excerpts would
+be a claim about content that does not exist.
 
 **Confidence and markers are passed through verbatim.** They are lore's vocabulary and
 kenward does not reinterpret them. The prompt explains how to weigh them:

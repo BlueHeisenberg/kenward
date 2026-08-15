@@ -30,7 +30,7 @@ Companion documents: `ARCHITECTURE.md` (why), this file (what and how).
 ## 1. Package tree
 
 ```
-cmd/kenward/            entrypoint: run, setup, version, doctor
+cmd/kenward/            entrypoint: run, setup, invite, revoke, doctor, update, version
 internal/domain/        core types. Depends on nothing.
 internal/config/        YAML load, defaults, validation
 internal/scope/         message -> Scope resolution. THE authorization boundary.
@@ -57,7 +57,8 @@ Third-party dependencies, fixed:
 | `github.com/go-telegram/bot` | v1.23.0 | `transport` |
 | `github.com/modelcontextprotocol/go-sdk` | v1.7.0 | `memory` |
 | `gopkg.in/yaml.v3` | v3.0.1 | `config` |
-| `github.com/BlueHeisenberg/keel` | — | `routing` (llm), `session` (vault), `supervisor` (sandbox), update |
+| `golang.org/x/sys` | v0.47.0 | `setup` (terminal echo suppression) |
+| `github.com/BlueHeisenberg/keel` | v0.2.0 | `routing` (llm), `session` (vault), `supervisor` (sandbox), update |
 
 Note: the MCP SDK requires Go 1.25, which is why the module targets it.
 
@@ -91,7 +92,8 @@ type Household struct {
 
 type ScopeKind int
 const (
-    ScopeDirect ScopeKind = iota + 1
+    ScopeUnknown ScopeKind = iota  // the zero value; never valid for a resolved Scope
+    ScopeDirect
     ScopeGroup
 )
 
@@ -131,11 +133,12 @@ type Entry struct {
     Domain     string
     Title      string
     Body       string
-    Confidence string    // lore's vocabulary; validated against config.AllowedConfidence
+    Confidence string    // lore's vocabulary; validated inside internal/memory
     Markers    []string
     Origin     string
     CreatedAt  time.Time
     UpdatedAt  time.Time
+    Partial    bool      // this is a search excerpt, not a whole entry
 }
 
 type Draft struct {
@@ -171,6 +174,20 @@ defaulting.
 Results from a multi-space search are returned **grouped in the order of
 `q.Spaces`**, not globally re-ranked — ranking across spaces is a policy decision that
 belongs to the assistant, not the client.
+
+`Confidence` and `Origin` carry lore's vocabularies and are checked as the client parses
+lore's output, inside `internal/memory`. `internal/config` has no say in it: the
+vocabularies belong to lore, not to a household's configuration, and nothing in
+`kenward.yaml` may widen or narrow them.
+
+`Partial` is the one field a caller may not infer. lore's search returns a snippet — a
+body that may be elided in the middle, with no origin and no timestamps — while `Get`
+returns the whole entry, and only the client knows which it just handled. It is a field
+rather than a heuristic because the consequence of getting it wrong is invisible:
+anything rendering an entry into a prompt must say which it has, and a model shown a
+fragment under a heading claiming completeness will answer confidently from the part it
+can see. `PROMPT.md` describes how the prompt says so; an invariant test asserts that
+every entry crossing the `Memory` interface carries the right value.
 
 ### `internal/transport`
 
@@ -337,6 +354,9 @@ Mode difference, stated honestly in the docs and in `kenward doctor` output:
 ```yaml
 mode: simple                  # simple | isolated
 
+data_dir: /var/lib/kenward    # where kenward's own mutable state lives; empty means
+                              # the per-OS default from config.DefaultDataDir()
+
 household:
   name: "Home"
   shared_space: household
@@ -383,6 +403,12 @@ update:
   check_interval: 6h
 ```
 
+`data_dir` holds only what kenward writes about itself — today `state.json`, the record
+of which Telegram account is bound to which member. It is not where lore keeps its data
+and it never holds a secret. Left empty it resolves to the per-OS state location; the
+`--data-dir` flag and `$KENWARD_DATA_DIR` override it in that order, which is how the
+container image runs with no arguments. See `CLI.md`.
+
 Validation rules that are errors, not warnings:
 
 - every tier named in `household.tiers` or `members[].tiers` must be a tag on at least
@@ -409,7 +435,8 @@ Validation rules that are errors, not warnings:
 4. **Assemble.** System prompt + retrieved entries (rendered with their markers and
    confidence) + the last N turns from the unit-local history ring.
 5. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
-   explicit refusal naming the tiers tried — never a silent fallback.
+   explicit refusal naming the tiers tried — never a silent fallback. Any other router
+   failure becomes one of the notices in §10; a turn never ends in silence.
 6. **Reply.**
 7. **Capture.** If the model proposed a memory write, run the capture state machine.
 8. **Record** the turn in the unit-local history ring.
@@ -439,6 +466,12 @@ Rules:
 - The answer is only accepted from `AllowedUserID`.
 - Promotion uses `memory.Share`, never a read-then-put, so lore's own provenance is
   preserved.
+- **A write that fails after the member said yes is reported to them, not just logged.**
+  lore may have stored the entry and lost the answer, and lore has no delete, so a retry
+  that duplicates it is permanent (§12). The member is told that it cannot be confirmed
+  either way and to check before saving it again, and the title is suppressed for the
+  next ten turns so the model does not immediately re-propose the thing they were just
+  asked to verify.
 
 ---
 
@@ -501,6 +534,41 @@ which mode it is in, that change is wrong.
 - `channel: off` is fully supported and the product works forever without updating
 - Isolated mode updates pods **one member at a time**
 
+### What of that is wired
+
+The requirements above are the destination. Some of them are not reached yet, and the
+distance is worth stating precisely, because a household reading this section would
+otherwise conclude that a security release will arrive on its own. It will not.
+
+- **There is no scheduler.** `update.check_interval` is parsed, validated and passed to
+  `keel/update`, and nothing periodically calls `Check`. Every update today begins with
+  somebody typing `kenward update` at a terminal. Patch and minor releases therefore do
+  not auto-apply, and an installation left alone stays on the version it has
+  indefinitely, whatever `update.channel` says.
+- **Consent reaches only an interactive invocation.** Major versions and releases
+  flagged `securitySensitive` do ask first, and refusing consent is the default when
+  nobody answers — no terminal, a pipe, a cron job and a closed stdin all resolve to no,
+  which is the correct answer for a release that may move routing or privacy defaults.
+  But the question is printed to stdout and read from stdin, not sent over Telegram.
+  Asking the household over Telegram is what the automatic path needs and does not have.
+- **Drain is a no-op.** The hook is passed to `keel/update` and returns immediately, so
+  nothing yet waits for units to finish their turns. Since the only caller is a person
+  at a terminal, the restart they cause is one they chose; the promise not to restart
+  mid-conversation becomes load-bearing the moment updates apply themselves, and it must
+  be real before that.
+- **Health is wired on resume, not on apply.** `kenward run` calls `resumeUpdate` before
+  serving anything, and that path runs the real check — lore answers, Telegram
+  authorises — so a swapped binary that cannot come up is rolled back on its next start.
+  The health hook `kenward update` passes for its own in-process apply is still a stub
+  that returns nil.
+- **Isolated mode has no update path at all.** `internal/supervisor/isolated` contains
+  no update code; `cmd/kenward/update.go` updates the binary it is run from and knows
+  nothing about pods. One member at a time is a requirement with no implementation
+  behind it.
+
+Until the scheduler exists, `INSTALL.md` and `CLI.md` describe updating as the manual
+act it currently is.
+
 ---
 
 ## 10. Refusals
@@ -508,11 +576,49 @@ which mode it is in, that change is wrong.
 Refusal text is a product surface. It must say what happened and why, and never imply a
 capability that does not exist:
 
-> No machine in your allowed tiers (`local`) is reachable right now — I tried `monster`
-> and `5090`. Your private space is set to local-only, so I won't send this to a cloud
-> provider. Wake one of them and ask again.
+> No machine in your allowed tiers (`local`) is reachable right now — `monster` and
+> `5090` were unavailable. This conversation is limited to that tier, so I won't send it
+> anywhere else. Wake one of them and ask again.
 
-Refusals are golden-tested. Changing one is a deliberate edit to a test fixture.
+Every clause is chosen. "Your allowed tiers" becomes "the household's allowed tiers" in
+a group conversation, because the chain being enforced is the group's. "Were
+unavailable" is preferred to "I tried", because `NoBackendError.Tried` lists endpoints
+that were attempted alongside endpoints skipped for a cooldown or a failed probe, and
+claiming an attempt that never happened is a small untruth in a message whose whole
+value is being accurate. And the refusal names the boundary rather than the
+configuration behind it: a member is told this conversation goes no further, not that
+somebody set their space to local-only.
+
+Refusals are golden-tested, in `internal/assistant/testdata`. Changing one is a
+deliberate edit to a test fixture.
+
+### Every turn produces a reply
+
+A refusal is only one of the ways a turn can fail to produce an answer, and silence is
+the one response that teaches a household the assistant is broken and unpredictable. A
+message that arrives always produces something, and the node writes it: a model that
+cannot be reached cannot explain why it cannot be reached.
+
+Beyond the tier-chain refusal, the router's other failures are classified into three
+notices, chosen so that each one tells the member the truth about what they can do next:
+
+| What happened | What is sent |
+| --- | --- |
+| Rate limited (HTTP 429) | "The model is busy right now. Try again in a moment." |
+| A rejected key, an unknown model, a request the endpoint will not parse (401, 403, 404, invalid request) | "Something is wrong with this household's setup — tell whoever runs it." |
+| Anything else | "Something went wrong reaching the model, and your message wasn't answered. Try again in a moment." |
+
+The middle row is the one that earns its place: no amount of retrying fixes a rejected
+key, the member cannot repair it, and the operator can — so the notice sends them to the
+person who can. Two further notices come from outside the router: a model that declined
+the turn produces "The model declined to answer this.", and a direct message arriving
+while the member's key is locked produces "Your assistant is locked. It needs to be
+unlocked on the machine it runs on." All of them are golden-tested alongside the
+refusals.
+
+The classification reads `keel/llm`'s error vocabulary, which the routing seam passes
+through unchanged; a content-filter decline commonly arrives as an empty response
+carrying the finish reason rather than as a completion with text.
 
 ---
 

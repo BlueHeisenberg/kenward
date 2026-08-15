@@ -1,0 +1,343 @@
+package main
+
+import (
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/supervisor"
+)
+
+// TestResolveUnitSelection is the precedence table, conflicts included.
+//
+// Isolated mode has two deployment paths — an operator's compose file passing
+// --member, and the host supervisor passing KENWARD_MEMBER to a pod — and both must
+// work. Where they disagree, neither wins: a pod quietly serving the wrong member is
+// discovered when somebody's private memory turns up in the wrong conversation.
+func TestResolveUnitSelection(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		flagMember string
+		flagGroup  bool
+		vars       map[string]string
+		wantMember string
+		wantGroup  bool
+		wantErr    []string // substrings the error must contain
+	}{
+		{
+			name: "neither: whole household",
+		},
+		{
+			name:       "flag member only",
+			flagMember: "david",
+			wantMember: "david",
+		},
+		{
+			name:      "flag group only",
+			flagGroup: true,
+			wantGroup: true,
+		},
+		{
+			name:       "environment member only",
+			vars:       map[string]string{supervisor.EnvMember: "david"},
+			wantMember: "david",
+		},
+		{
+			name:      "environment group only",
+			vars:      map[string]string{supervisor.EnvGroup: "1"},
+			wantGroup: true,
+		},
+		{
+			name:       "flag wins where they agree",
+			flagMember: "david",
+			vars:       map[string]string{supervisor.EnvMember: "david"},
+			wantMember: "david",
+		},
+		{
+			name:      "group agrees across both sources",
+			flagGroup: true,
+			vars:      map[string]string{supervisor.EnvGroup: "1"},
+			wantGroup: true,
+		},
+		{
+			name:    "empty environment values are absent, not a selection",
+			vars:    map[string]string{supervisor.EnvMember: "", supervisor.EnvGroup: ""},
+			wantErr: nil,
+		},
+		{
+			name:      "KENWARD_GROUP=0 is a no",
+			vars:      map[string]string{supervisor.EnvGroup: "0"},
+			wantGroup: false,
+		},
+
+		// --- conflicts: every one of these is a usage error ---
+		{
+			name:       "both flags",
+			flagMember: "david",
+			flagGroup:  true,
+			wantErr:    []string{"--member david", "--group", "exactly one unit"},
+		},
+		{
+			name:    "both environment variables",
+			vars:    map[string]string{supervisor.EnvMember: "david", supervisor.EnvGroup: "1"},
+			wantErr: []string{"KENWARD_MEMBER=david", "KENWARD_GROUP", "exactly one unit"},
+		},
+		{
+			name:       "flag names one member, environment names another",
+			flagMember: "david",
+			vars:       map[string]string{supervisor.EnvMember: "jordan"},
+			wantErr:    []string{"disagree", "member david", "member jordan"},
+		},
+		{
+			name:       "flag names a member, environment names the group",
+			flagMember: "david",
+			vars:       map[string]string{supervisor.EnvGroup: "1"},
+			wantErr:    []string{"disagree", "member david", "household group"},
+		},
+		{
+			name:      "flag names the group, environment names a member",
+			flagGroup: true,
+			vars:      map[string]string{supervisor.EnvMember: "jordan"},
+			wantErr:   []string{"disagree", "household group", "member jordan"},
+		},
+		{
+			name:    "KENWARD_GROUP with a member's name is a mistake, not a guess",
+			vars:    map[string]string{supervisor.EnvGroup: "david"},
+			wantErr: []string{"KENWARD_GROUP", "not a yes or a no"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := resolveUnitSelection(tc.flagMember, tc.flagGroup, lookup(tc.vars))
+			if len(tc.wantErr) > 0 {
+				if err == nil {
+					t.Fatalf("want an error, got selection %+v", got)
+				}
+				for _, want := range tc.wantErr {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error does not mention %q:\n%v", want, err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.member != tc.wantMember || got.group != tc.wantGroup {
+				t.Errorf("selection = {member:%q group:%v}, want {member:%q group:%v}",
+					got.member, got.group, tc.wantMember, tc.wantGroup)
+			}
+		})
+	}
+}
+
+// TestRunRejectsUnitSelectorInSimpleMode, however the selector arrived.
+//
+// A flag that silently does nothing is how a household comes to believe it is
+// isolated when it is one shared process, so this is exit 2 rather than a warning.
+func TestRunRejectsUnitSelectorInSimpleMode(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args []string
+		vars map[string]string
+	}{
+		{"--member", []string{"run", "--member", "david"}, nil},
+		{"--group", []string{"run", "--group"}, nil},
+		{"KENWARD_MEMBER", []string{"run"}, map[string]string{supervisor.EnvMember: "david"}},
+		{"KENWARD_GROUP", []string{"run"}, map[string]string{supervisor.EnvGroup: "1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			vars := fullEnvironment()
+			for k, v := range tc.vars {
+				vars[k] = v
+			}
+			h := newHarness(t, simpleYAML, vars)
+			h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+				t.Fatal("a supervisor was built for a configuration that should have been refused")
+				return nil, nil
+			}
+			if code := h.run(tc.args...); code != exitUsage {
+				t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h.both())
+			}
+			if !strings.Contains(h.stderr(), "isolated mode only") {
+				t.Errorf("stderr does not explain why:\n%s", h.stderr())
+			}
+		})
+	}
+}
+
+// TestRunSelectsSupervisorByMode covers the three-way choice `run` makes.
+func TestRunSelectsSupervisorByMode(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		yaml      string
+		args      []string
+		wantMode  config.Mode
+		wantUnit  string
+		wantGroup bool
+	}{
+		{"simple, whole household", simpleYAML, []string{"run"}, config.ModeSimple, "", false},
+		{"isolated, host supervisor", isolatedYAML, []string{"run"}, config.ModeIsolated, "", false},
+		{"isolated, one member's pod", isolatedYAML, []string{"run", "--member", "david"}, config.ModeIsolated, "david", false},
+		{"isolated, the group's pod", isolatedYAML, []string{"run", "--group"}, config.ModeIsolated, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, tc.yaml, fullEnvironment())
+			var gotMode config.Mode
+			var gotSel unitSelection
+			h.e.supervisors = func(_ *env, cfg *config.Config, opts runOptions, _ *slog.Logger) (supervisor.Supervisor, error) {
+				gotMode = cfg.Mode
+				gotSel = opts.selection
+				return stubSupervisor{}, nil
+			}
+			if code := h.run(tc.args...); code != exitOK {
+				t.Fatalf("exit = %d, want 0\n%s", code, h.both())
+			}
+			if gotMode != tc.wantMode {
+				t.Errorf("mode = %q, want %q", gotMode, tc.wantMode)
+			}
+			if gotSel.member != tc.wantUnit || gotSel.group != tc.wantGroup {
+				t.Errorf("selection = {member:%q group:%v}, want {member:%q group:%v}",
+					gotSel.member, gotSel.group, tc.wantUnit, tc.wantGroup)
+			}
+			h.assertNoSecrets(t)
+		})
+	}
+}
+
+// TestRunRefusesUnknownMember: a pod told to serve somebody the configuration does
+// not name has nothing to serve, and starting anyway would look like it worked.
+func TestRunRefusesUnknownMember(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, isolatedYAML, fullEnvironment())
+	if code := h.run("run", "--member", "nobody"); code != exitUsage {
+		t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h.both())
+	}
+	if !strings.Contains(h.stderr(), "names no member") {
+		t.Errorf("stderr does not say why:\n%s", h.stderr())
+	}
+}
+
+// TestStartupSummaryNamesEverySpace.
+//
+// docs/CLI.md: one summary line per space, naming the mode, the members served and
+// the tier chain, so that an operator can read it and know whether a private space
+// can reach a provider.
+func TestStartupSummaryNamesEverySpace(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoad(t, simpleYAML)
+	lines := startupSummary(cfg, unitSelection{})
+
+	joined := renderAttrs(lines)
+	for _, want := range []string{
+		"mode=simple",
+		"space=david-private",
+		"space=jordan-private",
+		"space=household",
+		"members_served=david,jordan",
+		"tiers=[local]",
+		"tiers=[local, cloud]",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("startup summary does not contain %q:\n%s", want, joined)
+		}
+	}
+
+	// The point of the line: david's chain is local-only and reaches no provider;
+	// jordan's does. Both facts have to be readable off the line itself.
+	if !strings.Contains(joined, "space=david-private") || !strings.Contains(joined, "reaches_provider=false") {
+		t.Errorf("david's space does not report reaches_provider=false:\n%s", joined)
+	}
+	if !strings.Contains(joined, "reaches_provider=true") {
+		t.Errorf("no space reports reaches_provider=true, but jordan's chain names cloud:\n%s", joined)
+	}
+}
+
+// TestStartupSummaryInAPodNamesOnlyThatUnit.
+func TestStartupSummaryInAPodNamesOnlyThatUnit(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoad(t, isolatedYAML)
+
+	member := renderAttrs(startupSummary(cfg, unitSelection{member: "david"}))
+	if !strings.Contains(member, "space=david-private") {
+		t.Errorf("david's pod does not name david's space:\n%s", member)
+	}
+	for _, unwanted := range []string{"space=jordan-private", "space=household"} {
+		if strings.Contains(member, unwanted) {
+			t.Errorf("david's pod names %q, which it does not serve:\n%s", unwanted, member)
+		}
+	}
+
+	group := renderAttrs(startupSummary(cfg, unitSelection{group: true}))
+	if !strings.Contains(group, "space=household") {
+		t.Errorf("the group pod does not name the shared space:\n%s", group)
+	}
+	// A group scope may never name a private space, and the line an operator reads
+	// must not suggest otherwise.
+	for _, unwanted := range []string{"david-private", "jordan-private"} {
+		if strings.Contains(group, unwanted) {
+			t.Errorf("the group pod's summary names %q:\n%s", unwanted, group)
+		}
+	}
+}
+
+func renderAttrs(lines [][]any) string {
+	var b strings.Builder
+	for _, line := range lines {
+		for i := 0; i+1 < len(line); i += 2 {
+			b.WriteString(strings.TrimSpace(toString(line[i])))
+			b.WriteString("=")
+			b.WriteString(toString(line[i+1]))
+			b.WriteString(" ")
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func toString(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case bool:
+		if t {
+			return "true"
+		}
+		return "false"
+	default:
+		return ""
+	}
+}
+
+// stubSupervisor stands in for a running household: it starts, it stops, and it
+// never touches Telegram, lore or a container runtime.
+type stubSupervisor struct{}
+
+func (stubSupervisor) Start(context.Context) error { return nil }
+func (stubSupervisor) Stop(context.Context) error  { return nil }
+func (stubSupervisor) Health(context.Context) ([]supervisor.UnitHealth, error) {
+	return nil, nil
+}
+
+func mustLoad(t *testing.T, yaml string) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kenward.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path, filepath.Join(dir, "data"), lookup(fullEnvironment()))
+	if err != nil {
+		t.Fatalf("loading configuration: %v", err)
+	}
+	return cfg
+}

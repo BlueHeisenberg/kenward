@@ -1,0 +1,507 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/memory"
+	"github.com/BlueHeisenberg/kenward/internal/privacy"
+	"github.com/BlueHeisenberg/kenward/internal/version"
+)
+
+// checkStatus is how one check came out.
+type checkStatus string
+
+const (
+	// statusOK is a check that passed.
+	statusOK checkStatus = "ok"
+	// statusWarn is something worth knowing that is not a failure.
+	statusWarn checkStatus = "warn"
+	// statusFail is a check that failed.
+	statusFail checkStatus = "fail"
+)
+
+func (s checkStatus) symbol() string {
+	switch s {
+	case statusOK:
+		return "✓"
+	case statusWarn:
+		return "!"
+	default:
+		return "✗"
+	}
+}
+
+// check is one line of doctor's report, with any detail that belongs under it.
+type check struct {
+	Status checkStatus `json:"status"`
+	Text   string      `json:"text"`
+	Detail []string    `json:"detail,omitempty"`
+}
+
+// doctorReport is everything `kenward doctor` found. It is assembled first and
+// rendered second so that the text and the --json forms cannot disagree, and so that
+// the rendering can be golden-tested without any of the world being present.
+type doctorReport struct {
+	Version    string `json:"version"`
+	Mode       string `json:"mode"`
+	ConfigPath string `json:"config_path"`
+
+	Configuration []check          `json:"configuration"`
+	Memory        []check          `json:"memory"`
+	Sessions      []check          `json:"sessions"`
+	Transport     []check          `json:"transport"`
+	Endpoints     []endpointReport `json:"endpoints"`
+
+	// Statement is internal/privacy's statement for this mode, verbatim. It is not
+	// composed here and must never be: two copies of this claim is how one of them
+	// drifts into promising more than the mode delivers.
+	Statement string `json:"privacy_statement"`
+	// TierNotes are privacy.TierNote's lines, one per conversation.
+	TierNotes []string `json:"tier_notes"`
+
+	Exit int `json:"exit_code"`
+}
+
+type endpointReport struct {
+	Name    string   `json:"name"`
+	Tiers   []string `json:"tiers"`
+	Reached bool     `json:"reached"`
+	Detail  string   `json:"detail,omitempty"`
+	Millis  int64    `json:"millis,omitempty"`
+}
+
+func cmdDoctor(e *env, args []string) int {
+	fs := newFlagSet(e, "doctor", "kenward doctor [--config PATH] [--data-dir PATH] [--json]")
+	configPath := fs.String("config", "", "path to kenward.yaml")
+	dataDir := fs.String("data-dir", "", "override the data directory")
+	asJSON := fs.Bool("json", false, "emit the report as JSON")
+	if code, ok := parseFlags(e, fs, args); !ok {
+		return code
+	}
+	if fs.NArg() > 0 {
+		e.errorf("doctor takes no positional arguments; got %q", fs.Arg(0))
+		return exitUsage
+	}
+
+	rep := runDoctor(e, resolveConfigPath(e, *configPath), resolveDataDir(e, *dataDir))
+	if *asJSON {
+		enc := json.NewEncoder(e.stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(rep); err != nil {
+			e.errorf("%v", err)
+			return exitFailure
+		}
+		return rep.Exit
+	}
+	fmt.Fprint(e.stdout, renderDoctor(rep))
+	return rep.Exit
+}
+
+// runDoctor runs every check and reports all results.
+//
+// Nothing stops at the first failure. A household's configuration is edited rarely
+// and by hand; surfacing one problem per run turns a five-minute fix into an evening.
+func runDoctor(e *env, path, dataDir string) doctorReport {
+	ctx := e.context()
+	rep := doctorReport{
+		Version:    version.Short(),
+		ConfigPath: path,
+		Mode:       "unknown",
+		Exit:       exitOK,
+	}
+
+	cfg, cfgErr := loadConfig(path, dataDir, e.env())
+	var ve *config.ValidationError
+	switch {
+	case cfgErr != nil && !errors.As(cfgErr, &ve):
+		// The file could not be opened or parsed. There is no configuration to
+		// check anything else against, so this is the whole report.
+		rep.Configuration = append(rep.Configuration, check{
+			Status: statusFail,
+			Text:   fmt.Sprintf("%s could not be read", path),
+			Detail: []string{cfgErr.Error()},
+		})
+		rep.Exit = exitUsage
+		return rep
+	case cfgErr != nil:
+		rep.Configuration = append(rep.Configuration, check{
+			Status: statusFail,
+			Text:   fmt.Sprintf("%s parses, but describes a household that cannot be served", filepath.Base(path)),
+			Detail: append([]string{path}, ve.Problems...),
+		})
+		rep.Exit = exitUsage
+	default:
+		rep.Configuration = append(rep.Configuration, check{
+			Status: statusOK,
+			Text:   fmt.Sprintf("%s parses and validates", filepath.Base(path)),
+			Detail: []string{path},
+		})
+	}
+
+	rep.Mode = string(cfg.Mode)
+
+	// Environment variables get their own check with the names listed, because "set
+	// these and start again" is the single most common first-run failure. Names
+	// only: nothing here ever prints a value.
+	if missing := cfg.MissingEnvNames(e.env()); len(missing) > 0 {
+		rep.Configuration = append(rep.Configuration, check{
+			Status: statusFail,
+			Text:   fmt.Sprintf("%s referenced but not set", plural(len(missing), "1 environment variable is", fmt.Sprintf("%d environment variables are", len(missing)))),
+			Detail: missing,
+		})
+		rep.Exit = exitUsage
+	} else {
+		rep.Configuration = append(rep.Configuration, check{
+			Status: statusOK,
+			Text:   "all referenced environment variables are set",
+		})
+	}
+
+	rep.Memory = doctorMemory(ctx, e, cfg, &rep)
+	rep.Sessions = doctorSessions(ctx, e, cfg)
+	rep.Transport = doctorTransport(ctx, e, cfg, &rep)
+	rep.Endpoints = doctorEndpoints(ctx, e, cfg)
+	rep.Statement = privacy.Statement(privacyModeFor(cfg.Mode))
+	rep.TierNotes = tierNotes(cfg)
+	return rep
+}
+
+// doctorMemory checks that lore answers and that every configured space is there.
+//
+// lore not answering is a failure: without it there is no retrieval, no capture and
+// no enrolment history, and the node cannot do its job. A space that does not exist
+// yet is not — that is what a member who has not claimed their invite looks like.
+func doctorMemory(ctx context.Context, e *env, cfg *config.Config, rep *doctorReport) []check {
+	res := e.probes.loreProbe()(ctx, cfg)
+	if res.Err != nil {
+		if rep.Exit == exitOK {
+			rep.Exit = exitFailure
+		}
+		return []check{{
+			Status: statusFail,
+			Text:   "lore mcp did not respond",
+			Detail: []string{
+				res.Err.Error(),
+				"kenward spawns `lore mcp` (memory.lore_command). Without it there is " +
+					"no retrieval, no capture and no enrolment history.",
+			},
+		}}
+	}
+
+	checks := []check{{Status: statusOK, Text: "lore mcp responds"}}
+	for _, s := range res.Spaces {
+		switch {
+		case s.Err == nil:
+			checks = append(checks, check{
+				Status: statusOK,
+				Text:   fmt.Sprintf("space %q reachable", s.Space),
+			})
+		case errors.Is(s.Err, memory.ErrUnknownSpace):
+			checks = append(checks, check{
+				Status: statusWarn,
+				Text:   fmt.Sprintf("space %q does not exist yet", s.Space),
+				Detail: []string{"it is created when the member claims their invite"},
+			})
+		default:
+			if rep.Exit == exitOK {
+				rep.Exit = exitFailure
+			}
+			checks = append(checks, check{
+				Status: statusFail,
+				Text:   fmt.Sprintf("space %q did not answer", s.Space),
+				Detail: []string{s.Err.Error()},
+			})
+		}
+	}
+
+	// `lore mcp` never syncs: it reads and writes the local store and poking a
+	// daemon is best-effort. Saying so is not a failure, but a household running two
+	// instances and wondering why nothing crosses between them deserves the hint.
+	checks = append(checks, check{
+		Status: statusWarn,
+		Text:   "`lore mcp` does not sync on its own",
+		Detail: []string{"run `lore serve` on the same LORE_HOME if this store should reach another machine"},
+	})
+	return checks
+}
+
+// doctorSessions reports key custody: who has a wrapped key, and who is enrolled
+// without one.
+//
+// An operator needs to be able to see this without sending a message and waiting for
+// a non-answer. A member who is enrolled but has no wrapped key gets the locked
+// notice for every private message they ever send, while the household group works
+// perfectly — so it is worth saying out loud, at length, on the one screen somebody
+// looks at when something is wrong.
+//
+// It is a warning rather than a failure. docs/CLI.md names three things doctor exits
+// non-zero for, and this is not one of them; the container's HEALTHCHECK runs this
+// command, and a household mid-enrolment is not unhealthy. Whether a key is unwrapped
+// *right now* is not knowable from here at all: that lives in the running node's
+// memory and this is a different process. Saying so is better than implying otherwise.
+func doctorSessions(ctx context.Context, e *env, cfg *config.Config) []check {
+	res := e.probes.sessionsProbe()(ctx, cfg)
+	if res.Err != nil {
+		return []check{{
+			Status: statusWarn,
+			Text:   "could not read the wrapped-key store",
+			Detail: []string{res.Err.Error()},
+		}}
+	}
+
+	var checks []check
+	if res.Custody != "" {
+		checks = append(checks, check{
+			Status: statusOK,
+			Text:   res.Custody,
+			Detail: []string{
+				"whether a key is unwrapped right now is not visible from here: unwrapped " +
+					"keys live in the running node's memory and this is a different process",
+			},
+		})
+	}
+	checks = append(checks, check{
+		Status: statusOK,
+		Text: fmt.Sprintf("%s a wrapped key on disk",
+			plural(len(res.Provisioned), "1 member has", fmt.Sprintf("%d members have", len(res.Provisioned)))),
+	})
+	for _, id := range res.MissingKey {
+		checks = append(checks, check{
+			Status: statusWarn,
+			Text:   fmt.Sprintf("%s is enrolled but has no wrapped key", id),
+			Detail: []string{
+				"every private message to them is refused as locked until the node is " +
+					"started once with a passphrase; the household group is unaffected, " +
+					"which is why this is easy to miss",
+			},
+		})
+	}
+	return checks
+}
+
+// doctorTransport authorises every bot token this configuration names.
+//
+// A token Telegram refuses is a failure: the node has no way to receive or send
+// anything, which is not a household machine being asleep but a deployment that
+// cannot work.
+func doctorTransport(ctx context.Context, e *env, cfg *config.Config, rep *doctorReport) []check {
+	probe := e.probes.telegramProbe()
+	var checks []check
+
+	add := func(label, envName string) {
+		token, ok := e.env()(envName)
+		if !ok || token == "" {
+			// Already reported as a missing environment variable; repeat it here
+			// so the Transport section is not silently empty.
+			checks = append(checks, check{
+				Status: statusFail,
+				Text:   fmt.Sprintf("%s: %s is not set", label, envName),
+			})
+			return
+		}
+		res := probe(ctx, token)
+		if res.Err != nil {
+			if rep.Exit == exitOK {
+				rep.Exit = exitFailure
+			}
+			checks = append(checks, check{
+				Status: statusFail,
+				Text:   fmt.Sprintf("%s: Telegram did not authorise %s", label, envName),
+				Detail: []string{res.Err.Error()},
+			})
+			return
+		}
+		name := res.Username
+		if name == "" {
+			name = "an unnamed bot"
+		} else {
+			name = "@" + name
+		}
+		checks = append(checks, check{
+			Status: statusOK,
+			Text:   fmt.Sprintf("%s: Telegram authorises as %s", label, name),
+		})
+	}
+
+	if cfg.Mode == config.ModeIsolated {
+		for _, m := range cfg.Members {
+			if m.BotTokenEnv == "" {
+				continue
+			}
+			add(m.Name, m.BotTokenEnv)
+		}
+		if cfg.Telegram.BotTokenEnv != "" {
+			add("household group", cfg.Telegram.BotTokenEnv)
+		}
+		if len(checks) == 0 {
+			checks = append(checks, check{Status: statusWarn, Text: "no bot token is configured"})
+		}
+		return checks
+	}
+
+	if cfg.Telegram.BotTokenEnv == "" {
+		return []check{{Status: statusWarn, Text: "no bot token is configured"}}
+	}
+	add("household", cfg.Telegram.BotTokenEnv)
+	return checks
+}
+
+// doctorEndpoints probes every endpoint and never fails over any of them.
+//
+// This is load-bearing rather than tidy. The container's HEALTHCHECK runs `doctor`,
+// so an endpoint that does not answer must not change the exit code: a household's
+// GPU box is switched off most of the time, and treating that as unhealthy would put
+// a perfectly good household into a restart loop.
+func doctorEndpoints(ctx context.Context, e *env, cfg *config.Config) []endpointReport {
+	probe := e.probes.endpointProbe()
+	var out []endpointReport
+	for _, ep := range cfg.RoutingEndpoints() {
+		res := probe(ctx, ep)
+		out = append(out, endpointReport{
+			Name:    res.Name,
+			Tiers:   res.Tiers,
+			Reached: res.Reached,
+			Detail:  res.Detail,
+			Millis:  res.Elapsed.Milliseconds(),
+		})
+	}
+	return out
+}
+
+// tierNotes renders, for each conversation, what its tier chain means in practice.
+// Every line comes from internal/privacy; the only decision made here is which tiers
+// count as local, which privacy.TierNote asks its caller for because that is
+// configuration rather than something the privacy package can know.
+func tierNotes(cfg *config.Config) []string {
+	local := localTiers(cfg)
+	var notes []string
+	for _, m := range cfg.DomainMembers() {
+		notes = append(notes, privacy.MemberNote(m, staysHome(local, m.Tiers)))
+	}
+	label := cfg.Household.Name
+	if label == "" {
+		label = cfg.Household.SharedSpace
+	}
+	if label != "" {
+		notes = append(notes, privacy.TierNote(label, cfg.Household.Tiers, staysHome(local, cfg.Household.Tiers)))
+	}
+	return notes
+}
+
+// renderDoctor draws the report.
+func renderDoctor(r doctorReport) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "kenward %s — mode: %s\n", r.Version, r.Mode)
+
+	writeSection(&b, "Configuration", r.Configuration)
+	writeSection(&b, "Memory", r.Memory)
+	writeSection(&b, "Sessions", r.Sessions)
+	writeSection(&b, "Transport", r.Transport)
+
+	if len(r.Endpoints) > 0 {
+		b.WriteString("\nEndpoints\n")
+		nameWidth, tierWidth := 0, 0
+		for _, ep := range r.Endpoints {
+			nameWidth = max(nameWidth, len([]rune(ep.Name)))
+			tierWidth = max(tierWidth, len([]rune(strings.Join(ep.Tiers, ","))))
+		}
+		anyDown := false
+		for _, ep := range r.Endpoints {
+			symbol, detail := statusOK.symbol(), fmt.Sprintf("answered in %dms", ep.Millis)
+			if !ep.Reached {
+				anyDown = true
+				symbol, detail = statusFail.symbol(), ep.Detail
+			}
+			fmt.Fprintf(&b, "  %s %s  %s  %s\n",
+				symbol,
+				padRunes(ep.Name, nameWidth),
+				padRunes(strings.Join(ep.Tiers, ","), tierWidth),
+				detail)
+		}
+		if anyDown {
+			b.WriteString("\n  An endpoint that does not answer is reported here, not failed. Household\n")
+			b.WriteString("  machines are legitimately switched off, and a conversation whose chain names\n")
+			b.WriteString("  only unreachable machines is refused rather than sent somewhere else.\n")
+		}
+	}
+
+	if r.Statement != "" {
+		b.WriteString("\nPrivacy\n\n")
+		// Verbatim, unindented. internal/setup tells every operator that `kenward
+		// doctor` prints this same statement in the same words, and that promise is
+		// only worth anything if the two strings are identical.
+		b.WriteString(r.Statement)
+		b.WriteString("\n")
+	}
+	if len(r.TierNotes) > 0 {
+		b.WriteString("\nWhere each conversation may go\n\n")
+		for _, note := range r.TierNotes {
+			fmt.Fprintf(&b, "  %s\n", note)
+		}
+	}
+	return b.String()
+}
+
+func writeSection(b *strings.Builder, name string, checks []check) {
+	if len(checks) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "\n%s\n", name)
+	for _, c := range checks {
+		for i, line := range wrap(c.Text, reportWidth-4) {
+			if i == 0 {
+				fmt.Fprintf(b, "  %s %s\n", c.Status.symbol(), line)
+				continue
+			}
+			fmt.Fprintf(b, "    %s\n", line)
+		}
+		for _, d := range c.Detail {
+			for _, line := range wrap(d, reportWidth-6) {
+				fmt.Fprintf(b, "      %s\n", line)
+			}
+		}
+	}
+}
+
+// reportWidth is how wide doctor's own prose is allowed to be. It is narrower than
+// eighty so that the indented forms still fit, and it applies only to text this
+// package composes — never to the privacy statement, which arrives already wrapped
+// and is printed exactly as internal/privacy wrote it.
+const reportWidth = 80
+
+// wrap breaks a line on spaces. session.CustodyReport in particular is one long
+// sentence, and a terminal's own wrapping would break the alignment of everything
+// under it.
+func wrap(s string, width int) []string {
+	words := strings.Fields(s)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	var lines []string
+	line := words[0]
+	for _, w := range words[1:] {
+		if len([]rune(line))+1+len([]rune(w)) > width {
+			lines = append(lines, line)
+			line = w
+			continue
+		}
+		line += " " + w
+	}
+	return append(lines, line)
+}
+
+// padRunes right-pads counted in runes rather than bytes, so a household with a
+// María in it comes out aligned with everybody else.
+func padRunes(s string, width int) string {
+	n := width - len([]rune(s))
+	if n <= 0 {
+		return s
+	}
+	return s + strings.Repeat(" ", n)
+}

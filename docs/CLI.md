@@ -71,14 +71,20 @@ Details the first draft of this document left out, settled during implementation
 
 `--non-interactive` with flags for every answer, for scripted installs.
 
+`--force` replaces an existing configuration. Without it, setup refuses when a file is
+already there and says why: a household's configuration is full of decisions somebody
+made once, and overwriting it because a wizard was run twice is not recoverable from the
+file that no longer exists. The refusal is a usage error, so a script notices.
+
 ---
 
 ## `kenward run [--config PATH] [--data-dir PATH] [--member ID | --group]`
 
 Runs the node. This is what the container entrypoint and the systemd unit call.
 
-`--data-dir` overrides the per-OS default and is what the container image sets, since a
-container's home directory is not where anyone expects state to live.
+`--data-dir` overrides the `data_dir` in the configuration, which itself defaults to a
+per-OS state location. It is what the container image sets, since a container's home
+directory is not where anyone expects state to live.
 
 `--member` and `--group` exist for **isolated mode only**, where each pod runs exactly
 one unit: a member's pod is started with `--member david`, the household's with
@@ -96,8 +102,33 @@ does nothing is how someone ends up believing they are isolated when they are no
 - Handles SIGINT/SIGTERM: stop accepting messages, finish in-flight turns, lock all
   sessions, exit.
 
-`--config` defaults to `kenward.yaml` in the working directory, then to the per-OS
-config location.
+### Where the configuration and the data directory come from
+
+Both settings are resolved the same way, and every command that takes them uses the same
+resolution: **the flag wins, then the environment, then the built-in default.**
+
+`--config`, in order:
+
+1. `--config PATH`
+2. `$KENWARD_CONFIG`
+3. `kenward.yaml` in the working directory, if it exists
+4. the per-OS config location — `kenward/kenward.yaml` under `os.UserConfigDir()`
+
+The working directory comes before the per-OS location because that is where `kenward
+setup` writes by default. Somebody who has just run setup and then runs kenward in the
+same shell must not be told there is no configuration.
+
+`--data-dir`, in order:
+
+1. `--data-dir PATH`
+2. `$KENWARD_DATA_DIR`
+3. whatever `data_dir` says in the configuration, which itself falls back to the per-OS
+   state location
+
+The environment layer is not a convenience. The container image sets both variables, and
+that is what makes `docker run image` work with no arguments at all — while an operator
+passing a flag on the command line still wins over the image's own defaults. Changing
+the precedence would either break the image or make it impossible to override.
 
 ---
 
@@ -137,50 +168,112 @@ kenward v0.1.0 — mode: simple
 
 Configuration
   ✓ kenward.yaml parses and validates
+      /etc/kenward/kenward.yaml
   ✓ all referenced environment variables are set
 
 Memory
-  ✓ lore mcp responds (5 tools)
-  ✓ space "david-private" reachable
+  ✓ lore mcp responds
   ✓ space "household" reachable
-  ! lore serve is not running — spaces will not sync between instances
+  ✓ space "david-private" reachable
+  ✓ space "jordan-private" reachable
+  ! `lore mcp` does not sync on its own
+      run `lore serve` on the same LORE_HOME if this store should reach another
+      machine
+
+Sessions
+  ✓ key custody: simple mode. One node passphrase, held by the operator, wraps
+    every member's key (members: david, jordan). The operator can unlock any
+    member's key and with it that member's private memory. That is this mode's
+    stated limitation, not a bug.
+      whether a key is unwrapped right now is not visible from here: unwrapped
+      keys live in the running node's memory and this is a different process
+  ✓ 2 members have a wrapped key on disk
 
 Transport
-  ✓ Telegram authorises as @our_household_bot
+  ✓ household: Telegram authorises as @our_household_bot
 
 Endpoints
-  ✓ monster       local        answered in 412ms
-  ✗ 5090          local        no route to host
-  ✓ openrouter    cloud        answered in 890ms
+  ✓ monster     local  answered in 412ms
+  ✓ openrouter  cloud  answered in 412ms
 
 Privacy
-  In simple mode every member's key lives in one process. Whoever runs this
-  machine can read every member's private memory. Separation between members is
-  real; sealing against the operator is not. Isolated mode provides that.
 
-  david    tiers: [local]              → will refuse rather than use cloud
-  household tiers: [local, cloud]      → may use a provider
+Every member's memory is separate: what you tell kenward in a private chat is
+stored in your own space, and the household group can never read it.
+
+What this mode does NOT do is seal anything against whoever runs this machine.
+All members' keys live in one process here, and one bot token carries every
+conversation, so the person operating this computer can read every member's
+private memory — on the disk, and in flight on its way to and from Telegram.
+For most households that is fine — it is your own family machine, and you
+already trust whoever set it up.
+
+If that is not the arrangement you want, isolated mode gives each member their
+own sealed process, their own key and their own bot. It needs Linux with Podman
+or Docker.
+
+Two things hold whichever mode you are in. A conversation whose tier chain
+names only machines in the house never reaches a provider: when none of them
+answers, kenward refuses rather than reaching further, and there is no setting
+that changes that. And nothing is written to memory without the member seeing
+the exact words first and saying yes.
+
+Where each conversation may go
+
+  David: [local] — will refuse rather than use a provider
+  Jordan: [local, cloud] — may use a provider
+  Casa: [local, cloud] — may use a provider
 ```
 
-The Privacy section is golden-tested. It is the single most important output the product
-produces, because it is where a claim becomes checkable, and it must never drift into
-overstating what the mode delivers.
+That is the whole report, reproduced from the golden fixture rather than sketched: the
+report is golden-tested end to end, for both modes, in `cmd/kenward/testdata`. The
+Privacy block and the per-conversation lines under **Where each conversation may go**
+come verbatim from `internal/privacy`, which is also what `kenward setup` prints, so the
+two can never drift into promising different things. It is the single most important
+output the product produces, because it is where a claim becomes checkable, and it must
+never drift into overstating what the mode delivers.
 
-A powered-off endpoint is reported as a fact, not an error — `doctor` exits non-zero only
-on configuration faults, an unreachable lore, or a Telegram authorisation failure.
+An endpoint that does not answer is reported as a fact, not a failure, and the report
+says so where it happens:
+
+```
+  An endpoint that does not answer is reported here, not failed. Household
+  machines are legitimately switched off, and a conversation whose chain names
+  only unreachable machines is refused rather than sent somewhere else.
+```
+
+`doctor` exits non-zero only on configuration faults, an unreachable lore, or a Telegram
+authorisation failure. This matters beyond tidiness: the container's `HEALTHCHECK` runs
+`doctor`, so treating a sleeping GPU box as unhealthy would put a perfectly good
+household into a restart loop.
 
 ---
 
-## `kenward update [--check]`
+## `kenward update [--check] [--config PATH] [--data-dir PATH]`
 
-Manual trigger for the update path described in
-[IMPLEMENTATION.md](IMPLEMENTATION.md) section 9. `--check` reports what is available
-and changes nothing. Without it, applies subject to the same rules the automatic path
-follows: signature verified, drained first, health-checked after, rolled back on
-failure, and consent required for a major version or a release flagged as changing
-security-relevant defaults.
+The update path described in [IMPLEMENTATION.md](IMPLEMENTATION.md) section 9. `--check`
+reports what is available and changes nothing. Without it, applies: signature verified
+against a key compiled into this binary, the staged binary run once before the swap,
+swapped atomically, and rolled back automatically if the new version does not come up on
+its next start.
+
+Consent is required for a major version or a release flagged as changing
+security-relevant defaults. The question is asked here, at the terminal, and answered
+`y`. **Nobody there means no** — a pipe, a cron job, a script or a closed stdin all
+resolve to declining, because a release that may move routing or privacy defaults is
+exactly the one that must not slip through because nothing was listening.
 
 Prints the channel in use, and says so plainly when it is `off`.
+
+**This command is currently the only way kenward updates.** Nothing schedules a check,
+so `update.check_interval` is read and not yet acted on, and an installation left alone
+stays on the version it has however `update.channel` is set. Section 9 of
+IMPLEMENTATION.md lists exactly which of the update requirements are wired and which are
+not.
+
+Applying an update does not restart the running node: it says so, and leaves the restart
+to whoever runs the machine. Restarting the household's assistant out from under an
+operator is not this command's decision.
 
 ---
 
@@ -192,8 +285,9 @@ Version, commit, build date, Go version, platform. One line.
 
 ## Not in this binary
 
-Release tooling — key generation, manifest construction, signing — lives in a separate
-`kenward-release` binary that is not shipped to households. See
+Release tooling — key generation, manifest construction, signing, and reading a signed
+manifest back — lives in a separate `kenward-release` binary that is not shipped to
+households. See
 [RELEASING.md](RELEASING.md). A household's copy has no reason to be able to sign
 anything, and a capability present in a widely-installed binary is one an attacker
 inherits.

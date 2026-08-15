@@ -12,6 +12,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/enrol"
+	"github.com/BlueHeisenberg/kenward/internal/scope"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -424,6 +425,94 @@ func TestSimpleNoGoroutineLeaksAfterStop(t *testing.T) {
 		runtime.GC()
 		return runtime.NumGoroutine() <= before
 	})
+}
+
+func TestUnitRefusesStrangerWithoutMux(t *testing.T) {
+	// The Mux is an optimisation, not the gate: a message handed straight to a
+	// unit, bypassing every view, must still be refused by scope resolution.
+	// This is the invariant that survives someone later changing Mux matching.
+	h := newSimpleHarness(t, simpleTestConfig(), nil)
+
+	if len(h.sup.run.pending) == 0 {
+		t.Fatal("no constructed units to test against")
+	}
+	for _, pu := range h.sup.run.pending {
+		err := pu.unit.Handle(context.Background(), transport.Inbound{
+			ChatID: 999, UserID: 999, Text: "let me in", MessageID: 1,
+		})
+		if !errors.Is(err, scope.ErrNotEnrolled) {
+			t.Fatalf("unit %+v answered a stranger with %v, want scope.ErrNotEnrolled", pu.key, err)
+		}
+	}
+	// Refused in silence: resolution failed before anything could be sent.
+	if n := len(h.fake.Sent()); n != 0 {
+		t.Fatalf("stranger received %d messages from a direct Handle call, want none", n)
+	}
+
+	// The same delivery from an enrolled member is served — proving the direct
+	// path exercised above is the real serving path, not a stub.
+	err := h.sup.run.pending[0].unit.Handle(context.Background(), transport.Inbound{
+		ChatID: davidTelegramID, UserID: davidTelegramID, Text: "hello", MessageID: 2,
+	})
+	if err != nil {
+		t.Fatalf("enrolled member's direct Handle: %v", err)
+	}
+	if got, ok := h.fake.LastSent(); !ok || got.Text != "via:local" {
+		t.Fatalf("enrolled member's direct Handle sent %+v, want via:local", got)
+	}
+
+	_ = h.sup.Stop(context.Background())
+	_ = h.fake.Close()
+}
+
+func TestPerUnitContextBudgetFromTierChain(t *testing.T) {
+	windows := map[string]int{"local": 8192, "cloud": 200000}
+
+	// The derivation itself: minimum across the chain, unknown tiers do not
+	// constrain, empty derivation falls back to the assistant's default.
+	cases := []struct {
+		tiers []string
+		want  int
+	}{
+		{[]string{"local"}, 8192},
+		{[]string{"cloud"}, 200000},
+		{[]string{"local", "cloud"}, 8192},
+		{[]string{"cloud", "local"}, 8192},
+		{[]string{"mystery"}, 0},
+		{nil, 0},
+	}
+	for _, c := range cases {
+		if got := minWindow(windows, c.tiers); got != c.want {
+			t.Fatalf("minWindow(%v) = %d, want %d", c.tiers, got, c.want)
+		}
+	}
+
+	// Wired through: david's local-only chain and the household's cloud chain
+	// resolve to different budgets in the same supervisor — the budget is per
+	// scope, never per household.
+	h := newSimpleHarness(t, simpleTestConfig(), func(o *SimpleOptions) {
+		o.TierWindows = windows
+	})
+	member := h.sup.run.unitOptions([]string{"local"})
+	group := h.sup.run.unitOptions([]string{"cloud"})
+	if member.ContextBudget != 8192 || group.ContextBudget != 200000 {
+		t.Fatalf("budgets member=%d group=%d, want 8192 and 200000",
+			member.ContextBudget, group.ContextBudget)
+	}
+
+	// An explicit household-wide budget still wins when the operator sets one.
+	h2 := newSimpleHarness(t, simpleTestConfig(), func(o *SimpleOptions) {
+		o.TierWindows = windows
+		o.Unit.ContextBudget = 4096
+	})
+	if got := h2.sup.run.unitOptions([]string{"cloud"}).ContextBudget; got != 4096 {
+		t.Fatalf("explicit budget = %d, want 4096", got)
+	}
+
+	_ = h.sup.Stop(context.Background())
+	_ = h2.sup.Stop(context.Background())
+	_ = h.fake.Close()
+	_ = h2.fake.Close()
 }
 
 func TestSimpleConstructionErrors(t *testing.T) {

@@ -43,6 +43,11 @@ type SingleOptions struct {
 	// Unit seeds the unit's options. HouseholdName and SearchLimit are filled
 	// from the configuration when zero.
 	Unit assistant.Options
+	// TierWindows names the smallest context window, in the assistant's estimated
+	// tokens, of any endpoint tagged with each tier. The unit's context budget is
+	// derived as the minimum across its own tier chain; see the same field on
+	// SimpleOptions. Ignored when Unit.ContextBudget is set explicitly.
+	TierWindows map[string]int
 	// Logger receives lifecycle events and per-message failures. Nil discards.
 	Logger *slog.Logger
 	// LookupEnv resolves the bot token and API keys. Nil means os.LookupEnv.
@@ -102,6 +107,7 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 		sessions:          opts.Sessions,
 		sessionMode:       session.ModeIsolated,
 		lookupEnv:         opts.LookupEnv,
+		tierWindows:       opts.TierWindows,
 		unitOpts:          opts.Unit,
 		logger:            opts.Logger,
 		drainTimeout:      opts.DrainTimeout,

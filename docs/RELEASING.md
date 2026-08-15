@@ -12,6 +12,10 @@ shipped in the container image or the release artifacts. A household's copy of k
 has no reason to be able to generate signing keys or sign manifests, and every capability
 present in a widely-installed binary is one an attacker gets to use.
 
+It has four subcommands: `keygen` makes a keypair, `manifest` builds an unsigned manifest
+from a directory of artifacts, `sign` adds a signature to one, and `verify` reads a
+signed manifest back with the same code the updater runs.
+
 ---
 
 ## The signing key
@@ -73,9 +77,36 @@ kenward-release sign --key ~/.kenward-release/release-1.key --in manifest.json -
 
 Then publish `signed.json` at the manifest URL and the artifacts at the URLs it names.
 
+`--channel` takes a list, because the Channels section below says to publish once to both:
+`--channel edge,stable` writes the same release into each and lets the client-side delay
+separate them. Artifact URLs default to
+`https://github.com/BlueHeisenberg/kenward/releases/download/{version}/{file}`; override
+with `--base-url` if artifacts are hosted elsewhere. `--published-at` overrides the
+timestamp, which matters only for reproducing a manifest exactly.
+
 The manifest carries, per channel: the version, release notes, publication timestamp, a
 `securitySensitive` flag, and for each platform an artifact URL, SHA-256 and size. The
 signature covers the whole payload, so the digests cannot be swapped independently of it.
+
+### Reading back what you are about to publish
+
+```sh
+kenward-release verify --in signed.json --pub ~/.kenward-release/release-1.pub
+```
+
+`verify` checks the envelope with the same code the updater runs and then prints
+everything it says: which of the keys you gave it signed the manifest, and per channel
+the version, the publication time, the `securitySensitive` flag, the notes, and every
+artifact with its digest.
+
+Run it on the file you are about to publish, and read the output rather than glancing at
+the exit code. Everything below the signature line is what every household will act on,
+and a manifest is the one artifact where a typo reaches other people's machines
+automatically.
+
+`--pub` repeats. A key that did not sign is reported rather than treated as a failure,
+because during a rotation you are expected to pass both the old and the new one; the
+exit is non-zero only when **no** key signed the manifest.
 
 ### `securitySensitive`
 
@@ -115,6 +146,9 @@ you are not running `edge` at home, the stable channel is not being tested by an
 - [ ] `securitySensitive` set if anything in the list above changed
 - [ ] Release notes say what changes for a household, not what changed in the code
 - [ ] Manifest signed on a machine holding the key, not in CI
+- [ ] `kenward-release verify --in signed.json --pub <every trusted key>` run on the
+      exact file about to be published, and its output read — the signature, the
+      versions, the flags and every digest
 - [ ] Installed the release on your own household from `edge` and used it for a day
 
 ---
