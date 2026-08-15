@@ -59,6 +59,21 @@ const (
 	DefaultEndpointTimeout     = 120 * time.Second
 )
 
+// DefaultLoreCommand returns the argv that starts lore's MCP server.
+//
+// It is a default rather than a required field because omitting it has never meant
+// anything safer: a configuration with no lore command validated cleanly and then failed
+// at startup, when the memory client tried to spawn nothing. kenward without memory is
+// not a degraded mode, it is a broken one, so the useful behaviour for an omitted block
+// is the documented one — which this already was, in the setup wizard, the example
+// configuration and the docs. Defaulting it makes the implicit case behave like the
+// written one instead of failing later and less clearly.
+//
+// It returns a fresh slice on every call, deliberately. A package-level slice would be
+// shared by every configuration that took the default, and one caller editing its own
+// argv would rewrite the default for the whole process.
+func DefaultLoreCommand() []string { return []string{"lore", "mcp"} }
+
 // LookupEnvFunc reads an environment variable, with the same shape as os.LookupEnv.
 //
 // It is injectable so that validation can be tested exhaustively without a test
@@ -159,7 +174,8 @@ type EndpointConfig struct {
 
 // MemoryConfig configures the lore client.
 type MemoryConfig struct {
-	// LoreCommand is the argv used to start lore's MCP server.
+	// LoreCommand is the argv used to start lore's MCP server. Omitted, it is
+	// DefaultLoreCommand; stated, it is used exactly as written.
 	LoreCommand []string `yaml:"lore_command"`
 	// SearchLimit is the per-space retrieval budget for one turn.
 	SearchLimit int `yaml:"search_limit"`
@@ -304,6 +320,9 @@ func Decode(r io.Reader) (*Config, error) {
 func (c *Config) ApplyDefaults() {
 	if c.DataDir == "" {
 		c.DataDir = DefaultDataDir()
+	}
+	if len(c.Memory.LoreCommand) == 0 {
+		c.Memory.LoreCommand = DefaultLoreCommand()
 	}
 	if c.Memory.SearchLimit == 0 {
 		c.Memory.SearchLimit = DefaultSearchLimit

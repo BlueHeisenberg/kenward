@@ -78,6 +78,7 @@ func (c *Config) ValidateWithSecrets(s *Secrets) error {
 	tags := c.validateEndpoints(p)
 	c.validateHousehold(p, tags)
 	c.validateMembers(p, tags)
+	c.validateMemory(p)
 	c.validateLimits(p)
 	c.validateUpdate(p)
 	c.validateSecrets(p, s)
@@ -262,6 +263,29 @@ func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 				}
 			}
 		}
+	}
+}
+
+// validateMemory checks the lore command is something that could be executed.
+//
+// After ApplyDefaults an omitted command has already become DefaultLoreCommand, so the
+// empty case here is not reachable from a YAML file — it catches configurations built in
+// Go that never went through ApplyDefaults, which the setup wizard and other packages
+// do. That is worth a check rather than a comment: the failure it replaces is a spawn of
+// nothing at startup, reported far from the file that caused it.
+//
+// What it deliberately does not do is look for the program on PATH or stat it. Whether
+// lore is installed is a property of the machine, not of the configuration, and a
+// validation that fails on one host and passes on another would make `doctor` useless
+// for checking a file before shipping it. That check belongs to `doctor`, on the machine
+// that will run it.
+func (c *Config) validateMemory(p *problems) {
+	if len(c.Memory.LoreCommand) == 0 {
+		p.addf("memory.lore_command: required; it is the argv kenward runs to start lore's MCP server, and without it there is no memory to read or write")
+		return
+	}
+	if strings.TrimSpace(c.Memory.LoreCommand[0]) == "" {
+		p.addf("memory.lore_command: the first element is the program to run and it is empty; write it as %v", DefaultLoreCommand())
 	}
 }
 

@@ -157,6 +157,158 @@ endpoints:
 			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
 		}
 	}
+
+	// Checked separately: a slice is not comparable with !=, and the table above holds
+	// its values as any.
+	if got, want := cfg.Memory.LoreCommand, config.DefaultLoreCommand(); !reflect.DeepEqual(got, want) {
+		t.Errorf("memory.lore_command = %v, want %v", got, want)
+	}
+}
+
+// TestLoreCommandDefault: omitting the memory block used to validate cleanly and then
+// fail at startup, when the memory client tried to spawn nothing. An omitted key now
+// behaves like the documented one.
+func TestLoreCommandDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want []string
+	}{
+		{
+			name: "no memory block at all",
+			yaml: "",
+			want: config.DefaultLoreCommand(),
+		},
+		{
+			name: "a memory block that says nothing about the command",
+			yaml: "memory: {search_limit: 4}\n",
+			want: config.DefaultLoreCommand(),
+		},
+		{
+			name: "an explicitly empty command falls back to the default rather than to nothing",
+			yaml: "memory: {lore_command: []}\n",
+			want: config.DefaultLoreCommand(),
+		},
+		{
+			name: "a stated command is used exactly as written",
+			yaml: `memory: {lore_command: ["/opt/lore/bin/lore", "mcp", "--verbose"]}` + "\n",
+			want: []string{"/opt/lore/bin/lore", "mcp", "--verbose"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := config.Decode(strings.NewReader(tt.yaml))
+			if err != nil {
+				t.Fatalf("Decode() error: %v", err)
+			}
+			if got := cfg.Memory.LoreCommand; !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("memory.lore_command = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDefaultLoreCommandIsNotShared guards the reason DefaultLoreCommand is a function
+// rather than a package-level slice: a shared backing array would mean one configuration
+// editing its own argv rewrote the default for every other one in the process.
+func TestDefaultLoreCommandIsNotShared(t *testing.T) {
+	first := config.DefaultLoreCommand()
+	first[0] = "compromised"
+	if second := config.DefaultLoreCommand(); second[0] != "lore" {
+		t.Errorf("DefaultLoreCommand() = %v after an earlier caller edited its copy", second)
+	}
+
+	a, err := config.Decode(strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("Decode() error: %v", err)
+	}
+	b, err := config.Decode(strings.NewReader(""))
+	if err != nil {
+		t.Fatalf("Decode() error: %v", err)
+	}
+	a.Memory.LoreCommand[0] = "compromised"
+	if b.Memory.LoreCommand[0] != "lore" {
+		t.Errorf("two defaulted configurations share one argv: %v", b.Memory.LoreCommand)
+	}
+}
+
+// TestLoreCommandValidation covers the configurations that never went through
+// ApplyDefaults — the wizard and other packages build these in Go — where an empty or
+// malformed command would otherwise become a spawn of nothing at startup, reported far
+// from the file that caused it.
+func TestLoreCommandValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		command []string
+		want    string
+	}{
+		{
+			name:    "no command at all",
+			command: nil,
+			want:    "memory.lore_command: required",
+		},
+		{
+			name:    "an empty program",
+			command: []string{"", "mcp"},
+			want:    "memory.lore_command: the first element is the program to run and it is empty",
+		},
+		{
+			name:    "a blank program",
+			command: []string{"   ", "mcp"},
+			want:    "memory.lore_command: the first element is the program to run and it is empty",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Mode:      config.ModeSimple,
+				Household: config.HouseholdConfig{SharedSpace: "household", Tiers: []string{"local"}},
+				Telegram:  config.TelegramConfig{BotTokenEnv: "T"},
+				Endpoints: []config.EndpointConfig{{Name: "m", BaseURL: "http://m:1/v1", Model: "q", Tags: []string{"local"}}},
+				Memory:    config.MemoryConfig{LoreCommand: tt.command},
+			}
+			err := cfg.Validate(env(map[string]string{"T": "t"}))
+
+			var ve *config.ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("Validate() error = %v (%T), want *config.ValidationError", err, err)
+			}
+			if !containsSub(ve.Problems, tt.want) {
+				t.Errorf("no problem contains %q; got: %v", tt.want, ve.Problems)
+			}
+		})
+	}
+
+	// And a stated command is not a problem.
+	cfg := &config.Config{
+		Mode:      config.ModeSimple,
+		Household: config.HouseholdConfig{SharedSpace: "household", Tiers: []string{"local"}},
+		Telegram:  config.TelegramConfig{BotTokenEnv: "T"},
+		Endpoints: []config.EndpointConfig{{Name: "m", BaseURL: "http://m:1/v1", Model: "q", Tags: []string{"local"}}},
+		Memory:    config.MemoryConfig{LoreCommand: []string{"lore", "mcp"}},
+		Update:    config.UpdateConfig{Channel: config.UpdateStable},
+	}
+	if err := cfg.Validate(env(map[string]string{"T": "t"})); err != nil {
+		t.Fatalf("Validate() error = %v, want a valid configuration", err)
+	}
+}
+
+// TestLoreCommandValidationDoesNotConsultTheMachine: whether lore is installed is a
+// property of the host, not of the file. A validation that failed on one machine and
+// passed on another would make `doctor` useless for checking a configuration before
+// shipping it, so a program that does not exist is still a valid configuration here.
+func TestLoreCommandValidationDoesNotConsultTheMachine(t *testing.T) {
+	cfg := &config.Config{
+		Mode:      config.ModeSimple,
+		Household: config.HouseholdConfig{SharedSpace: "household", Tiers: []string{"local"}},
+		Telegram:  config.TelegramConfig{BotTokenEnv: "T"},
+		Endpoints: []config.EndpointConfig{{Name: "m", BaseURL: "http://m:1/v1", Model: "q", Tags: []string{"local"}}},
+		Memory:    config.MemoryConfig{LoreCommand: []string{"/nonexistent/path/to/lore", "mcp"}},
+		Update:    config.UpdateConfig{Channel: config.UpdateStable},
+	}
+	if err := cfg.Validate(env(map[string]string{"T": "t"})); err != nil {
+		t.Fatalf("Validate() error = %v; a program this machine lacks is still a valid configuration", err)
+	}
 }
 
 func TestApplyDefaultsIsIdempotent(t *testing.T) {

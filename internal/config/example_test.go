@@ -2,9 +2,13 @@ package config_test
 
 import (
 	"fmt"
+	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 )
@@ -109,6 +113,91 @@ func TestExampleDemonstratesTierAsymmetry(t *testing.T) {
 	if !reachesCloud {
 		t.Errorf("jordan.Tiers = %v, want a chain that reaches the cloud tier", jordan.Tiers)
 	}
+}
+
+// TestExampleStatesEveryDefaultedKey closes the one hole TestExampleExercisesEveryField
+// cannot see.
+//
+// That test reflects over a *loaded* configuration, and loading applies defaults — so a
+// field with a default comes back non-zero whether the example set it or not, and the
+// example could quietly drop the key without anything failing. The keys below all have
+// defaults, and the example is meant to spell them out rather than rely on them: this is
+// the file an operator copies to learn what the knobs are, and a knob it never mentions
+// is a knob they will not know exists.
+//
+// It reads the YAML directly rather than through Load, because the whole point is to see
+// what the file says before defaulting has had a chance to speak for it.
+func TestExampleStatesEveryDefaultedKey(t *testing.T) {
+	data, err := os.ReadFile(examplePath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", examplePath, err)
+	}
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("parsing %s: %v", examplePath, err)
+	}
+
+	for _, path := range []string{
+		"data_dir",
+		"memory.lore_command",
+		"memory.search_limit",
+		"session.idle_timeout",
+		"capture.max_proposals_per_turn",
+		"update.channel",
+		"update.check_interval",
+	} {
+		if v, ok := lookupYAMLPath(raw, path); !ok || isEmptyYAMLValue(v) {
+			t.Errorf("kenward.example.yaml does not state %s; it has a default, so leaving it out still loads — "+
+				"but the example is what an operator reads to learn the key exists", path)
+		}
+	}
+
+	// Endpoint timeouts default too, and are per-endpoint rather than a single key.
+	endpoints, ok := raw["endpoints"].([]any)
+	if !ok || len(endpoints) == 0 {
+		t.Fatalf("kenward.example.yaml has no endpoints list")
+	}
+	for i, e := range endpoints {
+		m, ok := e.(map[string]any)
+		if !ok {
+			t.Fatalf("endpoints[%d] is not a mapping", i)
+		}
+		if v, ok := m["timeout"]; !ok || isEmptyYAMLValue(v) {
+			t.Errorf("kenward.example.yaml endpoints[%d] does not state a timeout; it defaults, so the example must show it", i)
+		}
+	}
+}
+
+// lookupYAMLPath walks a dotted path through a decoded YAML mapping.
+func lookupYAMLPath(root map[string]any, path string) (any, bool) {
+	var cur any = root
+	for _, part := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = m[part]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+// isEmptyYAMLValue reports whether a decoded value is present but says nothing — a null,
+// an empty string or an empty list. Stating a key and leaving it blank is not stating it.
+func isEmptyYAMLValue(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(t) == ""
+	case []any:
+		return len(t) == 0
+	case map[string]any:
+		return len(t) == 0
+	}
+	return false
 }
 
 // allowedZeroFields lists the exact field paths that are legitimately still at their
