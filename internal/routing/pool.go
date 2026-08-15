@@ -153,28 +153,31 @@ func (p *Pool) Complete(ctx context.Context, chain []string, req Request) (Compl
 // includes 429. llm.ErrInvalidRequest was never sent anywhere and falls
 // through to false.
 //
-// llm.ErrEmptyResponse deliberately does NOT fail over, and this is a privacy
-// decision, not an oversight — do not tidy it away. keel currently reports a
-// model that declined to answer (finish_reason "content_filter") and a machine
-// that produced a genuinely empty response through the same sentinel, with the
-// finish reason present only as prose in the error text. If routing treated
-// that as an availability failure it would walk the rest of the tier chain,
-// machine by machine — and for a space whose chain ends in a cloud tier, the
-// content a local model just declined to answer would be sent to a third-party
-// provider because a refusal was misread as an outage. That is the exact leak
-// this package exists to prevent, so the whole class stays with the caller.
+// An empty response (*llm.EmptyResponseError) splits on its finish reason, and
+// the split is a privacy decision, not an inconsistency — do not tidy it away.
+// A genuinely empty answer (no choices, an empty choice, no finish reason at
+// all) is a broken endpoint and fails over with cooldown, exactly like a 5xx.
+// But llm.FinishContentFilter means the model declined to answer, and a
+// refusal is a final answer, not an availability problem: if routing treated
+// it as an outage it would walk the rest of the tier chain offering the same
+// content to every machine in turn — and for a space whose chain ends in a
+// cloud tier, content a local model just declined would be handed to a
+// third-party provider because a refusal was misread as a malfunction. That is
+// the exact leak this package exists to prevent, so a content-filter refusal
+// returns to the caller unchanged and the endpoint is not cooled: nothing is
+// wrong with the machine.
 //
-// TODO(keel): keel is queued to return the parsed Response alongside
-// ErrEmptyResponse, with named finish-reason constants. Once that lands,
-// split the class: a content_filter finish reason keeps this behaviour
-// (returned to the caller unchanged, no cooldown — nothing is wrong with the
-// machine), while a genuinely empty or malformed response becomes
-// failover-eligible with cooldown. Until the distinction is structural,
-// failing over on any of it is unsafe, and string-matching the error text is
-// not a substitute. TestEmptyResponseDoesNotFailOver pins today's behaviour.
+// The check uses errors.As on the concrete type rather than reading the
+// Response llm.Chat returns alongside the sentinel, so the same path works
+// where no Response exists — the streaming API reports the finish reason only
+// through *llm.EmptyResponseError.
 func shouldFailover(err error) bool {
 	if llm.IsTransport(err) {
 		return true
+	}
+	var ee *llm.EmptyResponseError
+	if errors.As(err, &ee) {
+		return ee.FinishReason != llm.FinishContentFilter
 	}
 	var ae *llm.APIError
 	if errors.As(err, &ae) {

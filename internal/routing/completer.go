@@ -19,10 +19,12 @@ import (
 // never completed a round trip — refused dial, reset, TLS failure, a fired
 // per-attempt timeout — and the pool may try another machine. A *llm.APIError
 // means the endpoint answered non-2xx; only a 5xx status justifies failover,
-// because a 4xx would be rejected identically everywhere. Anything else —
-// llm.ErrEmptyResponse, llm.ErrInvalidRequest, a missing key variable — is
-// returned to the caller as-is and never triggers failover; see shouldFailover
-// for why an empty response in particular must not.
+// because a 4xx would be rejected identically everywhere. A
+// *llm.EmptyResponseError splits on its finish reason: genuinely empty fails
+// over, a content-filter refusal does not — see shouldFailover for why that
+// split is a privacy boundary. Anything else — llm.ErrInvalidRequest, a
+// missing key variable — is returned to the caller as-is and never triggers
+// failover.
 type Completer interface {
 	Complete(ctx context.Context, ep Endpoint, req Request) (Completion, error)
 }

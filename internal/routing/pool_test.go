@@ -459,61 +459,94 @@ func TestEndpointTimeoutCoolsAndFailsOver(t *testing.T) {
 	}
 }
 
-// TestEmptyResponseDoesNotFailOver pins the privacy rule around
-// llm.ErrEmptyResponse, and the comment matters more than the mechanics: a
-// model that declined to answer (finish_reason "content_filter") and a machine
-// that produced a genuinely empty response currently arrive through the same
-// sentinel, indistinguishable at the routing layer. If the pool failed over on
-// it, a refusal would be misread as an outage and the same content would be
-// offered to every machine down the tier chain — for a chain ending in a cloud
-// tier, that is routing handing a third-party provider content a local model
-// just declined, the exact leak this product exists to prevent. So the whole
-// class returns to the caller: no failover, no cooldown, the healthy sibling
-// untouched.
-//
-// The content_filter case must keep this behaviour permanently. The
-// genuine-empty case is failover-eligible in principle and should flip once
-// keel returns the parsed Response alongside the sentinel so the two are
-// distinguishable (see the TODO on shouldFailover); until then, safe beats
-// available.
+// emptyVsHealthyPool builds a pool over the real httpCompleter with an
+// endpoint serving body verbatim and a healthy sibling in the same tier that
+// counts the requests reaching it. Configuration order puts "empty" first, so
+// LRU tries it first.
+func emptyVsHealthyPool(t *testing.T, body string) (p *Pool, healthyHits *int32) {
+	t.Helper()
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, body)
+	}))
+	t.Cleanup(empty.Close)
+
+	var hits int32
+	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		io.WriteString(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(healthy.Close)
+
+	p = NewPool([]Endpoint{
+		{Name: "empty", BaseURL: empty.URL, Model: "m", Tags: []string{"local"}, Timeout: time.Second},
+		{Name: "healthy", BaseURL: healthy.URL, Model: "m", Tags: []string{"local"}, Timeout: time.Second},
+	}, NewHTTPCompleter(nil, nil))
+	return p, &hits
+}
+
+// TestEmptyResponseDoesNotFailOver pins the content-filter half of the
+// empty-response rule, and the reasoning matters more than the mechanics: a
+// model that declined to answer (finish_reason "content_filter") produced a
+// final answer, not an availability failure. If the pool failed over on it,
+// the refusal would be misread as an outage and the same content offered to
+// every machine down the tier chain — for a chain ending in a cloud tier, that
+// is routing handing a third-party provider content a local model just
+// declined, the exact leak this product exists to prevent. So it returns to
+// the caller unchanged, the healthy sibling is never consulted, and the
+// endpoint is not cooled: nothing is wrong with the machine. This behaviour is
+// permanent; its mirror for genuinely empty responses is
+// TestEmptyResponseFailsOverWhenGenuinelyEmpty.
 func TestEmptyResponseDoesNotFailOver(t *testing.T) {
+	p, healthyHits := emptyVsHealthyPool(t,
+		`{"choices":[{"message":{"content":""},"finish_reason":"content_filter"}]}`)
+
+	_, err := p.Complete(context.Background(), []string{"local"},
+		Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+	if !errors.Is(err, llm.ErrEmptyResponse) {
+		t.Fatalf("got %v, want llm.ErrEmptyResponse returned to the caller", err)
+	}
+	var ee *llm.EmptyResponseError
+	if !errors.As(err, &ee) || ee.FinishReason != llm.FinishContentFilter {
+		t.Fatalf("got %v, want *llm.EmptyResponseError carrying FinishContentFilter for the layers above", err)
+	}
+	if n := atomic.LoadInt32(healthyHits); n != 0 {
+		t.Fatalf("healthy sibling received %d requests, want 0 (a refusal must not walk the chain)", n)
+	}
+	if p.inCooldown("empty") {
+		t.Fatal("a content-filter refusal must not cool the endpoint: nothing is wrong with the machine")
+	}
+}
+
+// TestEmptyResponseFailsOverWhenGenuinelyEmpty is the mirror: an empty answer
+// with no content-filter finish reason is a malfunction — no choices at all,
+// or an empty choice from a model that claims it stopped normally — and a
+// broken endpoint deserves failover and cooldown, exactly like a 5xx.
+func TestEmptyResponseFailsOverWhenGenuinelyEmpty(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
 	}{
 		{"no choices", `{"choices":[]}`},
-		{"content filter refusal",
-			`{"choices":[{"message":{"content":""},"finish_reason":"content_filter"}]}`},
+		{"empty choice claiming normal stop",
+			`{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				io.WriteString(w, tc.body)
-			}))
-			defer empty.Close()
+			p, healthyHits := emptyVsHealthyPool(t, tc.body)
 
-			var healthyHits int32
-			healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				atomic.AddInt32(&healthyHits, 1)
-				io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}]}`)
-			}))
-			defer healthy.Close()
-
-			p := NewPool([]Endpoint{
-				{Name: "empty", BaseURL: empty.URL, Model: "m", Tags: []string{"local"}, Timeout: time.Second},
-				{Name: "healthy", BaseURL: healthy.URL, Model: "m", Tags: []string{"local"}, Timeout: time.Second},
-			}, NewHTTPCompleter(nil, nil))
-
-			_, err := p.Complete(context.Background(), []string{"local"},
+			comp, err := p.Complete(context.Background(), []string{"local"},
 				Request{Messages: []Message{{Role: "user", Content: "hi"}}})
-			if !errors.Is(err, llm.ErrEmptyResponse) {
-				t.Fatalf("got %v, want llm.ErrEmptyResponse returned to the caller", err)
+			if err != nil {
+				t.Fatalf("Complete: %v, want failover to the healthy sibling", err)
 			}
-			if n := atomic.LoadInt32(&healthyHits); n != 0 {
-				t.Fatalf("healthy sibling received %d requests, want 0 (no failover)", n)
+			if comp.Endpoint != "healthy" || comp.Text != "ok" {
+				t.Fatalf("comp = %+v, want the healthy sibling's completion", comp)
 			}
-			if p.inCooldown("empty") {
-				t.Fatal("an empty response must not cool the endpoint: nothing is known to be wrong with the machine")
+			if n := atomic.LoadInt32(healthyHits); n != 1 {
+				t.Fatalf("healthy sibling received %d requests, want 1", n)
+			}
+			if !p.inCooldown("empty") {
+				t.Fatal("a genuinely empty response must cool the endpoint")
 			}
 		})
 	}
