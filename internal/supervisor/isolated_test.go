@@ -3,15 +3,32 @@ package supervisor
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io/fs"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/BlueHeisenberg/keel/sandbox"
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 )
+
+// fakeSecretFS serves secret files from memory, always 0600. Paths are
+// normalised to forward slashes so credential paths joined with the host OS
+// separator still match.
+type fakeSecretFS map[string]string
+
+func (f fakeSecretFS) ReadSecretFile(path string) ([]byte, fs.FileMode, error) {
+	v, ok := f[strings.ReplaceAll(path, "\\", "/")]
+	if !ok {
+		return nil, 0, fs.ErrNotExist
+	}
+	return []byte(v), 0o600, nil
+}
 
 // isolatedTestConfig is a household of two enrolled members, one unenrolled, and
 // a group chat, each with their own bot token variable.
@@ -184,8 +201,8 @@ func TestIsolatedRunsOnePodPerUnit(t *testing.T) {
 		t.Fatal("a pod was created for an unenrolled member")
 	}
 	hs := mustHealth(t, h.sup)
-	if !errors.Is(hs["ana"].Err, ErrNotEnrolled) || hs["ana"].State != StateUnknown {
-		t.Fatalf("unenrolled member = %+v, want unknown/not-enrolled", hs["ana"])
+	if hs["ana"].State != StateNotEnrolled || hs["ana"].Err != nil {
+		t.Fatalf("unenrolled member = %+v, want awaiting enrolment with nil Err", hs["ana"])
 	}
 
 	// Each pod carries its own bot token under the variable the configuration
@@ -204,7 +221,7 @@ func TestIsolatedRunsOnePodPerUnit(t *testing.T) {
 
 	h.stop(t)
 
-	// Graceful stop for every pod; Destroy never — the work volume is where the
+	// Graceful stop for every pod; Purge never — the work volume is where the
 	// member's lore lives.
 	for _, name := range []string{"kenward-member-david", "kenward-member-eve", "kenward-group"} {
 		if _, _, stops := h.backend.counts(name); stops != 1 {
@@ -212,7 +229,7 @@ func TestIsolatedRunsOnePodPerUnit(t *testing.T) {
 		}
 	}
 	if h.backend.destroyed() != 0 {
-		t.Fatalf("Destroy called %d times, want never", h.backend.destroyed())
+		t.Fatalf("Purge called %d times, want never", h.backend.destroyed())
 	}
 	hs = mustHealth(t, h.sup)
 	if hs["david"].State != StateStopped || hs["group"].State != StateStopped {
@@ -311,8 +328,12 @@ func TestIsolatedHealthBeforeStartAndAfterStop(t *testing.T) {
 		t.Fatalf("Health before Start reported %d units, want 4", len(hs))
 	}
 	for name, u := range hs {
-		if u.State != StateUnknown {
-			t.Fatalf("unit %s before Start = %v, want unknown", name, u.State)
+		want := StateUnknown
+		if name == "ana" {
+			want = StateNotEnrolled
+		}
+		if u.State != want {
+			t.Fatalf("unit %s before Start = %v, want %v", name, u.State, want)
 		}
 	}
 
@@ -325,6 +346,451 @@ func TestIsolatedHealthBeforeStartAndAfterStop(t *testing.T) {
 	}
 	if err := h.sup.Stop(context.Background()); err != nil {
 		t.Fatalf("second Stop: %v", err)
+	}
+}
+
+// waitAllReady waits for the three pods of the standard test household.
+func (h *isolatedHarness) waitAllReady(t *testing.T) {
+	t.Helper()
+	waitFor(t, "pods ready", func() bool {
+		hs := mustHealth(t, h.sup)
+		return hs["david"].State == StateReady &&
+			hs["eve"].State == StateReady &&
+			hs["group"].State == StateReady
+	})
+}
+
+func TestIsolatedRollRecreatesInOrderAndWaitsForHealth(t *testing.T) {
+	h := newIsolatedHarness(t, func(o *IsolatedOptions) {
+		o.RollTimeout = time.Second
+	})
+	h.start(t)
+	h.waitAllReady(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.sup.Roll(ctx); err != nil {
+		t.Fatalf("Roll: %v", err)
+	}
+
+	// Deterministic order: members in configuration order, the group last. Roll
+	// only returned nil because every pod held healthy across two polls before
+	// the next was touched, so a completed roll is itself the health-wait proof;
+	// the stop-on-failure test covers the sequencing when a wait fails.
+	want := []string{"kenward-member-david", "kenward-member-eve", "kenward-group"}
+	got := h.backend.recreations()
+	if len(got) != len(want) {
+		t.Fatalf("recreations = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("recreation order = %v, want %v", got, want)
+		}
+	}
+
+	// Each pod was gracefully stopped exactly once for its recreation — the
+	// drain — and recreated exactly once.
+	for _, name := range want {
+		if _, _, stops := h.backend.counts(name); stops != 1 {
+			t.Fatalf("pod %s stopped %d times during roll, want 1", name, stops)
+		}
+		if n := h.backend.recreated(name); n != 1 {
+			t.Fatalf("pod %s recreated %d times, want 1", name, n)
+		}
+	}
+
+	hs := mustHealth(t, h.sup)
+	for _, unit := range []string{"david", "eve", "group"} {
+		if hs[unit].State != StateReady {
+			t.Fatalf("after roll, %s = %v, want ready", unit, hs[unit].State)
+		}
+	}
+
+	h.stop(t)
+}
+
+func TestIsolatedRollPreservesVolumeIdentity(t *testing.T) {
+	h := newIsolatedHarness(t, func(o *IsolatedOptions) { o.RollTimeout = time.Second })
+	h.start(t)
+	h.waitAllReady(t)
+
+	names := []string{"kenward-member-david", "kenward-member-eve", "kenward-group"}
+	before := map[string]int{}
+	for _, name := range names {
+		id, ok := h.backend.volumeID(name)
+		if !ok {
+			t.Fatalf("pod %s has no volume", name)
+		}
+		before[name] = id
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := h.sup.Roll(ctx); err != nil {
+		t.Fatalf("Roll: %v", err)
+	}
+
+	// The recreated pods are attached to the same volumes, by identity. A roll
+	// that came back with fresh empty volumes would look exactly this
+	// successful from every other angle — and the members' memory would be
+	// gone. This is the assertion behind splitting Recreate from Purge.
+	for _, name := range names {
+		id, ok := h.backend.volumeID(name)
+		if !ok || id != before[name] {
+			t.Fatalf("pod %s volume identity changed across roll: %d -> %d (ok=%v)", name, before[name], id, ok)
+		}
+	}
+	if h.backend.destroyed() != 0 {
+		t.Fatal("a roll purged a pod")
+	}
+
+	h.stop(t)
+}
+
+func TestIsolatedRollFailsWhenHealthLies(t *testing.T) {
+	// The new pod reports running exactly once and then dies — the health check
+	// that lies. One sighting is not health: the supervisor requires the pod to
+	// hold running across consecutive polls, so this roll fails at david and
+	// nobody else is touched. What "healthy" means here is a property of the
+	// pod process, held over time; the unit inside exits on fatal wiring
+	// errors, which is what makes process-up meaningful at all.
+	h := newIsolatedHarness(t, func(o *IsolatedOptions) { o.RollTimeout = time.Second })
+	h.backend.setRecreateFlap("kenward-member-david")
+	h.start(t)
+	h.waitAllReady(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := h.sup.Roll(ctx)
+
+	var re *RollError
+	if !errors.As(err, &re) || re.Member != "david" {
+		t.Fatalf("Roll = %v, want a *RollError at david", err)
+	}
+	if !strings.Contains(err.Error(), "after recreation") {
+		t.Fatalf("Roll error = %v, want it to say the pod died after recreation", err)
+	}
+	if got := h.backend.recreations(); len(got) != 1 || got[0] != "kenward-member-david" {
+		t.Fatalf("recreations = %v, want david only", got)
+	}
+
+	h.stop(t)
+}
+
+func TestIsolatedRollInterruptedMidwayIsCoherent(t *testing.T) {
+	// Stop lands while eve's new pod is still warming up. What must be left
+	// behind is coherent: david rolled and healthy, eve recreated (not stopped
+	// and abandoned), the group untouched on its working old pod.
+	h := newIsolatedHarness(t, func(o *IsolatedOptions) { o.RollTimeout = 10 * time.Second })
+	h.backend.setRecreateWarmup("kenward-member-eve", 1<<30)
+	h.start(t)
+	h.waitAllReady(t)
+
+	rollErr := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		rollErr <- h.sup.Roll(ctx)
+	}()
+	waitFor(t, "roll to reach eve", func() bool {
+		return h.backend.recreated("kenward-member-eve") == 1
+	})
+
+	// Before the shutdown: nobody is stopped-but-not-recreated, and the group
+	// has not been touched at all.
+	if _, _, stops := h.backend.counts("kenward-group"); stops != 0 {
+		t.Fatalf("group was stopped %d times mid-roll, want 0", stops)
+	}
+	if h.backend.recreated("kenward-group") != 0 {
+		t.Fatal("group was recreated after the roll was interrupted")
+	}
+	if h.backend.recreated("kenward-member-david") != 1 {
+		t.Fatal("david was not rolled before the interruption")
+	}
+
+	h.stop(t)
+	if err := <-rollErr; err == nil {
+		t.Fatal("interrupted Roll returned nil")
+	}
+	if got := h.backend.recreations(); len(got) != 2 {
+		t.Fatalf("recreations after interruption = %v, want david and eve only", got)
+	}
+}
+
+// fiveUnitConfig is four members plus the group, for the failure-mid-sequence
+// case.
+func fiveUnitConfig() *config.Config {
+	cfg := &config.Config{
+		Mode: config.ModeIsolated,
+		Household: config.HouseholdConfig{
+			Name: "Home", SharedSpace: "household", GroupChatID: groupChatID, Tiers: []string{"local"},
+		},
+		Telegram: config.TelegramConfig{BotTokenEnv: "TOK_GROUP"},
+	}
+	for i := 1; i <= 4; i++ {
+		id := fmt.Sprintf("m%d", i)
+		cfg.Members = append(cfg.Members, config.MemberConfig{
+			ID: id, Name: id, TelegramID: int64(i),
+			PrivateSpace: id + "-private", Tiers: []string{"local"},
+			BotTokenEnv: "TOK_" + id,
+		})
+	}
+	return cfg
+}
+
+func TestIsolatedRollFailureLeavesSurvivorsServing(t *testing.T) {
+	backend := newFakeBackend()
+	opts := isolatedTestOptions(backend)
+	opts.RollTimeout = 40 * time.Millisecond
+	sup, err := newIsolated(fiveUnitConfig(), opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+	backend.setRecreateBroken("kenward-member-m3")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startErr := make(chan error, 1)
+	go func() { startErr <- sup.Start(ctx) }()
+	waitFor(t, "all five ready", func() bool {
+		hs := mustHealth(t, sup)
+		return hs["m1"].State == StateReady && hs["m2"].State == StateReady &&
+			hs["m3"].State == StateReady && hs["m4"].State == StateReady &&
+			hs["group"].State == StateReady
+	})
+
+	rollCtx, rollCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer rollCancel()
+	rerr := sup.Roll(rollCtx)
+	var re *RollError
+	if !errors.As(rerr, &re) || re.Member != "m3" {
+		t.Fatalf("Roll = %v, want a *RollError at m3", rerr)
+	}
+
+	// Members one and two rolled; three failed; four and the group were never
+	// touched and are still serving — that is what stopping on failure means.
+	for name, want := range map[string]int{
+		"kenward-member-m1": 1, "kenward-member-m2": 1, "kenward-member-m3": 1,
+		"kenward-member-m4": 0, "kenward-group": 0,
+	} {
+		if got := backend.recreated(name); got != want {
+			t.Fatalf("pod %s recreated %d times, want %d", name, got, want)
+		}
+	}
+	for _, survivor := range []string{"kenward-member-m4", "kenward-group"} {
+		if !backend.isRunning(survivor) {
+			t.Fatalf("survivor %s is not running after the failed roll", survivor)
+		}
+	}
+	hs := mustHealth(t, sup)
+	if hs["m4"].State != StateReady || hs["group"].State != StateReady {
+		t.Fatalf("survivors after failed roll: m4=%v group=%v, want ready", hs["m4"].State, hs["group"].State)
+	}
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer stopCancel()
+	if err := sup.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := <-startErr; err != nil {
+		t.Fatalf("Start returned: %v", err)
+	}
+}
+
+func TestIsolatedRollsAreExclusive(t *testing.T) {
+	// Whatever two concurrent rolls could mean, it must never be two recreates
+	// of the same member.
+	h := newIsolatedHarness(t, func(o *IsolatedOptions) { o.RollTimeout = 10 * time.Second })
+	h.backend.setRecreateWarmup("kenward-member-david", 100)
+	h.start(t)
+	h.waitAllReady(t)
+
+	first := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		first <- h.sup.Roll(ctx)
+	}()
+	waitFor(t, "first roll to begin", func() bool {
+		return h.backend.recreated("kenward-member-david") == 1
+	})
+
+	if err := h.sup.Roll(context.Background()); err == nil || !strings.Contains(err.Error(), "already in progress") {
+		t.Fatalf("concurrent Roll = %v, want already-in-progress", err)
+	}
+
+	if err := <-first; err != nil {
+		t.Fatalf("first Roll: %v", err)
+	}
+	for _, name := range []string{"kenward-member-david", "kenward-member-eve", "kenward-group"} {
+		if got := h.backend.recreated(name); got != 1 {
+			t.Fatalf("pod %s recreated %d times, want exactly 1", name, got)
+		}
+	}
+
+	h.stop(t)
+}
+
+func TestIsolatedRollStopsOnFirstFailure(t *testing.T) {
+	before := runtime.NumGoroutine()
+
+	h := newIsolatedHarness(t, func(o *IsolatedOptions) {
+		o.RollTimeout = 40 * time.Millisecond
+	})
+	h.backend.setRecreateBroken("kenward-member-eve")
+	h.start(t)
+	h.waitAllReady(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := h.sup.Roll(ctx)
+
+	var re *RollError
+	if !errors.As(err, &re) {
+		t.Fatalf("Roll = %v, want a *RollError", err)
+	}
+	if re.Member != "eve" || re.Group {
+		t.Fatalf("RollError names %q (group=%v), want eve", re.Member, re.Group)
+	}
+
+	// The roll stopped at eve: david was recreated, the group was never touched
+	// and stayed on its working old pod, serving throughout.
+	got := h.backend.recreations()
+	if len(got) != 2 || got[0] != "kenward-member-david" || got[1] != "kenward-member-eve" {
+		t.Fatalf("recreations = %v, want david then eve and nothing more", got)
+	}
+	if n := h.backend.recreated("kenward-group"); n != 0 {
+		t.Fatalf("group pod recreated %d times after an earlier failure, want 0", n)
+	}
+	hs := mustHealth(t, h.sup)
+	if hs["group"].State != StateReady || hs["group"].Restarts != 0 {
+		t.Fatalf("group after failed roll = %+v, want untouched and ready", hs["group"])
+	}
+	if hs["david"].State != StateReady {
+		t.Fatalf("david after roll = %v, want ready on the new image", hs["david"].State)
+	}
+	// Eve's monitor keeps trying to bring her back, so her state oscillates;
+	// what must hold is that the failure is recorded and counted.
+	if hs["eve"].Err == nil || hs["eve"].Restarts == 0 {
+		t.Fatalf("eve after failed roll = %+v, want the failure retained and counted", hs["eve"])
+	}
+
+	h.stop(t)
+
+	// No goroutine leaks on the failure path.
+	waitFor(t, "goroutines to drain", func() bool {
+		runtime.GC()
+		return runtime.NumGoroutine() <= before
+	})
+}
+
+// fakeBackend must satisfy the full Backend contract, Recreate and Purge
+// included, so these tests exercise the same interface production runs on.
+var _ sandbox.Backend = (*fakeBackend)(nil)
+
+func TestIsolatedRollRequiresStart(t *testing.T) {
+	h := newIsolatedHarness(t, nil)
+	if err := h.sup.Roll(context.Background()); err == nil {
+		t.Fatal("Roll before Start succeeded; it must require a started supervisor")
+	}
+}
+
+func TestIsolatedPodConfigProvisioning(t *testing.T) {
+	cfgPath := t.TempDir() + "/kenward.yaml"
+	yaml := []byte("mode: isolated\n")
+	if err := os.WriteFile(cfgPath, yaml, 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	backend := newFakeBackend()
+	opts := isolatedTestOptions(backend)
+	opts.ConfigFile = cfgPath
+	sup, err := newIsolated(isolatedTestConfig(), opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+
+	// Every pod gets the compose-identical argv and the configuration at the
+	// compose-identical path, so both deployment shapes run one contract.
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		wantFlag := "--member=" + string(p.key.member)
+		if p.key.group {
+			wantFlag = "--group"
+		}
+		want := []string{"--config=" + PodConfigPath, "--data-dir=" + DefaultPodDataDir, wantFlag}
+		if len(spec.Command) != len(want) {
+			t.Fatalf("pod %s command = %v, want %v", p.name, spec.Command, want)
+		}
+		for i := range want {
+			if spec.Command[i] != want[i] {
+				t.Fatalf("pod %s command = %v, want %v", p.name, spec.Command, want)
+			}
+		}
+		if len(spec.Files) != 1 || spec.Files[0].Path != PodConfigPath || string(spec.Files[0].Data) != string(yaml) {
+			t.Fatalf("pod %s files = %+v, want the configuration at %s", p.name, spec.Files, PodConfigPath)
+		}
+	}
+}
+
+func TestIsolatedPodTokenFromFileAndCredential(t *testing.T) {
+	// david's token comes from a file, eve's from a systemd credential; no
+	// environment variable exists anywhere. Each pod receives its token in the
+	// shape its own resolver will look for: the file at the same path, 0600;
+	// the credential as a file under a synthetic CREDENTIALS_DIRECTORY.
+	cfg := &config.Config{
+		Mode: config.ModeIsolated,
+		Household: config.HouseholdConfig{
+			Name: "Home", SharedSpace: "household", Tiers: []string{"local"},
+		},
+		Members: []config.MemberConfig{
+			{ID: "david", Name: "David", TelegramID: 1, PrivateSpace: "d",
+				Tiers: []string{"local"}, BotTokenFile: "/etc/kenward/tokens/david"},
+			{ID: "eve", Name: "Eve", TelegramID: 2, PrivateSpace: "e",
+				Tiers: []string{"local"}},
+		},
+	}
+	secrets := config.NewSecrets(config.SecretOptions{
+		LookupEnv:      func(string) (string, bool) { return "", false },
+		FS:             fakeSecretFS{"/etc/kenward/tokens/david": "tok-david-file", "/creds/bot_token.eve": "tok-eve-cred"},
+		CredentialsDir: "/creds",
+	})
+	opts := isolatedTestOptions(newFakeBackend())
+	opts.Secrets = secrets
+	sup, err := newIsolated(cfg, opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		switch string(p.key.member) {
+		case "david":
+			if len(spec.Files) != 1 || spec.Files[0].Path != "/etc/kenward/tokens/david" ||
+				string(spec.Files[0].Data) != "tok-david-file" || spec.Files[0].Mode != 0o600 {
+				t.Fatalf("david's token delivery = %+v, want a 0600 file at the configured path", spec.Files)
+			}
+			for k := range spec.Env {
+				if strings.Contains(strings.ToLower(k), "token") {
+					t.Fatalf("david's token leaked into the environment as %s", k)
+				}
+			}
+		case "eve":
+			if spec.Env["CREDENTIALS_DIRECTORY"] != podCredentialsDir {
+				t.Fatalf("eve's pod has no synthetic credentials directory: %v", spec.Env)
+			}
+			wantPath := podCredentialsDir + "/bot_token.eve"
+			if len(spec.Files) != 1 || spec.Files[0].Path != wantPath ||
+				string(spec.Files[0].Data) != "tok-eve-cred" || spec.Files[0].Mode != 0o600 {
+				t.Fatalf("eve's token delivery = %+v, want the credential at %s", spec.Files, wantPath)
+			}
+		}
 	}
 }
 

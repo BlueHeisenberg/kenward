@@ -180,26 +180,52 @@ func (s *fakeSessions) unlock(ids ...domain.MemberID) {
 
 // fakeBackend scripts pod behaviour by name. A pod whose name is in crashLoop
 // reports not-running on every Inspect no matter how often it is started, which
-// is exactly what a crash-looping member looks like from the host.
+// is exactly what a crash-looping member looks like from the host. It also
+// implements PodRecreator; a name in recreateBroken models a new image that
+// crashes on startup — the recreate call itself succeeds, and the resulting
+// container never runs.
 type fakeBackend struct {
-	mu        sync.Mutex
-	created   map[string]sandbox.Spec
-	running   map[string]bool
-	crashLoop map[string]bool
+	mu             sync.Mutex
+	created        map[string]sandbox.Spec
+	running        map[string]bool
+	crashLoop      map[string]bool
+	recreateBroken map[string]bool
+	// recreateWarmup makes a recreated pod report not-running for that many
+	// Inspect calls before coming up, modelling a slow start.
+	recreateWarmup map[string]int
+	warmupLeft     map[string]int
+	// recreateFlap makes a recreated pod report running exactly once and then
+	// die — the health check that lies.
+	recreateFlap map[string]bool
+	flapArmed    map[string]bool
+	// volumes models the named work volume: created once with Create, reused
+	// by Recreate, deleted only by Purge. The id is the identity assertion —
+	// a recreation that changed it would have lost the member's lore.
+	volumes   map[string]int
+	volSeq    int
 	creates   map[string]int
 	starts    map[string]int
 	stops     map[string]int
+	recreates map[string]int
 	destroys  int
+	events    []string
 }
 
 func newFakeBackend() *fakeBackend {
 	return &fakeBackend{
-		created:   make(map[string]sandbox.Spec),
-		running:   make(map[string]bool),
-		crashLoop: make(map[string]bool),
-		creates:   make(map[string]int),
-		starts:    make(map[string]int),
-		stops:     make(map[string]int),
+		created:        make(map[string]sandbox.Spec),
+		running:        make(map[string]bool),
+		crashLoop:      make(map[string]bool),
+		recreateBroken: make(map[string]bool),
+		recreateWarmup: make(map[string]int),
+		warmupLeft:     make(map[string]int),
+		recreateFlap:   make(map[string]bool),
+		flapArmed:      make(map[string]bool),
+		volumes:        make(map[string]int),
+		creates:        make(map[string]int),
+		starts:         make(map[string]int),
+		stops:          make(map[string]int),
+		recreates:      make(map[string]int),
 	}
 }
 
@@ -207,6 +233,57 @@ func (b *fakeBackend) setCrashLoop(name string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.crashLoop[name] = true
+}
+
+// setRecreateBroken makes the named pod's next recreation produce a container
+// that never runs, as a broken new image would.
+func (b *fakeBackend) setRecreateBroken(name string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.recreateBroken[name] = true
+}
+
+// setRecreateWarmup makes the named pod report not-running for n Inspect calls
+// after each recreation before coming up.
+func (b *fakeBackend) setRecreateWarmup(name string, n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.recreateWarmup[name] = n
+}
+
+// setRecreateFlap makes the named pod report running exactly once after
+// recreation and then die.
+func (b *fakeBackend) setRecreateFlap(name string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.recreateFlap[name] = true
+}
+
+// volumeID returns the identity of the pod's work volume.
+func (b *fakeBackend) volumeID(name string) (int, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	id, ok := b.volumes[name]
+	return id, ok
+}
+
+func (b *fakeBackend) isRunning(name string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.running[name]
+}
+
+// recreations lists the pods recreated so far, in order.
+func (b *fakeBackend) recreations() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for _, e := range b.events {
+		if strings.HasPrefix(e, "recreate ") {
+			out = append(out, strings.TrimPrefix(e, "recreate "))
+		}
+	}
+	return out
 }
 
 func (b *fakeBackend) kill(name string) {
@@ -219,6 +296,12 @@ func (b *fakeBackend) counts(name string) (creates, starts, stops int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.creates[name], b.starts[name], b.stops[name]
+}
+
+func (b *fakeBackend) recreated(name string) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.recreates[name]
 }
 
 func (b *fakeBackend) destroyed() int {
@@ -240,6 +323,13 @@ func (b *fakeBackend) Create(_ context.Context, spec sandbox.Spec) (sandbox.Hand
 	b.created[spec.Name] = spec
 	b.creates[spec.Name]++
 	b.running[spec.Name] = !b.crashLoop[spec.Name]
+	// Volume creation is idempotent, as in keel: an existing volume is reused
+	// with its identity — and its data — intact.
+	if _, ok := b.volumes[spec.Name]; !ok {
+		b.volSeq++
+		b.volumes[spec.Name] = b.volSeq
+	}
+	b.events = append(b.events, "create "+spec.Name)
 	return sandbox.Handle{ID: spec.Name}, nil
 }
 
@@ -251,6 +341,7 @@ func (b *fakeBackend) Start(_ context.Context, id string) error {
 	}
 	b.starts[id]++
 	b.running[id] = !b.crashLoop[id]
+	b.events = append(b.events, "start "+id)
 	return nil
 }
 
@@ -262,15 +353,45 @@ func (b *fakeBackend) Stop(_ context.Context, id string) error {
 	}
 	b.stops[id]++
 	b.running[id] = false
+	b.events = append(b.events, "stop "+id)
 	return nil
 }
 
-func (b *fakeBackend) Destroy(_ context.Context, id string) error {
+// Recreate mirrors keel's contract: the container is replaced from the spec and
+// the work volume survives with its identity intact — no path through here
+// touches b.volumes. A name marked recreateBroken becomes a crash-looper from
+// here on — its new image never runs; warmup and flap script slow starts and
+// lying health.
+func (b *fakeBackend) Recreate(_ context.Context, spec sandbox.Spec) (sandbox.Handle, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.recreateBroken[spec.Name] {
+		b.crashLoop[spec.Name] = true
+	}
+	b.created[spec.Name] = spec
+	b.recreates[spec.Name]++
+	b.running[spec.Name] = !b.crashLoop[spec.Name]
+	if w := b.recreateWarmup[spec.Name]; w > 0 && b.running[spec.Name] {
+		b.warmupLeft[spec.Name] = w
+		b.running[spec.Name] = false
+	}
+	if b.recreateFlap[spec.Name] {
+		b.running[spec.Name] = true
+		b.flapArmed[spec.Name] = true
+	}
+	b.events = append(b.events, "recreate "+spec.Name)
+	return sandbox.Handle{ID: spec.Name}, nil
+}
+
+// Purge deletes the pod and its volume — the one call the supervisor must never
+// make; purges() lets tests assert it never happened.
+func (b *fakeBackend) Purge(_ context.Context, id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.destroys++
 	delete(b.created, id)
 	delete(b.running, id)
+	delete(b.volumes, id)
 	return nil
 }
 
@@ -280,7 +401,20 @@ func (b *fakeBackend) Inspect(_ context.Context, id string) (sandbox.Status, err
 	if _, ok := b.created[id]; !ok {
 		return sandbox.Status{}, sandbox.ErrSandboxNotFound
 	}
-	return sandbox.Status{Running: b.running[id]}, nil
+	if n := b.warmupLeft[id]; n > 0 {
+		b.warmupLeft[id] = n - 1
+		if b.warmupLeft[id] == 0 {
+			b.running[id] = true
+		}
+		return sandbox.Status{Running: false}, nil
+	}
+	running := b.running[id]
+	if running && b.flapArmed[id] {
+		// Seen alive exactly once; dead by the next look.
+		b.flapArmed[id] = false
+		b.running[id] = false
+	}
+	return sandbox.Status{Running: running}, nil
 }
 
 func (b *fakeBackend) Exec(context.Context, string, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {

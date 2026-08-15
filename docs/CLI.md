@@ -57,7 +57,12 @@ Details the first draft of this document left out, settled during implementation
   stopping** — so a stray Enter never downgrades the mode somebody just asked for.
 - **Tokens are never written to the config**, only environment variable *names*. The
   wizard offers to write a `.env` beside the config at 0600, never overwrites an existing
-  one, and prints variable names rather than values.
+  one, and prints variable names rather than values. On Linux it also says that the
+  shipped systemd unit supplies secrets with `LoadCredential=` rather than an environment
+  file, and that a secret comes from a variable, a file or a credential but from exactly
+  one of them. Without that note an operator who has just been told to set
+  `KENWARD_BOT_TOKEN` opens the unit, finds no `EnvironmentFile=` in it, and concludes
+  they have misread one of the two.
 - **Per-member tokens cannot exist yet at setup time** in isolated mode, since each member
   creates their own bot during enrolment. The wizard validates against the process
   environment overlaid with the variables it is telling the operator to create, and lists
@@ -94,8 +99,11 @@ does nothing is how someone ends up believing they are isolated when they are no
 
 - Loads and validates the config; refuses to start on any validation error, printing all
   of them at once.
-- Refuses to start with a missing environment variable, listing every one. Never starts
-  half-configured.
+- Refuses to start with a secret it cannot read, listing every one and where it looked —
+  an environment variable that is unset or empty, a file that is missing or too
+  permissive, a systemd credential that is not there. Never starts half-configured: a
+  node missing one member's token would serve everyone else and silently drop that
+  member.
 - Logs, on startup, exactly one summary of what it will and will not do — the mode, the
   members served, and each space's tier chain. An operator should be able to read that
   line and know whether a private space can reach a provider.
@@ -258,18 +266,26 @@ swapped atomically, and rolled back automatically if the new version does not co
 its next start.
 
 Consent is required for a major version or a release flagged as changing
-security-relevant defaults. The question is asked here, at the terminal, and answered
-`y`. **Nobody there means no** — a pipe, a cron job, a script or a closed stdin all
-resolve to declining, because a release that may move routing or privacy defaults is
-exactly the one that must not slip through because nothing was listening.
+security-relevant behaviour, and the prompt says which of the two it is, because they
+deserve different amounts of thought. Answer `y` or `n`. **Anything else is unanswered,
+not declined** — no terminal, a pipe, a cron job, a closed stdin — which means nothing is
+applied now and the same release is offered again next time. A considered `n` is
+remembered and not raised again until a different version appears. One unheard question
+must never suppress a security release permanently, and a pipe that ended is not somebody
+deciding.
 
 Prints the channel in use, and says so plainly when it is `off`.
 
-**This command is currently the only way kenward updates.** Nothing schedules a check,
-so `update.check_interval` is read and not yet acted on, and an installation left alone
-stays on the version it has however `update.channel` is set. Section 9 of
-IMPLEMENTATION.md lists exactly which of the update requirements are wired and which are
-not.
+A running node checks and applies on its own; this command exists for the cases that one
+cannot handle. It judges a manifest and a build by exactly the same rules — same
+signature check, same manifest-age refusal, same health check — because a `kenward
+update` that was more permissive than the scheduled path would be the thing somebody
+reaches for precisely when the automatic path has already refused. The one difference is
+drain: a CLI invocation is serving nobody, so there is no turn in flight to wait for.
+
+**It is currently the only way a major or security-flagged release gets applied**, since
+the running node has no way to ask the household over Telegram yet and therefore holds
+such releases back. Section 9 of [IMPLEMENTATION.md](IMPLEMENTATION.md) records why.
 
 Applying an update does not restart the running node: it says so, and leaves the restart
 to whoever runs the machine. Restarting the household's assistant out from under an

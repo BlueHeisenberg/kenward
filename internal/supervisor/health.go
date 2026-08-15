@@ -8,12 +8,11 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 )
 
-// ErrNotEnrolled marks a configured member who has not yet claimed their invite.
-//
-// Such a member has no unit at all — nothing was started, nothing failed — so their
-// UnitHealth carries StateUnknown, zero restarts, and this error so a renderer can say
-// "not enrolled" rather than guessing. It is information, never a failure: a household
-// where half the members have not claimed their codes yet is healthy, not degraded.
+// ErrNotEnrolled reports that a member has not yet claimed their invite where that
+// prevents what the caller asked for — selecting them for a single-unit process
+// with no way to enrol, for instance. In Health the same fact is a state, not an
+// error: a unit that does not exist yet has StateNotEnrolled, a nil Err and zero
+// restarts, because a household mid-onboarding is healthy, not degraded.
 var ErrNotEnrolled = errors.New("supervisor: member is not enrolled; no unit to run")
 
 // unitKey identifies one unit within a supervisor: a member's assistant, or the
@@ -69,7 +68,8 @@ func (t *tracker) add(k unitKey) {
 }
 
 // addNotEnrolled registers a configured member with no unit. The record reports
-// StateUnknown with ErrNotEnrolled and never moves.
+// StateNotEnrolled — a known situation, not an absence of information and not a
+// failure — and never moves until promote is called for a claimed invite.
 func (t *tracker) addNotEnrolled(id domain.MemberID) {
 	k := unitKey{member: id}
 	t.mu.Lock()
@@ -78,7 +78,7 @@ func (t *tracker) addNotEnrolled(id domain.MemberID) {
 		return
 	}
 	t.order = append(t.order, k)
-	t.units[k] = &unitRecord{state: StateUnknown, since: t.now(), err: ErrNotEnrolled, virtual: true}
+	t.units[k] = &unitRecord{state: StateNotEnrolled, since: t.now(), virtual: true}
 }
 
 // promote turns a not-enrolled record into a live one, for a member who claimed

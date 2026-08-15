@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/enrol"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -164,10 +165,12 @@ func TestSingleSelectionErrors(t *testing.T) {
 		return err
 	}
 
-	// An unenrolled member is an error, never an empty run.
+	// An unenrolled member without a claimer is an error: such a pod could
+	// neither serve nor enrol anyone, and starting it would only look healthy.
+	// With a claimer it starts claim-only — TestSingleClaimOnlyPod covers that.
 	err := newWith(singleTestConfig(), func(o *SingleOptions) { o.Member = "ana" })
 	if !errors.Is(err, ErrNotEnrolled) {
-		t.Fatalf("unenrolled member = %v, want ErrNotEnrolled", err)
+		t.Fatalf("unenrolled member without claimer = %v, want ErrNotEnrolled", err)
 	}
 
 	// A member the household does not have.
@@ -196,6 +199,94 @@ func TestSingleSelectionErrors(t *testing.T) {
 	if err := newWith(simple, func(o *SingleOptions) { o.Member = "david" }); err == nil {
 		t.Fatal("NewSingle accepted a simple-mode configuration")
 	}
+}
+
+func TestSingleClaimOnlyPodServesAfterClaim(t *testing.T) {
+	// D-023: a member's bot exists before they claim, and the claim happens in
+	// a conversation with that bot. So an unenrolled member's pod starts
+	// claim-only — no unit, nothing served — and the successful claim mints
+	// their unit in place, without a restart.
+	claimer, err := enrol.New(enrol.NewMemStore(), testBinder{})
+	if err != nil {
+		t.Fatalf("enrol.New: %v", err)
+	}
+	code, err := claimer.Mint(context.Background(), "Ana", time.Hour)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+	anaID := enrol.MemberIDFor("Ana")
+	if anaID != "ana" {
+		t.Fatalf("MemberIDFor(Ana) = %q; the test config expects %q", anaID, "ana")
+	}
+
+	h := newSingleHarness(t, singleTestConfig(), func(o *SingleOptions) {
+		o.Member = "ana"
+		o.Enrol = claimer
+	})
+	h.sessions.unlock("ana")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	h.cancel = cancel
+	go func() { h.startErr <- h.sup.Start(ctx) }()
+
+	// The claim-only window: the pod is up, the member is awaiting enrolment,
+	// and nothing is served.
+	waitFor(t, "claim-only state", func() bool {
+		return mustHealth(t, h.sup)["ana"].State == StateNotEnrolled
+	})
+	const anaTelegramID = int64(333)
+	h.fake.Inject(transport.Inbound{ChatID: anaTelegramID, UserID: anaTelegramID, Text: "hello?", MessageID: 1})
+	time.Sleep(30 * time.Millisecond)
+	if n := len(h.fake.Sent()); n != 0 {
+		t.Fatalf("claim-only pod sent %d messages to a codeless sender, want silence", n)
+	}
+
+	// The claim mints the unit in place: onboarding, then service, no restart.
+	h.fake.Inject(transport.Inbound{ChatID: anaTelegramID, UserID: anaTelegramID, Text: code, MessageID: 2})
+	waitFor(t, "onboarding sent", func() bool { return len(h.fake.Sent()) >= 1 })
+	waitFor(t, "ana's unit ready", func() bool {
+		return mustHealth(t, h.sup)["ana"].State == StateReady
+	})
+	before := len(h.fake.Sent())
+	h.fake.Inject(transport.Inbound{ChatID: anaTelegramID, UserID: anaTelegramID, Text: "hi", MessageID: 3})
+	waitFor(t, "ana's first turn", func() bool {
+		for _, o := range h.fake.Sent()[before:] {
+			if o.Text == "via:local" && o.ChatID == anaTelegramID {
+				return true
+			}
+		}
+		return false
+	})
+
+	// A different member's code landing on this bot binds them, but must never
+	// mint their unit in ana's address space — their pod is elsewhere.
+	bobCode, err := claimer.Mint(context.Background(), "Bob", time.Hour)
+	if err != nil {
+		t.Fatalf("Mint bob: %v", err)
+	}
+	h.fake.Inject(transport.Inbound{ChatID: 444, UserID: 444, Text: bobCode, MessageID: 4})
+	waitFor(t, "bob's onboarding", func() bool {
+		for _, o := range h.fake.Sent() {
+			if o.ChatID == 444 {
+				return true
+			}
+		}
+		return false
+	})
+	hs, err := h.sup.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	for _, u := range hs {
+		if u.Member == enrol.MemberIDFor("Bob") {
+			t.Fatal("a foreign member's claim minted a unit in this pod")
+		}
+	}
+	if len(hs) != 1 {
+		t.Fatalf("Health reports %d units, want ana's alone", len(hs))
+	}
+
+	h.stop(t)
 }
 
 func TestSingleStopDrainsInFlightTurnThenLocks(t *testing.T) {

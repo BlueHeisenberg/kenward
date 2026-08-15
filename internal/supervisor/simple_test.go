@@ -180,14 +180,17 @@ func TestSimpleUnenrolledMemberHasNoUnit(t *testing.T) {
 	if !ok {
 		t.Fatal("unenrolled member missing from Health")
 	}
-	if ana.State != StateUnknown || ana.State == StateFailed {
-		t.Fatalf("unenrolled member state = %v, want unknown and never failed", ana.State)
+	if ana.State != StateNotEnrolled {
+		t.Fatalf("unenrolled member state = %v, want StateNotEnrolled — a known situation, never a failure", ana.State)
 	}
-	if !errors.Is(ana.Err, ErrNotEnrolled) {
-		t.Fatalf("unenrolled member err = %v, want ErrNotEnrolled", ana.Err)
+	if ana.Err != nil {
+		t.Fatalf("unenrolled member err = %v, want nil: nothing has gone wrong", ana.Err)
 	}
 	if ana.Healthy() {
 		t.Fatal("unenrolled member reported healthy")
+	}
+	if got := ana.State.String(); got != "awaiting enrolment" {
+		t.Fatalf("doctor's rendering = %q, want %q", got, "awaiting enrolment")
 	}
 
 	// A message from an unknown account gets nothing at all — no unit, no reply.
@@ -201,8 +204,8 @@ func TestSimpleUnenrolledMemberHasNoUnit(t *testing.T) {
 
 	// Still not enrolled after the drain; the record never pretends it stopped.
 	hs = mustHealth(t, h.sup)
-	if got := hs["ana"]; got.State != StateUnknown || !errors.Is(got.Err, ErrNotEnrolled) {
-		t.Fatalf("after Stop, unenrolled member = %+v, want unknown/not-enrolled", got)
+	if got := hs["ana"]; got.State != StateNotEnrolled || got.Err != nil {
+		t.Fatalf("after Stop, unenrolled member = %+v, want still awaiting enrolment", got)
 	}
 }
 
@@ -285,10 +288,11 @@ func TestSimpleHealthBeforeStartAndAfterStop(t *testing.T) {
 	if len(hs) != 3 {
 		t.Fatalf("Health before Start reported %d units, want 3", len(hs))
 	}
-	for name, u := range hs {
-		if u.State != StateUnknown {
-			t.Fatalf("unit %s before Start = %v, want unknown", name, u.State)
-		}
+	if hs["david"].State != StateUnknown || hs["group"].State != StateUnknown {
+		t.Fatalf("units before Start: david=%v group=%v, want unknown", hs["david"].State, hs["group"].State)
+	}
+	if hs["ana"].State != StateNotEnrolled {
+		t.Fatalf("ana before Start = %v, want awaiting enrolment", hs["ana"].State)
 	}
 
 	h.start(t)
@@ -513,6 +517,46 @@ func TestPerUnitContextBudgetFromTierChain(t *testing.T) {
 	_ = h2.sup.Stop(context.Background())
 	_ = h.fake.Close()
 	_ = h2.fake.Close()
+}
+
+func TestSimpleBotTokenResolvedThroughSecrets(t *testing.T) {
+	// The configuration states a token file and no environment variable. With
+	// no injected transport, construction must fail inside token resolution —
+	// proving the token goes through config's Secrets API, where file, env and
+	// credential precedence lives, rather than through a raw environment read
+	// that would leave the shipped systemd unit (LoadCredential=, no
+	// EnvironmentFile=) unable to start.
+	cfg := simpleTestConfig()
+	cfg.Telegram = config.TelegramConfig{BotTokenFile: "/etc/kenward/bot-token"}
+	secrets := config.NewSecrets(config.SecretOptions{
+		LookupEnv: func(string) (string, bool) { return "", false },
+		FS:        fakeSecretFS{},
+	})
+	_, err := NewSimple(cfg, SimpleOptions{
+		Memory: &fakeMemory{}, Router: &fakeRouter{}, Sessions: newFakeSessions(),
+		Secrets: secrets,
+	})
+	if err == nil || !strings.Contains(err.Error(), "resolving bot token") {
+		t.Fatalf("NewSimple = %v, want a bot-token resolution failure through Secrets", err)
+	}
+}
+
+func TestSingleBotTokenResolvedThroughSecrets(t *testing.T) {
+	// Same property for the pod-side runtime: the member's token resolves
+	// through Secrets, so a pod can hold a 0600 file or credential and no
+	// environment variable at all.
+	secrets := config.NewSecrets(config.SecretOptions{
+		LookupEnv: func(string) (string, bool) { return "", false },
+		FS:        fakeSecretFS{},
+	})
+	_, err := NewSingle(singleTestConfig(), SingleOptions{
+		Member: "david",
+		Memory: &fakeMemory{}, Router: &fakeRouter{}, Sessions: newFakeSessions(),
+		Secrets: secrets,
+	})
+	if err == nil || !strings.Contains(err.Error(), "resolving bot token") {
+		t.Fatalf("NewSingle = %v, want a bot-token resolution failure through Secrets", err)
+	}
 }
 
 func TestSimpleConstructionErrors(t *testing.T) {

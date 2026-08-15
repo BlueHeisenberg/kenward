@@ -73,7 +73,13 @@ type SimpleOptions struct {
 	TierWindows map[string]int
 	// Logger receives lifecycle events and per-message failures. Nil discards.
 	Logger *slog.Logger
-	// LookupEnv resolves bot tokens and API keys. Nil means os.LookupEnv.
+	// Secrets resolves the bot token from whichever source the configuration
+	// states — a file, an environment variable, or a systemd credential. Nil
+	// builds a resolver over LookupEnv, the real filesystem and the
+	// CREDENTIALS_DIRECTORY systemd supplies.
+	Secrets *config.Secrets
+	// LookupEnv resolves endpoint API keys at call time and seeds the default
+	// Secrets resolver. Nil means os.LookupEnv.
 	LookupEnv config.LookupEnvFunc
 	// DrainTimeout bounds the drain when shutdown is triggered by Start's context
 	// rather than by Stop, whose own context sets the bound. Defaults to
@@ -113,13 +119,21 @@ func NewSimple(cfg *config.Config, opts SimpleOptions) (*Simple, error) {
 		return nil, fmt.Errorf("supervisor: simple supervisor given mode %q", cfg.Mode)
 	}
 
+	secrets := opts.Secrets
+	if secrets == nil {
+		secrets = config.NewSecrets(config.SecretOptions{LookupEnv: opts.LookupEnv})
+	}
 	rc := runnerConfig{
-		transport:         opts.Transport,
-		memory:            opts.Memory,
-		router:            opts.Router,
-		sessions:          opts.Sessions,
-		claimer:           opts.Enrol,
-		botTokenEnv:       cfg.Telegram.BotTokenEnv,
+		transport: opts.Transport,
+		memory:    opts.Memory,
+		router:    opts.Router,
+		sessions:  opts.Sessions,
+		claimer:   opts.Enrol,
+		// The household bot's token, resolved through the Secrets API at the
+		// moment the transport is built — file first, then environment, then
+		// credential, exactly as the configuration states it.
+		botToken:          func() (config.Secret, error) { return cfg.BotToken(secrets) },
+		endpointKey:       endpointKeyFunc(cfg, secrets),
 		sessionMode:       session.ModeSimple,
 		lookupEnv:         opts.LookupEnv,
 		tierWindows:       opts.TierWindows,
@@ -192,8 +206,8 @@ func (s *Simple) Stop(ctx context.Context) error { return s.run.stop(ctx) }
 // never touches the transport, the router, lore or anything else external — a
 // household's inference machines being asleep is normal life, not ill health —
 // and is callable before Start and after Stop. Members who have not enrolled are
-// present with StateUnknown and ErrNotEnrolled: they have no unit, which is a
-// fact, not a failure.
+// present with StateNotEnrolled: they have no unit, which is a known situation,
+// not a failure and not an absence of information.
 func (s *Simple) Health(_ context.Context) ([]UnitHealth, error) {
 	return s.run.health(), nil
 }

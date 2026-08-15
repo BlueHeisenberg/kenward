@@ -55,6 +55,10 @@ func (s State) String() string {
 		return "stopped"
 	case StateFailed:
 		return "failed"
+	case StateNotEnrolled:
+		// Rendered for an operator who is waiting on someone to accept an
+		// invitation: nothing is wrong, there is just nothing to run yet.
+		return "awaiting enrolment"
 	default:
 		return "unknown"
 	}

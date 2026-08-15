@@ -51,6 +51,35 @@ the config path, then `systemctl enable --now kenward`. The unit ships with hard
 already applied and each line commented, so you can loosen one knowingly rather than
 discovering it later.
 
+The unit supplies secrets as **systemd credentials** rather than environment variables,
+because an `EnvironmentFile=` value stays in the process's environment for as long as it
+runs, is readable through `/proc`, and is inherited by every child it spawns — including
+the `lore mcp` subprocess, which has no business seeing a Telegram token. Put one file
+per secret under `/etc/kenward/credentials/` — `bot_token` for the household bot,
+`bot_token.<member id>` and `api_key.<endpoint name>` where they apply — and name each on
+a `LoadCredential=` line. kenward looks for exactly those names with no configuration at
+all; you do not repeat them in `kenward.yaml`.
+
+Leave the source files `root:root` mode `0600`: systemd reads them as PID 1, before it
+drops to the unit's user, so they never need chowning even under `DynamicUser=`, where
+the uid changes on every start. The directory kenward reads them back from is an
+ephemeral tmpfs that exists only while the unit runs — nothing you put there survives a
+restart, and it is not a place to keep state.
+
+A secret may also come from a file you name yourself, through `bot_token_file`,
+`members[].bot_token_file` or `endpoints[].api_key_file`. The value is the file's
+contents with the trailing newline trimmed, and a file that is group- or world-readable is
+refused outright, with its mode in the message. What you may not do is name both a file
+and a variable for the same secret: that is a startup error rather than a precedence,
+because two sources mean one of them is a belief about where the value comes from that is
+not true.
+
+**One caveat while this is being finished.** kenward validates all three sources today,
+but the parts that actually hand a token to a bot still read the environment variable. A
+household supplying its token *only* by file or credential will pass validation and then
+find no token where it is needed. Until that is plumbed through, keep `bot_token_env` and
+`api_key_env` set, and treat the unit's `LoadCredential=` lines as where this is going.
+
 ### macOS
 
 Download `kenward_darwin_arm64` (or `_amd64` on Intel), make it executable, and run
@@ -133,25 +162,33 @@ for configuration faults, an unreachable lore, or a Telegram authorisation failu
 
 ## Updating
 
-**Updating is something you do, not something that happens to you — today.** Run:
+A running kenward checks for updates on `update.check_interval` and applies them itself:
+the manifest is verified against a key compiled into the binary, the new build is run
+once before it is installed, in-flight conversations are allowed to finish, the swap is
+atomic, and a version that does not come up is rolled back automatically. Endpoint
+reachability is deliberately not part of that health check — your GPU box being asleep is
+normal, and treating it as a fault would roll a good update back forever.
+
+**One case still needs you.** A major version, or a release flagged as changing
+security-relevant behaviour — the settings that decide whether a private conversation may
+reach a provider — is never applied without somebody agreeing. Asking you over Telegram
+is the intended way and is not built yet, so the running node will not apply such a
+release at all: it logs that it is holding back and keeps serving on the version it has.
+Patch and minor releases carry on arriving normally. Until the question can reach you in
+the chat, apply those yourself:
 
 ```sh
 kenward update --check     # what is available; changes nothing
-kenward update             # apply it
+kenward update             # apply it, answering the question at the terminal
 ```
 
-What that does is signed and careful: the manifest is verified against a key compiled
-into the binary, the new build is run once before it is installed, the swap is atomic,
-and a version that does not come up is rolled back automatically the next time kenward
-starts. A major version, or a release flagged as changing anything security-relevant,
-asks you first — and if there is nobody at the terminal to ask, the answer is no.
-
-The part that is not built yet is the automatic half. Nothing checks on a timer, so
-until you run the command, nothing is fetched and nothing is applied. **Do not read this
-section as a promise that a security fix will reach your household on its own.** It will
-not, yet. Until it does, either run `kenward update` when you think of it, or watch the
-releases page. `docs/IMPLEMENTATION.md` section 9 records precisely which requirements
-are wired and which are still ahead.
+Answer `y` or `n`. Anything else, including no terminal at all, counts as unanswered
+rather than declined — nothing is applied, and you are asked again next time. That is
+deliberate: one unheard question must never suppress a security release permanently.
 
 Set `update.channel: off` in the config if you would rather never update at all. That
 path is fully supported and kenward works indefinitely without ever updating.
+
+`docs/IMPLEMENTATION.md` section 9 records exactly which of the update requirements are
+wired and which are still ahead, including why per-member pods cannot be rolled one at a
+time from inside kenward.

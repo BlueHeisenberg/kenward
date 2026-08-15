@@ -43,9 +43,23 @@ type runnerConfig struct {
 	sessions  session.Sessions
 	// claimer, when set, receives direct messages from senders no unit serves.
 	claimer *enrol.Claimer
+	// serveOnEnrol says whether a freshly claimed member gets a unit in this
+	// process. Nil serves everyone, which is simple mode; a single-unit process
+	// serves exactly its own member and leaves everyone else to their own pods.
+	serveOnEnrol func(domain.Member) bool
 
 	// How to build the nil seams.
-	botTokenEnv string
+	//
+	// botToken resolves this process's bot token through config's Secrets API —
+	// file, environment variable or systemd credential, whichever the
+	// configuration states — at the moment the transport is built. It is a
+	// closure so the resolved value never sits on any struct a logger could
+	// print.
+	botToken func() (config.Secret, error)
+	// endpointKey resolves one endpoint's API key at call time, for the same
+	// reason botToken is a closure: resolution stays owned by internal/config
+	// and the value rests nowhere.
+	endpointKey routing.KeyFunc
 	sessionMode session.Mode
 	loreHome    string
 	lookupEnv   config.LookupEnvFunc
@@ -177,12 +191,13 @@ func newRunner(cfg *config.Config, rc runnerConfig) (*runner, error) {
 
 func (r *runner) buildDeps() error {
 	if r.rc.transport == nil {
-		env := r.rc.botTokenEnv
-		token, ok := r.rc.lookupEnv(env)
-		if env == "" || !ok || token == "" {
-			return fmt.Errorf("supervisor: bot token environment variable %q is not set", env)
+		// Resolved here, at the point of use, and handed straight to the
+		// transport: the value is never stored where %#v could print it.
+		token, err := r.rc.botToken()
+		if err != nil {
+			return fmt.Errorf("supervisor: resolving bot token: %w", err)
 		}
-		t, err := transport.NewTelegram(token, transport.WithLogger(r.logger))
+		t, err := transport.NewTelegram(token.Value(), transport.WithLogger(r.logger))
 		if err != nil {
 			return fmt.Errorf("supervisor: building telegram transport: %w", err)
 		}
@@ -208,7 +223,7 @@ func (r *runner) buildDeps() error {
 	}
 	if r.rc.router == nil {
 		r.rc.router = routing.NewPool(r.cfg.RoutingEndpoints(),
-			routing.NewHTTPCompleter(nil, r.rc.lookupEnv))
+			routing.NewHTTPCompleter(nil, r.rc.endpointKey))
 	}
 	if r.rc.sessions == nil {
 		store := session.NewFileStore(filepath.Join(r.cfg.DataDir, simpleSessionsFile))
@@ -688,9 +703,19 @@ func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound)
 // their binding into a new configuration snapshot, swap it in, and give them a
 // unit. The swap is copy-on-write, so no unit ever reads a half-updated member set.
 func (r *runner) enrolled(m domain.Member) {
+	// The binding is folded in regardless: scope resolution should know every
+	// member the household now has, even one served by a different process.
 	r.cfgMu.Lock()
 	r.cfg = configWithBinding(r.cfg, m)
 	r.cfgMu.Unlock()
+
+	if r.rc.serveOnEnrol != nil && !r.rc.serveOnEnrol(m) {
+		// Someone else's claim landed on this bot. Their unit lives in their
+		// own process; minting one here would put a member's conversation in
+		// an address space it must never enter.
+		r.logger.Info("supervisor: member enrolled; served by another process", "member", string(m.ID))
+		return
+	}
 	r.tracker.promote(m.ID)
 
 	if err := r.buildMemberUnit(m); err != nil {
@@ -857,6 +882,26 @@ func snapshotConfig(c *config.Config) *config.Config {
 	out.Endpoints = append([]config.EndpointConfig(nil), c.Endpoints...)
 	out.Household.Tiers = append([]string(nil), c.Household.Tiers...)
 	return &out
+}
+
+// endpointKeyFunc builds the router's key resolver over config's accessor, so
+// precedence across file, environment and credential sources lives in exactly
+// one place. An endpoint the configuration does not name gets no key, which is
+// also what an endpoint that needs no authentication gets.
+func endpointKeyFunc(cfg *config.Config, secrets *config.Secrets) routing.KeyFunc {
+	endpoints := append([]config.EndpointConfig(nil), cfg.Endpoints...)
+	return func(ep routing.Endpoint) (string, error) {
+		for _, ec := range endpoints {
+			if ec.Name == ep.Name {
+				key, err := ec.APIKey(secrets)
+				if err != nil {
+					return "", err
+				}
+				return key.Value(), nil
+			}
+		}
+		return "", nil
+	}
 }
 
 // configWithBinding returns a new snapshot carrying m's enrolment. The member row

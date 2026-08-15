@@ -203,9 +203,17 @@ and it is a configuration line rather than a subsystem: *private conversations n
 my hardware, and here is the config that proves it.*
 
 It also gives the availability story a purpose beyond convenience. When a private space has
-no local backend awake, the correct behaviour is to say so — naming the tiers tried and the
-endpoints attempted — not to silently ship someone's private context to a third party.
-Refusal text is a product surface, and it is golden-tested for exactly that reason.
+no local backend awake, the correct behaviour is to say so — naming the tiers allowed and
+the endpoints that could not answer — not to silently ship someone's private context to a
+third party. The wording is careful about that second list: it holds endpoints that were
+attempted alongside endpoints skipped for a cooldown or a failed probe, so the refusal says
+they were unavailable rather than claiming an attempt that never happened.
+
+The same principle runs past refusals. A rate-limited provider, a rejected key, a model
+that declined the turn, a locked key — each produces a short notice saying what happened
+and what the member can do about it, because silence is the one reply that teaches a
+household the assistant is broken and unpredictable. Every one of those strings is a
+product surface, and they are golden-tested for exactly that reason.
 
 ## Key custody, and what the privacy claim actually is
 

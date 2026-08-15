@@ -58,7 +58,7 @@ Third-party dependencies, fixed:
 | `github.com/modelcontextprotocol/go-sdk` | v1.7.0 | `memory` |
 | `gopkg.in/yaml.v3` | v3.0.1 | `config` |
 | `golang.org/x/sys` | v0.47.0 | `setup` (terminal echo suppression) |
-| `github.com/BlueHeisenberg/keel` | v0.2.0 | `routing` (llm), `session` (vault), `supervisor` (sandbox), update |
+| `github.com/BlueHeisenberg/keel` | v0.4.0 | `routing` (llm), `session` (vault), `supervisor` (sandbox), `updater` (update) |
 
 Note: the MCP SDK requires Go 1.25, which is why the module targets it.
 
@@ -364,7 +364,8 @@ household:
   tiers: [local, local-slow, cloud]
 
 telegram:
-  # simple mode: one token for everything
+  # simple mode: one token for everything. bot_token_file is the alternative;
+  # naming both is an error. With neither, the systemd credential `bot_token`.
   bot_token_env: KENWARD_BOT_TOKEN
   # isolated mode: per-member tokens, see members[].bot_token_env
 
@@ -375,6 +376,7 @@ members:
     private_space: david-private
     tiers: [local]            # local-only: refuses rather than reaching for cloud
     bot_token_env: KENWARD_BOT_TOKEN_DAVID   # isolated mode only
+    # bot_token_file: /run/secrets/david-token   # or this; never both
 
 endpoints:
   - name: monster
@@ -386,6 +388,7 @@ endpoints:
     base_url: https://openrouter.ai/api/v1
     model: anthropic/claude-sonnet-5
     api_key_env: OPENROUTER_API_KEY
+    # api_key_file: /run/secrets/openrouter    # or this; never both
     tags: [cloud]
 
 memory:
@@ -416,9 +419,110 @@ Validation rules that are errors, not warnings:
 - `private_space` values must be unique across members and must not equal
   `household.shared_space`
 - `telegram_id` values must be unique
-- in `isolated` mode every member must have a distinct `bot_token_env`
-- referenced env vars must be set at startup, or `kenward` exits with a list of what is
-  missing — never starts half-configured
+- in `isolated` mode every member must have a distinct bot token source: two members
+  naming the same `bot_token_env`, or the same `bot_token_file`, share a bot and defeat
+  the mode
+- naming two sources for one secret is an error, not a precedence — see below
+- every secret the configuration depends on must be readable at startup, or `kenward`
+  exits with a list of what is missing and where each one was looked for; it never
+  starts half-configured
+
+### Where a secret comes from
+
+**The configuration names secrets. It never holds one.** That has always been true; what
+changed is that an environment variable is no longer the only way to name one, because
+it is the wrong instrument in the two deployments that matter most. In a pod, the
+environment is readable by every process in the container and visible in `/proc`, and a
+member's pod holds that member's bot token — whoever holds a bot token reads every
+message ever sent to it. Under systemd, an `EnvironmentFile=` value sits in the
+process's environment for as long as it runs and is inherited by every child it spawns,
+including the `lore mcp` subprocess, which has no business seeing a Telegram token.
+
+So a secret has three possible sources:
+
+| Source | Form | Applies to |
+| --- | --- | --- |
+| A file | `bot_token_file`, `members[].bot_token_file`, `endpoints[].api_key_file` | any deployment that can mount a file |
+| An environment variable | `bot_token_env`, `members[].bot_token_env`, `endpoints[].api_key_env` | a hand-run binary, and the compose path |
+| A systemd credential | no configuration at all | the systemd unit |
+
+Resolution is `_file` → `_env` → credential.
+
+**Naming both `_file` and `_env` for the same secret is a validation error, not a
+precedence win.** This is the rule most likely to be read as pedantry, so the reasoning
+is worth stating: a precedence order would let the configuration keep working while one
+of the two lines is dead, and the operator goes on believing the value comes from
+somewhere it does not. That belief is the whole problem — it is the state in which a
+rotated file changes nothing, a revoked variable is never noticed, and the eventual
+debugging session starts from a false premise. Two sources means somebody holds a belief
+about this secret that is not true, and interrupting them costs one error message.
+
+The automatic credential does not collide with anything, because it is not a *stated*
+source: it is the fallback consulted only when the configuration says nothing.
+
+**Files.** The value is the file's contents with the trailing newline trimmed — and only
+that, because every tool that writes a credential adds one and a token carrying `\n` is
+rejected by Telegram with an error that names nothing useful. A file that is group- or
+world-readable is **refused**, with its mode in the message: a `0644` token file is a
+finding rather than a preference, since everything with a shell on that host then holds
+the household's bot, and failing loudly is the only way the operator who created it ever
+learns. The check is skipped on Windows, and that is stated rather than hidden:
+`os.Stat` there synthesises permission bits from the read-only attribute alone, with no
+relation to the ACL that actually governs access, so enforcing would refuse every file on
+the platform while proving nothing about any of them.
+
+**systemd credentials.** If `$CREDENTIALS_DIRECTORY` is set, kenward looks in it, with no
+configuration whatsoever, for:
+
+```
+bot_token                 the household bot (simple mode, and the group unit)
+bot_token.<member id>     a member's own bot
+api_key.<endpoint name>   one per endpoint that needs a key
+```
+
+The unit file already names each credential; making the operator repeat the name in
+`kenward.yaml` would only create a second place for the two to disagree. Names that
+systemd would not accept — anything outside letters, digits, `_`, `-` and `.` — disable
+the automatic lookup for that member or endpoint rather than becoming a path.
+
+Two properties of this mechanism are surprising enough to be worth writing down, because
+each one is a trap in the opposite direction:
+
+- **The source file never needs chowning.** systemd reads the path on the `LoadCredential=`
+  line *as PID 1*, before it drops to the unit's user. So the file in
+  `/etc/kenward/credentials/` stays `root:root` mode `0600` for good, even under
+  `DynamicUser=`, where the uid is different on every start and could not be chowned to
+  in advance. The re-ownership happens automatically, and only on the copy systemd hands
+  to the unit.
+- **`$CREDENTIALS_DIRECTORY` is ephemeral and is not `StateDirectory`.** It is a
+  non-swappable tmpfs created for one unit and torn down when the unit stops. Nothing
+  written there survives a restart, and nothing about it is a place to keep state.
+  Expecting otherwise is the mistake to warn an operator against.
+
+`deploy/kenward.service` uses `LoadCredential=` for exactly these reasons.
+`deploy/README.md` explains why the compose files stay on environment variables: there
+is no portable Compose primitive equivalent to a credential, so they scope secrets as
+tightly as per-service `environment:` blocks allow and point at the `_file` form for an
+operator who wants the stronger guarantee.
+
+A resolved value is never stored on the `Config` and never appears in a message. It is
+handed back on demand by an accessor, behind a closure rather than a string field, so
+that no amount of `%+v` on a configuration can print a token; the type's `String()` says
+where the value came from and not what it is. Names, paths, variable names and file modes
+appear freely — that is what makes a fault fixable.
+
+**Only the resolver is wired.** `config.Secrets` implements all three sources and
+validation uses it, so a configuration naming a file or relying on a credential
+validates, and `kenward run` will not start if that file is unreadable. But the
+components that actually *use* a token still read the environment variable name directly
+— `internal/supervisor` when it hands a bot token to a unit or a pod, `doctor` when it
+reports whether tokens are set, and the update health check when it asks whether Telegram
+authorises. None of them holds a `*Secrets`. The consequence is specific and worth
+knowing before an operator meets it: a household supplying its token only through
+`bot_token_file` or a systemd credential passes validation and then finds no token where
+it is needed. Until the accessors are plumbed through the supervisor, `bot_token_env` and
+`api_key_env` remain the sources that work end to end, and `deploy/kenward.service`'s
+`LoadCredential=` lines are ahead of the runtime rather than behind it.
 
 ---
 
@@ -534,40 +638,88 @@ which mode it is in, that change is wrong.
 - `channel: off` is fully supported and the product works forever without updating
 - Isolated mode updates pods **one member at a time**
 
+`internal/updater` owns kenward's side of that: when checks happen, and what health,
+drain and consent mean for a household. keel owns the mechanism and states the full
+threat model in its own package documentation; this package defers to it entirely. The
+single authority that can put new code on a household's machine is an Ed25519 release
+signature verified against keys compiled into this binary — never the update host, never
+the network path to it, never the scheduler. Everything past signature verification is
+availability engineering, and nothing in it may prevent kenward from starting or serving:
+a scheduler that cannot be constructed is a warning and a household that does not
+auto-update, never a refusal to start.
+
+### Consent is three-valued, and unanswered is the zero value
+
+`keel/update`'s `Consent` hook takes a request carrying the version pair, the notes, and
+the `SecuritySensitive` flag, so the question can say *which* of the two reasons it is
+being asked. That distinction is not cosmetic: "there is a major version" and "this
+release changes behaviour that decides whether a private conversation may reach a
+provider" deserve different amounts of thought, and collapsing them into one sentence
+hides the one that matters.
+
+The answer is `Approved`, `Declined` or `Unanswered`, and **`Unanswered` is the zero
+value on purpose.** A declined release is remembered and not raised again until a
+different version appears — somebody decided. An unanswered one is asked about again on
+the next cycle, because a timed-out question, an undeliverable message or a pipe that
+ended is not a decision. Getting this the other way round would mean one unheard question
+suppressing a security release forever, which is the failure this design exists to avoid.
+Neither outcome applies the update; the distinction controls only whether the household
+is asked again.
+
+At a terminal, agreeing is typing `y` and refusing is typing `n`. Anything else —
+including no stdin at all — is `Unanswered`, and it says so.
+
 ### What of that is wired
 
-The requirements above are the destination. Some of them are not reached yet, and the
-distance is worth stating precisely, because a household reading this section would
-otherwise conclude that a security release will arrive on its own. It will not.
+The requirements above are the destination. Most of them are now reached; two are not,
+and the distance is worth stating precisely, because a household reading this section
+would otherwise conclude that every release arrives on its own.
 
-- **There is no scheduler.** `update.check_interval` is parsed, validated and passed to
-  `keel/update`, and nothing periodically calls `Check`. Every update today begins with
-  somebody typing `kenward update` at a terminal. Patch and minor releases therefore do
-  not auto-apply, and an installation left alone stays on the version it has
-  indefinitely, whatever `update.channel` says.
-- **Consent reaches only an interactive invocation.** Major versions and releases
-  flagged `securitySensitive` do ask first, and refusing consent is the default when
-  nobody answers — no terminal, a pipe, a cron job and a closed stdin all resolve to no,
-  which is the correct answer for a release that may move routing or privacy defaults.
-  But the question is printed to stdout and read from stdin, not sent over Telegram.
-  Asking the household over Telegram is what the automatic path needs and does not have.
-- **Drain is a no-op.** The hook is passed to `keel/update` and returns immediately, so
-  nothing yet waits for units to finish their turns. Since the only caller is a person
-  at a terminal, the restart they cause is one they chose; the promise not to restart
-  mid-conversation becomes load-bearing the moment updates apply themselves, and it must
-  be real before that.
-- **Health is wired on resume, not on apply.** `kenward run` calls `resumeUpdate` before
-  serving anything, and that path runs the real check — lore answers, Telegram
-  authorises — so a swapped binary that cannot come up is rolled back on its next start.
-  The health hook `kenward update` passes for its own in-process apply is still a stub
-  that returns nil.
-- **Isolated mode has no update path at all.** `internal/supervisor/isolated` contains
-  no update code; `cmd/kenward/update.go` updates the binary it is run from and knows
-  nothing about pods. One member at a time is a requirement with no implementation
-  behind it.
+**Wired.** `kenward run` builds an `updater.Scheduler` and runs it alongside the
+supervisor. It checks on `update.check_interval`, verifies signatures, refuses a manifest
+older than `DefaultMaxManifestAge`, honours the stable channel's delay, drains, swaps,
+health-checks and rolls back. Health is the real check in both the scheduled path and
+`kenward update` — lore answers and *this process's own* bot token authorises, which in a
+member's pod means that member's token rather than the household's, since checking a
+credential the process does not hold would fail health on a perfectly good pod. Drain is
+the supervisor's own drain rather than a second mechanism: the supervisor is the one
+component that knows whether a turn is in flight, and two sources of that truth would
+eventually disagree, at which point a restart lands in the middle of somebody's
+conversation. A restart request stops intake and lets the serve loop finish its own
+shutdown, and it is issued after a *failed* swap too — a household that has been drained
+and then left running would be silently ignoring its members, which is worse than one
+that restarts.
 
-Until the scheduler exists, `INSTALL.md` and `CLI.md` describe updating as the manual
-act it currently is.
+**Not wired: consent over Telegram.** The scheduler's `Consent` hook is deliberately nil,
+which means the scheduled path never applies a major version or a release flagged
+`securitySensitive` — it logs the refusal once per version and leaves it, while patch and
+minor releases keep applying. That is the safe failure and it is what this document
+promises, but it is not the promise fulfilled: a household on an old major version is
+told nothing.
+
+It is nil for a structural reason rather than an unfinished one. The question has to
+reach the household over kenward's own transport, and this layer cannot get at it: the
+supervisor owns the bot and does not expose it, and Telegram long-polling admits one
+consumer per token, so a second transport built here would either never see the member's
+tap or would steal updates from the units and break the assistant in order to ask a
+question about updating it. `internal/updater` defines the `Consenter` interface the
+answer will implement — a member's tap, taps from anyone else not counting, timeout and
+undeliverable both meaning `Unanswered`. Wiring it means the supervisor exposing a way to
+ask the household group something, and that is the supervisor's decision.
+
+**Not wired: one member at a time.** This one is not merely unbuilt; the obvious
+implementation does not exist and cannot. keel's cross-process lock serialises processes
+that share **one install path** — several pods running off one mounted binary — and it is
+taken *before* the drain, so a process that loses it skips the cycle quietly without
+having silenced anybody first. But containerised isolated-mode pods each carry a private
+copy of the binary in their own image filesystem. They never contend for that lock, so it
+delivers no per-member sequencing for them at all. Two independent analyses reached the
+same conclusion: rolling one member at a time is not expressible from inside the process
+being updated. It belongs to whatever owns the pods' shared artifact — the image, and the
+process that rolls it — and pretending otherwise would be a promise the lock cannot keep.
+
+`INSTALL.md` and `CLI.md` describe the update path in these terms rather than the
+requirements list's.
 
 ---
 

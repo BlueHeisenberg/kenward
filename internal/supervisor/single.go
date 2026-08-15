@@ -10,6 +10,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/assistant"
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/enrol"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
@@ -40,6 +41,15 @@ type SingleOptions struct {
 	// session.Manager in isolated mode over a file store in the data directory,
 	// which inside a pod holds exactly one wrapped key.
 	Sessions session.Sessions
+	// Enrol receives direct messages while the selected member has not yet
+	// claimed their invite. A member's bot exists before they claim, and the
+	// claim happens in a conversation with that bot — never the household's —
+	// so an unenrolled member's pod starts in a claim-only state: no unit, no
+	// session, nothing touching lore, just this claimer waiting for the code.
+	// When the claim binds, the member's unit starts serving in place, without
+	// a restart. Required to select a member who has not enrolled; ignored for
+	// one who has, whose claim window is over.
+	Enrol *enrol.Claimer
 	// Unit seeds the unit's options. HouseholdName and SearchLimit are filled
 	// from the configuration when zero.
 	Unit assistant.Options
@@ -50,7 +60,15 @@ type SingleOptions struct {
 	TierWindows map[string]int
 	// Logger receives lifecycle events and per-message failures. Nil discards.
 	Logger *slog.Logger
-	// LookupEnv resolves the bot token and API keys. Nil means os.LookupEnv.
+	// Secrets resolves the bot token from whichever source the configuration
+	// states — a file, an environment variable, or a systemd credential. A pod
+	// is exactly where the environment is the wrong place for a token, so a
+	// 0600 file or a credential works here without any environment variable
+	// existing at all. Nil builds a resolver over LookupEnv, the real
+	// filesystem and the CREDENTIALS_DIRECTORY this process was given.
+	Secrets *config.Secrets
+	// LookupEnv resolves endpoint API keys at call time, locates LORE_HOME,
+	// and seeds the default Secrets resolver. Nil means os.LookupEnv.
 	LookupEnv config.LookupEnvFunc
 	// DrainTimeout bounds the drain when shutdown is triggered by Start's context
 	// rather than by Stop. Defaults to DefaultDrainTimeout.
@@ -85,10 +103,11 @@ type Single struct {
 
 // NewSingle wires a Single supervisor over cfg for the unit opts selects.
 //
-// Selecting a member the configuration does not carry, or one who has not claimed
-// their invite, is an error rather than an empty run: a pod that starts cleanly
-// and serves nobody would look healthy while a member goes unanswered. Selecting
-// the group requires a configured group chat for the same reason.
+// Selecting a member the configuration does not carry is an error. Selecting one
+// who has not claimed their invite starts the pod in a claim-only state — see
+// SingleOptions.Enrol — and is an error only when no claimer was supplied, since
+// such a pod could never do anything at all. Selecting the group requires a
+// configured group chat for the same reason.
 func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 	if cfg == nil {
 		return nil, errors.New("supervisor: nil configuration")
@@ -100,12 +119,17 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 		return nil, errors.New("supervisor: select exactly one of Member and Group")
 	}
 
+	secrets := opts.Secrets
+	if secrets == nil {
+		secrets = config.NewSecrets(config.SecretOptions{LookupEnv: opts.LookupEnv})
+	}
 	rc := runnerConfig{
 		transport:         opts.Transport,
 		memory:            opts.Memory,
 		router:            opts.Router,
 		sessions:          opts.Sessions,
 		sessionMode:       session.ModeIsolated,
+		endpointKey:       endpointKeyFunc(cfg, secrets),
 		lookupEnv:         opts.LookupEnv,
 		tierWindows:       opts.TierWindows,
 		unitOpts:          opts.Unit,
@@ -131,21 +155,40 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 			return nil, errors.New("supervisor: group unit selected but no group chat is configured")
 		}
 		rc.group = true
-		rc.botTokenEnv = cfg.Telegram.BotTokenEnv
+		rc.botToken = func() (config.Secret, error) { return cfg.BotToken(secrets) }
 	default:
 		m, ok := cfg.MemberByID(opts.Member)
 		if !ok {
 			return nil, fmt.Errorf("supervisor: no member %q in this household", opts.Member)
 		}
-		if !m.Enrolled() {
-			// An error, not an empty run: a pod serving nobody must not sit
-			// there looking healthy.
-			return nil, fmt.Errorf("supervisor: member %q: %w", opts.Member, ErrNotEnrolled)
+		// The member's own token, never the household's, resolved through the
+		// Secrets API from whichever source this member's row states. A pod
+		// holding another unit's credentials would undo the mode.
+		mc, ok := memberConfigByID(cfg, opts.Member)
+		if !ok {
+			return nil, fmt.Errorf("supervisor: no member %q in this household", opts.Member)
 		}
-		rc.members = []domain.Member{m}
-		// The member's own token, never the household's. A pod holding another
-		// unit's credentials would undo the mode.
-		rc.botTokenEnv = m.BotTokenEnv
+		rc.botToken = func() (config.Secret, error) { return mc.BotToken(secrets) }
+		// A claimed member gets their unit; one who has not claimed yet gets a
+		// claim-only process — their bot exists before they enrol, and the
+		// claim conversation happens on it, so the pod's job in that window is
+		// to wait for the code and nothing else. Serving would be impossible
+		// anyway, and refusing to start would leave nowhere for the code to go.
+		if m.Enrolled() {
+			rc.members = []domain.Member{m}
+		} else {
+			if opts.Enrol == nil {
+				return nil, fmt.Errorf("supervisor: member %q has not claimed their invite and no claimer was supplied: %w",
+					opts.Member, ErrNotEnrolled)
+			}
+			rc.unenrolled = []domain.MemberID{m.ID}
+			rc.claimer = opts.Enrol
+		}
+		// Whether the claim happens now or happened already, this process
+		// serves exactly one member. A claim for anyone else that lands on this
+		// bot binds them, but their unit belongs to their own pod.
+		selected := m.ID
+		rc.serveOnEnrol = func(em domain.Member) bool { return em.ID == selected }
 	}
 
 	run, err := newRunner(cfg, rc)
@@ -169,10 +212,23 @@ func (s *Single) Start(ctx context.Context) error { return s.run.start(ctx) }
 func (s *Single) Stop(ctx context.Context) error { return s.run.stop(ctx) }
 
 // Health reports the one unit's condition from the supervisor's own records,
-// never from anything external, and is callable before Start and after Stop.
+// never from anything external, and is callable before Start and after Stop. In
+// the claim-only window the member reports StateNotEnrolled — a known situation,
+// never a failure — and moves to StateReady when their claim mints the unit.
 func (s *Single) Health(_ context.Context) ([]UnitHealth, error) {
 	return s.run.health(), nil
 }
 
 // Single implements Supervisor.
 var _ Supervisor = (*Single)(nil)
+
+// memberConfigByID finds a member's configuration row, which carries the secret
+// references the domain type deliberately does not.
+func memberConfigByID(cfg *config.Config, id domain.MemberID) (config.MemberConfig, bool) {
+	for _, mc := range cfg.Members {
+		if domain.MemberID(mc.ID) == id {
+			return mc, true
+		}
+	}
+	return config.MemberConfig{}, false
+}
