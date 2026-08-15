@@ -1,0 +1,44 @@
+# Go
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+go.work
+go.work.sum
+
+# Coverage
+coverage.txt
+coverage.html
+
+# --- Household configuration and secrets: NEVER commit ---
+# Publication must stay a decision, not a history rewrite.
+kenward.yaml
+kenward.yml
+config.yaml
+config.yml
+*.local.yaml
+*.local.yml
+.env
+.env.*
+*.token
+*.key
+*.pem
+/data/
+/state/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local scratch
+/tmp/
+/scratch/
