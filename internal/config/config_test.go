@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
@@ -290,6 +292,45 @@ func TestLoreCommandValidation(t *testing.T) {
 	}
 	if err := cfg.Validate(env(map[string]string{"T": "t"})); err != nil {
 		t.Fatalf("Validate() error = %v, want a valid configuration", err)
+	}
+}
+
+// TestLoreCommandSuggestionIsTypableYAML: the message exists to unstick an operator, so
+// what it tells them to write has to parse. Go's %v renders [lore mcp], which is not a
+// flow sequence. The property is that the suggestion parses back into the field it is
+// about — not the exact punctuation.
+func TestLoreCommandSuggestionIsTypableYAML(t *testing.T) {
+	cfg := &config.Config{
+		Mode:      config.ModeSimple,
+		Household: config.HouseholdConfig{SharedSpace: "household", Tiers: []string{"local"}},
+		Telegram:  config.TelegramConfig{BotTokenEnv: "T"},
+		Endpoints: []config.EndpointConfig{{Name: "m", BaseURL: "http://m:1/v1", Model: "q", Tags: []string{"local"}}},
+		Memory:    config.MemoryConfig{LoreCommand: []string{"", "mcp"}},
+		Update:    config.UpdateConfig{Channel: config.UpdateStable},
+	}
+
+	var ve *config.ValidationError
+	if err := cfg.Validate(env(map[string]string{"T": "t"})); !errors.As(err, &ve) {
+		t.Fatalf("Validate() error = %v (%T), want *config.ValidationError", err, err)
+	}
+
+	const marker = "write it as "
+	var suggestion string
+	for _, p := range ve.Problems {
+		if i := strings.Index(p, marker); i >= 0 {
+			suggestion = p[i+len(marker):]
+		}
+	}
+	if suggestion == "" {
+		t.Fatalf("no problem suggests what to write: %v", ve.Problems)
+	}
+
+	var got config.MemoryConfig
+	if err := yaml.Unmarshal([]byte("lore_command: "+suggestion), &got); err != nil {
+		t.Fatalf("the suggested %s is not valid YAML: %v", suggestion, err)
+	}
+	if want := config.DefaultLoreCommand(); !reflect.DeepEqual(got.LoreCommand, want) {
+		t.Errorf("the suggested %s parses as %v, want %v", suggestion, got.LoreCommand, want)
 	}
 }
 

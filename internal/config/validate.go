@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -285,8 +286,19 @@ func (c *Config) validateMemory(p *problems) {
 		return
 	}
 	if strings.TrimSpace(c.Memory.LoreCommand[0]) == "" {
-		p.addf("memory.lore_command: the first element is the program to run and it is empty; write it as %v", DefaultLoreCommand())
+		p.addf("memory.lore_command: the first element is the program to run and it is empty; write it as %s", yamlFlowSeq(DefaultLoreCommand()))
 	}
+}
+
+// yamlFlowSeq renders a string slice as the YAML an operator should type. Go's own %v
+// prints [lore mcp], which is not a flow sequence: copying it into kenward.yaml turns a
+// message meant to unstick someone into a second error.
+func yamlFlowSeq(items []string) string {
+	quoted := make([]string, len(items))
+	for i, s := range items {
+		quoted[i] = strconv.Quote(s)
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 func (c *Config) validateLimits(p *problems) {
