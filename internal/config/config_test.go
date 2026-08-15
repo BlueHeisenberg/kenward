@@ -590,6 +590,36 @@ members:
 			want: []string{"members[1].bot_token_env: T_ONE is already members[0]'s token variable"},
 		},
 		{
+			// The group pod runs on the household bot even when every member has
+			// their own, so a group chat plus no household token used to validate and
+			// then fail when the first group message arrived.
+			name: "isolated mode with a group chat needs the household token",
+			yaml: `
+mode: isolated
+household: {shared_space: household, group_chat_id: -1001234567890, tiers: [local]}
+members:
+  - {id: david, private_space: dp, tiers: [local], bot_token_env: T_DAVID}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			env:  map[string]string{"T_DAVID": "t"},
+			want: []string{"telegram.bot_token", "household.group_chat_id"},
+		},
+		{
+			name: "isolated mode with a group chat and a household token",
+			yaml: `
+mode: isolated
+household: {shared_space: household, group_chat_id: -1001234567890, tiers: [local]}
+telegram: {bot_token_env: T_HOUSE}
+members:
+  - {id: david, private_space: dp, tiers: [local], bot_token_env: T_DAVID}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			env:  map[string]string{"T_HOUSE": "t", "T_DAVID": "t"},
+			want: nil, wantNone: true,
+		},
+		{
 			name: "isolated mode needs no household token",
 			yaml: `
 mode: isolated

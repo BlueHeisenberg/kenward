@@ -351,6 +351,13 @@ func (c *Config) secretRefs() []secretRef {
 	if c.Mode == ModeSimple {
 		add(c.BotTokenRef(), "required in simple mode; the household shares one bot")
 	}
+	if c.Mode == ModeIsolated && c.Household.GroupChatID != 0 {
+		// Per-member bots cover the members; the household group conversation still
+		// runs on the household bot. Only when there is a group to serve — isolated
+		// mode without one is a legitimate configuration and must not be made to
+		// invent a token it will never use.
+		add(c.BotTokenRef(), "required in isolated mode when household.group_chat_id is set; the group pod runs on the household bot")
+	}
 	if c.Mode == ModeIsolated {
 		for i, m := range c.Members {
 			ref := m.BotTokenRef()

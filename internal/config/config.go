@@ -115,8 +115,10 @@ type HouseholdConfig struct {
 type TelegramConfig struct {
 	// BotTokenEnv names the environment variable holding the token. One of this,
 	// BotTokenFile or the systemd credential named by CredentialBotToken is required
-	// in simple mode, where one bot serves the whole household; all are unused in
-	// isolated mode, where each member's pod carries its own token.
+	// in simple mode, where one bot serves the whole household, and in isolated mode
+	// whenever household.group_chat_id is set: the members get their own bots there,
+	// but the group conversation still runs on the household bot. Isolated mode with
+	// no group chat needs no household token at all.
 	BotTokenEnv string `yaml:"bot_token_env"`
 	// BotTokenFile names a file holding the token, for the deployments where an
 	// environment variable is the wrong place for one. See secret.go. Stating it as

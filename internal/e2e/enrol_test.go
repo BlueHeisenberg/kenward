@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -157,13 +156,13 @@ func memberHealth(t *testing.T, h *harness, id domain.MemberID) supervisor.UnitH
 // stillUnenrolled reports whether the supervisor still says this member has not
 // claimed their invite.
 //
-// It reads UnitHealth.Err rather than UnitHealth.State: the supervisor declares a
-// StateNotEnrolled but does not use it, recording StateUnknown and this error
-// instead, so the error is the only place the fact is actually carried.
+// Err must be nil for it: a household half way through onboarding is healthy, and
+// an operator watching for someone to accept an invitation must not be shown an
+// error while they wait.
 func stillUnenrolled(t *testing.T, h *harness, id domain.MemberID) bool {
 	t.Helper()
 	u := memberHealth(t, h, id)
-	return errors.Is(u.Err, supervisor.ErrNotEnrolled) && u.State != supervisor.StateReady
+	return u.State == supervisor.StateNotEnrolled && u.Err == nil
 }
 
 // wrongCode is a code-shaped string that was never minted: sixteen symbols of the

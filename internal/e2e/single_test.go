@@ -32,10 +32,19 @@ const (
 	davidBotTokenEnv = "KENWARD_BOT_TOKEN_DAVID"
 	meiBotTokenEnv   = "KENWARD_BOT_TOKEN_MEI"
 	samBotTokenEnv   = "KENWARD_BOT_TOKEN_SAM"
+	patBotTokenEnv   = "KENWARD_BOT_TOKEN_PAT"
 
 	samMemberID         = domain.MemberID("sam")
 	samSpace            = domain.SpaceID("sam-private")
 	samTelegramID int64 = 1003
+	samChatID     int64 = 5003
+
+	// Pat is a second member who has not claimed, so a code for one of them can
+	// be presented to the other's bot.
+	patMemberID         = domain.MemberID("pat")
+	patSpace            = domain.SpaceID("pat-private")
+	patTelegramID int64 = 1004
+	patChatID     int64 = 5004
 )
 
 // podEnvironment is the environment an isolated household's configuration is
@@ -47,6 +56,7 @@ func podEnvironment() map[string]string {
 		davidBotTokenEnv: "123456:david-token",
 		meiBotTokenEnv:   "123456:mei-token",
 		samBotTokenEnv:   "123456:sam-token",
+		patBotTokenEnv:   "123456:pat-token",
 	}
 }
 
@@ -69,9 +79,11 @@ func isolatedConfigYAML(dataDir, localURL string) string {
 		davidTelegramID, davidSpace, davidBotTokenEnv)
 	fmt.Fprintf(&b, "  - id: mei\n    name: Mei\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n",
 		meiTelegramID, meiSpace, meiBotTokenEnv)
-	// No telegram_id: sam has been given a bot and a code and has not used it.
+	// No telegram_id: each has been given a bot and a code and has not used it.
 	fmt.Fprintf(&b, "  - id: %s\n    name: Sam\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n",
 		samMemberID, samSpace, samBotTokenEnv)
+	fmt.Fprintf(&b, "  - id: %s\n    name: Pat\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n",
+		patMemberID, patSpace, patBotTokenEnv)
 	fmt.Fprintf(&b, "endpoints:\n")
 	fmt.Fprintf(&b, "  - name: attic\n    base_url: '%s'\n    model: test-model\n    tags: [local]\n    timeout: 30s\n", localURL)
 	fmt.Fprintf(&b, "memory:\n  lore_command: [lore, mcp]\n  search_limit: 8\n")
