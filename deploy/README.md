@@ -6,7 +6,7 @@ Four ways to run kenward; pick one.
 | --- | --- |
 | [`compose.simple.yml`](compose.simple.yml) | Simple mode — one household bot, one container. Works on Windows, macOS, Linux. |
 | [`compose.isolated.yml`](compose.isolated.yml) | Isolated mode — one container per member plus one for the group. Linux with Podman or Docker only. Normally generated from `kenward.yaml`; the checked-in copy is a worked two-member example. |
-| [`kenward.service`](kenward.service) | Running the plain Linux binary under systemd instead of a container. |
+| [`kenward.service`](kenward.service) | Running the plain Linux binary under systemd instead of a container. Secrets load as systemd credentials, not environment variables — see below. |
 | [`../Dockerfile`](../Dockerfile) | Building the image itself. Read its top comment first — it explains why `lore` is not inside it and how to supply one. |
 
 Pick Simple unless you have a household member whose privacy from *the person
@@ -15,16 +15,32 @@ running the machine* matters more than the convenience of one process. See
 
 ## What you fill in
 
-Every one of these files assumes two things exist next to it, and none of
-them create either:
+Every one of these files assumes `kenward.yaml` exists next to it — the
+household's configuration (`docs/IMPLEMENTATION.md` §4), referenced by path
+and never generated here — plus the actual secret values, supplied
+differently depending on the path:
 
-- **`kenward.yaml`** — the household's configuration (`docs/IMPLEMENTATION.md`
-  §4). Referenced by path, never generated here.
-- **`.env`** (compose) or **`/etc/kenward/kenward.env`** (systemd) — the
-  actual secret values: bot token(s) and any provider API key kenward.yaml's
-  `bot_token_env` / `api_key_env` fields name. kenward.yaml itself never
-  contains a literal token or key, only the name of the environment variable
-  that holds one.
+- **Compose (`compose.simple.yml`, `compose.isolated.yml`)**: a `.env` file
+  next to the compose file, holding bot token(s) and any provider API key
+  kenward.yaml's `bot_token_env` / `api_key_env` fields name.
+- **systemd (`kenward.service`)**: individual files under
+  `/etc/kenward/credentials/`, one per secret, loaded via `LoadCredential=`
+  — see that file's comments for the exact names.
+
+kenward.yaml itself never contains a literal token or key, only the name of
+an environment variable or a credential/file path that holds one.
+
+**The two paths deliberately use different mechanisms, not out of
+inconsistency:** systemd has `LoadCredential=`, which hands each secret to
+the process as its own read-only file in a service-private, non-swappable
+directory that disappears when the unit stops — invisible to `/proc` and not
+silently inherited by a spawned child process. Containers have no equivalent
+primitive that Compose can drive portably, so the compose files fall back to
+environment variables, scoped as tightly as `environment:` blocks allow (see
+below). If you want file-backed secrets in a container too, kenward's config
+also accepts the `*_file` form (a path to a file holding the value) — pair it
+with a secret mounted read-only at 0600, e.g. a Docker/Podman secret or a
+bind-mounted file, rather than `environment:`.
 
 For the container paths you also need a `lore` binary on the host to
 bind-mount in — see the Dockerfile's note on why it isn't baked into the
@@ -38,15 +54,21 @@ bot token (and only the provider keys its own tier chain can reach), which is
 what makes it true that no container can read another member's private
 Telegram conversation. If you ever see `env_file:` re-added to that file,
 that isolation has been undone — treat it as a regression, not a cleanup.
+Even so, that token still sits in that member's own container's environment
+— readable by anything with access to *that* container, which is a weaker
+guarantee than systemd's credential files give the binary-install path; see
+`compose.isolated.yml`'s header for the `*_file` alternative if that gap
+matters for your household.
 
 ## The one warning that matters
 
-**`kenward.yaml` and `.env` (or `kenward.env`) hold real secrets — Telegram
-bot tokens, provider API keys, and (in kenward.yaml) the shape of a real
-household's private/shared space split. Never commit either one, anywhere,
-under any name.** `.gitignore` and `.dockerignore` both already block the
-obvious filenames (`kenward.yaml`, `.env`, `*.token`, `*.key`, `*.pem`, `/data/`,
-`/state/`), but a rename or a copy under a different path defeats that —
-check `git status` before committing when you've touched deploy configuration.
-If a secret does land in git history, rotating it (new bot token, new API
-key) is the fix; deleting the file afterwards is not.
+**`kenward.yaml`, `.env`, and the files under `/etc/kenward/credentials/`
+hold real secrets — Telegram bot tokens, provider API keys, and (in
+kenward.yaml) the shape of a real household's private/shared space split.
+Never commit any of them, anywhere, under any name.** `.gitignore` and
+`.dockerignore` both already block the obvious filenames (`kenward.yaml`,
+`.env`, `*.token`, `*.key`, `*.pem`, `/data/`, `/state/`), but a rename or a
+copy under a different path defeats that — check `git status` before
+committing when you've touched deploy configuration. If a secret does land
+in git history, rotating it (new bot token, new API key) is the fix;
+deleting the file afterwards is not.

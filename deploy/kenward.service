@@ -3,9 +3,11 @@
 # /etc/systemd/system/kenward.service, then:
 #
 #   sudo mkdir -p /etc/kenward
-#   sudo $EDITOR /etc/kenward/kenward.yaml       # mode: simple | isolated
-#   sudo $EDITOR /etc/kenward/kenward.env        # bot token(s) + provider keys
-#   sudo chmod 600 /etc/kenward/kenward.env      # holds secrets — not committed anywhere
+#   sudo $EDITOR /etc/kenward/kenward.yaml            # mode: simple | isolated
+#   sudo mkdir -p -m 0700 /etc/kenward/credentials
+#   sudo install -m 0600 /dev/stdin /etc/kenward/credentials/bot_token <<< '<token>'
+#   # ... one file per secret this household actually uses — see the
+#   # LoadCredential= block below for the exact names.
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now kenward
 #
@@ -27,10 +29,39 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/kenward run --config /etc/kenward/kenward.yaml --data-dir /var/lib/kenward
-# Bot tokens and provider API keys are named by env var only in kenward.yaml
-# (bot_token_env, api_key_env) — this file supplies their values, kept out of
-# both the unit file and version control, mode 600.
-EnvironmentFile=/etc/kenward/kenward.env
+
+# --- Secrets: LoadCredential=, not EnvironmentFile= ---
+# An EnvironmentFile= value lives in this process's environment for as long
+# as it runs: readable via /proc/<pid>/environ by anything with access to
+# that (this unit's user, or root), and automatically inherited by every
+# child process it spawns — including the `lore mcp` subprocess kenward
+# starts, whether or not lore has any business seeing a Telegram token.
+# LoadCredential= avoids both: each credential is materialised as its own
+# read-only (mode 0400) file under $CREDENTIALS_DIRECTORY, a directory
+# systemd creates for this unit alone, backed by non-swappable memory, and
+# torn down the moment the unit stops. There is nothing to grep out of
+# /proc, and a child process gets nothing unless it deliberately opens that
+# exact file — the environment variable it does inherit, $CREDENTIALS_DIRECTORY,
+# is just a path, not a secret.
+#
+# internal/config looks for these names under $CREDENTIALS_DIRECTORY with no
+# further configuration (see docs/IMPLEMENTATION.md §4 once updated to
+# describe the new secret sources):
+#   bot_token               - the household bot (simple mode / group unit)
+#   bot_token.<member id>   - a member's own bot
+#   api_key.<endpoint name> - a provider key, one per endpoint that needs one
+#
+# The PATH half of each line below is read by systemd itself — running as
+# root, before it drops privileges to this unit's (dynamic) user — so the
+# source files in /etc/kenward/credentials/ can stay root:root mode 0600 and
+# never need to be chowned to whatever uid DynamicUser happens to pick this
+# time around; that re-ownership only has to happen (and does, automatically)
+# on the copy systemd hands to the unit, not on the source file. One example
+# of each naming form below; add or remove lines to match this household's
+# actual members and endpoints (kenward.yaml).
+LoadCredential=bot_token:/etc/kenward/credentials/bot_token
+LoadCredential=bot_token.david:/etc/kenward/credentials/bot_token.david
+LoadCredential=api_key.openrouter:/etc/kenward/credentials/api_key.openrouter
 
 Restart=on-failure
 RestartSec=5s
@@ -49,8 +80,17 @@ DynamicUser=yes
 # Persistent, writable state (session key material while unlocked stays in
 # memory only and is never written here; this is for enrolment claim-code
 # storage and, if memory.lore_command points LORE_HOME under it, lore's own
-# on-disk store). Resolves to /var/lib/kenward, created and owned correctly
-# for the DynamicUser above regardless of which uid that turns out to be.
+# on-disk store). Resolves to /var/lib/kenward. DynamicUser's allocated uid
+# is not guaranteed to be the same from one start to the next, but systemd
+# re-chowns StateDirectory's contents to whichever uid this start got before
+# ExecStart runs, so nothing here needs a fixed uid to keep working.
+#
+# This is a different directory from $CREDENTIALS_DIRECTORY above, and the
+# two must not be confused: credentials are a transient, systemd-managed
+# tmpfs torn down at every stop and rebuilt from the LoadCredential= sources
+# at every start, while StateDirectory is where kenward itself persists
+# things across restarts. Nothing kenward needs to keep belongs in the
+# credentials directory, and no secret belongs in StateDirectory.
 StateDirectory=kenward
 StateDirectoryMode=0700
 

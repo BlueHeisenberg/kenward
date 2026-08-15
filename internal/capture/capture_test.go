@@ -85,6 +85,10 @@ type stubMemory struct {
 	puts     []putCall
 	shares   []shareCall
 	gets     []string
+	// putSpace and shareSpace, when set, make the stub report the write landed in
+	// a different space than the one requested — a store that misroutes.
+	putSpace   domain.SpaceID
+	shareSpace domain.SpaceID
 }
 
 func (m *stubMemory) Search(context.Context, memory.SearchQuery) ([]memory.Entry, error) {
@@ -106,6 +110,9 @@ func (m *stubMemory) Put(_ context.Context, space domain.SpaceID, d memory.Draft
 	if m.putErr != nil {
 		return memory.Entry{}, m.putErr
 	}
+	if m.putSpace != "" {
+		space = m.putSpace
+	}
 	return memory.Entry{ID: "entry-1", Space: space, Title: d.Title, Body: d.Body}, nil
 }
 
@@ -113,6 +120,9 @@ func (m *stubMemory) Share(_ context.Context, from, to domain.SpaceID, id string
 	m.shares = append(m.shares, shareCall{from: from, to: to, id: id})
 	if m.shareErr != nil {
 		return memory.Entry{}, m.shareErr
+	}
+	if m.shareSpace != "" {
+		to = m.shareSpace
 	}
 	return memory.Entry{ID: id, Space: to, Title: m.entry.Title}, nil
 }
@@ -845,6 +855,141 @@ func TestUnsureWithoutSharedSpaceOffersPersonalOnly(t *testing.T) {
 	}
 	if len(mem.puts) != 1 || mem.puts[0].space != personal {
 		t.Fatalf("puts = %+v, want one write to %s", mem.puts, personal)
+	}
+}
+
+// TestWrongSpaceWriteIsNotConfirmed: the confirmation reports the outcome, not the
+// intention. A store that lands the write in a different space than the member chose
+// must produce a went-wrong notice, never a correct-reading "Saved to your private
+// memory" — that message being derivable only from the actual outcome is the
+// cross-check this test pins.
+func TestWrongSpaceWriteIsNotConfirmed(t *testing.T) {
+	mem := &stubMemory{putSpace: shared} // the member chose personal; the store misroutes
+	tr := &stubTransport{answers: []transport.Answer{accept(ChoicePersonal)}}
+	e := New(mem, tr, Options{})
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+	if err == nil {
+		t.Fatal("err = nil, want the space mismatch reported as a failure")
+	}
+	if out.Stored() {
+		t.Error("outcome claims a save that landed in the wrong space")
+	}
+	if len(tr.sends) != 1 {
+		t.Fatalf("sends = %v, want exactly the went-wrong notice", tr.sends)
+	}
+	got := tr.sends[0].Text
+	if strings.Contains(got, "Saved") || strings.Contains(got, "your private memory") {
+		t.Errorf("member told a misrouted write went where they chose: %q", got)
+	}
+	if !strings.Contains(got, "was not stored where you chose") {
+		t.Errorf("notice %q does not say the destination was wrong", got)
+	}
+}
+
+// TestWrongSpacePublicationIsNotConfirmed is the same cross-check for the promotion
+// flow.
+func TestWrongSpacePublicationIsNotConfirmed(t *testing.T) {
+	mem := &stubMemory{
+		entry:      memory.Entry{Title: "Where the spare key lives"},
+		shareSpace: personal, // the copy never left the private space
+	}
+	tr := &stubTransport{answers: []transport.Answer{accept(ChoicePublish)}}
+	e := New(mem, tr, Options{})
+
+	out, err := e.OfferPromotion(context.Background(), directScope(), "entry-7", davidID)
+	if err == nil {
+		t.Fatal("err = nil, want the space mismatch reported as a failure")
+	}
+	if out.Stored() {
+		t.Error("outcome claims a publication that landed in the wrong space")
+	}
+	for _, s := range tr.sends {
+		if strings.Contains(s.Text, "Published") {
+			t.Errorf("member told a misrouted copy was published: %q", s.Text)
+		}
+	}
+}
+
+// TestGroupDeclinesArePerMember: in the household group, one member refusing a title
+// silences it for them alone. Another member is still asked.
+func TestGroupDeclinesArePerMember(t *testing.T) {
+	e, mem, tr := newEngine(t,
+		transport.Answer{ChoiceID: ChoiceDecline, UserID: davidID},
+		transport.Answer{ChoiceID: ChoiceShared, UserID: otherID},
+	)
+	sc := groupScope()
+
+	e.BeginTurn(sc, "turn-1")
+	if out, err := e.Offer(context.Background(), sc, proposal(TargetShared), davidID); err != nil || out.Kind != OutcomeDeclined {
+		t.Fatalf("david's offer: %v %v", out.Kind, err)
+	}
+
+	// The next turn is another member's message proposing the same title.
+	e.BeginTurn(sc, "turn-2")
+	out, err := e.Offer(context.Background(), sc, proposal(TargetShared), otherID)
+	if err != nil {
+		t.Fatalf("other member's offer: %v", err)
+	}
+	if out.Kind != OutcomeSaved {
+		t.Fatalf("outcome = %v, want saved: david's refusal suppressed the title for everyone", out.Kind)
+	}
+	if len(tr.asks) != 2 {
+		t.Fatalf("asks = %d, want 2", len(tr.asks))
+	}
+	if len(mem.puts) != 1 {
+		t.Fatalf("puts = %+v, want the other member's save", mem.puts)
+	}
+
+	// And david himself stays suppressed inside the window.
+	e.BeginTurn(sc, "turn-3")
+	out, err = e.Offer(context.Background(), sc, proposal(TargetShared), davidID)
+	if err != nil {
+		t.Fatalf("david's second offer: %v", err)
+	}
+	if out.Kind != OutcomeDuplicate {
+		t.Fatalf("outcome = %v, want duplicate for the member who declined", out.Kind)
+	}
+}
+
+// TestGroupBudgetIsPerMember: the per-turn proposal budget belongs to the speaker.
+// One member's pending or spent question must not consume another member's slot,
+// even when their turns interleave in the same group scope state.
+func TestGroupBudgetIsPerMember(t *testing.T) {
+	e, mem, tr := newEngine(t,
+		transport.Answer{ChoiceID: ChoiceShared, UserID: davidID},
+		transport.Answer{ChoiceID: ChoiceShared, UserID: otherID},
+	)
+	sc := groupScope()
+	e.BeginTurn(sc, "turn-1")
+
+	first := proposal(TargetShared)
+	if out, err := e.Offer(context.Background(), sc, first, davidID); err != nil || out.Kind != OutcomeSaved {
+		t.Fatalf("david's offer: %v %v", out.Kind, err)
+	}
+
+	// The other member's proposal arrives against the same scope state before a
+	// new turn begins — the interleaving a released turn slot makes possible.
+	second := proposal(TargetShared)
+	second.Draft.Title = "Recycling collection moved"
+	out, err := e.Offer(context.Background(), sc, second, otherID)
+	if err != nil {
+		t.Fatalf("other member's offer: %v", err)
+	}
+	if out.Kind != OutcomeSaved {
+		t.Fatalf("outcome = %v, want saved: david's question spent the other member's budget", out.Kind)
+	}
+	if len(tr.asks) != 2 || len(mem.puts) != 2 {
+		t.Fatalf("asks = %d puts = %d, want 2 and 2", len(tr.asks), len(mem.puts))
+	}
+
+	// Each member's own budget is still spent.
+	third := proposal(TargetShared)
+	third.Draft.Title = "A third thing"
+	if out, _ := e.Offer(context.Background(), sc, third, davidID); out.Kind != OutcomeLimited {
+		t.Fatalf("david's second offer = %v, want limited", out.Kind)
 	}
 }
 

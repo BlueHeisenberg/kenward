@@ -40,6 +40,17 @@
 # which is exactly the failure this file's header warns about. The same
 # applies to provider API keys below: each service is given only the keys its
 # own tier chain in kenward.yaml can actually reach, never the full set.
+#
+# Even scoped this way, a member's own token still sits in that member's own
+# container's environment — visible to anything with access to that specific
+# container (a shell in it, `docker inspect`, `/proc` from inside it). That is
+# a real gap compared to kenward.service's systemd credentials, which never
+# touch the environment at all (see that file's comments) — containers have
+# no directly equivalent primitive Compose can drive portably. If that gap
+# matters for your household, kenward's config also accepts a `*_file` form
+# (e.g. `bot_token_file`) pointing at a path — mount the secret in as a
+# read-only, 0600 file (a Docker/Podman secret, or a bind mount) instead of
+# setting it via `environment:`, and reference that path instead.
 
 services:
   # --- per-member pod: david ---

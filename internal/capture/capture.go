@@ -219,19 +219,30 @@ func (o Options) normalized() Options {
 	return o
 }
 
-// decline is one refused title, remembered with the turn it was refused in.
+// decline is one refused title, remembered with the turn it was refused in and the
+// member who refused it. The speaker matters in the household group: one member's
+// refusal must not decide what another member is asked, so suppression matches on
+// who declined, not just what was declined. In a direct scope there is one speaker
+// and the field changes nothing.
 type decline struct {
-	title string
-	turn  int
+	title   string
+	turn    int
+	speaker int64
 }
 
 // scopeState is the whole of capture's memory: which turn a scope is on, how much of
 // this turn's budget is spent, and what was recently refused. It is in-process only and
 // is never persisted — a restart legitimately forgets that you said no.
+//
+// The proposal budget is per speaker within the turn. In the household group a
+// capture question can still be waiting on one member's tap when another member's
+// turn begins, and a budget shared across speakers would let the first member's
+// late question consume the second member's only slot. A direct scope has one
+// speaker, so the map holds one entry and behaves exactly as a counter did.
 type scopeState struct {
 	turnToken string
 	turn      int
-	offered   int
+	offered   map[int64]int
 	declines  []decline
 	touched   uint64
 }
@@ -239,8 +250,11 @@ type scopeState struct {
 // Engine asks members to confirm memory writes and performs the ones they accept.
 //
 // An Engine is safe for concurrent use. It holds no per-member state beyond the small
-// bounded history described above, keyed by scope rather than by member, so a unit may
-// own one and nothing is shared between units that do not share a scope.
+// bounded history described above, keyed by scope, so a unit may own one and nothing
+// is shared between units that do not share a scope. Within a scope's state the
+// decline records and the per-turn budget carry the speaker, because the household
+// group is one scope with many speakers and neither one member's refusals nor their
+// pending question may decide what another member is asked.
 type Engine struct {
 	mem  memory.Memory
 	tr   transport.Transport
@@ -281,7 +295,7 @@ func (e *Engine) BeginTurn(sc domain.Scope, turn string) {
 	}
 	st.turnToken = turn
 	st.turn++
-	st.offered = 0
+	st.offered = nil
 	st.pruneDeclines(e.opts.DeclineWindow)
 }
 
@@ -317,14 +331,17 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	e.mu.Lock()
 	st := e.stateLocked(sc)
 	switch {
-	case st.recentlyDeclined(title, e.opts.DeclineWindow):
+	case st.recentlyDeclined(title, askUserID, e.opts.DeclineWindow):
 		e.mu.Unlock()
 		return Outcome{Kind: OutcomeDuplicate, Title: title}, nil
-	case st.offered >= e.opts.MaxProposalsPerTurn:
+	case st.offered[askUserID] >= e.opts.MaxProposalsPerTurn:
 		e.mu.Unlock()
 		return Outcome{Kind: OutcomeLimited, Title: title}, nil
 	}
-	st.offered++
+	if st.offered == nil {
+		st.offered = make(map[int64]int, 1)
+	}
+	st.offered[askUserID]++
 	turn := st.turn
 	e.mu.Unlock()
 
@@ -334,13 +351,13 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		// Refunding it follows the duplicate-suppression reasoning above: a
 		// proposal that never became a question must not consume the one question
 		// this turn is allowed.
-		e.refundOffer(sc, turn)
+		e.refundOffer(sc, askUserID, turn)
 		return Outcome{}, err
 	}
 
 	ans, err := e.tr.Ask(ctx, q)
 	if err != nil {
-		e.refundOffer(sc, turn)
+		e.refundOffer(sc, askUserID, turn)
 		// The member may have seen a question that will never resolve; the one
 		// thing they must not be left believing is that something was stored.
 		e.notify(ctx, sc, fmt.Sprintf("I meant to ask about remembering %q, but the question didn't go through. Nothing was written.", title))
@@ -349,7 +366,7 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 
 	// A timeout is a decline.
 	if ans.TimedOut {
-		e.recordDecline(sc, title, turn)
+		e.recordDecline(sc, askUserID, title, turn)
 		return Outcome{Kind: OutcomeTimedOut, Title: title}, nil
 	}
 	// A tap from anyone but the member we asked is ignored — not honoured, and not
@@ -376,7 +393,7 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 			return Outcome{}, err
 		}
 	default:
-		e.recordDecline(sc, title, turn)
+		e.recordDecline(sc, askUserID, title, turn)
 		return Outcome{Kind: OutcomeDeclined, Title: title}, nil
 	}
 
@@ -389,19 +406,32 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		// uncertainty to the member (IMPLEMENTATION.md section 12) instead of
 		// retrying silently, and suppress the title so the model does not
 		// immediately re-propose the thing they were just told to verify first.
-		e.recordDecline(sc, title, turn)
+		e.recordDecline(sc, askUserID, title, turn)
 		e.notify(ctx, sc, fmt.Sprintf("I can't confirm whether %q was saved — the memory store didn't answer. Check before saving it again; a duplicate can't be deleted.", title))
 		return Outcome{}, fmt.Errorf("capture: storing a confirmed entry in %s: %w", space, err)
 	}
 
-	out := Outcome{Kind: OutcomeSaved, Space: space, EntryID: entry.ID, Title: title}
+	// The confirmation reports the outcome, never echoes the intention: it is
+	// derived from the entry the store returned, so the destination the member is
+	// told and the destination that was written come from different values and can
+	// disagree. A store reporting a different space than the one confirmed is
+	// treated as a failure — telling a member their private note is private while
+	// it sits in the shared space is the exact failure this product exists to
+	// prevent, and a confirmation built from the intended space could never notice.
+	if entry.Space != space {
+		e.recordDecline(sc, askUserID, title, turn)
+		e.notify(ctx, sc, fmt.Sprintf("Something went wrong: %q was not stored where you chose. Tell whoever runs this node before saving it again.", title))
+		return Outcome{}, fmt.Errorf("capture: store reported space %s for a write confirmed to %s", entry.Space, space)
+	}
+
+	out := Outcome{Kind: OutcomeSaved, Space: entry.Space, EntryID: entry.ID, Title: title}
 	// The write has happened; a failure to confirm it is reported but does not unsay
 	// it, so the outcome is returned alongside the error.
 	if err := e.tr.Send(ctx, transport.Outbound{
 		ChatID: sc.ChatID,
-		Text:   fmt.Sprintf("Saved %q to %s (%s).", title, destinationPhrase(sc, space), space),
+		Text:   fmt.Sprintf("Saved %q to %s (%s).", title, destinationPhrase(sc, entry.Space), entry.Space),
 	}); err != nil {
-		return out, fmt.Errorf("capture: confirming entry %s stored in %s: %w", out.EntryID, space, err)
+		return out, fmt.Errorf("capture: confirming entry %s stored in %s: %w", out.EntryID, entry.Space, err)
 	}
 	return out, nil
 }
@@ -461,12 +491,20 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 		return Outcome{}, fmt.Errorf("capture: publishing %s to %s: %w", entryID, to, err)
 	}
 
-	out := Outcome{Kind: OutcomeSaved, Space: to, EntryID: shared.ID, Title: entry.Title}
+	// As with Offer, the confirmation reports where the copy actually landed, and
+	// a store reporting a different space than the one the member approved is a
+	// failure, not something to confirm.
+	if shared.Space != to {
+		e.notify(ctx, sc, fmt.Sprintf("Something went wrong: %q was not published where you chose. Tell whoever runs this node.", entry.Title))
+		return Outcome{}, fmt.Errorf("capture: store reported space %s for a publication confirmed to %s", shared.Space, to)
+	}
+
+	out := Outcome{Kind: OutcomeSaved, Space: shared.Space, EntryID: shared.ID, Title: entry.Title}
 	if err := e.tr.Send(ctx, transport.Outbound{
 		ChatID: sc.ChatID,
-		Text:   fmt.Sprintf("Published %q to the household memory (%s). Everyone can see it now.", entry.Title, to),
+		Text:   fmt.Sprintf("Published %q to the household memory (%s). Everyone can see it now.", entry.Title, shared.Space),
 	}); err != nil {
-		return out, fmt.Errorf("capture: confirming publication of entry %s as %s in %s: %w", entryID, out.EntryID, to, err)
+		return out, fmt.Errorf("capture: confirming publication of entry %s as %s in %s: %w", entryID, out.EntryID, shared.Space, err)
 	}
 	return out, nil
 }
@@ -597,16 +635,16 @@ func promotionText(entry memory.Entry) string {
 	return b.String()
 }
 
-// refundOffer returns a spent slot to the turn's proposal budget. It is called only
-// when no question reached the member; a question they saw — answered, ignored or
-// declined — keeps the budget spent. The turn is checked so a refund arriving after
-// the turn has moved on does not credit the next one.
-func (e *Engine) refundOffer(sc domain.Scope, turn int) {
+// refundOffer returns a spent slot to the speaker's proposal budget. It is called
+// only when no question reached the member; a question they saw — answered, ignored
+// or declined — keeps the budget spent. The turn is checked so a refund arriving
+// after the turn has moved on does not credit the next one.
+func (e *Engine) refundOffer(sc domain.Scope, speaker int64, turn int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	st := e.stateLocked(sc)
-	if st.turn == turn && st.offered > 0 {
-		st.offered--
+	if st.turn == turn && st.offered[speaker] > 0 {
+		st.offered[speaker]--
 	}
 }
 
@@ -618,22 +656,23 @@ func (e *Engine) notify(ctx context.Context, sc domain.Scope, text string) {
 	_ = e.tr.Send(ctx, transport.Outbound{ChatID: sc.ChatID, Text: text})
 }
 
-// recordDecline remembers a refusal so the same title is not put to the member again
-// for the next DeclineWindow turns.
-func (e *Engine) recordDecline(sc domain.Scope, title string, turn int) {
+// recordDecline remembers a refusal so the same title is not put to that member
+// again for the next DeclineWindow turns. The speaker is part of the record: in the
+// household group, one member's refusal suppresses the title for them alone.
+func (e *Engine) recordDecline(sc domain.Scope, speaker int64, title string, turn int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	st := e.stateLocked(sc)
-	st.declines = append(st.declines, decline{title: normalizeTitle(title), turn: turn})
+	st.declines = append(st.declines, decline{title: normalizeTitle(title), turn: turn, speaker: speaker})
 	if len(st.declines) > maxDeclines {
 		st.declines = append(st.declines[:0], st.declines[len(st.declines)-maxDeclines:]...)
 	}
 }
 
-func (st *scopeState) recentlyDeclined(title string, window int) bool {
+func (st *scopeState) recentlyDeclined(title string, speaker int64, window int) bool {
 	want := normalizeTitle(title)
 	for _, d := range st.declines {
-		if d.title == want && st.turn-d.turn < window {
+		if d.title == want && d.speaker == speaker && st.turn-d.turn < window {
 			return true
 		}
 	}
