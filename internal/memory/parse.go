@@ -248,7 +248,7 @@ func parseEntryMeta(line string, r *rendered) error {
 	e.ID = m[1]
 	v, err := strconv.Atoi(m[2])
 	if err != nil {
-		return parseErrf(toolGet, 2, m[2], "unparseable version: %v", err)
+		return parseErrf(toolGet, 2, m[2], "unparseable version")
 	}
 	r.Version = v
 
@@ -262,7 +262,7 @@ func parseEntryMeta(line string, r *rendered) error {
 	e.Domain = strings.TrimPrefix(seg[2], "domain ")
 
 	if !confidences[seg[3]] {
-		return parseErrf(toolGet, 2, seg[3], "%q is not one of lore's confidence values", seg[3])
+		return parseErrf(toolGet, 2, seg[3], "not one of lore's confidence values")
 	}
 	e.Confidence = seg[3]
 
@@ -271,7 +271,7 @@ func parseEntryMeta(line string, r *rendered) error {
 	}
 	origin := strings.TrimPrefix(seg[4], "origin ")
 	if !origins[origin] {
-		return parseErrf(toolGet, 2, origin, "%q is not one of lore's origin values", origin)
+		return parseErrf(toolGet, 2, origin, "not one of lore's origin values")
 	}
 	e.Origin = origin
 
@@ -281,13 +281,13 @@ func parseEntryMeta(line string, r *rendered) error {
 	}
 	ts, err := parseLoreTime(strings.TrimPrefix(last, "updated "))
 	if err != nil {
-		return parseErrf(toolGet, 2, last, "unparseable updated timestamp: %v", err)
+		return parseErrf(toolGet, 2, last, "unparseable updated timestamp")
 	}
 	e.UpdatedAt = ts
 
 	middle := seg[5 : len(seg)-1]
 	if len(middle) > 2 {
-		return parseErrf(toolGet, 2, line, "unexpected extra metadata fields: %v", middle)
+		return parseErrf(toolGet, 2, line, "unexpected extra metadata fields: %d, want at most 2", len(middle))
 	}
 	seenMarkers := false
 	for _, f := range middle {
@@ -335,7 +335,7 @@ func parseSpaces(text string) ([]spaceRow, error) {
 		}
 		n, err := strconv.Atoi(m[4])
 		if err != nil {
-			return nil, parseErrf(toolSpaces, i+1, m[4], "unparseable entry count: %v", err)
+			return nil, parseErrf(toolSpaces, i+1, m[4], "unparseable entry count")
 		}
 		out = append(out, spaceRow{
 			Name:    m[1],
@@ -369,11 +369,11 @@ func parseStored(text string) (stored, error) {
 	}
 	v, err := strconv.Atoi(m[2])
 	if err != nil {
-		return stored{}, parseErrf(toolPut, 0, m[2], "unparseable version: %v", err)
+		return stored{}, parseErrf(toolPut, 0, m[2], "unparseable version")
 	}
 	name, err := strconv.Unquote(m[3])
 	if err != nil {
-		return stored{}, parseErrf(toolPut, 0, m[3], "unparseable quoted space name: %v", err)
+		return stored{}, parseErrf(toolPut, 0, m[3], "unparseable quoted space name")
 	}
 	return stored{ID: m[1], Version: v, SpaceName: name, Domain: m[4], Confidence: m[5], Origin: m[6]}, nil
 }
@@ -399,11 +399,11 @@ func parseCopied(text string) (copied, error) {
 	}
 	to, err := strconv.Unquote(m[2])
 	if err != nil {
-		return copied{}, parseErrf(toolShare, 0, m[2], "unparseable quoted space name: %v", err)
+		return copied{}, parseErrf(toolShare, 0, m[2], "unparseable quoted space name")
 	}
 	from, err := strconv.Unquote(m[4])
 	if err != nil {
-		return copied{}, parseErrf(toolShare, 0, m[4], "unparseable quoted space name: %v", err)
+		return copied{}, parseErrf(toolShare, 0, m[4], "unparseable quoted space name")
 	}
 	return copied{NewID: m[1], ToSpace: to, SourceID: m[3], FromSpace: from}, nil
 }

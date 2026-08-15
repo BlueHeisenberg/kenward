@@ -33,6 +33,7 @@ type shareCall struct {
 type stubTransport struct {
 	answers []transport.Answer
 	askErr  error
+	sendErr error
 	asks    []askCall
 	sends   []transport.Outbound
 }
@@ -43,7 +44,7 @@ func (t *stubTransport) Updates(context.Context) (<-chan transport.Inbound, erro
 
 func (t *stubTransport) Send(_ context.Context, o transport.Outbound) error {
 	t.sends = append(t.sends, o)
-	return nil
+	return t.sendErr
 }
 
 func (t *stubTransport) Ask(_ context.Context, q transport.Question) (transport.Answer, error) {
@@ -364,9 +365,14 @@ func TestTimeoutIsDecline(t *testing.T) {
 }
 
 // TestAnswerFromAnotherUser: the transport should have filtered it, but a stray tap
-// still may not route someone else's memory.
+// still may not route someone else's memory — and may not decide anything on the
+// asked member's behalf either: nothing is written, and the title is not recorded as
+// their decline.
 func TestAnswerFromAnotherUser(t *testing.T) {
-	e, mem, _ := newEngine(t, transport.Answer{ChoiceID: ChoiceShared, UserID: otherID})
+	e, mem, _ := newEngine(t,
+		transport.Answer{ChoiceID: ChoiceShared, UserID: otherID},
+		accept(ChoiceShared),
+	)
 	sc := directScope()
 	e.BeginTurn(sc, "turn-1")
 
@@ -374,11 +380,22 @@ func TestAnswerFromAnotherUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Offer: %v", err)
 	}
-	if out.Kind != OutcomeDeclined {
-		t.Fatalf("outcome = %v, want declined", out.Kind)
+	if out.Kind != OutcomeTimedOut {
+		t.Fatalf("outcome = %v, want timed out (the asked member never answered)", out.Kind)
 	}
 	if len(mem.puts) != 0 {
 		t.Fatalf("puts = %+v, want none", mem.puts)
+	}
+
+	// The stray tap was not recorded as the asked member's decline: the same title
+	// may be proposed again next turn, and this time their own tap saves it.
+	e.BeginTurn(sc, "turn-2")
+	out, err = e.Offer(context.Background(), sc, proposal(TargetUnsure), davidID)
+	if err != nil {
+		t.Fatalf("second Offer: %v", err)
+	}
+	if out.Kind != OutcomeSaved {
+		t.Fatalf("outcome = %v, want saved; a stray tap suppressed the title", out.Kind)
 	}
 }
 
@@ -747,9 +764,28 @@ func TestAskFailurePropagates(t *testing.T) {
 	if len(mem.puts) != 0 {
 		t.Fatalf("puts = %+v, want none", mem.puts)
 	}
+	// The member is told nothing was written, best effort.
+	if len(tr.sends) != 1 || !strings.Contains(tr.sends[0].Text, "Nothing was written") {
+		t.Errorf("sends = %v, want the nothing-was-written notice", tr.sends)
+	}
+
+	// No question reached the member, so the turn's budget was not spent: the same
+	// turn may still ask once the transport recovers.
+	tr.askErr = nil
+	tr.answers = []transport.Answer{accept(ChoiceShared)}
+	out, err := e.Offer(context.Background(), sc, proposal(TargetShared), davidID)
+	if err != nil {
+		t.Fatalf("retry Offer: %v", err)
+	}
+	if out.Kind != OutcomeSaved {
+		t.Fatalf("outcome = %v, want saved; a failed ask spent the turn's budget", out.Kind)
+	}
 }
 
-func TestPutFailurePropagates(t *testing.T) {
+// TestPutFailureReportsUncertainty: lore has no delete, so a write that failed after
+// the member said yes is reported as uncertain rather than retried or passed over in
+// silence (IMPLEMENTATION.md section 12).
+func TestPutFailureReportsUncertainty(t *testing.T) {
 	mem := &stubMemory{putErr: errors.New("lore is down")}
 	tr := &stubTransport{answers: []transport.Answer{accept(ChoiceShared)}}
 	e := New(mem, tr, Options{})
@@ -763,8 +799,52 @@ func TestPutFailurePropagates(t *testing.T) {
 	if out.Stored() {
 		t.Error("outcome claims a write that failed")
 	}
-	if len(tr.sends) != 0 {
-		t.Errorf("confirmed a write that failed: %v", tr.sends)
+	if len(tr.sends) != 1 {
+		t.Fatalf("sends = %v, want exactly the uncertainty notice", tr.sends)
+	}
+	got := tr.sends[0].Text
+	if !strings.Contains(got, "can't confirm") || !strings.Contains(got, "Check before saving it again") {
+		t.Errorf("notice %q does not report uncertainty", got)
+	}
+	if strings.Contains(got, "Saved") {
+		t.Errorf("notice %q reads as a confirmation", got)
+	}
+
+	// The title is suppressed while the member verifies, so the model cannot
+	// immediately re-propose the thing they were told to check first.
+	e.BeginTurn(sc, "turn-2")
+	out, err = e.Offer(context.Background(), sc, proposal(TargetShared), davidID)
+	if err != nil {
+		t.Fatalf("second Offer: %v", err)
+	}
+	if out.Kind != OutcomeDuplicate {
+		t.Fatalf("outcome = %v, want duplicate suppression after an uncertain write", out.Kind)
+	}
+}
+
+// TestUnsureWithoutSharedSpaceOffersPersonalOnly: destinations are resolved before
+// they are offered, so a scope with no shared space never shows a Household button
+// whose tap could only fail.
+func TestUnsureWithoutSharedSpaceOffersPersonalOnly(t *testing.T) {
+	e, mem, tr := newEngine(t, accept(ChoicePersonal))
+	sc := directScope()
+	sc.Read = []domain.SpaceID{personal}
+	e.BeginTurn(sc, "turn-1")
+
+	out, err := e.Offer(context.Background(), sc, proposal(TargetUnsure), davidID)
+	if err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	want := []string{ChoicePersonal, ChoiceDecline}
+	got := tr.lastChoiceIDs()
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("choices = %v, want %v", got, want)
+	}
+	if out.Kind != OutcomeSaved || out.Space != personal {
+		t.Fatalf("outcome = %+v, want saved to the personal space", out)
+	}
+	if len(mem.puts) != 1 || mem.puts[0].space != personal {
+		t.Fatalf("puts = %+v, want one write to %s", mem.puts, personal)
 	}
 }
 
@@ -827,4 +907,141 @@ func equal(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// The title and body a member's private conversation produced. Every error this
+// package can return is checked against both.
+const (
+	secretTitle = "Miriam's biopsy is on the 12th"
+	secretBody  = "She has not told her sister yet."
+)
+
+// secretProposal is a proposal whose title and body are exactly the kind of thing
+// the model writes out of a private conversation: a one-line summary of the
+// sensitive thing itself.
+func secretProposal() Proposal {
+	return Proposal{
+		Draft: memory.Draft{
+			Domain:     "household",
+			Title:      secretTitle,
+			Body:       secretBody,
+			Confidence: "provisional",
+		},
+		Target: TargetPersonal,
+	}
+}
+
+// assertNoContent fails when an error's default rendering — the string that
+// reaches the operator's log — quotes anything the member said.
+func assertNoContent(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, leak := range []string{secretTitle, secretBody, "Miriam", "biopsy", "sister"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("error text quotes conversation content %q: %s", leak, err)
+		}
+	}
+}
+
+// TestOfferErrorsCarryNoContent proves that no failure of the capture flow puts
+// the proposal's title or body into the error a caller logs. A member discusses
+// something private, the model proposes remembering it, the member taps Save, the
+// write fails — and in isolated mode that error is written to a log the host
+// operator can read. Identifying the capture by outcome, space and entry id is
+// enough to act on and is not content.
+func TestOfferErrorsCarryNoContent(t *testing.T) {
+	sc := directScope()
+	boom := errors.New("lore is unreachable")
+
+	t.Run("ask fails", func(t *testing.T) {
+		e, _, tr := newEngine(t)
+		tr.askErr = boom
+		_, err := e.Offer(context.Background(), sc, secretProposal(), davidID)
+		assertNoContent(t, err)
+	})
+
+	t.Run("write fails", func(t *testing.T) {
+		e, m, _ := newEngine(t, accept(ChoicePersonal))
+		m.putErr = boom
+		_, err := e.Offer(context.Background(), sc, secretProposal(), davidID)
+		assertNoContent(t, err)
+		// The space is not content and an operator needs it, so it stays.
+		if !strings.Contains(err.Error(), string(personal)) {
+			t.Errorf("the error should still name the space, got %s", err)
+		}
+	})
+
+	t.Run("confirmation fails after the write landed", func(t *testing.T) {
+		e, _, tr := newEngine(t, accept(ChoicePersonal))
+		tr.sendErr = boom
+		out, err := e.Offer(context.Background(), sc, secretProposal(), davidID)
+		assertNoContent(t, err)
+		if !out.Stored() {
+			t.Fatal("the write happened; the outcome must still say so")
+		}
+		// An id identifies the entry that could not be confirmed without saying
+		// anything about what is in it.
+		if !strings.Contains(err.Error(), out.EntryID) {
+			t.Errorf("the error should name the entry id %q, got %s", out.EntryID, err)
+		}
+	})
+}
+
+// TestPromotionErrorsCarryNoContent is the same guarantee for the publish flow,
+// where the title comes off a stored entry rather than a fresh proposal.
+func TestPromotionErrorsCarryNoContent(t *testing.T) {
+	sc := directScope()
+	boom := errors.New("lore is unreachable")
+	stored := memory.Entry{Title: secretTitle, Body: secretBody}
+
+	t.Run("read fails", func(t *testing.T) {
+		e, m, _ := newEngine(t)
+		m.entry, m.getErr = stored, boom
+		_, err := e.OfferPromotion(context.Background(), sc, "entry-7", davidID)
+		assertNoContent(t, err)
+		if !strings.Contains(err.Error(), "entry-7") {
+			t.Errorf("the error should name the entry id, got %s", err)
+		}
+	})
+
+	t.Run("ask fails", func(t *testing.T) {
+		e, m, tr := newEngine(t)
+		m.entry, tr.askErr = stored, boom
+		_, err := e.OfferPromotion(context.Background(), sc, "entry-7", davidID)
+		assertNoContent(t, err)
+	})
+
+	t.Run("share fails", func(t *testing.T) {
+		e, m, _ := newEngine(t, transport.Answer{ChoiceID: ChoicePublish, UserID: davidID})
+		m.entry, m.shareErr = stored, boom
+		_, err := e.OfferPromotion(context.Background(), sc, "entry-7", davidID)
+		assertNoContent(t, err)
+	})
+
+	t.Run("confirmation fails after the copy landed", func(t *testing.T) {
+		e, m, tr := newEngine(t, transport.Answer{ChoiceID: ChoicePublish, UserID: davidID})
+		m.entry, tr.sendErr = stored, boom
+		out, err := e.OfferPromotion(context.Background(), sc, "entry-7", davidID)
+		assertNoContent(t, err)
+		if !out.Stored() {
+			t.Fatal("the copy happened; the outcome must still say so")
+		}
+	})
+}
+
+// TestOutcomeCarriesTheTitleForTheMember: removing the title from errors must not
+// remove it from the outcome. The member is who it is for, and a caller rendering
+// a confirmation back into the chat still needs it — the point is that disclosing
+// it is a decision the caller takes, not something an error does behind its back.
+func TestOutcomeCarriesTheTitleForTheMember(t *testing.T) {
+	e, _, _ := newEngine(t, transport.Answer{ChoiceID: ChoiceDecline, UserID: davidID})
+	out, err := e.Offer(context.Background(), directScope(), secretProposal(), davidID)
+	if err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if out.Title != secretTitle {
+		t.Errorf("Outcome.Title = %q, want the proposal's title", out.Title)
+	}
 }

@@ -53,54 +53,103 @@ var ErrBusy = errors.New("memory: lore store is busy")
 // that message verbatim. Where the message is recognised, Unwrap yields one of
 // this package's sentinels — including ErrNotFound — so callers can branch with
 // errors.Is without matching on prose.
+//
+// # What Error does not say
+//
+// Error renders the tool and the sentinel the message was classified as, never
+// Text. lore chooses the wording of its own rejections and kenward does not
+// constrain it, so Text is lore's content rather than kenward's diagnostics:
+// nothing here can promise that a future lore does not quote the entry it
+// refused back at the caller. The prose is unlisted, not lost — read
+// [ToolError.Detail], and log the result only where a member's memory is
+// allowed to go.
 type ToolError struct {
 	// Tool is the lore tool that failed, for example "lore_put".
 	Tool string
-	// Text is lore's message, verbatim.
+	// Text is lore's message, verbatim. Treat it as lore's content: reach it
+	// through Detail rather than rendering it into anything logged by default.
 	Text string
 
 	sentinel error
 }
 
-// Error implements the error interface.
+// Error implements the error interface. It names the tool and the classification
+// only; see the type documentation for why, and [ToolError.Detail] for lore's own
+// words.
 func (e *ToolError) Error() string {
-	return fmt.Sprintf("memory: %s: %s", e.Tool, e.Text)
+	if e.sentinel != nil {
+		return fmt.Sprintf("memory: %s rejected the call: %s", e.Tool, unprefixed(e.sentinel))
+	}
+	return fmt.Sprintf("memory: %s rejected the call with a message this client does not recognise", e.Tool)
 }
+
+// Detail returns lore's message verbatim.
+//
+// It is a method rather than part of Error so that disclosing it is a decision.
+func (e *ToolError) Detail() string { return e.Text }
 
 // Unwrap returns the sentinel this message was recognised as, or nil when lore
 // reported something this client does not have a typed error for.
 func (e *ToolError) Unwrap() error { return e.sentinel }
 
+// unprefixed renders a sentinel without this package's own "memory: " prefix, so
+// that wrapping it does not repeat the prefix twice in one line.
+func unprefixed(err error) string {
+	return strings.TrimPrefix(err.Error(), "memory: ")
+}
+
 // ParseError reports that lore's output text could not be understood.
 //
 // This client parses lore's unstructured, human-readable tool output, so a change
 // to lore's output format shows up here rather than as an Entry with silently
-// empty fields. Reason names the specific expectation that failed and Snippet
-// carries the offending text, so a format change is diagnosable from the error
-// alone.
+// empty fields. Reason names the specific expectation that failed, and Tool and
+// Line say where, so a format change is diagnosable from the error alone.
+//
+// # What Error does not say
+//
+// Error renders the structural failure — which tool, which line, what was
+// expected — and never Snippet, because Snippet is a fragment of lore's rendered
+// output and lore renders a household's memory: entry titles and body lines. An
+// error string is the part of a failure that reaches the operator's log by
+// default, and in isolated mode that log crosses the boundary the mode exists to
+// hold. The offending text is unlisted, not lost: [ParseError.Detail] returns it
+// for whoever is deliberately debugging a lore format change.
 type ParseError struct {
 	// Tool is the lore tool whose output could not be parsed.
 	Tool string
-	// Reason names the expectation that failed.
+	// Reason names the expectation that failed. It is built from this package's
+	// own format strings and carries no fragment of lore's output.
 	Reason string
 	// Line is the 1-based line number the failure was found on, or 0 when the
 	// failure concerns the output as a whole.
 	Line int
-	// Snippet is the offending text, truncated.
+	// Snippet is the offending text, truncated. It is memory content: reach it
+	// through Detail rather than rendering it into anything logged by default.
 	Snippet string
 }
 
-// Error implements the error interface.
+// Error implements the error interface. It names the tool, the line and the
+// expectation that failed; see the type documentation for why it omits the
+// snippet, and [ParseError.Detail] for how to read it.
 func (e *ParseError) Error() string {
 	loc := ""
 	if e.Line > 0 {
 		loc = fmt.Sprintf(" at line %d", e.Line)
 	}
-	return fmt.Sprintf("memory: cannot parse %s output%s: %s: %q", e.Tool, loc, e.Reason, e.Snippet)
+	return fmt.Sprintf("memory: cannot parse %s output%s: %s", e.Tool, loc, e.Reason)
 }
 
-// parseErrf builds a ParseError, truncating the snippet to a length that is safe
-// to put in a log line.
+// Detail returns the offending text lore emitted, truncated as it was captured.
+//
+// It is a method rather than part of Error so that disclosing it is a decision.
+// The text is whatever lore rendered, which for a search or a fetch is entry
+// titles and body lines — a member's memory. Treat the result as content, not as
+// diagnostics: log it where content is allowed to go, or not at all.
+func (e *ParseError) Detail() string { return e.Snippet }
+
+// parseErrf builds a ParseError. The snippet is truncated because it is retained
+// for a human reading Detail, not because truncation makes it safe to log: format
+// must never interpolate lore output into the reason.
 func parseErrf(tool string, line int, snippet string, format string, a ...any) *ParseError {
 	const maxSnippet = 300
 	if len(snippet) > maxSnippet {
@@ -108,6 +157,41 @@ func parseErrf(tool string, line int, snippet string, format string, a ...any) *
 	}
 	return &ParseError{Tool: tool, Reason: fmt.Sprintf(format, a...), Line: line, Snippet: snippet}
 }
+
+// ProcessError reports that the `lore mcp` subprocess failed as a process: the
+// MCP handshake did not complete, or it ended in the middle of a call.
+//
+// # What Error does not say
+//
+// Error names the stage and the underlying cause, never Stderr. kenward neither
+// controls nor constrains what lore prints on its standard error, so the tail
+// cannot be assumed to be free of whatever lore was working on, and an error
+// string reaches the operator's log by default. Read [ProcessError.Detail] when
+// diagnosing a start-up failure — that is where lore explains itself, typically
+// with "run `lore init` first".
+type ProcessError struct {
+	// Stage is what kenward was doing, for example "lore MCP handshake failed"
+	// or "lore_put: lore subprocess ended".
+	Stage string
+	// Stderr is the retained tail of the subprocess's standard error, as lore
+	// wrote it. Treat it as lore's content rather than kenward's diagnostics.
+	Stderr string
+	// Err is the underlying failure.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *ProcessError) Error() string {
+	return fmt.Sprintf("memory: %s: %v", e.Stage, e.Err)
+}
+
+// Detail returns the subprocess's stderr tail.
+//
+// It is a method rather than part of Error so that disclosing it is a decision.
+func (e *ProcessError) Detail() string { return e.Stderr }
+
+// Unwrap returns the underlying failure.
+func (e *ProcessError) Unwrap() error { return e.Err }
 
 // toolError classifies one of lore's isError messages.
 //

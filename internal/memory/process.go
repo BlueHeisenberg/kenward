@@ -106,14 +106,13 @@ func (c *child) stop(grace time.Duration) {
 	})
 }
 
-// stderrSuffix renders the child's stderr for inclusion in a start-up error.
-func (c *child) stderrSuffix() string {
-	s := c.stderr.String()
-	if s == "" {
-		return ""
-	}
-	return "; stderr: " + s
-}
+// stderrTailText returns the retained tail of the child's stderr.
+//
+// It is deliberately not a rendered suffix for an error string. lore decides what
+// it prints here and kenward does not constrain it, so the tail travels on
+// ProcessError.Stderr and reaches an operator through ProcessError.Detail — never
+// through an Error() that a caller might log without thinking.
+func (c *child) stderrTailText() string { return c.stderr.String() }
 
 // session is one connected `lore mcp` subprocess plus its MCP client session.
 type session struct {
@@ -171,15 +170,15 @@ func dial(ctx context.Context, cfg Config) (*session, error) {
 	}
 	cs, err := cl.Connect(connectCtx, transport, nil)
 	if err != nil {
-		suffix := ""
+		tail := ""
 		if !proc.alive() {
-			suffix = proc.stderrSuffix()
+			tail = proc.stderrTailText()
 		}
 		proc.stop(cfg.ShutdownGrace)
-		if suffix == "" {
-			suffix = proc.stderrSuffix()
+		if tail == "" {
+			tail = proc.stderrTailText()
 		}
-		return nil, fmt.Errorf("memory: lore MCP handshake failed: %w%s", err, suffix)
+		return nil, &ProcessError{Stage: "lore MCP handshake failed", Stderr: tail, Err: err}
 	}
 	s := &session{proc: proc, mcp: cs, done: make(chan struct{})}
 	// One supervisor goroutine per session; it returns when the connection ends,

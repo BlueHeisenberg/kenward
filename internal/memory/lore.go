@@ -355,15 +355,19 @@ func (c *Client) Put(ctx context.Context, space domain.SpaceID, d Draft) (Entry,
 		"space":  string(space),
 	}
 	if d.Confidence != "" {
+		// The rejected value is not named: a draft is model-generated from a
+		// member's conversation, so every one of its fields is content and this
+		// error is one a caller may log. The vocabulary it failed against is the
+		// diagnostic, and it is constant.
 		if !confidences[d.Confidence] {
-			return Entry{}, fmt.Errorf("memory: %q is not a lore confidence value: %w", d.Confidence, ErrInvalidArgument)
+			return Entry{}, fmt.Errorf("memory: draft confidence is not one of lore's values (experimental, provisional, validated, hardened): %w", ErrInvalidArgument)
 		}
 		args["confidence"] = d.Confidence
 	}
 	if len(d.Markers) > 0 {
-		for _, m := range d.Markers {
+		for i, m := range d.Markers {
 			if strings.Contains(m, ",") {
-				return Entry{}, fmt.Errorf("memory: marker %q contains a comma, which lore uses as its marker separator: %w", m, ErrInvalidArgument)
+				return Entry{}, fmt.Errorf("memory: draft marker %d contains a comma, which lore uses as its marker separator: %w", i, ErrInvalidArgument)
 			}
 		}
 		args["markers"] = strings.Join(d.Markers, ",")
@@ -586,7 +590,11 @@ func (c *Client) callTool(ctx context.Context, tool string, args map[string]any,
 			}
 			c.discard(s)
 			c.cfg.Logger.Warn("lore: subprocess ended", "tool", tool, "err", err)
-			ended := fmt.Errorf("memory: %s: lore subprocess ended: %w%s", tool, err, s.proc.stderrSuffix())
+			ended := error(&ProcessError{
+				Stage:  tool + ": lore subprocess ended",
+				Stderr: s.proc.stderrTailText(),
+				Err:    err,
+			})
 			if !idempotent {
 				return "", uncertain(ended)
 			}

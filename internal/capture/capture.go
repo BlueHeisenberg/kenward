@@ -9,6 +9,17 @@
 // The scope is the authorization decision and this package obeys it: a group scope may
 // never offer a private destination, because a household chat that can write into
 // someone's private space is the one thing the memory model exists to prevent.
+//
+// # Errors carry no conversation content
+//
+// Every error returned from this package names the failure by outcome, space and entry
+// id, and never by the proposal's title or body. Those are written by the model out of
+// what the member just said — a title is frequently a one-line summary of precisely the
+// private thing that was said — and an error is the part of a failure that reaches the
+// operator's log by default. In simple mode the operator can read the conversation
+// anyway; in isolated mode a pod's log is aggregated on the host, and the whole point of
+// that mode is that the host operator cannot read a member's memory. An id identifies
+// the failed capture well enough to act on and is not content.
 package capture
 
 import (
@@ -113,8 +124,14 @@ type Outcome struct {
 	Space domain.SpaceID
 	// EntryID is the stored entry, set only when Kind is OutcomeSaved.
 	EntryID string
-	// Title is the proposal's title, carried on every outcome so a caller logging a
-	// suppression can say which proposal it suppressed.
+	// Title is the proposal's title, carried on every outcome so a caller can put
+	// it back in front of the member it belongs to.
+	//
+	// It is member content, not diagnostics. A title is written by the model out
+	// of what the member just said, so it is routinely a one-line summary of
+	// exactly the private thing they said it about. Do not log it and do not put
+	// it in an error: an outcome is identified for an operator by Kind, Space and
+	// EntryID, all three of which are safe.
 	Title string
 }
 
@@ -278,10 +295,14 @@ func (e *Engine) BeginTurn(sc domain.Scope, turn string) {
 //	group, any target      [Household] [Don't save]
 //
 // A group scope never offers a personal destination, whatever the model proposed.
+// Destinations are resolved before they are offered: an unsure proposal in a scope
+// with no reachable shared space offers only the personal button, never one whose
+// tap can only fail.
 //
 // Proposals repeating a recently declined title are suppressed silently, as are
 // proposals beyond the turn's budget; both return an Outcome saying so and ask nothing.
-// A timeout is recorded as a decline.
+// A timeout is recorded as a decline. A proposal that never became a question — the
+// question could not be built or could not be sent — does not spend the turn's budget.
 func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUserID int64) (Outcome, error) {
 	if sc.Kind == domain.ScopeUnknown {
 		return Outcome{}, ErrUnresolvedScope
@@ -309,35 +330,49 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 
 	q, err := e.question(sc, p, title, askUserID)
 	if err != nil {
+		// No question reached the member, so the budget was not spent on them.
+		// Refunding it follows the duplicate-suppression reasoning above: a
+		// proposal that never became a question must not consume the one question
+		// this turn is allowed.
+		e.refundOffer(sc, turn)
 		return Outcome{}, err
 	}
 
 	ans, err := e.tr.Ask(ctx, q)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("capture: asking about %q: %w", title, err)
+		e.refundOffer(sc, turn)
+		// The member may have seen a question that will never resolve; the one
+		// thing they must not be left believing is that something was stored.
+		e.notify(ctx, sc, fmt.Sprintf("I meant to ask about remembering %q, but the question didn't go through. Nothing was written.", title))
+		return Outcome{}, fmt.Errorf("capture: asking the member to confirm a proposal: %w", err)
 	}
 
-	// A timeout is a decline. So is a tap the transport should have filtered out: the
-	// only answer that writes anything is a save chosen by the member we asked.
+	// A timeout is a decline.
 	if ans.TimedOut {
 		e.recordDecline(sc, title, turn)
 		return Outcome{Kind: OutcomeTimedOut, Title: title}, nil
 	}
+	// A tap from anyone but the member we asked is ignored — not honoured, and not
+	// recorded as the asked member's decline either: suppressing a title for ten
+	// turns on the strength of someone else's tap would let another member decide
+	// what this one is never asked about. The transport filters these before they
+	// get here; this is the defence for a transport that does not.
 	if ans.UserID != askUserID {
-		e.recordDecline(sc, title, turn)
-		return Outcome{Kind: OutcomeDeclined, Title: title}, nil
+		return Outcome{Kind: OutcomeTimedOut, Title: title}, nil
 	}
 
 	var space domain.SpaceID
 	switch ans.ChoiceID {
 	case ChoicePersonal:
 		if !sc.AllowsPrivateCapture() {
+			e.notify(ctx, sc, "I couldn't save that — nothing was written.")
 			return Outcome{}, ErrPersonalNotAllowed
 		}
 		space = personalSpace(sc)
 	case ChoiceShared:
 		space, err = e.sharedSpace(sc)
 		if err != nil {
+			e.notify(ctx, sc, "I couldn't save that — nothing was written.")
 			return Outcome{}, err
 		}
 	default:
@@ -349,7 +384,14 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	draft.Title = title
 	entry, err := e.mem.Put(ctx, space, draft)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("capture: storing %q in %s: %w", title, space, err)
+		// The write may have landed even though the store reported failure, and
+		// lore has no delete, so a retry that duplicates is permanent. Report the
+		// uncertainty to the member (IMPLEMENTATION.md section 12) instead of
+		// retrying silently, and suppress the title so the model does not
+		// immediately re-propose the thing they were just told to verify first.
+		e.recordDecline(sc, title, turn)
+		e.notify(ctx, sc, fmt.Sprintf("I can't confirm whether %q was saved — the memory store didn't answer. Check before saving it again; a duplicate can't be deleted.", title))
+		return Outcome{}, fmt.Errorf("capture: storing a confirmed entry in %s: %w", space, err)
 	}
 
 	out := Outcome{Kind: OutcomeSaved, Space: space, EntryID: entry.ID, Title: title}
@@ -359,7 +401,7 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		ChatID: sc.ChatID,
 		Text:   fmt.Sprintf("Saved %q to %s (%s).", title, destinationPhrase(sc, space), space),
 	}); err != nil {
-		return out, fmt.Errorf("capture: confirming %q: %w", title, err)
+		return out, fmt.Errorf("capture: confirming entry %s stored in %s: %w", out.EntryID, space, err)
 	}
 	return out, nil
 }
@@ -424,7 +466,7 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 		ChatID: sc.ChatID,
 		Text:   fmt.Sprintf("Published %q to the household memory (%s). Everyone can see it now.", entry.Title, to),
 	}); err != nil {
-		return out, fmt.Errorf("capture: confirming publication of %q: %w", entry.Title, err)
+		return out, fmt.Errorf("capture: confirming publication of entry %s as %s in %s: %w", entryID, out.EntryID, to, err)
 	}
 	return out, nil
 }
@@ -446,6 +488,19 @@ func (e *Engine) question(sc domain.Scope, p Proposal, title string, askUserID i
 
 	switch target {
 	case TargetUnsure:
+		// Both destinations are resolved before either is offered. A button whose
+		// tap can only fail is worse than no button: the member chooses Household,
+		// the resolution fails after the fact, and nothing they can see explains
+		// why nothing happened. If no shared destination exists, offer what does.
+		if _, err := e.sharedSpace(sc); err != nil {
+			space := personalSpace(sc)
+			q.Text = proposalText(p, title, destinationPhrase(sc, space))
+			q.Choices = []transport.Choice{
+				{ID: ChoicePersonal, Label: "Save to personal"},
+				{ID: ChoiceDecline, Label: "Don't save"},
+			}
+			break
+		}
 		q.Text = proposalText(p, title, "")
 		q.Choices = []transport.Choice{
 			{ID: ChoicePersonal, Label: "Personal"},
@@ -540,6 +595,27 @@ func promotionText(entry memory.Entry) string {
 	}
 	b.WriteString("\n\nPublish it?")
 	return b.String()
+}
+
+// refundOffer returns a spent slot to the turn's proposal budget. It is called only
+// when no question reached the member; a question they saw — answered, ignored or
+// declined — keeps the budget spent. The turn is checked so a refund arriving after
+// the turn has moved on does not credit the next one.
+func (e *Engine) refundOffer(sc domain.Scope, turn int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	st := e.stateLocked(sc)
+	if st.turn == turn && st.offered > 0 {
+		st.offered--
+	}
+}
+
+// notify tells the member what happened to their capture when the normal flow could
+// not. Delivery failure is swallowed deliberately: every caller is already returning
+// the error that matters, and a transport that cannot send will report the same
+// fault there.
+func (e *Engine) notify(ctx context.Context, sc domain.Scope, text string) {
+	_ = e.tr.Send(ctx, transport.Outbound{ChatID: sc.ChatID, Text: text})
 }
 
 // recordDecline remembers a refusal so the same title is not put to the member again

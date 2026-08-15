@@ -788,8 +788,21 @@ func TestStartFailureExplainsItself(t *testing.T) {
 	if err == nil {
 		t.Fatal("want a start-up error")
 	}
-	if !strings.Contains(err.Error(), "lore init") {
-		t.Errorf("the subprocess stderr must reach the operator, got %v", err)
+	// The stderr tail explains the failure but is lore's output, not kenward's, so
+	// it travels behind an explicit accessor rather than in the string a caller
+	// logs by default.
+	if strings.Contains(err.Error(), "lore init") {
+		t.Errorf("the subprocess stderr must not be in the default rendering, got %v", err)
+	}
+	var pe *ProcessError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want a *ProcessError, got %T: %v", err, err)
+	}
+	if !strings.Contains(pe.Detail(), "lore init") {
+		t.Errorf("the subprocess stderr must reach an operator who asks for it, got %q", pe.Detail())
+	}
+	if !strings.Contains(err.Error(), "handshake") {
+		t.Errorf("the error must still say what failed, got %v", err)
 	}
 }
 
