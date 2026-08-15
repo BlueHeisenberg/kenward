@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/privacy"
 )
 
 // realToken is a token of the shape BotFather hands out. It is a fixture, not a
@@ -131,7 +132,7 @@ func TestSimpleModeEndToEnd(t *testing.T) {
 	assertNoSecrets(t, path, realToken, "sk-secret")
 
 	// The statement for the mode that was chosen, and only that one.
-	if !strings.Contains(io.Transcript(), PrivacyStatement(config.ModeSimple)) {
+	if !strings.Contains(io.Transcript(), privacy.Statement(privacy.ModeSimple)) {
 		t.Error("the simple-mode privacy statement was not printed")
 	}
 	if strings.Contains(io.Transcript(), "Privacy, in isolated mode") {
@@ -191,7 +192,7 @@ func TestIsolatedModeEndToEnd(t *testing.T) {
 	if !strings.Contains(transcript, "kenward will not start until") {
 		t.Error("the transcript does not say that the missing variables block startup")
 	}
-	if !strings.Contains(transcript, PrivacyStatement(config.ModeIsolated)) {
+	if !strings.Contains(transcript, privacy.Statement(privacy.ModeIsolated)) {
 		t.Error("the isolated-mode privacy statement was not printed")
 	}
 
@@ -228,7 +229,7 @@ func TestIsolatedOnNonLinuxExplainsAndOffersSimple(t *testing.T) {
 			if cfg.Mode != config.ModeSimple {
 				t.Errorf("mode = %q, want simple after the fallback", cfg.Mode)
 			}
-			if !strings.Contains(transcript, PrivacyStatement(config.ModeSimple)) {
+			if !strings.Contains(transcript, privacy.Statement(privacy.ModeSimple)) {
 				t.Error("the simple-mode privacy statement was not printed after falling back")
 			}
 		})
@@ -748,7 +749,7 @@ func TestNonInteractiveSimple(t *testing.T) {
 
 	// The privacy statement is printed for a scripted install too. Somebody reads
 	// that output eventually, and it is where the claim is made.
-	if !strings.Contains(io.Transcript(), PrivacyStatement(config.ModeSimple)) {
+	if !strings.Contains(io.Transcript(), privacy.Statement(privacy.ModeSimple)) {
 		t.Error("a scripted install did not print the privacy statement")
 	}
 }
@@ -858,6 +859,30 @@ func TestEnvVarsAreListedWithoutValues(t *testing.T) {
 		if v.Where == "" || v.Note == "" {
 			t.Errorf("%s has no field or note attached", v.Name)
 		}
+	}
+}
+
+// TestTierSummaryReadsThePolicyBack checks the closing summary uses the same
+// rendering `kenward doctor` uses, so that the claim made at setup and the claim
+// checked afterwards are the same sentence.
+func TestTierSummaryReadsThePolicyBack(t *testing.T) {
+	answers := append(simpleAnswers()[:len(simpleAnswers())-3], "y", "n", "n")
+	_, cfg, io, err := runWizard(t, "linux", Options{}, answers...)
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, io.Transcript())
+	}
+	transcript := io.Transcript()
+
+	// David opted into a provider; María did not. Both lines are rendered by
+	// internal/privacy, and the difference between them is the whole policy.
+	if !strings.Contains(transcript, privacy.MemberNote(cfg.Members[0].Domain(), false)) {
+		t.Errorf("the summary does not say that David may use a provider:\n%s", transcript)
+	}
+	if !strings.Contains(transcript, privacy.MemberNote(cfg.Members[1].Domain(), true)) {
+		t.Errorf("the summary does not say that María will refuse rather than use one")
+	}
+	if !strings.Contains(transcript, privacy.TierNote("Casa", cfg.Household.Tiers, true)) {
+		t.Error("the summary does not cover the group chat")
 	}
 }
 

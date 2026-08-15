@@ -8,16 +8,18 @@ import (
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/privacy"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden files in testdata")
 
 // golden compares got against testdata/name, or rewrites it under -update.
 //
-// The three golden files in this package are the trust question and the two privacy
-// statements. They are golden precisely because they are the sentences somebody
-// makes a decision on: changing one has to be a deliberate edit to a fixture that
-// somebody reviews, never a diff nobody notices inside a refactor.
+// The golden file in this package is the trust question, which is golden because it
+// is the sentence somebody makes an irreversible decision on: changing it has to be
+// a deliberate edit to a fixture that somebody reviews, never a diff nobody notices
+// inside a refactor. The privacy statements are golden too, in internal/privacy,
+// where they now live.
 func golden(t *testing.T, name, got string) {
 	t.Helper()
 	path := filepath.Join("testdata", name)
@@ -85,58 +87,43 @@ func extractTrustBlock(t *testing.T, doc string) string {
 	return strings.TrimRight(strings.Join(lines, "\n"), " \n")
 }
 
-func TestPrivacyStatementGolden(t *testing.T) {
-	golden(t, "privacy_simple.txt", PrivacyStatement(config.ModeSimple))
-	golden(t, "privacy_isolated.txt", PrivacyStatement(config.ModeIsolated))
-}
-
-// TestPrivacyStatementSimpleIsNotSoftened guards the specific sentence the whole
-// mode rests on, in the specific words ARCHITECTURE.md uses, and guards against the
-// sealed-memory vocabulary that CLAUDE.md forbids for simple mode.
-func TestPrivacyStatementSimpleIsNotSoftened(t *testing.T) {
-	got := PrivacyStatement(config.ModeSimple)
-
-	for _, want := range []string{
-		"Whoever runs this machine can read every member's private\n  memory",
-		"Separation between members is real",
-		"sealing\n  against the operator is not",
+// TestPrivacyBlockPrintsTheSharedStatementVerbatim is the assertion that keeps this
+// package out of the business of describing what kenward protects.
+//
+// The wording lives in internal/privacy, golden-tested there, and is printed here
+// unchanged. A wizard that reworded it — even improved it — would be a second copy
+// of a promise, and the way a promise like this decays is one copy being softened
+// while the other is not.
+func TestPrivacyBlockPrintsTheSharedStatementVerbatim(t *testing.T) {
+	for _, tc := range []struct {
+		mode    config.Mode
+		want    privacy.Mode
+		heading string
+	}{
+		{config.ModeSimple, privacy.ModeSimple, "Privacy, in simple mode"},
+		{config.ModeIsolated, privacy.ModeIsolated, "Privacy, in isolated mode"},
 	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the simple-mode privacy statement no longer contains %q", want)
+		block := privacyBlock(tc.mode)
+		if !strings.HasPrefix(block, tc.heading) {
+			t.Errorf("%s block does not open with %q", tc.mode, tc.heading)
 		}
-	}
-	for _, forbidden := range []string{"sealed", "end-to-end", "encrypted at rest", "cannot read"} {
-		if strings.Contains(strings.ToLower(got), forbidden) {
-			t.Errorf("the simple-mode privacy statement claims %q, which simple mode does not do", forbidden)
+		if !strings.Contains(block, privacy.Statement(tc.want)) {
+			t.Errorf("the %s block does not contain internal/privacy's statement verbatim:\n%s", tc.mode, block)
 		}
-	}
-}
-
-// TestPrivacyStatementIsolatedClaimsNoMore checks the isolated statement makes the
-// claim ARCHITECTURE.md actually supports and not the stronger one.
-func TestPrivacyStatementIsolatedClaimsNoMore(t *testing.T) {
-	got := PrivacyStatement(config.ModeIsolated)
-	for _, want := range []string{
-		"The claim is not that the operator cannot read your memory.",
-		"Root always wins.",
-		"kenward can read private memory at all.",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the isolated privacy statement no longer contains %q", want)
+		if strings.Contains(block, privacy.Statement(otherMode(tc.want))) {
+			t.Errorf("the %s block contains the other mode's statement", tc.mode)
+		}
+		if !strings.Contains(block, "kenward doctor prints this same statement") {
+			t.Errorf("the %s block does not say where the reader will see this again", tc.mode)
 		}
 	}
 }
 
-// TestBothStatementsStateTheRoutingGuarantee checks that the sentence describing
-// what routing will never do appears in both, because it is the one privacy
-// property that does not depend on the mode.
-func TestBothStatementsStateTheRoutingGuarantee(t *testing.T) {
-	const guarantee = "never reaches a provider"
-	for _, mode := range []config.Mode{config.ModeSimple, config.ModeIsolated} {
-		if !strings.Contains(PrivacyStatement(mode), guarantee) {
-			t.Errorf("the %s privacy statement does not state the routing guarantee", mode)
-		}
+func otherMode(m privacy.Mode) privacy.Mode {
+	if m == privacy.ModeSimple {
+		return privacy.ModeIsolated
 	}
+	return privacy.ModeSimple
 }
 
 func TestOSName(t *testing.T) {
@@ -184,8 +171,6 @@ func TestLinesAreReadable(t *testing.T) {
 	blocks := map[string]string{
 		"Banner":                 Banner,
 		"TrustQuestion":          TrustQuestion,
-		"privacySimple":          privacySimple,
-		"privacyIsolated":        privacyIsolated,
 		"isolatedNeedsLinux":     isolatedNeedsLinux("windows"),
 		"membersIntro":           membersIntro,
 		"endpointsIntro":         endpointsIntro,
@@ -204,6 +189,7 @@ func TestLinesAreReadable(t *testing.T) {
 		"sharedSpaceNote":        sharedSpaceNote,
 		"endpointTiersNote":      endpointTiersNote,
 		"householdIntro":         householdIntro,
+		"privacyTrailer":         privacyTrailer,
 		"tokenLooksWrongMessage": tokenLooksWrong,
 	}
 	const limit = 82

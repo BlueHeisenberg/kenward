@@ -30,6 +30,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/privacy"
 )
 
 // Defaults offered by the wizard. They are exported so `cmd/kenward` can document
@@ -317,10 +318,50 @@ func (w *Wizard) finish() (*config.Config, error) {
 	}
 
 	w.blank()
-	w.io.Print(PrivacyStatement(cfg.Mode))
+	w.io.Print(privacyBlock(cfg.Mode))
+	w.blank()
+	w.io.Print(w.tierSummary())
 	w.blank()
 	w.io.Print(w.closing())
 	return cfg, nil
+}
+
+// tierSummary reads the privacy policy back off the configuration that was just
+// written, one line per space.
+//
+// It is the same rendering `kenward doctor` uses, from the same package, because
+// this is the line somebody checks a claim against: "David will refuse rather than
+// use a provider" is either true of the file or it is not, and it should say the
+// same thing in both places six months apart.
+func (w *Wizard) tierSummary() string {
+	plan := w.tierPlan()
+	inHouse := make(map[string]bool, len(plan.local))
+	for _, tier := range plan.local {
+		inHouse[tier] = true
+	}
+	staysHome := func(chain []string) bool {
+		if len(chain) == 0 {
+			return false
+		}
+		for _, tier := range chain {
+			if !inHouse[tier] {
+				return false
+			}
+		}
+		return true
+	}
+
+	var b strings.Builder
+	b.WriteString("Where each conversation may go\n\n")
+	for _, m := range w.members {
+		fmt.Fprintf(&b, "  %s\n", privacy.MemberNote(m.Domain(), staysHome(m.Tiers)))
+	}
+	label := w.household.Name
+	if label == "" {
+		label = w.household.SharedSpace
+	}
+	fmt.Fprintf(&b, "  %s\n", privacy.TierNote(label, w.household.Tiers, staysHome(w.household.Tiers)))
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // writeEnvFile writes the collected secrets beside the configuration, if that is

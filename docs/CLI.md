@@ -46,7 +46,28 @@ It asks, in order:
    opting into cloud is a deliberate act.
 
 It finishes by printing the privacy statement for the chosen mode — the honest one, in
-full — and the path it wrote.
+full, from `internal/privacy`, which is the same text `doctor` prints — and the path it
+wrote.
+
+Details the first draft of this document left out, settled during implementation:
+
+- **The trust question has no default.** It is the one answer that cannot be fixed later
+  by editing a file. On Windows or macOS, choosing the sealed option explains that
+  isolated mode is Linux-only, offers simple mode by its own name, and **defaults to
+  stopping** — so a stray Enter never downgrades the mode somebody just asked for.
+- **Tokens are never written to the config**, only environment variable *names*. The
+  wizard offers to write a `.env` beside the config at 0600, never overwrites an existing
+  one, and prints variable names rather than values.
+- **Per-member tokens cannot exist yet at setup time** in isolated mode, since each member
+  creates their own bot during enrolment. The wizard validates against the process
+  environment overlaid with the variables it is telling the operator to create, and lists
+  them under "kenward will not start until these are set".
+- **The group's tier chain also defaults to local-only.** CLI.md originally said this for
+  private spaces; defaulting the group the same way is the conservative reading, and
+  opting into a provider stays a deliberate act everywhere.
+- **A household with only cloud endpoints is warned and must confirm**, because a
+  configuration in which nothing can ever be answered locally is worth noticing before it
+  is written rather than after.
 
 `--non-interactive` with flags for every answer, for scripted installs.
 
