@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/BlueHeisenberg/kenward/internal/config"
 )
 
 // TestRunListsEveryValidationProblemAtOnce.
@@ -96,26 +99,37 @@ func TestRunListsEveryMissingEnvironmentVariableByName(t *testing.T) {
 	}
 }
 
-// TestRunNamesAMissingLoreCommand.
+// TestRunNamesAnUnrunnableLoreCommand.
 //
-// internal/config neither defaults nor validates memory.lore_command, so a
-// hand-written file that omits the memory: block validates cleanly and then fails
-// deep in the wiring with whatever the client says about spawning nothing. The right
-// place for this is validation, which is internal/config's to add; until then the
-// failure has to name the key and the file rather than the symptom.
-func TestRunNamesAMissingLoreCommand(t *testing.T) {
+// internal/config now defaults an omitted memory.lore_command to
+// config.DefaultLoreCommand, so leaving the block out is no longer a failure at all.
+// What still is: a command that is written down but could not be executed — here a
+// blank program name, which would spawn nothing. That has to reach the operator as a
+// configuration fault naming the file and the key, not as whatever the memory client
+// says about exec'ing "" once the household is already starting.
+//
+// Whether a lore binary exists on this machine is deliberately not checked here or in
+// internal/config; it is a property of the host, and `kenward doctor` is where it is
+// caught (see TestDoctorLoreUnreachableFails).
+func TestRunNamesAnUnrunnableLoreCommand(t *testing.T) {
 	t.Parallel()
-	without := strings.Replace(simpleYAML, "memory:\n  lore_command: [lore, mcp]\n", "", 1)
-	if strings.Contains(without, "lore_command") {
-		t.Fatal("the fixture still has a lore_command; this test is not testing anything")
+	blank := strings.Replace(simpleYAML, "lore_command: [lore, mcp]", `lore_command: ["", mcp]`, 1)
+	if blank == simpleYAML {
+		t.Fatal("the fixture no longer has a lore_command to blank out; this test is not testing anything")
 	}
-	h := newHarness(t, without, fullEnvironment())
+	h := newHarness(t, blank, fullEnvironment())
 
 	if code := h.run("run"); code != exitUsage {
 		t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h.both())
 	}
 	out := h.stderr()
-	for _, want := range []string{h.config, "memory.lore_command", "lore_command: [lore, mcp]"} {
+	// The file, the key, why it is wrong, and what to write instead.
+	for _, want := range []string{
+		h.config,
+		"memory.lore_command",
+		"the program to run and it is empty",
+		fmt.Sprint(config.DefaultLoreCommand()),
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the failure does not name %q:\n%s", want, out)
 		}

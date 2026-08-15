@@ -15,6 +15,7 @@ import (
 	"github.com/BlueHeisenberg/keel/vault"
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/enrol"
 	"github.com/BlueHeisenberg/kenward/internal/session"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
@@ -120,6 +121,11 @@ func loadConfigYAML(t *testing.T, dir, doc string, lookupEnv config.LookupEnvFun
 type podOptions struct {
 	member domain.MemberID
 	group  bool
+	// enrolFor supplies the claimer a pod waits on while its member has not
+	// claimed. It is a callback for the same reason the household's is: a Claimer
+	// is built over a Binder over the configuration, which does not exist until
+	// the pod has loaded it.
+	enrolFor func(*testing.T, *config.Config) *enrol.Claimer
 }
 
 // newPod builds one pod of the isolated household: a real supervisor.Single over a
@@ -153,6 +159,11 @@ func newPod(t *testing.T, opts podOptions) *harness {
 	tr := transport.NewFake()
 	mem := newFakeMemory()
 
+	var claimer *enrol.Claimer
+	if opts.enrolFor != nil {
+		claimer = opts.enrolFor(t, cfg)
+	}
+
 	// Router left nil on purpose, as in simple mode: the supervisor builds the real
 	// pool over the real HTTP completer.
 	sup, err := supervisor.NewSingle(cfg, supervisor.SingleOptions{
@@ -161,6 +172,7 @@ func newPod(t *testing.T, opts podOptions) *harness {
 		Transport: tr,
 		Memory:    mem,
 		Sessions:  sessions,
+		Enrol:     claimer,
 		LookupEnv: lookupEnv,
 	})
 	if err != nil {
@@ -376,12 +388,165 @@ func TestGroupPodServesTheGroupChatAndSearchesOnlyTheSharedSpace(t *testing.T) {
 	}
 }
 
-// TestPodForAnUnenrolledMemberIsRefusedAtConstruction covers the failure that would
-// otherwise be invisible. A pod that started cleanly for a member who has not
-// claimed would serve nobody while reporting itself healthy, and the member would
-// simply never be answered — with the supervisor, the operator and the health check
-// all agreeing that everything was fine.
-func TestPodForAnUnenrolledMemberIsRefusedAtConstruction(t *testing.T) {
+// newClaimOnlyPod starts the pod of a member who has not claimed yet: their bot
+// exists before they enrol, and the claim conversation happens on it. It returns
+// the pod and a mint function over the same invite store the pod's claimer reads.
+func newClaimOnlyPod(t *testing.T, member domain.MemberID) (*harness, func(name string) string) {
+	t.Helper()
+	var claimer *enrol.Claimer
+	h := newPod(t, podOptions{
+		member: member,
+		enrolFor: func(t *testing.T, cfg *config.Config) *enrol.Claimer {
+			t.Helper()
+			// The zero Provisioning, as the binary passes: a claim binds a member
+			// the configuration declares and never invents one.
+			binder, err := config.NewBinder(cfg, config.Provisioning{})
+			if err != nil {
+				t.Fatalf("building the enrolment binder: %v", err)
+			}
+			claimer, err = enrol.New(enrol.NewMemStore(), binder)
+			if err != nil {
+				t.Fatalf("building the claimer: %v", err)
+			}
+			return claimer
+		},
+	})
+	return h, func(name string) string {
+		t.Helper()
+		code, err := claimer.Mint(context.Background(), name, 0)
+		if err != nil {
+			t.Fatalf("minting a code for %s: %v", name, err)
+		}
+		return code
+	}
+}
+
+// TestPodForAnUnenrolledMemberStartsClaimOnlyAndServesNothingUntilClaimed covers
+// the window D-023 creates: the operator makes the member's bot and starts their
+// pod before handing over the code, so the pod has to exist with nothing to serve.
+// It must wait on that bot for the code and do nothing else — no unit, no key in
+// use, nothing reaching lore — and it must begin serving the moment the claim lands
+// rather than needing a restart nobody would know to perform.
+func TestPodForAnUnenrolledMemberStartsClaimOnlyAndServesNothingUntilClaimed(t *testing.T) {
+	h, mint := newClaimOnlyPod(t, samMemberID)
+	code := mint("Sam")
+	h.mem.seed(samSpace, entry("s1", "Sam's bike", "The bike lock code is 8812."))
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{Text: "8812.", FinishReason: "stop"}
+	})
+	h.start()
+
+	// Before the claim: a known situation, not a failure. An operator waiting for
+	// somebody to accept an invitation must not be shown an error.
+	before := memberHealth(t, h, samMemberID)
+	if before.State != supervisor.StateNotEnrolled || before.Err != nil {
+		t.Fatalf("before the claim sam's health is %+v, want %v with a nil error",
+			before, supervisor.StateNotEnrolled)
+	}
+
+	// A message that carries no code is answered the way every unrecognised sender
+	// is: with nothing. The claim behind it is the barrier — same pump, in order.
+	h.tr.InjectText(samChatID, samTelegramID, "hello? anyone?", false)
+	h.tr.InjectText(samChatID, samTelegramID, code, false)
+	onboarding := h.waitForReply(samChatID, 3)
+
+	if !strings.Contains(onboarding[0].Text, "Hello Sam") {
+		t.Errorf("onboarding opens with %q, want the member greeted by name", onboarding[0].Text)
+	}
+	// The claim-only window touched no memory at all: there was no unit to retrieve
+	// anything, and enrolment itself reads nothing.
+	if got := h.mem.recorded(); len(got) != 0 {
+		t.Errorf("the claim-only window made %d lore calls: %+v; it must touch nothing", len(got), got)
+	}
+	if n := h.local.count(); n != 0 {
+		t.Errorf("the claim-only window sent %d requests to an endpoint; it must send none", n)
+	}
+
+	// The unit is minted in place. No restart happens here, and none is needed.
+	waitFor(t, "sam's unit to be serving", func() bool {
+		return memberHealth(t, h, samMemberID).State == supervisor.StateReady
+	})
+	h.tr.InjectText(samChatID, samTelegramID, "what's the bike lock code?", false)
+	sent := h.waitForReply(samChatID, 4)
+	if sent[3].Text != "8812." {
+		t.Errorf("reply after the claim = %q, want the model's text", sent[3].Text)
+	}
+	searched := h.mem.searchedSpaces()
+	if len(searched) != 2 || !containsSpace(searched, samSpace) || !containsSpace(searched, sharedSpace) {
+		t.Errorf("searched %v, want the newly claimed member's own two spaces", searched)
+	}
+	if got := memberHealth(t, h, samMemberID); got.Restarts != 0 {
+		t.Errorf("sam's unit reports %d restarts; the claim must mint it in place", got.Restarts)
+	}
+}
+
+// TestAnotherMembersCodeOnThisBotBindsThemButMintsNoUnitHere covers the crossed
+// wires an operator will eventually produce: two people are invited at once and Pat
+// is handed the code, or the link, for Sam's bot.
+//
+// The claim is legitimate — a code is a code — so Pat is bound and told so. What
+// must not happen is Pat being served here: their conversation belongs to their own
+// pod, on their own bot, under their own key, and a pod that started answering them
+// would put two members behind one token, which is the whole of what the mode
+// refuses.
+func TestAnotherMembersCodeOnThisBotBindsThemButMintsNoUnitHere(t *testing.T) {
+	h, mint := newClaimOnlyPod(t, samMemberID)
+	patCode := mint("Pat")
+	samCode := mint("Sam")
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{Text: "Noted.", FinishReason: "stop"}
+	})
+	h.start()
+
+	h.tr.InjectText(patChatID, patTelegramID, patCode, false)
+	h.waitForReply(patChatID, 3)
+
+	// Bound: the binding is recorded where every later load will find it.
+	st, err := config.LoadState(filepath.Join(h.dir, config.StateFileName))
+	if err != nil {
+		t.Fatalf("reading the state file: %v", err)
+	}
+	if b, ok := st.Binding(patMemberID); !ok || b.TelegramID != patTelegramID {
+		t.Fatalf("state file holds %+v for pat, want a binding to %d", b, patTelegramID)
+	}
+
+	// Not served: no unit here is theirs. Sam's own claim behind it is the barrier.
+	h.tr.InjectText(patChatID, patTelegramID, "so what can you do?", false)
+	h.tr.InjectText(samChatID, samTelegramID, samCode, false)
+	h.waitForReply(samChatID, 3)
+	waitFor(t, "sam's unit to be serving", func() bool {
+		return memberHealth(t, h, samMemberID).State == supervisor.StateReady
+	})
+	h.tr.InjectText(samChatID, samTelegramID, "hello", false)
+	h.waitForReply(samChatID, 4)
+	if err := h.stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if got := h.sentTo(patChatID); len(got) != 3 {
+		t.Errorf("pat received %d messages, want only the 3 onboarding ones: %+v; "+
+			"their conversation belongs to their own pod", len(got), got)
+	}
+	health, err := h.sup.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	for _, u := range health {
+		if u.Member == patMemberID {
+			t.Errorf("this pod reports a unit for pat: %+v; a foreign claim must mint no unit here", u)
+		}
+	}
+	if containsSpace(h.mem.touchedSpaces(), patSpace) {
+		t.Errorf("this pod reached %s; another member's space is not this pod's to touch", patSpace)
+	}
+}
+
+// TestPodConstructionRefusesWhatItCannotServe covers the selections that are
+// mistakes rather than states: a member the household does not declare, a member
+// with nothing to serve them and no claimer either, and no selection at all. Each
+// has to fail at construction, because a pod that starts and serves nobody looks
+// healthy while somebody goes unanswered.
+func TestPodConstructionRefusesWhatItCannotServe(t *testing.T) {
 	lookupEnv := fakeEnv(podEnvironment())
 	cfg, _, _ := loadIsolatedConfig(t, lookupEnv)
 	tr := transport.NewFake()
@@ -393,12 +558,13 @@ func TestPodForAnUnenrolledMemberIsRefusedAtConstruction(t *testing.T) {
 		LookupEnv: lookupEnv,
 	}
 
-	t.Run("declared but not claimed", func(t *testing.T) {
+	t.Run("not claimed, and no claimer to claim with", func(t *testing.T) {
 		opts := base
 		opts.Member = samMemberID
 		sup, err := supervisor.NewSingle(cfg, opts)
 		if !errors.Is(err, supervisor.ErrNotEnrolled) {
-			t.Fatalf("NewSingle for an unenrolled member = %v, want %v", err, supervisor.ErrNotEnrolled)
+			t.Fatalf("NewSingle = %v, want %v: such a pod could never do anything at all",
+				err, supervisor.ErrNotEnrolled)
 		}
 		if sup != nil {
 			t.Error("NewSingle returned a supervisor as well as an error")

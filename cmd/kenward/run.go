@@ -82,21 +82,10 @@ func cmdRun(e *env, args []string) int {
 		}
 	}
 
-	// internal/config neither defaults nor validates memory.lore_command, so a
-	// hand-written file that omits the memory: block validates and then fails deep
-	// inside the wiring with whatever the client says about spawning nothing. The
-	// right place for this is validation; until it moves there, the failure at
-	// least names the key and the file it is missing from.
-	if len(cfg.Memory.LoreCommand) == 0 {
-		e.errorf("%s does not say how to start lore: memory.lore_command is missing or empty.\n\n"+
-			"lore is where everything kenward remembers lives, and kenward starts it as a\n"+
-			"subprocess rather than talking to a server. Without it there is no retrieval, no\n"+
-			"capture and no enrolment history. Add:\n\n"+
-			"  memory:\n"+
-			"    lore_command: [lore, mcp]\n\n"+
-			"which is what `kenward setup` writes, and make sure a `lore` binary is on PATH.", path)
-		return exitUsage
-	}
+	// memory.lore_command is internal/config's now: it defaults an omitted command to
+	// DefaultLoreCommand and rejects one that could not be executed, so the check that
+	// used to stand here is unreachable. A command that is present but useless is
+	// reported by renderConfigError above, naming the file and the key.
 
 	logger := slog.New(slog.NewTextHandler(e.stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	for _, line := range startupSummary(cfg, sel) {
