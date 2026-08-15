@@ -25,6 +25,16 @@ type Entry struct {
 	Origin     string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+	// Partial reports that this is a search excerpt rather than a whole entry:
+	// Body may be elided in the middle, and Origin, CreatedAt and UpdatedAt are
+	// absent because lore's search does not return them.
+	//
+	// It is a field rather than something a caller infers, because the consequence
+	// of getting it wrong is invisible. Anything rendering an entry into a prompt
+	// must say which it has — a model shown a fragment under a heading claiming
+	// completeness will answer confidently from the part it can see, and neither it
+	// nor the member has any way to know something was cut out.
+	Partial bool
 }
 
 // Draft is a proposed new entry, before it has been confirmed and stored.
