@@ -60,6 +60,30 @@ guarantee than systemd's credential files give the binary-install path; see
 `compose.isolated.yml`'s header for the `*_file` alternative if that gap
 matters for your household.
 
+## Running a one-off command against a compose deployment
+
+The image's `ENTRYPOINT` is the bare `kenward` binary, not `kenward run` — the
+default `CMD` runs the node, but every other subcommand (`version`, `doctor`,
+`invite`, `revoke`, `update`) is reachable too. That matters most for
+`invite`, which is how an operator with a running household actually adds a
+member; it needs the same config and data volume the running service already
+has, so run it as a one-off against the same service rather than a bare
+`docker run` with hand-copied mounts:
+
+```
+docker compose -f compose.simple.yml run --rm kenward invite --name David
+```
+
+(For Isolated mode, target whichever service owns enrolment for your setup,
+e.g. `docker compose -f compose.isolated.yml run --rm kenward-household
+invite --name David`.) `run` here reuses that service's image, volumes and
+environment, so the claim code lands in the same data directory and store
+the running node reads from. Don't use `docker compose exec` instead unless
+the service is already up — `exec` runs inside the *existing* container's
+process, while `run` starts a fresh, short-lived one from the same
+definition, which is what you want for a command that isn't the long-running
+node itself.
+
 ## The one warning that matters
 
 **`kenward.yaml`, `.env`, and the files under `/etc/kenward/credentials/`
