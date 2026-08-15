@@ -27,6 +27,19 @@
 #   3. Supply a `lore` binary per service (see ../Dockerfile's note) — each
 #      service gets its OWN copy/mount, never a shared one, since sharing the
 #      binary is fine but sharing the *instance* (same LORE_HOME) is not.
+#
+# NO `env_file:` ANYWHERE IN THIS FILE — do not add it back. `env_file:`
+# injects the *entire* referenced file into that one container's process
+# environment. A top-level `.env` next to this compose file is different: Compose
+# reads it only to interpolate `${VAR}` at parse time, so a service gets
+# exactly the variables its own `environment:` block names and nothing else.
+# Per-member bot tokens exist so that a compromised or merely curious process
+# holding one member's token cannot read another member's Telegram
+# conversation. `env_file:` on every service would hand each container every
+# member's token at once — David's container would hold Jordan's bot token —
+# which is exactly the failure this file's header warns about. The same
+# applies to provider API keys below: each service is given only the keys its
+# own tier chain in kenward.yaml can actually reach, never the full set.
 
 services:
   # --- per-member pod: david ---
@@ -34,15 +47,21 @@ services:
     image: ghcr.io/blueheisenberg/kenward:latest
     container_name: kenward-david
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      # Must match this member's bot_token_env in kenward.yaml.
+      # Must match this member's bot_token_env in kenward.yaml. Nothing else
+      # from .env reaches this container — see the note at the top of this
+      # file on why `env_file:` is not used here.
       KENWARD_BOT_TOKEN_DAVID: ${KENWARD_BOT_TOKEN_DAVID}
       # This pod's own lore instance. Distinct per service even though the
       # in-container path is the same string everywhere below — it resolves
       # against this service's own volume, never another's.
       LORE_HOME: /var/lib/kenward/lore
+      # No provider API key here: in this worked example david's tiers in
+      # kenward.yaml are `[local]` (local-only, refuses cloud — see
+      # docs/IMPLEMENTATION.md §4/§10). A key present in the environment is a
+      # key that can be used regardless of what routing policy intends, so if
+      # your david's tiers ever include a cloud tier, add exactly that
+      # endpoint's api_key_env here — never the whole provider-key set.
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
       - kenward-david-data:/var/lib/kenward
@@ -64,11 +83,17 @@ services:
     image: ghcr.io/blueheisenberg/kenward:latest
     container_name: kenward-jordan
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
+      # As with david, above: only this member's own token, nothing else
+      # from .env.
       KENWARD_BOT_TOKEN_JORDAN: ${KENWARD_BOT_TOKEN_JORDAN}
       LORE_HOME: /var/lib/kenward/lore
+      # Worked-example difference from david: say jordan's tiers in
+      # kenward.yaml DO include a cloud tier (e.g. `[local, cloud]`) backed by
+      # an endpoint with `api_key_env: OPENROUTER_API_KEY`. Because jordan's
+      # own chain can reach it, jordan's container — and only jordan's — gets
+      # the key:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
       - kenward-jordan-data:/var/lib/kenward
@@ -90,11 +115,14 @@ services:
     image: ghcr.io/blueheisenberg/kenward:latest
     container_name: kenward-household
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
+      # The group's own token, nothing else from .env.
       KENWARD_BOT_TOKEN_HOUSEHOLD: ${KENWARD_BOT_TOKEN_HOUSEHOLD}
       LORE_HOME: /var/lib/kenward/lore
+      # Add only the api_key_env values named by endpoints tagged with a tier
+      # in household.tiers (kenward.yaml). If household.tiers includes
+      # `cloud` the same way jordan's does above:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
       - kenward-household-data:/var/lib/kenward
@@ -121,6 +149,10 @@ services:
   # 4. Add a `kenward-sam-data:` entry under `volumes:` below.
   # 5. Do NOT point sam's LORE_HOME or data volume at david's or jordan's —
   #    each member's lore instance must be exclusive to their own container.
+  # 6. Do NOT add `env_file:` and do NOT copy jordan's OPENROUTER_API_KEY line
+  #    by reflex — only add a provider key here if sam's own tiers in
+  #    kenward.yaml actually include the tier that key's endpoint is tagged
+  #    with. A local-only sam gets no provider key at all, same as david.
 
 volumes:
   kenward-david-data:

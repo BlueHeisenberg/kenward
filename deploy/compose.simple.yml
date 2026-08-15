@@ -20,6 +20,16 @@
 # Secrets never appear in this file: every token/key is named by environment
 # variable only, sourced from `.env`, exactly as kenward.yaml itself only ever
 # names an env var (`bot_token_env`, `api_key_env`) and never a literal value.
+#
+# NO `env_file:` HERE either — do not add it back. Unlike compose.isolated.yml,
+# this is not a privacy boundary: Simple mode is one process behind one bot
+# token by design, so there is no second member's token for a stray `env_file:`
+# to leak. The reason to avoid it is narrower but still real: `env_file:` pulls
+# in every variable that happens to sit in `.env` — including keys for
+# providers this household's kenward.yaml never references, or secrets left
+# over from something else sharing the file — and hands all of it to this
+# process and to the `lore` subprocess it spawns. Listing only the variables
+# kenward.yaml actually names keeps that surface to what is in use.
 
 services:
   kenward:
@@ -29,11 +39,9 @@ services:
     container_name: kenward
     restart: unless-stopped
 
-    env_file:
-      - .env
-
     environment:
-      # Must match telegram.bot_token_env in kenward.yaml.
+      # Must match telegram.bot_token_env in kenward.yaml. Interpolated from
+      # `.env` at compose parse time — not injected wholesale.
       KENWARD_BOT_TOKEN: ${KENWARD_BOT_TOKEN}
       # Add one line here (and in .env) per api_key_env your endpoints
       # reference, e.g.:

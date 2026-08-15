@@ -30,6 +30,15 @@ For the container paths you also need a `lore` binary on the host to
 bind-mount in — see the Dockerfile's note on why it isn't baked into the
 image.
 
+Neither compose file uses `env_file:` — each service's `environment:` block
+names exactly the variables it needs, interpolated from `.env` at parse time
+rather than the whole file being injected. In `compose.isolated.yml` this is
+**load-bearing, not tidiness**: each member's container receives only its own
+bot token (and only the provider keys its own tier chain can reach), which is
+what makes it true that no container can read another member's private
+Telegram conversation. If you ever see `env_file:` re-added to that file,
+that isolation has been undone — treat it as a regression, not a cleanup.
+
 ## The one warning that matters
 
 **`kenward.yaml` and `.env` (or `kenward.env`) hold real secrets — Telegram
