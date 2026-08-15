@@ -48,7 +48,7 @@ type Config struct {
 	// value buys contention rather than throughput. Default 2.
 	MaxConcurrent int
 	// BusyRetries is how many times a call is retried after lore reports store
-	// contention. Default 3.
+	// contention. Default 3; a negative value disables retrying.
 	BusyRetries int
 	// Logger receives subprocess lifecycle events. Default: discard.
 	Logger *slog.Logger
@@ -157,21 +157,68 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Search runs one lore_search per space, concurrently, and returns the results
-// grouped in the order the caller listed the spaces.
+// Excerpt is one lore search hit. It is deliberately a different type from Entry.
+//
+// A search result is not a memory: lore_search returns about twelve tokens of the
+// body, no origin and no timestamps. An assistant that renders one into a prompt
+// as though it were the whole entry is telling the model something false, so the
+// two are not interchangeable and converting an Excerpt into an Entry has to be
+// written out (see Excerpt.Entry) rather than happening by assignment.
+type Excerpt struct {
+	// Entry carries what lore_search reports: ID, Space, Domain, Title,
+	// Confidence and Markers. Body holds the excerpt with lore's match
+	// highlighting removed. Origin, CreatedAt and UpdatedAt are always zero,
+	// which is what IsExcerpt keys on.
+	Entry Entry
+	// Snippet is lore's snippet verbatim, with the FTS5 match brackets still in
+	// it. It is kept for diagnosing retrieval, not for showing to anyone.
+	Snippet string
+}
+
+// IsExcerpt reports whether e is a search excerpt rather than a whole entry.
+//
+// The distinction is guaranteed by construction, not guessed: lore_search reports
+// no origin and no timestamp and this client never invents either, while lore_get
+// always reports both and fails to parse if it does not. Prompt rendering and
+// anything else that presents an entry as a complete memory should check this.
+func IsExcerpt(e Entry) bool {
+	return e.Origin == "" || e.UpdatedAt.IsZero()
+}
+
+// Search implements Memory. It is a thin wrapper over SearchExcerpts, kept
+// because the interface is expressed in entries; prefer SearchExcerpts, whose
+// type says what these values actually are.
+//
+// Every Entry it returns is partial: Body is an excerpt of about twelve tokens,
+// and Origin, CreatedAt and UpdatedAt are zero. Call Get with the id for the real
+// entry before presenting one as a memory.
+func (c *Client) Search(ctx context.Context, q SearchQuery) ([]Entry, error) {
+	xs, err := c.SearchExcerpts(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entry, 0, len(xs))
+	for _, x := range xs {
+		out = append(out, x.Entry)
+	}
+	return out, nil
+}
+
+// SearchExcerpts runs one lore_search per space, concurrently, and returns the
+// results grouped in the order the caller listed the spaces.
 //
 // Nothing is re-ranked across spaces: lore's relevance ordering holds inside a
-// group only. Two properties of lore's search are worth knowing at the call site:
+// group only. Ranking a private space against a shared one is a policy decision
+// that belongs to the assistant.
 //
-//   - Entry.Body holds lore's FTS5 snippet, not the entry body. The snippet is
-//     about twelve tokens of the body with the matched terms wrapped in square
-//     brackets and elisions marked with an ellipsis. Call Get for the real body.
-//   - Entry.Origin, Entry.CreatedAt and Entry.UpdatedAt are zero, because
-//     lore_search does not report them.
+// Excerpt.Entry.Body is lore's FTS5 snippet with the match brackets stripped —
+// roughly twelve tokens of the body, with an ellipsis where text was elided. The
+// stripping cannot distinguish a highlight bracket from a bracket that was in the
+// body, so the untouched snippet is kept on Excerpt.Snippet.
 //
 // Limit applies per space, not to the whole result set, so that a second space
 // cannot be crowded out by the first. Zero leaves lore's own default of eight.
-func (c *Client) Search(ctx context.Context, q SearchQuery) ([]Entry, error) {
+func (c *Client) SearchExcerpts(ctx context.Context, q SearchQuery) ([]Excerpt, error) {
 	if len(q.Spaces) == 0 {
 		return nil, ErrEmptySpaceSet
 	}
@@ -180,7 +227,7 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) ([]Entry, error) {
 	}
 	spaces := dedupeSpaces(q.Spaces)
 
-	groups := make([][]Entry, len(spaces))
+	groups := make([][]Excerpt, len(spaces))
 	errs := make([]error, len(spaces))
 	var wg sync.WaitGroup
 	for i, sp := range spaces {
@@ -197,7 +244,7 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) ([]Entry, error) {
 		return nil, err
 	}
 
-	var out []Entry
+	var out []Excerpt
 	for _, g := range groups {
 		out = append(out, g...)
 	}
@@ -205,7 +252,7 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) ([]Entry, error) {
 }
 
 // searchSpace runs lore_search against exactly one space.
-func (c *Client) searchSpace(ctx context.Context, space domain.SpaceID, q SearchQuery) ([]Entry, error) {
+func (c *Client) searchSpace(ctx context.Context, space domain.SpaceID, q SearchQuery) ([]Excerpt, error) {
 	args := map[string]any{
 		"query": q.Text,
 		"space": string(space),
@@ -220,25 +267,29 @@ func (c *Client) searchSpace(ctx context.Context, space domain.SpaceID, q Search
 	if err != nil {
 		return nil, fmt.Errorf("memory: search space %s: %w", space, err)
 	}
-	entries, err := parseSearch(text)
+	xs, err := parseSearch(text)
 	if err != nil {
 		return nil, err
 	}
-	for i := range entries {
-		entries[i].Space = space
+	for i := range xs {
+		xs[i].Entry.Space = space
 	}
-	return entries, nil
+	return xs, nil
 }
 
 // Get fetches one entry by id and confirms it lives in the given space.
 //
-// lore_get is not space-scoped — an entry id is globally unique in a lore store
-// and lore will happily return an entry from any space — so this client resolves
-// the space id to its display name through lore_spaces and rejects a mismatch as
-// ErrNotFound. Without that check, Get would be a hole in the authorization
-// decision the caller already made. The check is only as strong as lore's naming:
-// if two spaces in the same store carry the same display name it cannot tell them
-// apart.
+// An entry id must never be taken from member-supplied text: ids originate only
+// from a search performed within the current Scope, or from a promotion flow that
+// already resolved one.
+//
+// That rule is the first line of defence, and this is the second. lore_get is not
+// space-scoped — an entry id is globally unique in a lore store and lore will
+// happily return an entry from any space, so an id is in effect a capability to
+// read any space — so this client resolves the space id to its display name
+// through lore_spaces and rejects a mismatch as ErrNotFound. The check is only as
+// strong as lore's naming: if two spaces in the same store carry the same display
+// name it cannot tell them apart, which is why it is not the primary defence.
 //
 // Entry.CreatedAt is always zero; lore's MCP surface never reports created_at.
 // lore also returns tombstoned entries by id and does not mark them, so a deleted
@@ -285,6 +336,12 @@ func (c *Client) getRendered(ctx context.Context, id string) (rendered, error) {
 // rather than the draft. If the read-back fails the write still succeeded, and
 // the Entry is reconstructed from the draft and the write receipt, with
 // UpdatedAt left zero.
+//
+// On failure the caller must distinguish two cases before saying anything to a
+// member. An error matching ErrWriteUncertain means the request reached lore and
+// the answer did not come back: the entry may exist. Anything else means nothing
+// was written. lore has no delete, so a retry after an uncertain write can leave
+// a permanent duplicate.
 func (c *Client) Put(ctx context.Context, space domain.SpaceID, d Draft) (Entry, error) {
 	if strings.TrimSpace(d.Title) == "" || strings.TrimSpace(d.Body) == "" || strings.TrimSpace(d.Domain) == "" {
 		return Entry{}, fmt.Errorf("memory: title, body and domain are required: %w", ErrInvalidArgument)
@@ -322,7 +379,10 @@ func (c *Client) Put(ctx context.Context, space domain.SpaceID, d Draft) (Entry,
 	}
 	st, err := parseStored(text)
 	if err != nil {
-		return Entry{}, err
+		// lore answered, so the entry is stored; this client just cannot read
+		// the receipt well enough to name it. From the member's side that is
+		// the same situation as a lost answer.
+		return Entry{}, fmt.Errorf("%w: %w", ErrWriteUncertain, err)
 	}
 
 	fallback := Entry{
@@ -346,15 +406,23 @@ func (c *Client) Put(ctx context.Context, space domain.SpaceID, d Draft) (Entry,
 
 // Share copies an entry from one space to another, preserving lore's provenance.
 //
+// An entry id must never be taken from member-supplied text: ids originate only
+// from a search performed within the current Scope, or from a promotion flow that
+// already resolved one.
+//
 // lore_share takes no source space, so the source is fetched first and its space
 // checked against from; an entry that is not in from is reported as ErrNotFound,
-// for the same reason Get does it. The copy is executed directly with
+// for the same reason Get does it, and with the same caveat — it is the second
+// line of defence, not the first. The copy is executed directly with
 // confirm:true — lore's two-phase preview is an affordance for an agent deciding
 // whether to share, and kenward has already taken that decision through its own
 // confirmation before calling here.
 //
 // lore refuses to copy entries whose domain begins with profile/ or feedback/ out
 // of the personal space, on every path; that comes back as ErrUserModel.
+//
+// As with Put, a failure matching ErrWriteUncertain means the copy may exist and
+// must not be retried blindly; anything else means nothing was copied.
 func (c *Client) Share(ctx context.Context, from, to domain.SpaceID, entryID string) (Entry, error) {
 	if strings.TrimSpace(entryID) == "" {
 		return Entry{}, fmt.Errorf("memory: entry id is empty: %w", ErrInvalidArgument)
@@ -388,7 +456,7 @@ func (c *Client) Share(ctx context.Context, from, to domain.SpaceID, entryID str
 	}
 	cp, err := parseCopied(text)
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("%w: %w", ErrWriteUncertain, err)
 	}
 
 	r, err := c.getRendered(ctx, cp.NewID)
@@ -492,20 +560,30 @@ func (c *Client) callTool(ctx context.Context, tool string, args map[string]any,
 		timedOut := callCtx.Err() != nil && ctx.Err() == nil
 		cancel()
 
+		// Once the request is on the wire, an error that is not lore's own
+		// answer leaves a write's outcome unknown: lore may have committed it
+		// and lost the reply. Reads have no such problem.
+		uncertain := func(err error) error {
+			if idempotent {
+				return err
+			}
+			return fmt.Errorf("%w: %w", ErrWriteUncertain, err)
+		}
+
 		switch {
 		case err != nil && ctx.Err() != nil:
-			return "", fmt.Errorf("memory: %s: %w", tool, ctx.Err())
+			return "", uncertain(fmt.Errorf("memory: %s: %w", tool, ctx.Err()))
 		case err != nil && timedOut:
-			return "", fmt.Errorf("memory: %s: no answer within %s: %w", tool, c.cfg.CallTimeout, err)
+			return "", uncertain(fmt.Errorf("memory: %s: no answer within %s: %w", tool, c.cfg.CallTimeout, err))
 		case err != nil:
 			if !s.waitDead(deadGrace) {
-				return "", fmt.Errorf("memory: %s: %w", tool, err)
+				return "", uncertain(fmt.Errorf("memory: %s: %w", tool, err))
 			}
 			c.discard(s)
 			c.cfg.Logger.Warn("lore: subprocess ended", "tool", tool, "err", err)
 			ended := fmt.Errorf("memory: %s: lore subprocess ended: %w%s", tool, err, s.proc.stderrSuffix())
 			if !idempotent {
-				return "", ended
+				return "", uncertain(ended)
 			}
 			lastErr = ended
 			continue

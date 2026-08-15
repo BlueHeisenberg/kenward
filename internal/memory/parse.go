@@ -64,13 +64,28 @@ var (
 	spaceRowRe = regexp.MustCompile(`^(.*?)  kind:(personal|shared)  members:(\d+)  entries:(\d+)((?:  project)?(?:  pinned)?)  id:(\S+)$`)
 )
 
+// highlightRe matches one of FTS5's highlighted spans. lore builds its snippets
+// with snippet(entry_fts, 1, '[', ']', '…', 12), so matched terms arrive wrapped
+// in square brackets. The pattern refuses nested brackets so that at worst one
+// bracketed run is unwrapped.
+var highlightRe = regexp.MustCompile(`\[([^\[\]]*)\]`)
+
+// stripHighlights removes FTS5's match brackets and keeps everything else,
+// including the ellipsis that marks elided text.
+//
+// It cannot tell a highlight bracket from a square bracket that was in the body
+// all along, which is why the raw snippet is kept on Excerpt.Snippet.
+func stripHighlights(s string) string {
+	return highlightRe.ReplaceAllString(s, "$1")
+}
+
 // parseSearch reads lore_search's result list.
 //
-// The returned entries carry ID, Domain, Title, Confidence and Markers, and Body
-// holds lore's FTS5 snippet rather than the entry body — see Client.Search. Space
-// is left zero for the caller to fill in, because lore prints a space display
-// name, which is neither unique nor stable across lore instances.
-func parseSearch(text string) ([]Entry, error) {
+// The returned excerpts carry ID, Domain, Title, Confidence and Markers, with
+// Entry.Body holding the de-highlighted snippet and Snippet the raw one. Space is
+// left zero for the caller to fill in, because lore prints a space display name,
+// which is neither unique nor stable across lore instances.
+func parseSearch(text string) ([]Excerpt, error) {
 	text = strings.TrimRight(text, "\n")
 	if text == "" {
 		return nil, parseErrf(toolSearch, 0, "", "empty output")
@@ -86,7 +101,7 @@ func parseSearch(text string) ([]Entry, error) {
 	}
 
 	var (
-		out     []Entry
+		out     []Excerpt
 		cur     *Entry
 		body    []string
 		haveTop bool
@@ -95,8 +110,9 @@ func parseSearch(text string) ([]Entry, error) {
 		if cur == nil {
 			return
 		}
-		cur.Body = strings.Join(body, "\n")
-		out = append(out, *cur)
+		raw := strings.Join(body, "\n")
+		cur.Body = stripHighlights(raw)
+		out = append(out, Excerpt{Entry: *cur, Snippet: raw})
 		cur, body = nil, nil
 	}
 

@@ -1,0 +1,456 @@
+// Package assistant runs one conversation's turns, end to end.
+//
+// A Unit is one member's assistant, or the household group's. It is the thing that
+// runs as a goroutine in simple mode and as a pod in isolated mode, and it does not
+// know which: every dependency arrives through Deps, every policy through Options,
+// and nothing in this package consults configuration, the environment or any global.
+// If a change to Unit needs to ask what mode it is in, that change is wrong.
+//
+// A turn is the sequence fixed in docs/IMPLEMENTATION.md section 5: resolve scope,
+// ensure session, retrieve concurrently per space, assemble the prompt exactly as
+// docs/PROMPT.md specifies, route, reply, run capture, record history. The prompt is
+// a product surface and its rendered output is golden-tested; changing wording is a
+// deliberate fixture edit, not a refactor.
+//
+// One consequence of the turn's shape deserves an operator's attention: the prompt is
+// assembled before the router picks an endpoint, so a Unit budgets against a single
+// context size — Options.ContextBudget — which must be the smallest context window of
+// any endpoint its tier chain can reach. Mixing endpoints with materially different
+// context windows inside one tier therefore wastes the larger ones: every prompt is
+// trimmed to fit the smallest machine that might answer.
+package assistant
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/BlueHeisenberg/kenward/internal/capture"
+	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/memory"
+	"github.com/BlueHeisenberg/kenward/internal/routing"
+	"github.com/BlueHeisenberg/kenward/internal/scope"
+	"github.com/BlueHeisenberg/kenward/internal/session"
+	"github.com/BlueHeisenberg/kenward/internal/transport"
+)
+
+// ResolveFunc turns an inbound message into the turn's authorization decision.
+//
+// It is a function rather than a concrete dependency on the scope package so that a
+// Unit can be tested against fixed scopes; production wiring uses ConfigResolver. An
+// unrecognised sender must resolve to scope.ErrNotEnrolled, which the Unit answers
+// with silence — not a refusal, because even a refusal confirms the bot exists.
+type ResolveFunc func(in transport.Inbound) (domain.Scope, error)
+
+// ConfigResolver adapts scope.Resolve over a fixed configuration. It is what the
+// supervisor hands to New in both modes.
+func ConfigResolver(cfg *config.Config) ResolveFunc {
+	return func(in transport.Inbound) (domain.Scope, error) {
+		return scope.Resolve(cfg, in)
+	}
+}
+
+// Deps are the seams a Unit works through. All of them are required except Logger.
+// They are constructor-injected and never reached for globally, which is what lets
+// the same Unit run in one address space with its siblings or alone in a pod.
+type Deps struct {
+	// Resolve is the authorization boundary for every inbound message.
+	Resolve ResolveFunc
+	// Memory is retrieval and, through the capture engine, storage.
+	Memory memory.Memory
+	// Router walks the scope's tier chain and never widens it.
+	Router routing.Router
+	// Transport carries replies, refusals and capture questions.
+	Transport transport.Transport
+	// Sessions says whether a member's key is currently unwrapped.
+	Sessions session.Sessions
+	// Capture runs the confirmation state machine for proposed memory writes.
+	Capture *capture.Engine
+	// Logger receives dropped tool calls and degraded retrievals. Optional; nil
+	// discards.
+	Logger *slog.Logger
+}
+
+func (d Deps) validate() error {
+	switch {
+	case d.Resolve == nil:
+		return errors.New("assistant: Deps.Resolve is required")
+	case d.Memory == nil:
+		return errors.New("assistant: Deps.Memory is required")
+	case d.Router == nil:
+		return errors.New("assistant: Deps.Router is required")
+	case d.Transport == nil:
+		return errors.New("assistant: Deps.Transport is required")
+	case d.Sessions == nil:
+		return errors.New("assistant: Deps.Sessions is required")
+	case d.Capture == nil:
+		return errors.New("assistant: Deps.Capture is required")
+	}
+	return nil
+}
+
+// Defaults applied by New to a zero-valued Options.
+const (
+	// DefaultSearchLimit matches memory.search_limit in the configuration.
+	DefaultSearchLimit = 8
+	// DefaultHistoryLimit bounds the unit-local history ring, in turns.
+	DefaultHistoryLimit = 20
+	// DefaultContextBudget is the assumed endpoint context window, in tokens as this
+	// package estimates them. The Unit cannot know which endpoint will answer — the
+	// router decides after the prompt is assembled — so the budget is the smallest
+	// window in the pool, supplied by wiring.
+	DefaultContextBudget = 8192
+	// DefaultMaxTokens bounds the completion and is reserved out of the budget.
+	DefaultMaxTokens = 1024
+	// DefaultQueueLimit bounds how many messages may wait behind a running turn.
+	DefaultQueueLimit = 8
+	// DefaultQueueNoticeAfter is how long a queued message waits before the member
+	// is told it is queued. Short waits are normal and telling the member about
+	// every one of them would be noise.
+	DefaultQueueNoticeAfter = 2 * time.Second
+)
+
+// Options tunes a Unit. The zero value is valid and gets the defaults.
+type Options struct {
+	// HouseholdName is rendered into the prompt's identity and scope disclosure.
+	HouseholdName string
+	// SearchLimit is the per-space retrieval budget for one turn. Defaults to
+	// DefaultSearchLimit.
+	SearchLimit int
+	// HistoryLimit bounds the history ring in turns. Defaults to
+	// DefaultHistoryLimit. History is in memory only and is never written to lore:
+	// lore holds distilled knowledge, not transcripts.
+	HistoryLimit int
+	// ContextBudget is the endpoint context window in estimated tokens. Defaults to
+	// DefaultContextBudget.
+	//
+	// Set it to the smallest context window of any endpoint reachable through this
+	// conversation's tier chain: the router chooses the endpoint after the prompt
+	// is assembled, so the budget must hold everywhere the turn might land. This
+	// also means endpoints with materially different context windows are better
+	// kept in different tiers — inside one tier, the smallest window trims every
+	// prompt, wasting the larger machines.
+	ContextBudget int
+	// MaxTokens bounds the completion. Defaults to DefaultMaxTokens.
+	MaxTokens int
+	// Temperature is passed through to the router unchanged. Nil means unset —
+	// the provider's default — and a pointer to zero means greedy sampling, which
+	// the routing seam keeps distinguishable on purpose.
+	Temperature *float64
+	// QueueLimit bounds how many messages may wait behind a running turn; beyond
+	// it the member is told their message was dropped. Defaults to
+	// DefaultQueueLimit.
+	QueueLimit int
+	// QueueNoticeAfter is how long a queued message waits in silence before the
+	// member is told it is queued. Defaults to DefaultQueueNoticeAfter.
+	QueueNoticeAfter time.Duration
+	// Now supplies the prompt's date. Defaults to time.Now; tests fix it so the
+	// rendered prompt is stable.
+	Now func() time.Time
+}
+
+func (o Options) normalized() Options {
+	if o.SearchLimit < 1 {
+		o.SearchLimit = DefaultSearchLimit
+	}
+	if o.HistoryLimit < 1 {
+		o.HistoryLimit = DefaultHistoryLimit
+	}
+	if o.ContextBudget < 1 {
+		o.ContextBudget = DefaultContextBudget
+	}
+	if o.MaxTokens < 1 {
+		o.MaxTokens = DefaultMaxTokens
+	}
+	if o.QueueLimit < 1 {
+		o.QueueLimit = DefaultQueueLimit
+	}
+	if o.QueueNoticeAfter <= 0 {
+		o.QueueNoticeAfter = DefaultQueueNoticeAfter
+	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	return o
+}
+
+// Notices the Unit sends around a turn rather than as part of one. They are product
+// surface like the refusals and are golden-tested.
+const (
+	// lockedText is sent when a direct conversation arrives while the member's key
+	// is not unwrapped. The turn stops there: retrieval without a session would be
+	// retrieval without the member present.
+	//
+	// It deliberately does not invite the member to send anything. There is no
+	// unlock flow over Telegram and there cannot be one: a passphrase typed into a
+	// chat travels through Telegram, stays in the member's own history, and in
+	// simple mode is readable by whoever holds the bot token. Passphrases are
+	// supplied to the process when it starts and never travel in a message, so a
+	// prompt that hinted otherwise would train exactly the habit the design
+	// refuses to support.
+	lockedText = "Your assistant is locked. It needs to be unlocked on the machine it runs on."
+	// contentFilterText is sent when the model declined the turn. It reports what
+	// happened and stops: the assistant neither apologises for the model nor
+	// explains a policy it cannot see.
+	contentFilterText = "The model declined to answer this."
+	// queuedText is sent when a message has waited behind a long-running turn for
+	// more than Options.QueueNoticeAfter.
+	queuedText = "Still working on your last message — this one is queued and I'll take it next."
+	// droppedText is sent when the queue behind a running turn is full. Dropping
+	// with a notice is honest; dropping silently would read as being ignored.
+	droppedText = "I'm backed up and had to drop that message. Send it again in a moment."
+)
+
+// Unit is one conversation's assistant: a member's direct chat, or the household
+// group's. It owns nothing shared — no state keyed by member id lives anywhere in
+// this package — so units are isolated from one another by construction, in both
+// deployment modes.
+//
+// Concurrency policy: turns are serialised. A Unit runs at most one turn at a time;
+// messages arriving mid-turn wait in a bounded queue (Options.QueueLimit), the member
+// is told when their message has been queued for longer than Options.QueueNoticeAfter,
+// and messages beyond the bound are dropped with a notice. Order between messages
+// queued concurrently is not guaranteed — Telegram's own delivery makes no such
+// promise either — but no message is ever processed twice and no state is touched
+// outside the running turn.
+type Unit struct {
+	deps Deps
+	opts Options
+
+	// slot serialises turns: it has capacity one and holding it is holding the turn.
+	slot chan struct{}
+	// waitersMu guards waiters, the count of messages queued behind the slot.
+	waitersMu sync.Mutex
+	waiters   int
+
+	// history is the unit-local turn ring. It is only written by the running turn
+	// but carries its own lock so a snapshot is always consistent.
+	history *historyRing
+}
+
+// New builds a Unit over its dependencies. It fails fast on a missing dependency
+// rather than letting the first turn discover the hole.
+func New(deps Deps, opts Options) (*Unit, error) {
+	if err := deps.validate(); err != nil {
+		return nil, err
+	}
+	if deps.Logger == nil {
+		deps.Logger = slog.New(slog.DiscardHandler)
+	}
+	opts = opts.normalized()
+	return &Unit{
+		deps:    deps,
+		opts:    opts,
+		slot:    make(chan struct{}, 1),
+		history: newHistoryRing(opts.HistoryLimit),
+	}, nil
+}
+
+// Handle runs one turn for one inbound message.
+//
+// An unrecognised sender returns scope.ErrNotEnrolled (wrapped) and sends nothing at
+// all — the caller drops it in the same silence. Infrastructure failures are returned
+// for the caller to log; refusals and notices are not errors, they are the product
+// answering, and Handle returns nil for them.
+//
+// Cancellation of ctx stops the turn at the next boundary: nothing is sent after the
+// context is done, a capture question in flight is abandoned by the transport, and a
+// turn that never delivered its reply is not recorded in history.
+func (u *Unit) Handle(ctx context.Context, in transport.Inbound) error {
+	sc, err := u.deps.Resolve(in)
+	if err != nil {
+		// Silence is deliberate: replying at all, even to refuse, confirms to a
+		// stranger that this bot is a kenward node serving a real household.
+		return fmt.Errorf("assistant: resolving scope: %w", err)
+	}
+
+	release, err := u.admit(ctx, sc, in)
+	if err != nil || release == nil {
+		return err
+	}
+	defer release()
+
+	return u.turn(ctx, sc, in)
+}
+
+// admit serialises the turn. It returns a release function once the turn slot is
+// held, or (nil, nil) when the message was dropped because the queue was full. The
+// scope is already resolved when admit runs, so its notices never reach a stranger.
+func (u *Unit) admit(ctx context.Context, sc domain.Scope, in transport.Inbound) (func(), error) {
+	select {
+	case u.slot <- struct{}{}:
+		return func() { <-u.slot }, nil
+	default:
+	}
+
+	// A turn is in flight. Join the bounded queue or drop with a notice.
+	u.waitersMu.Lock()
+	if u.waiters >= u.opts.QueueLimit {
+		u.waitersMu.Unlock()
+		if err := u.send(ctx, sc, in, droppedText); err != nil {
+			return nil, fmt.Errorf("assistant: reporting dropped message: %w", err)
+		}
+		return nil, nil
+	}
+	u.waiters++
+	u.waitersMu.Unlock()
+	defer func() {
+		u.waitersMu.Lock()
+		u.waiters--
+		u.waitersMu.Unlock()
+	}()
+
+	notice := time.NewTimer(u.opts.QueueNoticeAfter)
+	defer notice.Stop()
+	for {
+		select {
+		case u.slot <- struct{}{}:
+			return func() { <-u.slot }, nil
+		case <-notice.C:
+			// The wait is long enough to be felt; say so, once, then keep waiting.
+			if err := u.send(ctx, sc, in, queuedText); err != nil {
+				u.deps.Logger.Warn("assistant: queue notice failed", "error", err)
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+// turn is one full pass of the sequence in docs/IMPLEMENTATION.md section 5. The
+// caller holds the turn slot.
+func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) error {
+	// Session. Only a member has a key; the group conversation has no session of
+	// its own, so a group turn proceeds without one.
+	if sc.Member != nil {
+		if _, ok := u.deps.Sessions.Key(sc.Member.ID); !ok {
+			return u.send(ctx, sc, in, lockedText)
+		}
+		u.deps.Sessions.Touch(sc.Member.ID)
+	}
+
+	// The capture engine ages its decline window per turn whether or not this turn
+	// proposes anything.
+	u.deps.Capture.BeginTurn(sc, fmt.Sprintf("%d:%d", in.ChatID, in.MessageID))
+
+	// Retrieve, one search per space in scope order, concurrently. The groups stay
+	// grouped: ranking a private space against the shared one is a policy decision
+	// this package makes only by keeping scope order, never by re-ranking.
+	groups := u.retrieve(ctx, sc, in.Text)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, g := range groups {
+		if g.err != nil {
+			u.deps.Logger.Warn("assistant: retrieval degraded",
+				"space", string(g.space), "error", g.err)
+		}
+	}
+
+	// Assemble within budget, then route. The chain is the scope's and only the
+	// scope's: a *routing.NoBackendError comes back when it is exhausted, and it
+	// becomes an explicit refusal — the node speaks it directly, because a model
+	// that cannot be reached cannot explain why.
+	req := u.assemble(sc, groups, in.Text)
+	comp, err := u.deps.Router.Complete(ctx, sc.Tiers, req)
+	if err != nil {
+		var nbe *routing.NoBackendError
+		if errors.As(err, &nbe) {
+			return u.send(ctx, sc, in, refusalText(sc, nbe))
+		}
+		return fmt.Errorf("assistant: completing turn: %w", err)
+	}
+
+	// A content filter is the model declining, which is a final answer: the member
+	// is told what happened, briefly, and nothing else runs — no reply, no capture,
+	// no history. The routing seam already guarantees the refused content was not
+	// re-offered to another machine.
+	if comp.FinishReason == routing.FinishContentFilter {
+		return u.send(ctx, sc, in, contentFilterText)
+	}
+
+	proposal, warn := extractProposal(comp.ToolCalls)
+	if warn != "" {
+		// A malformed tool call is dropped with a log line, never a crashed turn
+		// and never a write. Nothing is written without the member's button press
+		// regardless; this just spares them a broken question.
+		u.deps.Logger.Warn("assistant: remember call dropped", "reason", warn)
+	}
+	reply, warn := sanitizeReply(comp.Text)
+	if warn != "" {
+		u.deps.Logger.Warn("assistant: reply text sanitized", "reason", warn)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if reply != "" {
+		if err := u.send(ctx, sc, in, reply); err != nil {
+			return fmt.Errorf("assistant: sending reply: %w", err)
+		}
+	} else if proposal == nil {
+		u.deps.Logger.Warn("assistant: model returned an empty reply", "chat", in.ChatID)
+	}
+
+	if proposal != nil {
+		// The member who spoke is the member who decides; in the group chat the
+		// transport ignores taps from anyone else.
+		if _, err := u.deps.Capture.Offer(ctx, sc, *proposal, in.UserID); err != nil {
+			u.deps.Logger.Warn("assistant: capture failed", "error", err)
+		}
+	}
+
+	// Record only a delivered turn. History is unit-local, bounded and in memory
+	// only; it is never written to lore.
+	u.history.add(in.Text, reply)
+	return nil
+}
+
+// spaceGroup is one space's retrieval result, kept in scope order.
+type spaceGroup struct {
+	space   domain.SpaceID
+	entries []memory.Entry
+	err     error
+}
+
+// retrieve runs one memory.Search per space in sc.Read, concurrently, and returns
+// the results grouped in scope order. A failed search degrades that group rather
+// than failing the turn; the prompt says the space could not be read, because an
+// error rendered as "nothing found" would be a lie the member might act on.
+func (u *Unit) retrieve(ctx context.Context, sc domain.Scope, text string) []spaceGroup {
+	groups := make([]spaceGroup, len(sc.Read))
+	var wg sync.WaitGroup
+	for i, sp := range sc.Read {
+		wg.Add(1)
+		go func(i int, sp domain.SpaceID) {
+			defer wg.Done()
+			entries, err := u.deps.Memory.Search(ctx, memory.SearchQuery{
+				Text:   text,
+				Spaces: []domain.SpaceID{sp},
+				Limit:  u.opts.SearchLimit,
+			})
+			groups[i] = spaceGroup{space: sp, entries: entries, err: err}
+		}(i, sp)
+	}
+	wg.Wait()
+	return groups
+}
+
+// send delivers one outbound message in this scope. Group replies quote the message
+// they answer, because several conversations interleave there; direct replies do not,
+// because quoting the only other party is noise.
+func (u *Unit) send(ctx context.Context, sc domain.Scope, in transport.Inbound, text string) error {
+	replyTo := 0
+	if sc.Kind == domain.ScopeGroup {
+		replyTo = in.MessageID
+	}
+	return u.deps.Transport.Send(ctx, transport.Outbound{
+		ChatID:  sc.ChatID,
+		Text:    text,
+		ReplyTo: replyTo,
+	})
+}

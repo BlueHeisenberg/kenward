@@ -1,0 +1,338 @@
+package setup
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/BlueHeisenberg/kenward/internal/config"
+)
+
+// The copy in this file is the product. Setup is the first thing a person touches,
+// and most of what kenward is for evaporates if this reads like a configuration
+// tool. Two rules hold everywhere below.
+//
+// Plain second person, no product voice. The reader is someone who was told this
+// would take ten minutes, standing at a machine in their own house. They are not an
+// operator, an admin or a user.
+//
+// Never a claim the code does not keep. Every sentence about privacy here is checked
+// against ARCHITECTURE.md's key-custody section, and the simple-mode statement says
+// the uncomfortable thing first rather than last. A wizard that oversells the mode
+// somebody just chose is worse than no wizard, because it is believed.
+
+// Banner opens the wizard.
+const Banner = `kenward setup
+
+A handful of questions, then one file. Nothing is sent anywhere while this runs,
+and nothing you type here leaves the machine.`
+
+// TrustQuestion is the question the mode is chosen with, verbatim from
+// docs/CLI.md.
+//
+// It asks about trust rather than topology because a non-technical installer can
+// answer the first and cannot answer the second. "Do you want per-member pods?" is
+// unanswerable by the person who will actually be standing here; "does everyone
+// trust whoever runs this machine?" is a question about their own household, and
+// they are the only one who knows.
+const TrustQuestion = `Does everyone in this household trust whoever runs this machine to be able to
+read their private conversations?`
+
+// The two answers to TrustQuestion, with the trailing alignment they are printed
+// with. They are constants rather than a formatted table because the block they
+// render into is golden-tested against docs/CLI.md, and a layout helper that drifts
+// by one space would fail that test for no reason anybody could act on.
+const (
+	trustAnswerSimple   = "Yes — it is our own family machine.      (Simple)"
+	trustAnswerIsolated = "No, or I would rather it were sealed.    (Isolated — needs Linux with\n" +
+		"                                                Podman or Docker)"
+)
+
+// isolatedNeedsLinux explains, on a machine that cannot run isolated mode, why it
+// cannot — and does not offer a degraded version of it under the same name.
+//
+// The temptation here is to say "isolated mode is not available on Windows yet" and
+// carry on. That would leave someone believing their household is sealed when it is
+// not, which is the single worst outcome this product has. So the explanation says
+// what isolated mode actually does, why this machine cannot do it, and what to do
+// instead, and then offers the mode that does work under its own honest name.
+func isolatedNeedsLinux(goos string) string {
+	return fmt.Sprintf(`Isolated mode is Linux only, and this is %s.
+
+  Isolated mode works by running each member in their own container, with their
+  own bot token, their own memory and their own key. That is what stops the
+  person running the machine reading somebody else's private conversations, and
+  it needs Podman or Docker. On %s there is no way to give you the same
+  guarantee, and calling something isolated when it is not is the one thing this
+  program must never do.
+
+  Simple mode runs here and runs well. Separation between members is real in
+  both modes. Sealing against whoever runs the machine is the part that only
+  isolated mode gives you.
+
+  If sealing is what you need, install kenward on a Linux machine — a spare box,
+  a small server, a virtual machine on this one — and run setup there.`,
+		osName(goos), osName(goos))
+}
+
+const (
+	isolatedFallbackSimple = "Carry on in simple mode here."
+	isolatedFallbackStop   = "Stop. I will set it up on Linux instead."
+)
+
+// osName renders a GOOS value the way a person refers to their own computer.
+func osName(goos string) string {
+	switch goos {
+	case "windows":
+		return "Windows"
+	case "darwin":
+		return "macOS"
+	case "linux":
+		return "Linux"
+	default:
+		return goos
+	}
+}
+
+// Questions asked in the household and member steps. Each carries its own reason
+// for existing, because a question whose point is invisible gets a shrug for an
+// answer.
+const (
+	householdIntro = `The household
+
+Two names. Neither is shown to anyone outside the house.`
+
+	questionHouseholdName = "What is this household called?"
+	questionSharedSpace   = "What should the shared memory be called?"
+
+	sharedSpaceNote = `  The shared memory is what the group chat reads and writes. Everyone in the
+  household can see it. Each person also gets their own private memory, which
+  nobody else in the household can read.`
+
+	membersIntro = `Who lives here
+
+Names only, and first names are fine — a name is what kenward calls someone.
+
+Telegram accounts are not asked for. Each person claims their own later with
+` + "`kenward invite`" + `, which takes them ten seconds. Asking you to find somebody
+else's numeric Telegram id would be a miserable way to spend the next hour.
+
+One name per line. Press Enter on an empty line when everyone is in.`
+
+	questionMemberName = "Name"
+)
+
+// The Telegram step. The walkthrough is short and numbered because it is the only
+// part of setup that happens in another application, and the reader has to be able
+// to look up from the screen and back down again without losing their place.
+const (
+	botFatherWalkthrough = `  1. Open Telegram and start a chat with @BotFather.
+  2. Send /newbot.
+  3. Give it a name — anything — and a username ending in "bot".
+  4. BotFather replies with a token that looks like this:
+
+         123456789:AAF-3jkkQ_pP8vd2X9j1kZq7wRsTuVwXyZ0
+
+  5. Paste it below. It is not shown as you type.`
+
+	telegramIntroSimple = `Telegram
+
+kenward reaches you through a Telegram bot. You need to make one. It takes about
+a minute, it is free, and it does not need a phone number of its own.`
+
+	telegramIntroIsolated = `Telegram
+
+In isolated mode every member gets their own bot. That is not ceremony: whoever
+holds a bot's token can read every message sent to it, so a single household bot
+would hand the operator every private conversation no matter how well the memory
+is sealed on disk. Each member makes their own when they enrol, one each, and
+you will not have to touch them.
+
+What is needed now is the household's own bot — the one for the group chat.`
+
+	questionBotToken = "Bot token"
+
+	tokenLooksWrong = `  That does not look like a bot token. They are a number, a colon, and about
+  thirty-five more characters — BotFather's message has it on a line of its own.`
+
+	questionUseTokenAnyway = "Use it anyway?"
+	questionLeaveTokenUnset = "Leave it unset for now?"
+)
+
+// tokenNotStored is printed after a token is taken, every time. It is the moment to
+// say where secrets live, because it is the moment the reader has just handed one
+// over and is wondering.
+func tokenNotStored(envVar string) string {
+	return fmt.Sprintf(`  The token is not written into kenward.yaml. Nothing kenward writes ever
+  holds a secret. The file names an environment variable, and kenward reads the
+  value out of the environment when it starts:
+
+      %s`, envVar)
+}
+
+const (
+	questionWriteEnvFile = "Write the token to a .env file next to the configuration?"
+
+	envFileNote = `  The file is created readable only by you, and .gitignore already excludes it.
+  If you would rather keep the token in a password manager or a systemd unit,
+  say no and export the variable yourself.`
+)
+
+// The endpoints step.
+const (
+	endpointsIntro = `Endpoints
+
+The machines that actually run the model. At least one is needed.
+
+Each is tried as you enter it, so a mistyped address shows up now rather than
+the first time somebody asks a question. A machine that is simply switched off
+is fine — that is the normal state of a desktop GPU, and kenward is built for
+it.`
+
+	questionEndpointName    = "A short label for it"
+	questionEndpointBaseURL = "Base URL"
+	questionEndpointModel   = "Model, as the server names it"
+	questionEndpointKey     = "Does it need an API key?"
+	questionEndpointKeyEnv  = "Environment variable to read the key from"
+	questionEndpointKeyVal  = "Paste the key, or press Enter to set the variable yourself"
+	questionEndpointTiers   = "Which tiers does it answer for?"
+	questionAnotherEndpoint = "Add another endpoint?"
+
+	endpointTiersNote = `  A tier is a name you route by. The convention is "local" for machines in the
+  house and "cloud" for a provider; anything else is yours to invent. Separate
+  several with commas.`
+)
+
+// The tier-chain step. This is where the privacy policy is actually decided, so the
+// prompts spell out the consequence in the sentence that asks for the answer rather
+// than in a paragraph above it, which is not read.
+const (
+	tiersIntro = `Where each conversation may go
+
+A tier chain is the list of tiers a conversation may use, in order. It is the
+privacy policy, and it is the one thing in the file worth reading twice: kenward
+never widens a chain. If nothing in it answers, it says so and stops. It does
+not quietly reach further.`
+
+	tiersNoLocalWarning = `  Every endpoint you have configured is outside the house, so there is no
+  local-only chain to fall back on. Private conversations will reach a provider,
+  or they will not be answered at all. If that is not what you want, stop here,
+  add a machine on your own network, and run setup again.`
+)
+
+// privateDefaultNote states what the local-only default means, for one member, in
+// the words the member would use.
+func privateDefaultNote(name string, chain []string) string {
+	return fmt.Sprintf(`  %s's private conversations will use %s and nothing else. Nothing %s says
+  in private leaves the house; if no local machine answers, kenward refuses
+  rather than sending it to a provider.`, name, formatChain(chain), name)
+}
+
+// cloudOptIn is the question that widens a private chain. Its one sentence carries
+// the whole consequence, because it is the sentence somebody will read while
+// reaching for the y key.
+func cloudOptIn(name string, tiers []string, hosts []string) string {
+	return fmt.Sprintf("Also allow %s, so %s's private messages can be sent to %s when no local machine answers?",
+		formatChain(tiers), name, formatList(hosts))
+}
+
+// groupDefaultNote is the same statement for the household's shared conversations.
+func groupDefaultNote(chain []string) string {
+	return fmt.Sprintf(`  The group chat will use %s and nothing else. It is shared memory — everyone
+  in the household can read it — but shared inside the house is not the same as
+  sent out of it, so it defaults local too.`, formatChain(chain))
+}
+
+// groupCloudOptIn widens the household chain.
+func groupCloudOptIn(tiers []string, hosts []string) string {
+	return fmt.Sprintf("Also allow %s, so group messages can be sent to %s when no local machine answers?",
+		formatChain(tiers), formatList(hosts))
+}
+
+// PrivacyStatement is what setup prints once the mode is settled: the honest
+// description of what that mode does and does not protect against.
+//
+// It is golden-tested, and it is the most important output the program produces,
+// because it is where a claim becomes checkable. The simple-mode text says that
+// whoever runs the machine can read every member's private memory, in those words,
+// before it says anything reassuring. Softening it — "logical separation",
+// "trusted operator model", any phrasing that lets a reader come away with the
+// wrong belief — is a defect, not a wording preference.
+//
+// The sentences it shares with `kenward doctor` are shared deliberately: the same
+// claim, in the same words, at setup and at every check afterwards.
+func PrivacyStatement(mode config.Mode) string {
+	if mode == config.ModeIsolated {
+		return privacyIsolated
+	}
+	return privacySimple
+}
+
+const privacySimple = `Privacy, in simple mode
+
+  Every member's key lives in one process, and one bot token carries every
+  conversation. Whoever runs this machine can read every member's private
+  memory — on disk and in flight. Separation between members is real; sealing
+  against the operator is not. Isolated mode provides that.
+
+  This is the mode's known limitation, not a fault in it, and ` + "`kenward doctor`" + `
+  will say the same thing every time it runs. Most households are fine with it,
+  because the person running the machine is a member of their own family. If
+  that is not true here, stop now and set this up again on a Linux machine in
+  isolated mode.
+
+  What holds in both modes: a space whose tier chain names only local endpoints
+  never reaches a provider. When nothing local answers, kenward refuses. It does
+  not widen the chain, and there is no setting that makes it.
+
+  What holds in both modes: nothing is written to memory without the member
+  saying yes to the exact text first, and no configuration option turns that
+  off.`
+
+const privacyIsolated = `Privacy, in isolated mode
+
+  Each member runs in their own container, with their own bot token, their own
+  memory and their own key. The key is derived from that member's passphrase and
+  unwrapped into memory only while they have an active session; it is never
+  written to disk. A stolen disk or a backup yields nothing.
+
+  The claim is not that the operator cannot read your memory. It is that the
+  operator cannot read it from disk, from a backup, or while you are not in
+  session, and that doing so means deliberately attacking their own family. That
+  is strong, checkable and true. The stronger version is not.
+
+  Two limits, stated plainly, because they are the first things worth checking:
+
+    kenward can read private memory at all. That is what being the second
+    member of a two-member space means, and it is the price of an assistant
+    that answers when your laptop is shut.
+
+    Root always wins. Someone with root on this host, while a member is in
+    session, can read that member's unwrapped key out of memory. Isolated mode
+    raises the cost. It does not create an impossibility.
+
+  What holds in both modes: a space whose tier chain names only local endpoints
+  never reaches a provider. When nothing local answers, kenward refuses. It does
+  not widen the chain, and there is no setting that makes it.
+
+  What holds in both modes: nothing is written to memory without the member
+  saying yes to the exact text first, and no configuration option turns that
+  off.`
+
+// formatChain renders a tier chain the way the configuration file writes it.
+func formatChain(tiers []string) string {
+	return "[" + strings.Join(tiers, ", ") + "]"
+}
+
+// formatList renders a list of things in a sentence: "a", "a and b", "a, b and c".
+func formatList(items []string) string {
+	switch len(items) {
+	case 0:
+		return "a provider"
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " and " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+	}
+}

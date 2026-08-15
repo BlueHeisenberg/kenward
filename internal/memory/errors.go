@@ -28,6 +28,18 @@ var ErrUserModel = errors.New("memory: user-model entry cannot leave its space")
 // the target space and so may not author into it.
 var ErrNotWriter = errors.New("memory: not a writer of the target space")
 
+// ErrWriteUncertain marks a write whose outcome is unknown: the request reached
+// lore but no answer came back, so the entry may or may not have been stored.
+//
+// It exists because lore has no delete. A duplicate entry is permanent, so a
+// caller must be able to tell "this may not have saved" from "this did not save"
+// and say so, rather than inviting a retry that stores the learning twice. Every
+// other write failure — a rejection from lore, store contention that exhausted
+// its retries, an argument this client refused — means nothing was written.
+//
+// Use errors.Is to test for it; the underlying cause is wrapped alongside.
+var ErrWriteUncertain = errors.New("memory: write may or may not have been stored")
+
 // ErrBusy is returned when lore's SQLite store was locked by another process for
 // longer than the bounded retry window. lore opens the database with WAL, a
 // single connection and a five second busy timeout, so a concurrent writer —

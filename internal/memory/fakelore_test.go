@@ -1,10 +1,10 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"bytes"
 	"os"
 	"strings"
 	"sync"

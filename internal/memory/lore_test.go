@@ -505,8 +505,6 @@ func TestWritesAreNotReplayedAfterADeath(t *testing.T) {
 		t.Fatalf("a write must not be retried, saw %d attempts", n)
 	}
 	// The next call restarts it.
-	f2 := f.calls(t)
-	_ = f2
 	if _, err := f.Put(ctxT(t), spacePrivate, Draft{Domain: "d", Title: "t", Body: "b"}); err != nil {
 		t.Fatalf("the next write should reach a fresh subprocess: %v", err)
 	}
