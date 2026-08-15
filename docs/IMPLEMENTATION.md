@@ -10,7 +10,7 @@ Companion documents: `ARCHITECTURE.md` (why), this file (what and how).
 
 ## 0. Ground rules
 
-- **Go 1.23.** No cgo. Cross-platform (Windows / macOS / Linux) everywhere except
+- **Go 1.25.** No cgo. Cross-platform (Windows / macOS / Linux) everywhere except
   `supervisor/isolated`, which is Linux-only and must degrade with a clear error, never
   a panic, elsewhere.
 - **The per-member assistant is an isolated unit.** No shared mutable state keyed by
@@ -58,6 +58,8 @@ Third-party dependencies, fixed:
 | `github.com/modelcontextprotocol/go-sdk` | v1.7.0 | `memory` |
 | `gopkg.in/yaml.v3` | v3.0.1 | `config` |
 | `github.com/BlueHeisenberg/keel` | — | `routing` (llm), `session` (vault), `supervisor` (sandbox), update |
+
+Note: the MCP SDK requires Go 1.25, which is why the module targets it.
 
 Adding a dependency outside this table requires a decision recorded in
 `ARCHITECTURE.md`, not a `go get`.
@@ -498,7 +500,42 @@ Integration tests requiring real Podman, a real lore or a real provider are tagg
 
 ---
 
-## 12. Non-goals
+## 12. What lore actually does
+
+Established by reading lore's source, not by assumption. These facts constrain the
+design and several of them contradict what the architecture originally supposed.
+
+- **`lore mcp` is stdio only**, exposes five tools (`lore_search`, `lore_get`,
+  `lore_put`, `lore_spaces`, `lore_share`), and returns **unstructured text**, not JSON.
+  Failures arrive as `isError: true` rather than as protocol errors. The client is
+  therefore a parser, and is tested against a golden corpus so that a format change
+  fails loudly in one place.
+- **There is no Go client package.** Everything in lore is under `internal/`, so kenward
+  speaks MCP over stdio.
+- **Private memory must be a `shared`-kind space with two members.** lore's `personal`
+  space never crosses accounts, so a node could not read it. This is what the
+  architecture already specified, now confirmed as the only workable option rather than
+  a preference.
+- **Instances are isolated by `LORE_HOME`, not by machine.** Several lore daemons can
+  run on one host, each holding a subset of spaces, and converge on a shared space.
+  This is what makes one lore per member pod viable in isolated mode.
+- **Sync is last-writer-wins per entry**, compared on `(updated_at, author_account)`.
+  It is not a CRDT: the losing version is discarded silently, with no conflict record.
+  A machine with a fast clock wins every conflict. Household clocks should be synced,
+  and nothing in kenward may assume a write it made is still there.
+- **`lore mcp` alone never syncs.** Syncing requires a separate `lore serve`. Any
+  deployment running more than one lore instance must run both.
+- **Invites are not exposed over MCP.** Enrolment drives the lore CLI, which has
+  non-interactive flags but emits no JSON.
+- **There is no delete.** Anything kenward stores is permanent from lore's side.
+- `confidence` ∈ {experimental, provisional, validated, hardened} and `origin` ∈
+  {evidence, directive, convention, constraint}, both enforced by lore. **Markers are
+  free-form strings** — the familiar vocabulary is convention only, so kenward must not
+  validate against it.
+- lore's SQLite runs WAL with a single connection and a 5s busy timeout, so concurrent
+  calls contend. Client concurrency is bounded and busy errors are retried.
+
+## 13. Non-goals
 
 Not built, and not designed around: billing, tenant orchestration, a web dashboard, a
 control plane, SSO, organisations and teams, usage quotas, automatic memory writing
