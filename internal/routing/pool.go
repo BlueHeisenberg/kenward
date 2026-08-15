@@ -153,13 +153,25 @@ func (p *Pool) Complete(ctx context.Context, chain []string, req Request) (Compl
 // includes 429. llm.ErrInvalidRequest was never sent anywhere and falls
 // through to false.
 //
-// TODO(keel): when keel/llm lands its sentinel for a 2xx response carrying no
-// usable choice (queued as ErrEmptyResponse; verify the final name), add it
-// here as failover-eligible — the endpoint answered, so it is not a transport
-// failure, but it is not a completion either, and the next machine should get
-// the turn. Add a pool test with a server returning {"choices": []} asserting
-// failover and cooldown. As of 2026-08-15 the sentinel does not exist and an
-// empty 2xx surfaces as a successful empty completion.
+// llm.ErrEmptyResponse deliberately does NOT fail over, and this is a privacy
+// decision, not an oversight — do not tidy it away. keel currently reports a
+// model that declined to answer (finish_reason "content_filter") and a machine
+// that produced a genuinely empty response through the same sentinel, with the
+// finish reason present only as prose in the error text. If routing treated
+// that as an availability failure it would walk the rest of the tier chain,
+// machine by machine — and for a space whose chain ends in a cloud tier, the
+// content a local model just declined to answer would be sent to a third-party
+// provider because a refusal was misread as an outage. That is the exact leak
+// this package exists to prevent, so the whole class stays with the caller.
+//
+// TODO(keel): keel is queued to return the parsed Response alongside
+// ErrEmptyResponse, with named finish-reason constants. Once that lands,
+// split the class: a content_filter finish reason keeps this behaviour
+// (returned to the caller unchanged, no cooldown — nothing is wrong with the
+// machine), while a genuinely empty or malformed response becomes
+// failover-eligible with cooldown. Until the distinction is structural,
+// failing over on any of it is unsafe, and string-matching the error text is
+// not a substitute. TestEmptyResponseDoesNotFailOver pins today's behaviour.
 func shouldFailover(err error) bool {
 	if llm.IsTransport(err) {
 		return true

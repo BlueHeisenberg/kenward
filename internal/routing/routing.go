@@ -7,6 +7,7 @@ package routing
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -32,6 +33,24 @@ type Message struct {
 	Content string
 }
 
+// ToolSpec describes a tool the model may call.
+type ToolSpec struct {
+	Name        string
+	Description string
+	// Schema is the JSON Schema for the tool's arguments.
+	Schema json.RawMessage
+}
+
+// ToolCall is a tool invocation the model asked for.
+type ToolCall struct {
+	ID   string
+	Name string
+	// Arguments is the raw JSON the model produced. It is deliberately not decoded
+	// here: a malformed call must be a parsing decision made by the caller that
+	// understands the tool, not a routing failure.
+	Arguments json.RawMessage
+}
+
 // Request is a completion request, independent of which endpoint serves it.
 type Request struct {
 	Messages  []Message
@@ -42,14 +61,33 @@ type Request struct {
 	// indistinguishable from "unset", which serialises as the provider's default of
 	// roughly 1.0. Nil means unset.
 	Temperature *float64
+	// Tools the model may call. Empty means none are offered.
+	Tools []ToolSpec
 }
+
+// Finish reasons, as reported by the endpoint. The raw provider string is preserved on
+// Completion for anything a provider invents.
+const (
+	FinishStop          = "stop"
+	FinishLength        = "length"
+	FinishToolCalls     = "tool_calls"
+	FinishContentFilter = "content_filter"
+)
 
 // Completion is what came back, plus which endpoint produced it.
 type Completion struct {
-	Text     string
-	Endpoint string
-	Tier     string
-	Latency  time.Duration
+	Text      string
+	ToolCalls []ToolCall
+	// FinishReason is why generation stopped. It matters beyond diagnostics:
+	// FinishContentFilter means the model declined, which is a final answer and not
+	// an availability problem, so a caller must not respond by trying another
+	// machine. Doing so would walk the tier chain handing the same content to each
+	// endpoint in turn, and for a chain ending in a cloud tier that means sending a
+	// provider content a local model refused.
+	FinishReason string
+	Endpoint     string
+	Tier         string
+	Latency      time.Duration
 }
 
 // NoBackendError reports that every tier in the chain was exhausted.

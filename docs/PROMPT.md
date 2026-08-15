@@ -36,6 +36,11 @@ trimmed before retrieved memory: a forgotten fact is worse than a forgotten plea
 
 ## Identity and character
 
+In a group conversation there is no single member to address, so the first line becomes
+`You are kenward, a household assistant. You are talking to the {{.HouseholdName}}
+household.` and the capture instructions refer to *the member who asked* rather than to
+a name. Everything else is identical.
+
 ```
 You are kenward, a household assistant. You are talking to {{.MemberName}}.
 
@@ -118,6 +123,26 @@ Empty groups are rendered as an explicit statement, not omitted:
 
 An absent section reads to the model as "there is no such memory"; an explicit empty one
 reads as "I looked and found nothing". The second is true and the first is not.
+
+A retrieval that **failed** is a third case and gets its own text:
+
+```
+## From the household's shared memory
+(this memory could not be read just now)
+```
+
+Rendering a failed lookup as "nothing relevant found" would be a lie with consequences:
+the model would go on to answer as though the household had never recorded anything on
+the subject, and the member would never learn that the answer was given without
+consulting a memory that exists. An error disguised as an honest empty is worse than
+either.
+
+**Retrieved items are excerpts, and the prompt says so.** lore's search returns a snippet
+rather than a full entry — no origin, no timestamps, and a body that may be elided in the
+middle. Presenting that as the whole memory teaches the model to answer confidently from
+a fragment. The section heading therefore reads *"Excerpts from …"* rather than *"From
+…"*, and the instruction block states that these are search results and that an entry may
+continue beyond what is shown.
 
 **Confidence and markers are passed through verbatim.** They are lore's vocabulary and
 kenward does not reinterpret them. The prompt explains how to weigh them:

@@ -2,7 +2,7 @@ package routing
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -20,8 +20,9 @@ import (
 // per-attempt timeout — and the pool may try another machine. A *llm.APIError
 // means the endpoint answered non-2xx; only a 5xx status justifies failover,
 // because a 4xx would be rejected identically everywhere. Anything else —
-// llm.ErrInvalidRequest, a missing key variable — is returned to the caller
-// as-is and never triggers failover.
+// llm.ErrEmptyResponse, llm.ErrInvalidRequest, a missing key variable — is
+// returned to the caller as-is and never triggers failover; see shouldFailover
+// for why an empty response in particular must not.
 type Completer interface {
 	Complete(ctx context.Context, ep Endpoint, req Request) (Completion, error)
 }
@@ -55,7 +56,9 @@ type httpCompleter struct {
 }
 
 // Complete sends one non-streaming chat completion request to ep and returns
-// the completion text. The pool fills in Endpoint, Tier and Latency.
+// the completion: text, any tool calls the model asked for, and the finish
+// reason. Offered tools are mapped onto the OpenAI tools wire format. The pool
+// fills in Endpoint, Tier and Latency.
 //
 // The per-attempt deadline is carried by llm.Endpoint.Timeout, deliberately
 // not by a context.WithTimeout around the call: keel/llm attributes a
@@ -97,31 +100,48 @@ func (c *httpCompleter) Complete(ctx context.Context, ep Endpoint, req Request) 
 		n := req.MaxTokens
 		lreq.MaxTokens = &n
 	}
+	if len(req.Tools) > 0 {
+		lreq.Tools = make([]llm.ToolSpec, 0, len(req.Tools))
+		for _, ts := range req.Tools {
+			lreq.Tools = append(lreq.Tools, llm.ToolSpec{
+				Type: "function",
+				Function: llm.FunctionSpec{
+					Name:        ts.Name,
+					Description: ts.Description,
+					Parameters:  ts.Schema,
+				},
+			})
+		}
+	}
 
 	resp, err := c.provider.Chat(ctx, lep, lreq)
 	if err != nil {
-		return Completion{}, scrubbed(err)
+		// keel's errors pass through unmodified. Its APIError.Error() renders
+		// status, type, code and endpoint only — a provider's echoed prose is
+		// reachable solely through the explicit Detail() method — so nothing
+		// here needs scrubbing anymore. TestHTTPCompleterAPIErrorScrubbed
+		// stands guard over that property.
+		return Completion{}, err
 	}
-	return Completion{Text: resp.Content}, nil
-}
 
-// scrubbed strips provider-echoed text out of an *llm.APIError before it
-// leaves this package. Provider error bodies can quote request content, and
-// message content never belongs in an error. Classification survives: the
-// scrubbed copy is still a *llm.APIError carrying its status, type and code.
-//
-// TODO(keel): remove this wrapper once keel/llm's APIError.Error() renders
-// status, type, code and endpoint only (change queued with keel's author).
-// When dropping it, keep TestHTTPCompleterAPIErrorScrubbed and retarget it at
-// the unwrapped error — the proof that an echoing 400 body never surfaces is
-// the valuable half; this wrapper is only the workaround.
-func scrubbed(err error) error {
-	var ae *llm.APIError
-	if errors.As(err, &ae) {
-		clean := *ae
-		clean.Message = ""
-		clean.Body = ""
-		return &clean
+	// FinishReason is populated on every completion, not only tool-call or
+	// filtered ones: FinishContentFilter is what lets the layers above tell a
+	// model that declined from a machine that failed, and that distinction
+	// must never depend on which shape of response happened to carry it.
+	comp := Completion{Text: resp.Content, FinishReason: resp.FinishReason}
+	if len(resp.ToolCalls) > 0 {
+		comp.ToolCalls = make([]ToolCall, 0, len(resp.ToolCalls))
+		for _, tc := range resp.ToolCalls {
+			// Arguments pass through as raw JSON, deliberately undecoded:
+			// keel guarantees the string parses (repairing or defaulting a
+			// malformed one), and whether the parsed value makes sense for
+			// the tool is the caller's decision, not a routing failure.
+			comp.ToolCalls = append(comp.ToolCalls, ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: json.RawMessage(tc.Function.Arguments),
+			})
+		}
 	}
-	return err
+	return comp, nil
 }

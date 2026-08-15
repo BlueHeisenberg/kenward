@@ -118,12 +118,18 @@ func TestHTTPCompleterExplicitZeroTemperature(t *testing.T) {
 	}
 }
 
+// TestHTTPCompleterAPIErrorScrubbed proves that a 400 whose body echoes the
+// request never surfaces that content through the error's default rendering —
+// the string that reaches a log by default. The completer passes keel's error
+// through unmodified, so this test stands guard over keel/llm's own guarantee:
+// APIError.Error() renders status, type, code and endpoint only, and the
+// provider's prose is reachable solely through the explicit Detail() method.
 func TestHTTPCompleterAPIErrorScrubbed(t *testing.T) {
 	const secret = "the user's private message"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		// A provider error that echoes request content, which must never
-		// surface in the returned error.
+		// surface in the returned error's default rendering.
 		io.WriteString(w, `{"error":{"message":"bad input: `+secret+`","type":"invalid_request_error","code":"invalid"}}`)
 	}))
 	defer srv.Close()
@@ -140,11 +146,13 @@ func TestHTTPCompleterAPIErrorScrubbed(t *testing.T) {
 	if ae.StatusCode != http.StatusBadRequest || ae.Type != "invalid_request_error" || ae.Code != "invalid" {
 		t.Fatalf("APIError = %+v", ae)
 	}
-	if ae.Message != "" || ae.Body != "" {
-		t.Fatalf("APIError not scrubbed: Message=%q Body=%q", ae.Message, ae.Body)
-	}
 	if strings.Contains(err.Error(), secret) {
 		t.Fatal("error text echoes message content")
+	}
+	// The prose is unlisted, not lost: a caller that asks by name still gets
+	// the provider's words, so disclosure is a decision rather than a default.
+	if !strings.Contains(ae.Detail(), secret) {
+		t.Fatal("Detail() should carry the provider's prose on explicit request")
 	}
 	if shouldFailover(err) {
 		t.Fatal("a 400 must not trigger failover")
@@ -188,6 +196,171 @@ func TestHTTPCompleterTimeout(t *testing.T) {
 	}
 	if !shouldFailover(err) {
 		t.Fatal("a per-endpoint timeout must trigger failover")
+	}
+}
+
+// TestHTTPCompleterToolSpecOnWire asserts an offered tool reaches the provider
+// in the OpenAI tools shape, so the schema documented in the prompt design is
+// what the model actually sees rather than fiction.
+func TestHTTPCompleterToolSpecOnWire(t *testing.T) {
+	var gotTools []struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			Parameters  json.RawMessage `json:"parameters"`
+		} `json:"function"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Tools json.RawMessage `json:"tools"`
+		}
+		data, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(data, &body); err != nil {
+			t.Errorf("request body: %v", err)
+		}
+		if err := json.Unmarshal(body.Tools, &gotTools); err != nil {
+			t.Errorf("tools field: %v", err)
+		}
+		io.WriteString(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	schema := json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}}}`)
+	c := NewHTTPCompleter(nil, nil)
+	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
+	_, err := c.Complete(context.Background(), e, Request{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Tools:    []ToolSpec{{Name: "remember", Description: "propose a memory", Schema: schema}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(gotTools) != 1 {
+		t.Fatalf("got %d tools on the wire, want 1", len(gotTools))
+	}
+	tool := gotTools[0]
+	if tool.Type != "function" || tool.Function.Name != "remember" || tool.Function.Description != "propose a memory" {
+		t.Fatalf("tool on wire = %+v", tool)
+	}
+	if string(tool.Function.Parameters) != string(schema) {
+		t.Fatalf("parameters = %s, want %s", tool.Function.Parameters, schema)
+	}
+}
+
+// TestHTTPCompleterToolCallsReturned asserts a tool-calling response populates
+// Completion.ToolCalls with the arguments preserved byte for byte, and that
+// FinishReason carries the provider's reason.
+func TestHTTPCompleterToolCallsReturned(t *testing.T) {
+	// Canonical JSON, so keel's sanitizer classifies it clean and leaves the
+	// bytes untouched.
+	const args = `{"a":1,"b":"two"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call_7","type":"function","function":{"name":"remember","arguments":"`+
+			strings.ReplaceAll(args, `"`, `\"`)+`"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer srv.Close()
+
+	c := NewHTTPCompleter(nil, nil)
+	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
+	comp, err := c.Complete(context.Background(), e, Request{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(comp.ToolCalls) != 1 {
+		t.Fatalf("got %d tool calls, want 1", len(comp.ToolCalls))
+	}
+	call := comp.ToolCalls[0]
+	if call.ID != "call_7" || call.Name != "remember" {
+		t.Fatalf("tool call = %+v", call)
+	}
+	if string(call.Arguments) != args {
+		t.Fatalf("arguments = %s, want byte-for-byte %s", call.Arguments, args)
+	}
+	if comp.FinishReason != FinishToolCalls {
+		t.Fatalf("FinishReason = %q, want %q", comp.FinishReason, FinishToolCalls)
+	}
+}
+
+// TestHTTPCompleterMalformedToolArgs asserts that a model emitting broken
+// argument JSON still yields a Completion rather than an error: what to make
+// of bad arguments is a decision for the caller that understands the tool, not
+// a routing failure, and a turn must not be lost to a stray brace.
+func TestHTTPCompleterMalformedToolArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		args string // JSON-escaped as it appears inside the response body
+	}{
+		{"stray trailing brace", `{\"path\":\"/w\"}}`},
+		{"unparseable garbage", `not json at all`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"remember","arguments":"`+
+					tc.args+`"}}]},"finish_reason":"tool_calls"}]}`)
+			}))
+			defer srv.Close()
+
+			c := NewHTTPCompleter(nil, nil)
+			e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
+			comp, err := c.Complete(context.Background(), e, Request{
+				Messages: []Message{{Role: "user", Content: "hi"}},
+			})
+			if err != nil {
+				t.Fatalf("Complete returned %v, want a Completion despite malformed arguments", err)
+			}
+			if len(comp.ToolCalls) != 1 {
+				t.Fatalf("got %d tool calls, want 1", len(comp.ToolCalls))
+			}
+			if !json.Valid(comp.ToolCalls[0].Arguments) {
+				t.Fatalf("arguments %s do not parse; the raw-JSON contract requires a parseable string", comp.ToolCalls[0].Arguments)
+			}
+		})
+	}
+}
+
+// TestHTTPCompleterFinishReason asserts FinishReason is populated on every
+// completion — the ordinary case and the filtered-with-partial-content case
+// alike. FinishContentFilter on a completion is what lets the layers above
+// tell a model that declined from a machine that failed, so it must never be
+// dropped in the mapping.
+func TestHTTPCompleterFinishReason(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		text string
+		want string
+	}{
+		{"ordinary stop",
+			`{"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}]}`,
+			"hello", FinishStop},
+		{"filtered with partial content",
+			`{"choices":[{"message":{"content":"partial"},"finish_reason":"content_filter"}]}`,
+			"partial", FinishContentFilter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+
+			c := NewHTTPCompleter(nil, nil)
+			e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
+			comp, err := c.Complete(context.Background(), e, Request{
+				Messages: []Message{{Role: "user", Content: "hi"}},
+			})
+			if err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if comp.Text != tc.text || comp.FinishReason != tc.want {
+				t.Fatalf("comp = {Text:%q FinishReason:%q}, want {%q %q}",
+					comp.Text, comp.FinishReason, tc.text, tc.want)
+			}
+		})
 	}
 }
 

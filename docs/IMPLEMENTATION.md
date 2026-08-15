@@ -73,12 +73,13 @@ type MemberID string   // stable internal id; NOT the Telegram id
 type SpaceID string    // lore space identifier, always passed explicitly
 
 type Member struct {
-    ID         MemberID
-    Name       string
-    TelegramID int64     // 0 until claimed
-    Private    SpaceID
-    Tiers      []string  // ordered tier chain for this member's private conversations
-    EnrolledAt time.Time
+    ID          MemberID
+    Name        string
+    TelegramID  int64     // 0 until claimed
+    Private     SpaceID
+    Tiers       []string  // ordered tier chain for this member's private conversations
+    BotTokenEnv string    // env var name; isolated mode only, empty in simple mode
+    EnrolledAt  time.Time
 }
 
 type Household struct {
@@ -236,14 +237,48 @@ type Endpoint struct {
     Timeout   time.Duration
 }
 
+type Message struct {
+    Role    string // system | user | assistant | tool
+    Content string
+}
+
+type ToolSpec struct {
+    Name        string
+    Description string
+    Schema      json.RawMessage
+}
+
+type ToolCall struct {
+    ID        string
+    Name      string
+    Arguments json.RawMessage   // raw on purpose; malformed args are the caller's to reject
+}
+
 type Request struct {
-    Messages    []llm.Message
+    Messages    []Message
     MaxTokens   int
-    Temperature float64
+    Temperature *float64          // pointer so that 0 — deterministic — can be expressed
+    Tools       []ToolSpec
+}
+
+const (
+    FinishStop          = "stop"
+    FinishLength        = "length"
+    FinishToolCalls     = "tool_calls"
+    FinishContentFilter = "content_filter"
+)
+
+type Completion struct {
+    Text         string
+    ToolCalls    []ToolCall
+    FinishReason string
+    Endpoint     string
+    Tier         string
+    Latency      time.Duration
 }
 
 type Router interface {
-    Complete(ctx context.Context, chain []string, req Request) (llm.Completion, error)
+    Complete(ctx context.Context, chain []string, req Request) (Completion, error)
 }
 
 // ErrNoBackend carries what was tried, so the refusal can be specific.
@@ -528,6 +563,20 @@ design and several of them contradict what the architecture originally supposed.
 - **Invites are not exposed over MCP.** Enrolment drives the lore CLI, which has
   non-interactive flags but emits no JSON.
 - **There is no delete.** Anything kenward stores is permanent from lore's side.
+- **`lore_get` and `lore_share` are not space-scoped.** Entry ids are global, so an id is
+  effectively a capability to read an entry in any space. The client verifies the fetched
+  entry's space and returns `ErrNotFound` on a mismatch, but that verification resolves
+  spaces by display name and lore does not enforce uniqueness on names. The primary
+  defence is therefore upstream: **an entry id must never be taken from member-supplied
+  text.** Ids originate from a search performed within the current Scope, or from a
+  promotion flow that already resolved one.
+- **`Search` returns a snippet, not a body**, with no origin and no timestamps, and
+  `CreatedAt` can never be populated because lore's MCP surface exposes it on no tool.
+  Prompt rendering must not imply it holds a full entry when it holds a snippet.
+- **A write whose answer is lost is never replayed.** A `lore_put` may have landed even
+  though the client reported failure, and since lore has no delete, a retry that
+  duplicates it is permanent. Report uncertainty to the member rather than silently
+  retrying.
 - `confidence` ∈ {experimental, provisional, validated, hardened} and `origin` ∈
   {evidence, directive, convention, constraint}, both enforced by lore. **Markers are
   free-form strings** — the familiar vocabulary is convention only, so kenward must not
