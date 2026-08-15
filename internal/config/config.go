@@ -7,8 +7,10 @@
 // should be able to fix it in a single sitting rather than discovering one fault per
 // restart.
 //
-// Configuration never holds a secret. Bot tokens and API keys are named by environment
-// variable only; nothing in this package stores, logs or formats a key value.
+// Configuration never holds a secret. Bot tokens and API keys are named — by
+// environment variable, by file path, or by nothing at all when systemd supplies them as
+// a credential — and resolved on demand through the accessors in secret.go; nothing in
+// this package stores, logs or formats a key value.
 package config
 
 import (
@@ -96,10 +98,15 @@ type HouseholdConfig struct {
 
 // TelegramConfig holds the household-wide bot binding used in simple mode.
 type TelegramConfig struct {
-	// BotTokenEnv names the environment variable holding the token. Required in
-	// simple mode, where one bot serves the whole household; unused in isolated mode,
-	// where each member's pod carries its own token.
+	// BotTokenEnv names the environment variable holding the token. One of this,
+	// BotTokenFile or the systemd credential named by CredentialBotToken is required
+	// in simple mode, where one bot serves the whole household; all are unused in
+	// isolated mode, where each member's pod carries its own token.
 	BotTokenEnv string `yaml:"bot_token_env"`
+	// BotTokenFile names a file holding the token, for the deployments where an
+	// environment variable is the wrong place for one. See secret.go. Stating it as
+	// well as BotTokenEnv is an error, not a precedence.
+	BotTokenFile string `yaml:"bot_token_file"`
 }
 
 // MemberConfig is one human in the household.
@@ -116,8 +123,14 @@ type MemberConfig struct {
 	// when nothing in it is reachable, kenward refuses instead of widening.
 	Tiers []string `yaml:"tiers"`
 	// BotTokenEnv names this member's own bot token variable. Isolated mode only,
-	// where it is required and must differ from every other member's.
+	// where the token is required and must differ from every other member's.
 	BotTokenEnv string `yaml:"bot_token_env"`
+	// BotTokenFile names a file holding this member's token — the form a pod wants,
+	// where an environment value is readable by every process in the container. One
+	// source only: stating this and BotTokenEnv is an error. With neither, the
+	// credential named by MemberBotTokenCredential(ID) is used if systemd supplied
+	// one. See secret.go.
+	BotTokenFile string `yaml:"bot_token_file"`
 	// EnrolledAt is filled in from the state file by MergeState and is deliberately
 	// not readable from the YAML: when a member claimed their invite is something that
 	// happened, not something an operator declares. Writing enrolled_at in the file is
@@ -134,6 +147,10 @@ type EndpointConfig struct {
 	// appears in configuration. Empty for endpoints that need no authentication,
 	// which is the usual case for a machine on the household's own network.
 	APIKeyEnv string `yaml:"api_key_env"`
+	// APIKeyFile names a file holding the key instead. One source only: stating this
+	// and APIKeyEnv is an error. With neither, the credential named by
+	// EndpointAPIKeyCredential(Name) is used if systemd supplied one. See secret.go.
+	APIKeyFile string `yaml:"api_key_file"`
 	// Tags are the tier names this endpoint answers for.
 	Tags []string `yaml:"tags"`
 	// Timeout bounds one completion. Defaults to DefaultEndpointTimeout.
@@ -221,6 +238,7 @@ func joinValidation(errs ...error) error {
 		}
 		joined.Problems = append(joined.Problems, ve.Problems...)
 		joined.MissingEnv = append(joined.MissingEnv, ve.MissingEnv...)
+		joined.MissingSecrets = append(joined.MissingSecrets, ve.MissingSecrets...)
 	}
 	if len(joined.Problems) == 0 {
 		return nil

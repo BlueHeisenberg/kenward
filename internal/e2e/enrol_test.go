@@ -362,18 +362,14 @@ func TestACodeInTheGroupChatIsNotBurnedAndStillWorksInPrivate(t *testing.T) {
 	h.tr.InjectText(groupChatID, davidTelegramID, "anyone home?", true)
 	h.waitForReply(groupChatID, 1)
 
-	if got := h.sentTo(groupChatID); len(got) != 1 {
-		t.Fatalf("group chat has %d messages, want only David's reply: %+v", len(got), got)
-	}
-	if h.store.count() != 0 {
-		t.Errorf("a code pasted in the group reached the code store %d times; it must not even be looked up there",
-			h.store.count())
-	}
 	// The code is a credential. A group message is a conversation, and a
 	// conversation is sent to an inference endpoint — so a code that resolved to a
 	// group turn would have been handed to a model and to whoever runs it.
 	if providerSawCode(h.local, code) {
 		t.Error("a claim code reached an inference endpoint; a credential pasted in the group must never be sent anywhere")
+	}
+	if got := h.sentTo(groupChatID); len(got) != 1 {
+		t.Errorf("group chat has %d messages, want only David's reply: %+v", len(got), got)
 	}
 
 	// The subtle half: the same code, in private, afterwards.
@@ -381,6 +377,15 @@ func TestACodeInTheGroupChatIsNotBurnedAndStillWorksInPrivate(t *testing.T) {
 	onboarding := h.waitForReply(meiChatID, 3)
 	if len(onboarding) != 3 {
 		t.Fatalf("the private claim produced %d messages, want the onboarding: %+v", len(onboarding), onboarding)
+	}
+	// Exactly one redemption ever reached the store, and it is this one. The check
+	// is here rather than straight after the group message on purpose: the
+	// enrolment pump is a different goroutine from the group unit's, so David's
+	// reply does not order it. Mei's onboarding does — it comes off that pump, and
+	// anything the pump was going to do with the pasted code it had to do first.
+	if got := h.store.count(); got != 1 {
+		t.Errorf("the code store saw %d redemption attempts, want 1 (the private claim); "+
+			"a code pasted in the group must not even be looked up", got)
 	}
 	if !strings.Contains(onboarding[0].Text, "Hello Mei") {
 		t.Errorf("onboarding opens with %q, want the member greeted by name", onboarding[0].Text)

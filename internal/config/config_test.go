@@ -13,6 +13,7 @@ import (
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/routing"
 )
 
 // env returns a LookupEnvFunc over a fixed map, so no test touches the real process
@@ -823,19 +824,134 @@ func TestRoutingEndpoints(t *testing.T) {
 	if len(eps) != 2 {
 		t.Fatalf("RoutingEndpoints() returned %d endpoints", len(eps))
 	}
-	if eps[0].Name != "monster" || eps[0].Timeout != 120*time.Second {
-		t.Errorf("endpoints[0] = %+v", eps[0])
+
+	want := routing.Endpoint{
+		Name:    "monster",
+		BaseURL: "http://monster.tail:8000/v1",
+		Model:   "qwen3.6-27b-awq",
+		Tags:    []string{"local", "local-slow"},
+		Timeout: 120 * time.Second,
 	}
-	if eps[1].APIKeyEnv != "OPENROUTER_API_KEY" {
-		t.Errorf("endpoints[1].APIKeyEnv = %q", eps[1].APIKeyEnv)
+	if !reflect.DeepEqual(eps[0], want) {
+		t.Errorf("endpoints[0] = %+v, want %+v", eps[0], want)
 	}
-	if got, want := eps[0].Tags, []string{"local", "local-slow"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("endpoints[0].Tags = %v, want %v", got, want)
+	if eps[1].Name != "openrouter" || eps[1].Model != "anthropic/claude-sonnet-5" {
+		t.Errorf("endpoints[1] = %+v", eps[1])
+	}
+	// The default, not the file, is what routing must see when no timeout is written.
+	if eps[1].Timeout != config.DefaultEndpointTimeout {
+		t.Errorf("endpoints[1].Timeout = %v, want the default %v", eps[1].Timeout, config.DefaultEndpointTimeout)
 	}
 
 	eps[0].Tags[0] = "compromised"
 	if cfg.Endpoints[0].Tags[0] != "local" {
 		t.Error("RoutingEndpoints() aliased the configuration's tags")
+	}
+}
+
+// TestRoutingEndpointsCarryEverythingRoutingNeeds fails when routing grows a field the
+// conversion does not fill. Given an endpoint with every option written out, no field
+// of the converted value should still be at its zero value; if one is, config has
+// quietly stopped telling routing something routing asked for.
+func TestRoutingEndpointsCarryEverythingRoutingNeeds(t *testing.T) {
+	cfg, err := config.Decode(strings.NewReader(`
+mode: simple
+household: {shared_space: household, tiers: [cloud]}
+telegram: {bot_token_env: T}
+endpoints:
+  - name: openrouter
+    base_url: https://openrouter.ai/api/v1
+    model: anthropic/claude-sonnet-5
+    api_key_env: OPENROUTER_API_KEY
+    tags: [cloud]
+    timeout: 90s
+`))
+	if err != nil {
+		t.Fatalf("Decode() error: %v", err)
+	}
+
+	got := cfg.RoutingEndpoints()[0]
+	v := reflect.ValueOf(got)
+	for i := 0; i < v.NumField(); i++ {
+		if v.Field(i).IsZero() {
+			t.Errorf("routing.Endpoint.%s is zero after conversion; either the conversion must fill it or routing should not have it",
+				v.Type().Field(i).Name)
+		}
+	}
+}
+
+// TestRoutingEndpointsCarryNoCredential is the boundary this conversion exists to keep.
+//
+// An endpoint's key may come from a file, an environment variable, or a systemd
+// credential, and which one is a question routing must not be able to answer: the
+// completer is handed a resolver, resolves at the point of use, and retains nothing.
+// So the assertion is an absence — routing.Endpoint carries no credential and no name
+// of a place one lives, whichever source the operator chose.
+//
+// The absence is checked structurally as well as by value, so that re-adding a field
+// like APIKeyEnv fails here rather than quietly widening what routing knows.
+func TestRoutingEndpointsCarryNoCredential(t *testing.T) {
+	// Every source shape at once: an environment variable, a file, and an endpoint
+	// that names nothing and would be served by a systemd credential. Decode rather
+	// than Parse, because this is about what conversion carries, not about whether the
+	// secrets can be read here.
+	const doc = `
+mode: simple
+household: {shared_space: household, tiers: [cloud]}
+telegram: {bot_token_env: KENWARD_BOT_TOKEN}
+endpoints:
+  - {name: from-env, base_url: https://a.example/v1, model: m, api_key_env: OPENROUTER_API_KEY, tags: [cloud]}
+  - {name: from-file, base_url: https://b.example/v1, model: m, api_key_file: /run/secrets/openrouter.key, tags: [cloud]}
+  - {name: from-credential, base_url: https://c.example/v1, model: m, tags: [cloud]}
+`
+	cfg, err := config.Decode(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("Decode() error: %v", err)
+	}
+	eps := cfg.RoutingEndpoints()
+	if len(eps) != 3 {
+		t.Fatalf("RoutingEndpoints() returned %d endpoints, want 3", len(eps))
+	}
+
+	// Structural: no field of routing.Endpoint may be about a credential.
+	credentialish := []string{"key", "token", "secret", "credential", "password", "passphrase", "auth"}
+	rt := reflect.TypeOf(routing.Endpoint{})
+	for i := 0; i < rt.NumField(); i++ {
+		name := strings.ToLower(rt.Field(i).Name)
+		for _, bad := range credentialish {
+			if strings.Contains(name, bad) {
+				t.Errorf("routing.Endpoint has field %s; routing must not be able to learn where a key lives, let alone hold one",
+					rt.Field(i).Name)
+			}
+		}
+	}
+
+	// By value: neither a secret nor the name of a place one lives may survive the
+	// conversion, in any rendering of it.
+	rendered := fmt.Sprintf("%+v %#v", eps, eps)
+	for _, leaked := range []string{
+		"OPENROUTER_API_KEY",          // an environment variable name
+		"/run/secrets/openrouter.key", // a file path
+		"openrouter.key",
+		"CREDENTIALS_DIRECTORY",
+		config.EndpointAPIKeyCredential("from-credential"), // a credential name
+	} {
+		if leaked == "" {
+			// A name systemd would reject resolves to "", and every string contains
+			// the empty string. Skipping it keeps the assertion about real names.
+			continue
+		}
+		if strings.Contains(rendered, leaked) {
+			t.Errorf("the conversion carried %q into routing:\n%s", leaked, rendered)
+		}
+	}
+
+	// And the endpoints did arrive, so the absences above are about a populated value
+	// rather than an empty one.
+	for i, want := range []string{"from-env", "from-file", "from-credential"} {
+		if eps[i].Name != want || eps[i].BaseURL == "" || eps[i].Model == "" {
+			t.Errorf("endpoints[%d] = %+v, want the %s endpoint carried through", i, eps[i], want)
+		}
 	}
 }
 

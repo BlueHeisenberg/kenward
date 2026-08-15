@@ -135,6 +135,20 @@ var allowedZeroFields = map[string]string{
 	// not.
 	"Endpoints[0].APIKeyEnv": "monster is a local endpoint with no key in front of it",
 	"Endpoints[1].APIKeyEnv": "battlestation is a local endpoint with no key in front of it",
+
+	// The *_file forms are the alternative source for the same secrets the *_env
+	// fields above name, and exactly one source per secret is permitted (see
+	// secret.go). Demonstrating both in one example is not "more complete", it is the
+	// configuration this package refuses to load; and the example cannot demonstrate
+	// the file form on its own either, because the path would have to exist, with mode
+	// 0600, on whatever machine runs the tests. The example shows the variable form
+	// and documents the other two in comments.
+	"Telegram.BotTokenFile":   "bot_token_env is the source here; stating both is a validation error",
+	"Members[0].BotTokenFile": "the file form is an alternative to bot_token_env, not an addition to it",
+	"Members[1].BotTokenFile": "the file form is an alternative to bot_token_env, not an addition to it",
+	"Endpoints[0].APIKeyFile": "monster is a local endpoint with no key in front of it",
+	"Endpoints[1].APIKeyFile": "battlestation is a local endpoint with no key in front of it",
+	"Endpoints[2].APIKeyFile": "api_key_env is the source here; stating both is a validation error",
 }
 
 // TestExampleExercisesEveryField reflects over the loaded configuration and fails if any

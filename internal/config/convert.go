@@ -55,12 +55,11 @@ func (c *Config) RoutingEndpoints() []routing.Endpoint {
 	out := make([]routing.Endpoint, 0, len(c.Endpoints))
 	for _, e := range c.Endpoints {
 		out = append(out, routing.Endpoint{
-			Name:      e.Name,
-			BaseURL:   e.BaseURL,
-			Model:     e.Model,
-			APIKeyEnv: e.APIKeyEnv,
-			Tags:      copyStrings(e.Tags),
-			Timeout:   e.Timeout.Duration(),
+			Name:    e.Name,
+			BaseURL: e.BaseURL,
+			Model:   e.Model,
+			Tags:    copyStrings(e.Tags),
+			Timeout: e.Timeout.Duration(),
 		})
 	}
 	return out

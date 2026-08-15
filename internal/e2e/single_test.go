@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,8 +33,9 @@ const (
 	meiBotTokenEnv   = "KENWARD_BOT_TOKEN_MEI"
 	samBotTokenEnv   = "KENWARD_BOT_TOKEN_SAM"
 
-	samMemberID = domain.MemberID("sam")
-	samSpace    = domain.SpaceID("sam-private")
+	samMemberID         = domain.MemberID("sam")
+	samSpace            = domain.SpaceID("sam-private")
+	samTelegramID int64 = 1003
 )
 
 // podEnvironment is the environment an isolated household's configuration is
@@ -85,15 +87,21 @@ func loadIsolatedConfig(t *testing.T, lookupEnv config.LookupEnvFunc) (*config.C
 	t.Helper()
 	dir := t.TempDir()
 	local := newFakeProvider(t, "attic")
+	return loadConfigYAML(t, dir, isolatedConfigYAML(dir, local.baseURL()), lookupEnv), local, dir
+}
+
+// loadConfigYAML writes one configuration document into dir and loads it for real.
+func loadConfigYAML(t *testing.T, dir, doc string, lookupEnv config.LookupEnvFunc) *config.Config {
+	t.Helper()
 	path := filepath.Join(dir, "kenward.yaml")
-	if err := os.WriteFile(path, []byte(isolatedConfigYAML(dir, local.baseURL())), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatalf("writing configuration: %v", err)
 	}
 	cfg, err := config.LoadWithEnv(path, lookupEnv)
 	if err != nil {
 		t.Fatalf("loading configuration: %v", err)
 	}
-	return cfg, local, dir
+	return cfg
 }
 
 // podOptions selects the one unit a pod runs.
@@ -204,6 +212,43 @@ func (e *recordingEnv) names() []string {
 	sort.Strings(out)
 	return out
 }
+
+// recordingFS is a config.SecretFS that remembers every path it was asked to read
+// and returns a single space for all of them. It is the filesystem half of the same
+// observation: a secret may reach kenward as a file or as a systemd credential, and
+// watching only the environment would leave both of those doors unwatched.
+type recordingFS struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func (f *recordingFS) ReadSecretFile(path string) ([]byte, fs.FileMode, error) {
+	f.mu.Lock()
+	f.paths = append(f.paths, path)
+	f.mu.Unlock()
+	return []byte(" "), 0o600, nil
+}
+
+func (f *recordingFS) read(path string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.paths {
+		if p == path {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *recordingFS) names() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := append([]string(nil), f.paths...)
+	sort.Strings(out)
+	return out
+}
+
+var _ config.SecretFS = (*recordingFS)(nil)
 
 // -----------------------------------------------------------------------------
 // the scenarios
@@ -363,65 +408,132 @@ func TestPodForAnUnenrolledMemberIsRefusedAtConstruction(t *testing.T) {
 	})
 }
 
-// TestPodReadsOnlyItsOwnMembersBotToken is the credential-minimality assertion. A
-// pod holding a second member's bot token would be able to read and write that
-// member's private conversation, which is the entire property isolated mode sells;
-// and a token a process never reads is a token a compromise of that process cannot
-// disclose.
+// TestPodReadsOnlyItsOwnUnitsBotToken is the credential-minimality assertion. A pod
+// holding a second member's bot token could read and write that member's private
+// conversation, which is the whole of what isolated mode sells; and a credential a
+// process never reads is one that a compromise of that process cannot disclose.
 //
-// The environment is injectable, so what a pod asked for is directly observable.
-func TestPodReadsOnlyItsOwnMembersBotToken(t *testing.T) {
-	// The configuration is loaded through a separate lookup: loading validates the
-	// whole household's file and therefore reads every member's token variable by
-	// design. What is under test is what the supervisor reads afterwards.
-	cfg, _, _ := loadIsolatedConfig(t, fakeEnv(podEnvironment()))
+// A token may arrive by three doors — a 0600 file, an environment variable, or a
+// systemd credential under $CREDENTIALS_DIRECTORY — and config.Secrets opens all
+// three. The household below therefore puts one unit behind each door, and both the
+// environment and the filesystem the supervisor resolves through are recorded, so
+// "never read" means never by any route rather than merely never through the
+// environment.
+func TestPodReadsOnlyItsOwnUnitsBotToken(t *testing.T) {
+	dir := t.TempDir()
+	local := newFakeProvider(t, "attic")
+	credsDir := filepath.Join(dir, "credentials")
+	if err := os.MkdirAll(credsDir, 0o700); err != nil {
+		t.Fatalf("making the credentials directory: %v", err)
+	}
+	meiTokenPath := filepath.Join(dir, "mei-bot-token")
+	samCredential := config.MemberBotTokenCredential(string(samMemberID))
+	if samCredential == "" {
+		t.Fatalf("member id %q has no systemd credential name", samMemberID)
+	}
+	samCredentialPath := filepath.Join(credsDir, samCredential)
+	for _, f := range []struct{ path, content string }{
+		{meiTokenPath, "123456:mei-token\n"},
+		{samCredentialPath, "123456:sam-token\n"},
+	} {
+		if err := os.WriteFile(f.path, []byte(f.content), 0o600); err != nil {
+			t.Fatalf("writing %s: %v", f.path, err)
+		}
+	}
 
-	t.Run("building its own bot", func(t *testing.T) {
-		// Every token variable resolves to a single space. It is non-empty, so the
-		// supervisor accepts it and goes on to build the transport, which rejects a
-		// blank token locally — before it opens a connection to anything. That is
-		// what lets this test observe the real credential path without a network:
-		// construction gets exactly as far as the environment lookup and stops.
+	// Loading goes through the real filesystem and a plain environment: config
+	// validates the whole household's file and so reads every member's token by
+	// design, whichever door it comes through. What is under test is what the
+	// supervisor reads afterwards.
+	loadEnv := podEnvironment()
+	loadEnv[config.EnvCredentialsDirectory] = credsDir
+	cfg := loadConfigYAML(t, dir,
+		threeDoorConfigYAML(dir, local.baseURL(), meiTokenPath),
+		fakeEnv(loadEnv))
+
+	// Every door the supervisor opens hands back a single space: a stated source
+	// that really was read, and not a usable token. Construction therefore gets
+	// exactly as far as resolving one credential and stops, which is what lets this
+	// test watch the real path without a network round trip to Telegram.
+	newRecorders := func() (*recordingEnv, *recordingFS, *config.Secrets) {
 		blank := podEnvironment()
 		for _, name := range []string{botTokenEnv, davidBotTokenEnv, meiBotTokenEnv, samBotTokenEnv} {
 			blank[name] = " "
 		}
+		blank[config.EnvCredentialsDirectory] = credsDir
 		env := newRecordingEnv(blank)
-
-		_, err := supervisor.NewSingle(cfg, supervisor.SingleOptions{
-			Member:    "david",
-			Memory:    newFakeMemory(),
-			Sessions:  newPodSessions(t, "david"),
-			LookupEnv: env.lookup,
+		rfs := &recordingFS{}
+		return env, rfs, config.NewSecrets(config.SecretOptions{
+			LookupEnv:      env.lookup,
+			FS:             rfs,
+			CredentialsDir: credsDir,
+			FileMode:       config.FileModeSkip,
 		})
-		if err == nil {
-			t.Fatal("NewSingle built a transport from a blank token; this test can no longer see the credential path")
-		}
-		if !env.asked(davidBotTokenEnv) {
-			t.Fatalf("david's pod never read %s; it read %v", davidBotTokenEnv, env.names())
-		}
-		// The two that matter. Another member's token in this process would undo the
-		// mode outright; the household token would mean the member's conversation
-		// went through the operator's bot, which D-023 forbids by construction.
-		if env.asked(meiBotTokenEnv) {
-			t.Errorf("david's pod read %s; a pod must never resolve another member's bot token (asked: %v)",
-				meiBotTokenEnv, env.names())
-		}
-		if env.asked(samBotTokenEnv) {
-			t.Errorf("david's pod read %s; a pod must never resolve another member's bot token (asked: %v)",
-				samBotTokenEnv, env.names())
-		}
-		if env.asked(botTokenEnv) {
-			t.Errorf("david's pod read the household token %s; no member's conversation may traverse the household bot (asked: %v)",
-				botTokenEnv, env.names())
-		}
-	})
+	}
 
-	t.Run("given a bot", func(t *testing.T) {
-		// The production path a pod actually takes still resolves one token. This
-		// case is the other half: when the transport is supplied, no bot token is
-		// resolved at all, so nothing is read that is not used.
-		env := newRecordingEnv(podEnvironment())
+	// One row per unit: the door its own token comes through. Every other row's
+	// door must stay shut for the whole of that unit's construction.
+	type door struct {
+		unit    string // named in the failure message
+		select_ func(*supervisor.SingleOptions)
+		env     string // the variable this unit's token comes from, if any
+		file    string // the path this unit's token comes from, if any
+	}
+	doors := []door{
+		{unit: "david's pod", select_: func(o *supervisor.SingleOptions) { o.Member = "david" }, env: davidBotTokenEnv},
+		{unit: "mei's pod", select_: func(o *supervisor.SingleOptions) { o.Member = "mei" }, file: meiTokenPath},
+		{unit: "sam's pod", select_: func(o *supervisor.SingleOptions) { o.Member = samMemberID }, file: samCredentialPath},
+		{unit: "the group's pod", select_: func(o *supervisor.SingleOptions) { o.Group = true }, env: botTokenEnv},
+	}
+
+	for _, d := range doors {
+		t.Run(d.unit, func(t *testing.T) {
+			env, rfs, secrets := newRecorders()
+			opts := supervisor.SingleOptions{
+				Memory:    newFakeMemory(),
+				Secrets:   secrets,
+				LookupEnv: env.lookup,
+			}
+			d.select_(&opts)
+			if opts.Member != "" {
+				opts.Sessions = newPodSessions(t, opts.Member)
+			}
+
+			if _, err := supervisor.NewSingle(cfg, opts); err == nil {
+				t.Fatal("NewSingle accepted a blank token; this test can no longer see the credential path")
+			}
+
+			// The unit's own door was opened...
+			if d.env != "" && !env.asked(d.env) {
+				t.Errorf("%s never read %s; it read env %v and files %v", d.unit, d.env, env.names(), rfs.names())
+			}
+			if d.file != "" && !rfs.read(d.file) {
+				t.Errorf("%s never read %s; it read env %v and files %v", d.unit, d.file, env.names(), rfs.names())
+			}
+			// ...and every other unit's stayed shut. Another unit's token resolved in
+			// this process would undo the mode outright, and for a member the
+			// household token would mean their conversation had passed through the
+			// operator's bot, which D-023 forbids by construction.
+			for _, other := range doors {
+				if other.unit == d.unit {
+					continue
+				}
+				if other.env != "" && env.asked(other.env) {
+					t.Errorf("%s read %s, which belongs to %s; a pod must resolve no credential but its own (read env %v)",
+						d.unit, other.env, other.unit, env.names())
+				}
+				if other.file != "" && rfs.read(other.file) {
+					t.Errorf("%s read %s, which belongs to %s; a pod must resolve no credential but its own (read files %v)",
+						d.unit, other.file, other.unit, rfs.names())
+				}
+			}
+		})
+	}
+
+	t.Run("given a bot, no credential is resolved at all", func(t *testing.T) {
+		// The other half of minimality: a unit handed its transport resolves
+		// nothing, so nothing is read that is not used.
+		env, rfs, secrets := newRecorders()
 		tr := transport.NewFake()
 		t.Cleanup(func() { _ = tr.Close() })
 
@@ -430,6 +542,7 @@ func TestPodReadsOnlyItsOwnMembersBotToken(t *testing.T) {
 			Transport: tr,
 			Memory:    newFakeMemory(),
 			Sessions:  newPodSessions(t, "david"),
+			Secrets:   secrets,
 			LookupEnv: env.lookup,
 		})
 		if err != nil {
@@ -439,10 +552,46 @@ func TestPodReadsOnlyItsOwnMembersBotToken(t *testing.T) {
 
 		for _, name := range []string{botTokenEnv, davidBotTokenEnv, meiBotTokenEnv, samBotTokenEnv} {
 			if env.asked(name) {
-				t.Errorf("the supervisor read %s although it was given its transport; it asked for %v", name, env.names())
+				t.Errorf("the supervisor read %s although it was given its transport; it read %v", name, env.names())
 			}
 		}
+		if got := rfs.names(); len(got) != 0 {
+			t.Errorf("the supervisor read credential files %v although it was given its transport", got)
+		}
 	})
+}
+
+// threeDoorConfigYAML is the isolated household with each unit's bot token arriving
+// by a different one of the three sources config supports: David's from an
+// environment variable, Mei's from a file, Sam's from a systemd credential he states
+// nowhere — which is that door's whole point, since the unit file already names it.
+// All three have claimed, because an unenrolled member's pod is refused before any
+// credential is resolved.
+func threeDoorConfigYAML(dataDir, localURL, meiTokenPath string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "mode: isolated\n")
+	fmt.Fprintf(&b, "data_dir: '%s'\n", dataDir)
+	fmt.Fprintf(&b, "household:\n")
+	fmt.Fprintf(&b, "  name: Ashfield\n")
+	fmt.Fprintf(&b, "  shared_space: %s\n", sharedSpace)
+	fmt.Fprintf(&b, "  group_chat_id: %d\n", groupChatID)
+	fmt.Fprintf(&b, "  tiers: [local]\n")
+	fmt.Fprintf(&b, "telegram:\n")
+	fmt.Fprintf(&b, "  bot_token_env: %s\n", botTokenEnv)
+	fmt.Fprintf(&b, "members:\n")
+	fmt.Fprintf(&b, "  - id: david\n    name: David\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n",
+		davidTelegramID, davidSpace, davidBotTokenEnv)
+	fmt.Fprintf(&b, "  - id: mei\n    name: Mei\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_file: '%s'\n",
+		meiTelegramID, meiSpace, meiTokenPath)
+	fmt.Fprintf(&b, "  - id: %s\n    name: Sam\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n",
+		samMemberID, samTelegramID, samSpace)
+	fmt.Fprintf(&b, "endpoints:\n")
+	fmt.Fprintf(&b, "  - name: attic\n    base_url: '%s'\n    model: test-model\n    tags: [local]\n    timeout: 30s\n", localURL)
+	fmt.Fprintf(&b, "memory:\n  lore_command: [lore, mcp]\n  search_limit: 8\n")
+	fmt.Fprintf(&b, "session:\n  idle_timeout: 30m\n")
+	fmt.Fprintf(&b, "capture:\n  max_proposals_per_turn: 1\n")
+	fmt.Fprintf(&b, "update:\n  channel: stable\n  check_interval: 6h\n")
+	return b.String()
 }
 
 // newPodSessions is one pod's session manager: isolated custody, one member's key.

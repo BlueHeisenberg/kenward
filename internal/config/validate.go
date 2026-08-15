@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -20,6 +21,11 @@ type ValidationError struct {
 	// set to an empty value). It is separate from Problems so `kenward doctor` can
 	// print an actionable export list; the same faults also appear in Problems.
 	MissingEnv []string
+	// MissingSecrets names the secrets no source supplied, by configuration path —
+	// "telegram.bot_token", "members[2].bot_token". A secret may now arrive as a file
+	// or a systemd credential as well as a variable, so an export list no longer
+	// describes the whole set; this does. The same faults also appear in Problems.
+	MissingSecrets []string
 }
 
 func (e *ValidationError) Error() string {
@@ -38,8 +44,9 @@ func (e *ValidationError) Error() string {
 
 // problems accumulates validation faults in the order they are found.
 type problems struct {
-	list       []string
-	missingEnv []string
+	list           []string
+	missingEnv     []string
+	missingSecrets []string
 }
 
 func (p *problems) addf(format string, args ...any) {
@@ -49,26 +56,36 @@ func (p *problems) addf(format string, args ...any) {
 // Validate checks the configuration against the rules in the implementation contract
 // and against the environment it will run in.
 //
-// lookupEnv may be nil, in which case the real process environment is used.
+// lookupEnv may be nil, in which case the real process environment is used. Secrets are
+// resolved against that environment, the real filesystem and whatever credentials
+// directory it names; ValidateWithSecrets judges against injected ones.
 func (c *Config) Validate(lookupEnv LookupEnvFunc) error {
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
+	return c.ValidateWithSecrets(NewSecrets(SecretOptions{LookupEnv: lookupEnv}))
+}
+
+// ValidateWithSecrets is Validate with the secret sources injected, for tests and for
+// `doctor` judging a configuration against an environment other than its own.
+//
+// s may be nil, in which case the process environment and the real filesystem are used.
+func (c *Config) ValidateWithSecrets(s *Secrets) error {
+	s = s.orDefault()
 	p := &problems{}
 
 	c.validateMode(p)
 	tags := c.validateEndpoints(p)
 	c.validateHousehold(p, tags)
 	c.validateMembers(p, tags)
-	c.validateTelegram(p)
 	c.validateLimits(p)
 	c.validateUpdate(p)
-	c.validateEnv(p, lookupEnv)
+	c.validateSecrets(p, s)
 
 	if len(p.list) == 0 {
 		return nil
 	}
-	return &ValidationError{Problems: p.list, MissingEnv: p.missingEnv}
+	return &ValidationError{Problems: p.list, MissingEnv: p.missingEnv, MissingSecrets: p.missingSecrets}
 }
 
 func (c *Config) validateMode(p *problems) {
@@ -183,6 +200,7 @@ func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 	spaces := make(map[string]int)
 	telegrams := make(map[int64]int)
 	tokens := make(map[string]int)
+	tokenFiles := make(map[string]int)
 
 	for i, m := range c.Members {
 		where := fmt.Sprintf("members[%d]", i)
@@ -224,24 +242,26 @@ func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 
 		c.validateTiers(p, where+".tiers", m.Tiers, tags)
 
+		// Whether each member has a token at all is settled in validateSecrets,
+		// which knows about files and systemd credentials as well as variables.
+		// What is settled here is that no two members share one: two pods on one
+		// bot is not isolation, whichever form the token arrives in.
 		if c.Mode == ModeIsolated {
-			switch {
-			case strings.TrimSpace(m.BotTokenEnv) == "":
-				p.addf("%s.bot_token_env: required in isolated mode; each member's pod holds its own bot token", where)
-			default:
-				if first, dup := tokens[m.BotTokenEnv]; dup {
-					p.addf("%s.bot_token_env: %s is already members[%d]'s token variable; sharing a bot defeats isolated mode", where, m.BotTokenEnv, first)
+			if env := strings.TrimSpace(m.BotTokenEnv); env != "" {
+				if first, dup := tokens[env]; dup {
+					p.addf("%s.bot_token_env: %s is already members[%d]'s token variable; sharing a bot defeats isolated mode", where, env, first)
 				} else {
-					tokens[m.BotTokenEnv] = i
+					tokens[env] = i
+				}
+			}
+			if file := strings.TrimSpace(m.BotTokenFile); file != "" {
+				if first, dup := tokenFiles[file]; dup {
+					p.addf("%s.bot_token_file: %s is already members[%d]'s token file; sharing a bot defeats isolated mode", where, file, first)
+				} else {
+					tokenFiles[file] = i
 				}
 			}
 		}
-	}
-}
-
-func (c *Config) validateTelegram(p *problems) {
-	if c.Mode == ModeSimple && strings.TrimSpace(c.Telegram.BotTokenEnv) == "" {
-		p.addf("telegram.bot_token_env: required in simple mode; the household shares one bot")
 	}
 }
 
@@ -269,56 +289,99 @@ func (c *Config) validateUpdate(p *problems) {
 	}
 }
 
-// envRef is one place the configuration names an environment variable.
-type envRef struct {
-	name  string
-	where string
+// secretRef is one secret this configuration depends on, together with the reason it
+// must exist. An empty reason means the secret is optional — an endpoint on the
+// household's own network needs no key, and demanding one would be demanding a secret
+// nothing reads.
+type secretRef struct {
+	SecretRef
+	required string
 }
 
-// envRefs lists the variables this configuration actually depends on, in file order and
-// without duplicates. Only variables the selected mode uses are listed: a leftover
-// per-member token in a simple-mode file is inert, and demanding it be exported would
-// be demanding a secret that nothing reads.
-func (c *Config) envRefs() []envRef {
-	var refs []envRef
-	seen := make(map[string]bool)
-	add := func(name, where string) {
-		if name == "" || seen[name] {
+// secretRefs lists the secrets this configuration actually depends on, in file order and
+// without repeating a variable or a path. Only the secrets the selected mode uses are
+// listed: a leftover per-member token in a simple-mode file is inert.
+//
+// Every reference is included even when the file states no source for it, because the
+// systemd credential is the source in that case and the only way to find out is to look.
+func (c *Config) secretRefs() []secretRef {
+	var refs []secretRef
+	seenEnv := make(map[string]bool)
+	seenFile := make(map[string]bool)
+	add := func(ref SecretRef, required string) {
+		// A variable or a file named twice is one thing to check and one thing to
+		// say. Whether naming it twice is itself wrong is isolated mode's question,
+		// answered in validateMembers.
+		if (ref.Env != "" && seenEnv[ref.Env]) || (ref.File != "" && seenFile[ref.File]) {
 			return
 		}
-		seen[name] = true
-		refs = append(refs, envRef{name: name, where: where})
+		if ref.Env != "" {
+			seenEnv[ref.Env] = true
+		}
+		if ref.File != "" {
+			seenFile[ref.File] = true
+		}
+		refs = append(refs, secretRef{SecretRef: ref, required: required})
 	}
 
 	if c.Mode == ModeSimple {
-		add(c.Telegram.BotTokenEnv, "telegram.bot_token_env")
+		add(c.BotTokenRef(), "required in simple mode; the household shares one bot")
 	}
 	if c.Mode == ModeIsolated {
 		for i, m := range c.Members {
-			add(m.BotTokenEnv, fmt.Sprintf("members[%d].bot_token_env", i))
+			ref := m.BotTokenRef()
+			// Indexed rather than named: a member with no id at all still has a
+			// row in the file, and the row is what the operator has to edit.
+			ref.Where = fmt.Sprintf("members[%d].bot_token", i)
+			add(ref, "required in isolated mode; each member's pod holds its own bot token")
 		}
 	}
 	for i, e := range c.Endpoints {
-		add(e.APIKeyEnv, fmt.Sprintf("endpoints[%d].api_key_env", i))
+		ref := e.APIKeyRef()
+		ref.Where = fmt.Sprintf("endpoints[%d].api_key", i)
+		add(ref, "")
 	}
 	return refs
 }
 
-// validateEnv requires every referenced variable to be set and non-empty at load time.
+// validateSecrets requires every secret this configuration depends on to be readable at
+// load time, from whichever of its three sources supplies it.
 //
 // kenward must never start half-configured. A missing provider key discovered mid-turn
 // is a refusal a member cannot act on; a missing key discovered at startup is a line in
-// the operator's terminal.
-func (c *Config) validateEnv(p *problems, lookupEnv LookupEnvFunc) {
-	for _, ref := range c.envRefs() {
-		v, ok := lookupEnv(ref.name)
-		switch {
-		case !ok:
-			p.addf("%s: environment variable %s is not set", ref.where, ref.name)
-			p.missingEnv = append(p.missingEnv, ref.name)
-		case strings.TrimSpace(v) == "":
-			p.addf("%s: environment variable %s is set but empty", ref.where, ref.name)
-			p.missingEnv = append(p.missingEnv, ref.name)
+// the operator's terminal. Values read here are proved and dropped: nothing is kept, and
+// no fault message quotes one.
+func (c *Config) validateSecrets(p *problems, s *Secrets) {
+	s = s.orDefault()
+	for _, ref := range c.secretRefs() {
+		_, err := s.Resolve(ref.SecretRef)
+		if err == nil {
+			continue
+		}
+
+		var se *SecretError
+		if !errors.As(err, &se) {
+			p.addf("%s: %v", ref.Where, err)
+			p.missingSecrets = append(p.missingSecrets, ref.Where)
+			continue
+		}
+		if se.NotFound {
+			if ref.required == "" {
+				continue
+			}
+			fileField, envField := ref.fields()
+			msg := fmt.Sprintf("%s_env: %s. Supply it as %s, as %s", ref.Where, ref.required, envField, fileField)
+			if ref.Credential != "" {
+				msg += fmt.Sprintf(", or as the systemd credential %q", ref.Credential)
+			}
+			p.list = append(p.list, msg)
+			p.missingSecrets = append(p.missingSecrets, ref.Where)
+			continue
+		}
+		p.addf("%s: %s", se.Where, se.Detail)
+		p.missingSecrets = append(p.missingSecrets, ref.Where)
+		if se.MissingEnv != "" {
+			p.missingEnv = append(p.missingEnv, se.MissingEnv)
 		}
 	}
 }
@@ -326,12 +389,25 @@ func (c *Config) validateEnv(p *problems, lookupEnv LookupEnvFunc) {
 // MissingEnvNames returns the referenced environment variables that are not set or are
 // empty, sorted, without validating anything else. `kenward doctor` uses it to report
 // on a running node's environment.
+//
+// It says nothing about secrets supplied as files or as systemd credentials, which have
+// no variable to export; MissingSecretNames covers those.
 func (c *Config) MissingEnvNames(lookupEnv LookupEnvFunc) []string {
 	if lookupEnv == nil {
 		lookupEnv = os.LookupEnv
 	}
 	p := &problems{}
-	c.validateEnv(p, lookupEnv)
+	c.validateSecrets(p, NewSecrets(SecretOptions{LookupEnv: lookupEnv}))
 	sort.Strings(p.missingEnv)
 	return p.missingEnv
+}
+
+// MissingSecretNames returns the configuration paths of every secret that could not be
+// resolved, sorted — the whole set an operator has to fix, whatever form each one was
+// meant to arrive in.
+func (c *Config) MissingSecretNames(s *Secrets) []string {
+	p := &problems{}
+	c.validateSecrets(p, s.orDefault())
+	sort.Strings(p.missingSecrets)
+	return p.missingSecrets
 }

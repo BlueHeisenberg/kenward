@@ -24,6 +24,7 @@ type Endpoint struct {
 	// resolver, resolves at the point of use, and retains nothing. A field naming one
 	// of three possible sources would be misinformation the moment an operator chose
 	// a different one.
+
 	// Tags are the tiers this endpoint belongs to.
 	Tags []string
 	// Timeout bounds a single completion.
