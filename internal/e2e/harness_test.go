@@ -16,6 +16,7 @@ import (
 	"github.com/BlueHeisenberg/keel/vault"
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/enrol"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/session"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
@@ -200,6 +201,15 @@ func (m *fakeMemory) putCalls() []memCall {
 		}
 	}
 	return out
+}
+
+func containsMember(ids []domain.MemberID, want domain.MemberID) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }
 
 func containsSpace(spaces []domain.SpaceID, want domain.SpaceID) bool {
@@ -419,19 +429,39 @@ type harnessOptions struct {
 	// withCloud adds a second, reachable endpoint tagged cloud. It exists so a
 	// test can prove the node did not reach for it.
 	withCloud bool
+	// unenrolled names members whose telegram_id is left out of the configuration
+	// entirely, which is what a member who has been handed a claim code but has
+	// not presented it looks like on disk.
+	unenrolled []domain.MemberID
+	// enrolFor, when set, supplies the Claimer the supervisor hands messages from
+	// senders no unit serves. It is a callback rather than a value because a
+	// Claimer is built over a Binder over the configuration, and the configuration
+	// does not exist until newHarness has loaded it.
+	enrolFor func(*testing.T, *config.Config) *enrol.Claimer
+	// dataDir reuses an existing data directory instead of a fresh t.TempDir, so a
+	// second household can be built over the state a first one wrote. That is the
+	// only way to tell state that was persisted from state that only ever lived in
+	// the first supervisor's memory.
+	dataDir string
 }
 
 // harness is one running household: real configuration, real supervisor, real
 // units, faked edges.
 type harness struct {
-	t        *testing.T
+	t *testing.T
+	// dir is this household's data directory, which a second harness can be
+	// pointed at to prove something outlived the first supervisor.
+	dir      string
 	cfg      *config.Config
 	tr       *transport.Fake
 	mem      *fakeMemory
 	local    *fakeProvider
 	cloud    *fakeProvider
 	sessions *session.Manager
-	sup      *supervisor.Simple
+	// sup is the supervisor under test. It is the interface rather than *Simple so
+	// that a single-unit household — what runs inside an isolated pod — can be
+	// driven through exactly the same helpers.
+	sup supervisor.Supervisor
 
 	startErr chan error
 	stopOnce sync.Once
@@ -447,7 +477,10 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		opts.householdTiers = []string{"local"}
 	}
 
-	dir := t.TempDir()
+	dir := opts.dataDir
+	if dir == "" {
+		dir = t.TempDir()
+	}
 	local := newFakeProvider(t, "attic")
 	localURL := local.baseURL()
 	if opts.localDown {
@@ -497,6 +530,11 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	tr := transport.NewFake()
 	mem := newFakeMemory()
 
+	var claimer *enrol.Claimer
+	if opts.enrolFor != nil {
+		claimer = opts.enrolFor(t, cfg)
+	}
+
 	// Router is deliberately left nil: the supervisor then builds the real
 	// routing.Pool over the real HTTP completer, which is the wiring production
 	// uses and the thing this suite exists to exercise.
@@ -504,6 +542,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		Transport: tr,
 		Memory:    mem,
 		Sessions:  sessions,
+		Enrol:     claimer,
 		LookupEnv: lookupEnv,
 	})
 	if err != nil {
@@ -512,6 +551,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 
 	h := &harness{
 		t:        t,
+		dir:      dir,
 		cfg:      cfg,
 		tr:       tr,
 		mem:      mem,
@@ -609,10 +649,26 @@ func configYAML(dataDir, localURL string, cloud *fakeProvider, opts harnessOptio
 	fmt.Fprintf(&b, "telegram:\n")
 	fmt.Fprintf(&b, "  bot_token_env: %s\n", botTokenEnv)
 	fmt.Fprintf(&b, "members:\n")
-	fmt.Fprintf(&b, "  - id: david\n    name: David\n    telegram_id: %d\n    private_space: %s\n    tiers: [%s]\n",
-		davidTelegramID, davidSpace, strings.Join(opts.memberTiers, ", "))
-	fmt.Fprintf(&b, "  - id: mei\n    name: Mei\n    telegram_id: %d\n    private_space: %s\n    tiers: [%s]\n",
-		meiTelegramID, meiSpace, strings.Join(opts.memberTiers, ", "))
+	for _, m := range []struct {
+		id         domain.MemberID
+		name       string
+		telegramID int64
+		space      domain.SpaceID
+	}{
+		{"david", "David", davidTelegramID, davidSpace},
+		{"mei", "Mei", meiTelegramID, meiSpace},
+	} {
+		fmt.Fprintf(&b, "  - id: %s\n    name: %s\n", m.id, m.name)
+		// A member named in opts.unenrolled has no telegram_id at all. Writing a
+		// zero would not do: zero is how the file says "not claimed", so a member
+		// enrolled through state.json must be indistinguishable from one who never
+		// appeared in the YAML with an id.
+		if !containsMember(opts.unenrolled, m.id) {
+			fmt.Fprintf(&b, "    telegram_id: %d\n", m.telegramID)
+		}
+		fmt.Fprintf(&b, "    private_space: %s\n    tiers: [%s]\n",
+			m.space, strings.Join(opts.memberTiers, ", "))
+	}
 	fmt.Fprintf(&b, "endpoints:\n")
 	fmt.Fprintf(&b, "  - name: attic\n    base_url: '%s'\n    model: test-model\n    tags: [local]\n    timeout: 30s\n", localURL)
 	if cloud != nil {
