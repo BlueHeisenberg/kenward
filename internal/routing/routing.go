@@ -18,9 +18,12 @@ type Endpoint struct {
 	Name    string
 	BaseURL string
 	Model   string
-	// APIKeyEnv names the environment variable holding the key. The key itself is
-	// never stored in configuration or logged.
-	APIKeyEnv string
+	// No credential appears here. An endpoint's key may come from a file, an
+	// environment variable or a systemd credential, and which one is a question this
+	// package deliberately cannot answer: the completer is constructed with a
+	// resolver, resolves at the point of use, and retains nothing. A field naming one
+	// of three possible sources would be misinformation the moment an operator chose
+	// a different one.
 	// Tags are the tiers this endpoint belongs to.
 	Tags []string
 	// Timeout bounds a single completion.

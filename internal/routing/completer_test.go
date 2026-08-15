@@ -15,11 +15,9 @@ import (
 	"github.com/BlueHeisenberg/keel/llm"
 )
 
-func lookupFixed(vars map[string]string) func(string) (string, bool) {
-	return func(name string) (string, bool) {
-		v, ok := vars[name]
-		return v, ok
-	}
+// fixedKey is a KeyFunc handing every endpoint the same key.
+func fixedKey(key string) KeyFunc {
+	return func(Endpoint) (string, error) { return key, nil }
 }
 
 func TestHTTPCompleterSuccess(t *testing.T) {
@@ -45,10 +43,10 @@ func TestHTTPCompleterSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPCompleter(nil, lookupFixed(map[string]string{"TEST_KEY": "sekrit"}))
+	c := NewHTTPCompleter(nil, fixedKey("sekrit"))
 	e := Endpoint{
 		Name: "srv", BaseURL: srv.URL + "/v1", Model: "m1",
-		APIKeyEnv: "TEST_KEY", Timeout: time.Second,
+		Timeout: time.Second,
 	}
 	comp, err := c.Complete(context.Background(), e, Request{
 		Messages:  []Message{{Role: "user", Content: "hi"}},
@@ -364,22 +362,59 @@ func TestHTTPCompleterFinishReason(t *testing.T) {
 	}
 }
 
-func TestHTTPCompleterMissingKey(t *testing.T) {
+// TestHTTPCompleterKeyResolutionError pins that a key which cannot be resolved
+// is a caller-visible configuration fault: the request is never sent, the
+// resolver's error survives errors.Is through the wrapping, and the failure
+// never reads as an unreachable machine — trying a different endpoint cannot
+// conjure a key.
+func TestHTTPCompleterKeyResolutionError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Error("request sent despite missing key")
+		t.Error("request sent despite key resolution failure")
 	}))
 	defer srv.Close()
 
-	c := NewHTTPCompleter(nil, lookupFixed(nil))
-	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", APIKeyEnv: "ABSENT_KEY", Timeout: time.Second}
+	errResolve := errors.New("endpoints[0].api_key_file: no such file")
+	c := NewHTTPCompleter(nil, func(Endpoint) (string, error) { return "", errResolve })
+	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 	_, err := c.Complete(context.Background(), e, Request{})
-	if err == nil {
-		t.Fatal("want error for missing key env")
+	if !errors.Is(err, errResolve) {
+		t.Fatalf("got %v, want the resolver's error wrapped for the caller", err)
 	}
-	if !strings.Contains(err.Error(), "ABSENT_KEY") {
-		t.Fatalf("error should name the env var: %v", err)
+	if !strings.Contains(err.Error(), "srv") {
+		t.Fatalf("error should name the endpoint: %v", err)
 	}
 	if shouldFailover(err) {
 		t.Fatal("a configuration error must not trigger failover")
+	}
+}
+
+// TestHTTPCompleterNoKeySendsNoAuth pins the unauthenticated path: with no
+// KeyFunc at all, and with a KeyFunc reporting "no key needed", the request
+// carries no Authorization header rather than an empty or fabricated one.
+func TestHTTPCompleterNoKeySendsNoAuth(t *testing.T) {
+	keyFuncs := map[string]KeyFunc{
+		"nil KeyFunc":      nil,
+		"empty resolution": fixedKey(""),
+	}
+	for name, kf := range keyFuncs {
+		t.Run(name, func(t *testing.T) {
+			gotAuth := "unset"
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("Authorization")
+				io.WriteString(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+			}))
+			defer srv.Close()
+
+			c := NewHTTPCompleter(nil, kf)
+			e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
+			if _, err := c.Complete(context.Background(), e, Request{
+				Messages: []Message{{Role: "user", Content: "hi"}},
+			}); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if gotAuth != "" {
+				t.Fatalf("Authorization header = %q, want none", gotAuth)
+			}
+		})
 	}
 }

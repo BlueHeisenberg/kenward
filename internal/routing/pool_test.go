@@ -180,7 +180,7 @@ func TestOutOfChainIsolation(t *testing.T) {
 	p := NewPool([]Endpoint{
 		{Name: "monster", BaseURL: localURL, Model: "m", Tags: []string{"local"}, Timeout: time.Second},
 		{Name: "openrouter", BaseURL: cloudSrv.URL, Model: "m", Tags: []string{"cloud"}, Timeout: time.Second},
-	}, NewHTTPCompleter(nil, func(string) (string, bool) { return "", false }))
+	}, NewHTTPCompleter(nil, nil))
 
 	req := Request{Messages: []Message{{Role: "user", Content: "private"}}}
 	for _, chain := range [][]string{{"local"}, nil, {"gpu"}} {
