@@ -1,0 +1,174 @@
+# GoReleaser builds and publishes every kenward release artifact except two:
+# the container image (built from the repository's own Dockerfile in
+# .github/workflows/release.yml, so its documentation is not duplicated here)
+# and the signed update manifest (signed by hand, on a machine holding the
+# key — docs/RELEASING.md says why CI must never be able to sign).
+#
+# The release is created as a DRAFT on purpose. `kenward update` fetches
+# .../releases/latest/download/manifest.json, and "latest" means the newest
+# published, non-draft release: publishing binaries before the manifest is
+# attached would give every household a release whose manifest 404s. The
+# maintainer signs, uploads manifest.json, then undrafts. See
+# docs/RELEASING.md, "Cutting a release".
+
+version: 2
+
+project_name: kenward
+
+before:
+  hooks:
+    # The packaged copy of the systemd unit. deploy/kenward.service is written
+    # for the curl installer, which puts the binary in /usr/local/bin; a .deb
+    # or .rpm puts it in /usr/bin, and a unit whose ExecStart points at a path
+    # the package did not create fails on the first `systemctl start`. One
+    # substitution keeps a single documented unit file in the repository
+    # rather than two that drift.
+    #
+    # Not written into dist/: before-hooks run before GoReleaser creates that
+    # directory, and it refuses to start if something else has already made
+    # one. The output is gitignored.
+    - sh -c 'sed "s#/usr/local/bin/kenward#/usr/bin/kenward#g" deploy/kenward.service > deploy/kenward.service.pkg'
+
+builds:
+  - id: kenward
+    main: ./cmd/kenward
+    binary: kenward
+    env:
+      - CGO_ENABLED=0
+      # A go.work in the checkout would silently build against local sibling
+      # checkouts of keel instead of the pinned module versions. Never in a
+      # release.
+      - GOWORK=off
+    flags:
+      - -trimpath
+    ldflags:
+      # {{ .Tag }}, not {{ .Version }}: GoReleaser strips the leading "v" from
+      # .Version, and version.Short() is what names the pod image tag
+      # (cmd/kenward/supervisors.go: ghcr.io/blueheisenberg/kenward:<version>).
+      # A binary stamped "0.1.0" would look for an image tag that is not there.
+      - -X github.com/BlueHeisenberg/kenward/internal/version.Version={{ .Tag }}
+      - -X github.com/BlueHeisenberg/kenward/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/BlueHeisenberg/kenward/internal/version.Date={{ .CommitDate }}
+      # The trusted release public key(s), base64, comma-separated —
+      # cmd/kenward/release.go's link-time override. This is the PUBLIC half;
+      # the private key never comes near CI. Set the repository variable
+      # KENWARD_RELEASE_KEYS to the output of `kenward-release keygen`'s .pub.
+      # Empty is allowed and means the build cannot self-update: `kenward
+      # update` refuses outright rather than fetching something it cannot
+      # verify.
+      - -X main.releaseTrustedKeys={{ envOrDefault "KENWARD_RELEASE_KEYS" "" }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  # Raw, unarchived binaries. These are what the self-updater downloads:
+  # keel/update fetches the artifact URL straight into a staging file next to
+  # the binary it is replacing and renames it into place — it does not unpack
+  # anything. The names must match what cmd/kenward-release's manifest builder
+  # recognises, kenward_<goos>_<goarch>[.exe].
+  - id: binary
+    ids: [kenward]
+    formats: [binary]
+    name_template: 'kenward_{{ .Os }}_{{ .Arch }}'
+
+  # Conventional archives, for Homebrew and for people who would rather have a
+  # tarball with the licence in it.
+  - id: archive
+    ids: [kenward]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: 'kenward_{{ .Tag }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - LICENSE
+      - README.md
+      - docs/INSTALL.md
+
+checksum:
+  # A fixed name, because install.sh fetches it from
+  # .../releases/latest/download/checksums.txt and a version-stamped name
+  # would make that URL unguessable.
+  name_template: checksums.txt
+
+nfpms:
+  - id: kenward
+    ids: [kenward]
+    package_name: kenward
+    vendor: BlueHeisenberg
+    homepage: https://github.com/BlueHeisenberg/kenward
+    maintainer: BlueHeisenberg <2033896+BlueHeisenberg@users.noreply.github.com>
+    description: |-
+      Household AI assistant where each person's memory is actually their own.
+    # Not an SPDX identifier because BSL 1.1 is not OSI-approved and has no
+    # one; dpkg and rpm both take free text here.
+    license: BUSL-1.1
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    contents:
+      - src: deploy/kenward.service.pkg
+        dst: /usr/lib/systemd/system/kenward.service
+        type: config|noreplace
+      - src: kenward.example.yaml
+        dst: /usr/share/doc/kenward/kenward.example.yaml
+      - src: LICENSE
+        dst: /usr/share/doc/kenward/LICENSE
+    # No postinstall enabling the service: kenward cannot start without a
+    # config file and a bot token, and a unit that fails on install teaches
+    # people to ignore failed units.
+
+# A cask rather than a formula: GoReleaser removed `brews` in v2, and a cask
+# is the right shape anyway — this is a prebuilt binary, not something
+# Homebrew compiles.
+homebrew_casks:
+  - name: kenward
+    ids: [archive]
+    repository:
+      owner: BlueHeisenberg
+      name: homebrew-tap
+      branch: main
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    homepage: https://github.com/BlueHeisenberg/kenward
+    description: Household AI assistant where each person's memory is actually their own
+    # Skipped until github.com/BlueHeisenberg/homebrew-tap exists and
+    # HOMEBREW_TAP_TOKEN is set on the repository. The cask is still generated
+    # into dist/ on every run, so it can be read before the tap is ever
+    # created.
+    skip_upload: '{{ envOrDefault "HOMEBREW_TAP_SKIP" "true" }}'
+    hooks:
+      post:
+        # Homebrew does not notarise anything, and macOS refuses to run a
+        # downloaded, unsigned binary until the quarantine attribute is off.
+        # Without this the cask installs cleanly and then every invocation is
+        # killed by Gatekeeper.
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/kenward"]
+          end
+
+release:
+  draft: true
+  # Set from the tag: a tag with a hyphen (v0.1.0-rc1) is a prerelease, and a
+  # prerelease is not what .../releases/latest resolves to, which is the point.
+  prerelease: auto
+  name_template: '{{ .Tag }}'
+  extra_files:
+    # A copy of the installer pinned to this release, so `curl … | sh` can be
+    # audited at the exact version somebody ran.
+    - glob: install.sh
+  footer: |
+    ---
+
+    **This release is not complete until `manifest.json` is attached and signed.**
+    Until then `kenward update` on every existing installation will find nothing.
+    See docs/RELEASING.md.
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'

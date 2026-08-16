@@ -1,6 +1,9 @@
 # Go
 /bin/
 /dist/
+# Generated at release time from deploy/kenward.service, with the binary path
+# rewritten for the .deb/.rpm layout. See .goreleaser.yaml's before hook.
+/deploy/kenward.service.pkg
 *.exe
 *.exe~
 *.dll

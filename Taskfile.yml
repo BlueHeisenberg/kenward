@@ -14,7 +14,11 @@ vars:
     -X '{{.VERSION_PKG}}.Version={{.GIT_VERSION}}'
     -X '{{.VERSION_PKG}}.Commit={{.GIT_COMMIT}}'
     -X '{{.VERSION_PKG}}.Date={{.BUILD_DATE}}'
-  CROSS_TARGETS: linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64
+  # Every platform a release carries. Must stay in step with
+  # .goreleaser.yaml's build matrix and with defaultPlatforms in
+  # cmd/kenward-release/manifest.go: a platform built but not listed there is
+  # a platform whose installations quietly never update.
+  CROSS_TARGETS: linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
 
 tasks:
   default:
@@ -54,6 +58,29 @@ tasks:
     desc: Tidy go.mod and go.sum.
     cmds:
       - go mod tidy
+
+  snapshot:
+    desc: Rehearse the whole release — binaries, archives, deb, rpm, cask — publishing nothing.
+    cmds:
+      - GOWORK=off goreleaser release --snapshot --clean --skip=publish
+
+  release:check:
+    desc: Validate .goreleaser.yaml.
+    cmds:
+      - goreleaser check
+
+  install:test:
+    desc: Exercise install.sh end to end in a throwaway container. Needs Docker.
+    cmds:
+      - mkdir -p ./dist/release
+      # Only the one platform the container runs; the point of the exercise is
+      # install.sh's branching, not the cross-compiler.
+      - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOWORK=off go build -ldflags "{{.LDFLAGS}}" -o ./dist/release/kenward_linux_amd64 ./cmd/kenward
+      - (cd ./dist/release && sha256sum kenward_linux_amd64 > checksums.txt)
+      - >-
+        docker run --rm
+        -v "$PWD:/mnt:ro" -v "$PWD/dist/release:/release:ro"
+        debian:bookworm-slim sh /mnt/install_test.sh
 
   cross:
     desc: Cross-compile release binaries into ./dist for all supported platforms.
