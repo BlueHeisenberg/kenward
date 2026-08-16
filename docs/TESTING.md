@@ -201,6 +201,40 @@ task release:check       # validate .goreleaser.yaml
 task snapshot            # build every artifact into dist/, publish nothing
 ```
 
+### Isolated mode against real Podman
+
+`cmd/kenward/isolated_podman_test.go` is the only test that starts real containers, and
+it exists because isolated mode's defects all lived where no fake could see them: between
+`internal/supervisor`, which tests the capability against a fake container backend, and
+`cmd/kenward`, which wires it. It builds the image from this repository's own `Dockerfile`,
+adds a real `lore` binary to it, and drives `kenward run`'s own isolated wiring against
+real podman — the pods' argv and provisioned configuration, which secrets each pod does
+and does not hold, the wrapped key landing on the `/work` named volume, a rolling update
+preserving a member's lore across a real `Recreate`, a claim code minted on the host
+reaching an unenrolled member's own store, a revocation reaching the pod that actually
+holds the binding, and a stale pod being rebuilt once rather than on every start.
+
+```sh
+go test -tags integration -run TestIsolatedPodman -timeout 30m ./cmd/kenward/
+```
+
+It needs Linux, `podman` and `go` on PATH, and a `lore` checkout beside this one
+(`KENWARD_E2E_LORE_SRC` overrides the location). Missing any of those it skips and says
+which. Every run builds its own image, its own volumes and its own stores under an
+`sbx-kwe2e-` name prefix and removes all of it afterwards, failures included; it never
+touches a real `~/.lore` or any podman object outside that prefix.
+
+Telegram cannot be exercised — no bot token exists — so every pod runs as far as `getMe`,
+is refused and exits. The test asserts that rather than tolerating it: everything it is
+about happens before that call and leaves evidence on the pod's volume, and a pod that
+died earlier died of something the test is looking for.
+
+One operator step has no automation behind it and the test performs it: a pod's `/work`
+volume starts empty, `lore mcp` exits before the MCP handshake when its `LORE_HOME` holds
+no account, and `kenward run` refuses to serve a unit whose memory layer does not answer.
+So a supervisor-started pod on a fresh volume crash-loops until somebody runs `lore init`
+against that volume, and nothing in kenward does it.
+
 ## What this has and has not proved
 
 It has proved that the logic is right, that the pieces fit together, and — since the live
