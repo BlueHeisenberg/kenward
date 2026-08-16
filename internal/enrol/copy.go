@@ -2,6 +2,7 @@ package enrol
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/BlueHeisenberg/kenward/internal/transport"
@@ -58,7 +59,16 @@ type text struct {
 	// name is what the language calls itself, for the button.
 	name string
 
-	greeting func(member string) string
+	// greeting promises how many questions are coming, which is not a constant: the
+	// agent-name question only exists under one agent per member. The count is passed
+	// in rather than written into the sentence so that the promise and the step list
+	// cannot drift apart — see questionCount. It arrives already spelled in this
+	// language, because a table cannot reach into itself from inside its own literal.
+	greeting func(member, questions string) string
+	// numbers is how this language writes the small counts a greeting can promise.
+	// Only the sizes the step list can produce need an entry; number falls back to
+	// digits, which is wrong-looking rather than blank.
+	numbers map[int]string
 
 	languageQ       string
 	languageOther   string
@@ -97,6 +107,16 @@ type text struct {
 // to say about where a member's words go and who can read them, and a member who
 // named Catalan should get that part in Catalan even though the four questions
 // before it were in English.
+
+// number is how this language spells a count in prose, falling back to digits for
+// one it has no word for. A digit in the middle of a sentence is ugly; a blank where
+// a number should be is a broken promise, and that is the one this guards against.
+func (t text) number(n int) string {
+	if w, ok := t.numbers[n]; ok {
+		return w
+	}
+	return strconv.Itoa(n)
+}
 
 // tables is every language the tutorial is written in, keyed by tag.
 var tables = map[string]text{
@@ -148,11 +168,12 @@ var english = text{
 	tag:  LangEnglish,
 	name: "English",
 
-	greeting: func(member string) string {
+	numbers: map[int]string{3: "Three", 4: "Four"},
+	greeting: func(member, questions string) string {
 		return fmt.Sprintf("Hello %s. You're in.\n\n"+
-			"Four quick questions to set me up for you, then I'll explain how I work. "+
+			"%s quick questions to set me up for you, then I'll explain how I work. "+
 			"Skip any of them and you get my defaults, and you can change all of it later.",
-			transport.Esc(member))
+			transport.Esc(member), questions)
 	},
 
 	languageQ:     transport.Bold("Language") + "\n\nWhat language should I speak with you?",
@@ -197,12 +218,13 @@ var spanish = text{
 	tag:  LangSpanish,
 	name: "Español",
 
-	greeting: func(member string) string {
+	numbers: map[int]string{3: "Tres", 4: "Cuatro"},
+	greeting: func(member, questions string) string {
 		return fmt.Sprintf("Hola %s. Ya estás dentro.\n\n"+
-			"Cuatro preguntas rápidas para ajustarme a ti y luego te explico cómo funciono. "+
+			"%s preguntas rápidas para ajustarme a ti y luego te explico cómo funciono. "+
 			"Puedes saltarte cualquiera y te quedas con mis valores por defecto; todo esto "+
 			"se puede cambiar más adelante.",
-			transport.Esc(member))
+			transport.Esc(member), questions)
 	},
 
 	languageQ:     transport.Bold("Idioma") + "\n\n¿En qué idioma quieres que hable contigo?",

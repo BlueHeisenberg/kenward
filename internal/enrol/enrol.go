@@ -447,7 +447,7 @@ func (c *Claimer) Handle(ctx context.Context, in transport.Inbound) (Result, err
 	return Result{
 		Enrolled: true,
 		Member:   member,
-		Messages: []transport.Outbound{Greeting(in.ChatID, member.Name, textFor(c.language))},
+		Messages: []transport.Outbound{Greeting(in.ChatID, member.Name, textFor(c.language), questionCount(c.oneEach))},
 	}, nil
 }
 
@@ -481,7 +481,7 @@ func (c *Claimer) Tutorial(a Asker, m domain.Member, chatID int64, answers <-cha
 // before it. See the package-level function of the same name; this is it with the
 // household's settings already filled in.
 func (c *Claimer) FinishInterrupted(ctx context.Context, a Asker) error {
-	return FinishInterrupted(ctx, a, c.personas, c.askPrivate, c.logger)
+	return FinishInterrupted(ctx, a, c.personas, c.language, c.askPrivate, c.logger)
 }
 
 // Revoke unbinds a member's Telegram id.

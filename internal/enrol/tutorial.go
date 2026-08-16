@@ -1,6 +1,7 @@
 package enrol
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -115,11 +116,18 @@ func (t *Tutorial) Run(ctx context.Context) error {
 	t.cur = textFor(t.Household)
 	p := Persona{ChatID: t.ChatID}
 
-	steps := []func(context.Context, *Persona) outcome{t.askLanguage}
-	if t.OneEach {
-		steps = append(steps, t.askName)
-	}
-	steps = append(steps, t.askRegister, t.askCharacter)
+	// Written before the first question rather than after the first answer.
+	//
+	// It is the one fact the sweep needs to find this member again — which chat to
+	// finish in — and a member who is killed before they tap anything has no answers
+	// to carry it. Recorded after the first answer instead, that member had no row at
+	// all, FinishInterrupted skipped them for ever, and the memory model was never
+	// delivered: the one thing the product owes rather than asks. It is not a second
+	// writer of the record — it is the same save, one question earlier — so
+	// config.Binder still owns the state file and its clone-write-swap alone.
+	t.save(ctx, p)
+
+	steps := t.steps()
 
 	gone := false
 	for i := 0; i < len(steps); {
@@ -153,7 +161,7 @@ func (t *Tutorial) Run(ctx context.Context) error {
 		_ = t.send(ctx, t.cur.abandoned)
 	}
 
-	for _, out := range Explanation(t.ChatID, lang.For(p.Language), t.AskPrivate) {
+	for _, out := range Explanation(t.ChatID, lang.For(cmp.Or(p.Language, t.Household)), t.AskPrivate) {
 		if err := t.Asker.Send(ctx, out); err != nil {
 			// The member has part of the explanation and the rest is not coming.
 			// Explained stays false, so the next start finishes the job.
@@ -165,6 +173,25 @@ func (t *Tutorial) Run(ctx context.Context) error {
 	t.save(ctx, p)
 	return nil
 }
+
+// steps is the questions this tutorial will ask, in order.
+//
+// It is a method rather than a literal inside Run because the greeting promises how
+// many there are before Run exists, and a number written out twice is a number that
+// drifts — it already had, and every member enrolled under one agent per household
+// was promised four questions and asked three.
+func (t *Tutorial) steps() []func(context.Context, *Persona) outcome {
+	steps := []func(context.Context, *Persona) outcome{t.askLanguage}
+	if t.OneEach {
+		// Nothing to name when the household shares one agent.
+		steps = append(steps, t.askName)
+	}
+	return append(steps, t.askRegister, t.askCharacter)
+}
+
+// questionCount is how many questions a member of this household will be asked. It
+// is the greeting's promise, counted from the step list itself.
+func questionCount(oneEach bool) int { return len((&Tutorial{OneEach: oneEach}).steps()) }
 
 // askLanguage is question one, and everything after it is delivered in the answer.
 //
@@ -431,7 +458,12 @@ func oneLine(s string) string {
 // asks of them, and nothing else would ever send it. A member enrolled before
 // personas existed has no record here and is not swept; they were explained to
 // under the old one-shot onboarding.
-func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, askPrivate bool, log *slog.Logger) error {
+//
+// household is the language to explain in for a member who never reached the
+// language question, which is exactly the member this sweep exists for. Their
+// persona's language is empty because empty means "the household's", and reading it
+// as English would explain the memory model in a language nobody here asked for.
+func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, household string, askPrivate bool, log *slog.Logger) error {
 	if a == nil || ps == nil {
 		return nil
 	}
@@ -448,7 +480,7 @@ func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, askPrivate
 			log.Info("supervisor: finishing an onboarding the last run did not", "member", string(id))
 		}
 		sent := true
-		for _, out := range Explanation(p.ChatID, lang.For(p.Language), askPrivate) {
+		for _, out := range Explanation(p.ChatID, lang.For(cmp.Or(p.Language, household)), askPrivate) {
 			if err := a.Send(ctx, out); err != nil {
 				errs = append(errs, err)
 				sent = false
