@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -119,19 +120,47 @@ func TestSplitMessageNeverLosesContent(t *testing.T) {
 	}
 }
 
-// A limit too narrow for a single rune is raised to the smallest honourable one,
-// so no piece is ever wider than the effective limit.
+// A limit of 1 is unhonourable: one emoji is two UTF-16 units and nothing is
+// ever dropped, so a piece two units wide has to come out whatever the caller
+// asked for. splitMessage says so by raising the limit to 2 rather than
+// pretending, and the observable consequence is that limit 1 splits exactly as
+// limit 2 does.
+//
+// Asserting only "no piece exceeds 2 units" would prove nothing: no rune is
+// wider than 2, so that holds with the raise deleted too. The bite is in the
+// wants — at limit 1 taken at face value, "aa" comes back as two messages.
 func TestSplitMessageTinyLimit(t *testing.T) {
-	for _, in := range []string{"🔥", "a🔥b", "abc"} {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"🔥", []string{"🔥"}},   // the rune that cannot fit: emitted whole, never dropped
+		{"aa", []string{"aa"}}, // at a literal limit of 1 this would be "a", "a"
+		{"abc", []string{"ab", "c"}},
+		{"a🔥b", []string{"a", "🔥", "b"}},
+		{"ab🔥", []string{"ab", "🔥"}},
+	}
+	for _, tc := range cases {
+		got := splitMessage(tc.in, 1)
+		if !slices.Equal(got, tc.want) {
+			t.Fatalf("splitMessage(%q, 1) = %q, want %q", tc.in, got, tc.want)
+		}
+		// Same input, the limit the raise lands on: the two must agree, because
+		// raising is all that a limit below 2 does.
+		if two := splitMessage(tc.in, 2); !slices.Equal(got, two) {
+			t.Fatalf("splitMessage(%q, 1) = %q but splitMessage(%q, 2) = %q: the limit was not raised",
+				tc.in, got, tc.in, two)
+		}
+
 		var rebuilt strings.Builder
-		for _, part := range splitMessage(in, 1) {
+		for _, part := range got {
 			if utf16Len(part) > 2 {
-				t.Fatalf("input %q: part %q is %d units, over the effective limit of 2", in, part, utf16Len(part))
+				t.Fatalf("input %q: part %q is %d units, over the effective limit of 2", tc.in, part, utf16Len(part))
 			}
 			rebuilt.WriteString(part)
 		}
-		if strip(rebuilt.String()) != strip(in) {
-			t.Fatalf("input %q: content changed in splitting", in)
+		if strip(rebuilt.String()) != strip(tc.in) {
+			t.Fatalf("input %q: content changed in splitting", tc.in)
 		}
 	}
 }

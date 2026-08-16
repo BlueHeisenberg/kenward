@@ -58,10 +58,9 @@ type Telegram struct {
 	queue *queue
 	wg    sync.WaitGroup
 
-	// updatesGate is a test seam: when set, Updates calls it after the pumps are
-	// registered and the lock is released, so a test can interleave Close at the
-	// exact point the historical Updates/Close WaitGroup race lived. Nil in
-	// production.
+	// updatesGate is a test seam: when set, Updates calls it with t.mu still held,
+	// at the instant before it is released, which is the instant the historical
+	// Updates/Close WaitGroup race turned on. Nil in production.
 	updatesGate func()
 
 	pendingMu sync.Mutex
@@ -268,12 +267,25 @@ func (t *Telegram) Updates(ctx context.Context) (<-chan Inbound, error) {
 			}
 		}
 	}()
-	t.mu.Unlock()
+	t.releaseStarted()
 
+	return out, nil
+}
+
+// releaseStarted releases the lock Updates took, letting the test seam look
+// first.
+//
+// The seam fires here, under the lock, rather than after it: the invariant is
+// about this exact instant, because whoever takes t.mu next — Close, above all —
+// must already find both pumps counted. A seam on the far side of the unlock
+// cannot tell the two orderings apart, since by then wg.Add(2) has run either
+// way. Call and unlock live in one function so that moving the unlock moves the
+// observation with it.
+func (t *Telegram) releaseStarted() {
 	if t.updatesGate != nil {
 		t.updatesGate()
 	}
-	return out, nil
+	t.mu.Unlock()
 }
 
 // Send delivers a reply, splitting it across several messages if it exceeds
