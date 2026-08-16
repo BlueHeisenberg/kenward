@@ -31,7 +31,12 @@ It asks, in order:
    Choosing Isolated on Windows or macOS explains why it is Linux-only, offers Simple,
    and does not pretend otherwise.
 
-2. **Household name and shared space.**
+2. **Household name, and which lore space is the shared one.** The wizard lists the
+   spaces lore actually holds and writes the **id** of the one chosen. It does not ask
+   what to call the shared memory: an earlier draft did, slugified the answer, and so
+   produced a configuration that wrote memories happily and returned nothing on the first
+   read. Spaces are not created here or anywhere else in kenward — they exist already, or
+   the wizard has nothing to list.
 3. **The Telegram bot.** Simple mode: one token, with a short walkthrough of BotFather.
    Isolated mode: the household group bot now, and a note that each member creates their
    own during enrolment.
@@ -177,13 +182,13 @@ kenward v0.1.0 — mode: simple
 Configuration
   ✓ kenward.yaml parses and validates
       /etc/kenward/kenward.yaml
-  ✓ all referenced environment variables are set
+  ✓ every secret the configuration names can be read
 
 Memory
   ✓ lore mcp responds
-  ✓ space "household" reachable
-  ✓ space "david-private" reachable
-  ✓ space "jordan-private" reachable
+  ✓ space "7d5047bb-d939-4539-b3db-8b6221a2e245" reachable
+  ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
+  ✓ space "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19" reachable
   ! `lore mcp` does not sync on its own
       run `lore serve` on the same LORE_HOME if this store should reach another
       machine
@@ -233,13 +238,20 @@ Where each conversation may go
   Casa: [local, cloud] — may use a provider
 ```
 
-That is the whole report, reproduced from the golden fixture rather than sketched: the
-report is golden-tested end to end, for both modes, in `cmd/kenward/testdata`. The
-Privacy block and the per-conversation lines under **Where each conversation may go**
-come verbatim from `internal/privacy`, which is also what `kenward setup` prints, so the
-two can never drift into promising different things. It is the single most important
-output the product produces, because it is where a claim becomes checkable, and it must
-never drift into overstating what the mode delivers.
+That is the whole report, and its shape is golden-tested end to end, for both modes, in
+`cmd/kenward/testdata`. The Privacy block and the per-conversation lines under **Where
+each conversation may go** are byte-exact: they come verbatim from `internal/privacy`,
+which is also what `kenward setup` prints, so the two can never drift into promising
+different things. It is the single most important output the product produces, because it
+is where a claim becomes checkable, and it must never drift into overstating what the mode
+delivers. The names, paths and space ids above are one household's; only the wording is
+fixed.
+
+**Note the space lines.** Those are lore space ids, from the id column of `lore spaces`,
+because that is what `shared_space` and `private_space` must hold. A display name there
+writes successfully and fails on the first read, so `doctor` reports one as a
+configuration fault and exits 2 rather than passing it. The reasoning is in
+[IMPLEMENTATION.md](IMPLEMENTATION.md) section 4.
 
 An endpoint that does not answer is reported as a fact, not a failure, and the report
 says so where it happens:

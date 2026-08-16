@@ -21,8 +21,16 @@ holding it can read every message sent to the bot.
 
 **[lore](https://github.com/BlueHeisenberg/lore), running.** kenward owns no memory of
 its own; it talks to lore over MCP. You need lore installed, initialised, and holding a
-shared space for the household plus one private space per member. kenward will tell you
-if it cannot reach it.
+shared space for the household plus one private space per member. **Create them in lore
+first** — kenward creates a space nowhere, not at setup and not when somebody claims an
+invite.
+
+Then run `lore spaces` and keep the **id** column. That is what goes in `shared_space`
+and `private_space`, not the name you gave the space. lore does not enforce unique names,
+so kenward keys everything on ids; put a name there and it will write memories quite
+happily and return nothing on the first read. `kenward doctor` refuses a configuration
+like that outright, which is the only reason it is a nuisance rather than a week of lost
+captures.
 
 **At least one inference endpoint.** Anything OpenAI-compatible: vLLM, llama.cpp,
 Ollama, LM Studio, or a cloud provider. It does not need to be awake during setup —

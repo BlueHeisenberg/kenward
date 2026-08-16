@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 )
@@ -69,14 +70,23 @@ func (w *Wizard) askSpace(ctx context.Context, question, use string) (string, er
 		return "", ErrStopped
 	}
 
+	width := 0
+	for _, s := range usable {
+		if n := utf8.RuneCountInString(s.Name); n > width {
+			width = n
+		}
+	}
 	options := make([]string, 0, len(usable)+1)
 	for _, s := range usable {
-		options = append(options, fmt.Sprintf("%s   %s   %d entries", s.Name, shortID(s.ID), s.Entries))
+		options = append(options, fmt.Sprintf("%s   %s   %d entries", pad(s.Name, width), shortID(s.ID), s.Entries))
 	}
 	options = append(options, "None of these — I need to create one in lore first.")
 
 	w.blank()
-	if skipped := len(all) - len(usableSpaces(all, nil)); skipped > 0 {
+	// Said once. A household of four would otherwise read the same paragraph five
+	// times on the way through.
+	if !w.personalWarned && len(all) > len(usableSpaces(all, nil)) {
+		w.personalWarned = true
 		w.io.Print(personalSpacesSkipped)
 		w.blank()
 	}

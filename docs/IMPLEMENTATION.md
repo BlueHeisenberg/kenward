@@ -407,7 +407,8 @@ data_dir: /var/lib/kenward    # where kenward's own mutable state lives; empty m
 
 household:
   name: "Home"
-  shared_space: household
+  # A lore space id from `lore spaces`, never a display name. See below.
+  shared_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
   group_chat_id: -1001234567890
   tiers: [local, local-slow, cloud]
 
@@ -421,7 +422,7 @@ members:
   - id: david
     name: David
     telegram_id: 12345678
-    private_space: david-private
+    private_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8   # a space id, not a name
     tiers: [local]            # local-only: refuses rather than reaching for cloud
     bot_token_env: KENWARD_BOT_TOKEN_DAVID   # isolated mode only
     # bot_token_file: /run/secrets/david-token   # or this; never both
@@ -459,6 +460,24 @@ of which Telegram account is bound to which member. It is not where lore keeps i
 and it never holds a secret. Left empty it resolves to the per-OS state location; the
 `--data-dir` flag and `$KENWARD_DATA_DIR` override it in that order, which is how the
 container image runs with no arguments. See `CLI.md`.
+
+### Spaces are configured by id, never by display name
+
+`shared_space` and `private_space` hold lore **space ids** — the id column of `lore
+spaces`, not the name a human gave the space. `internal/memory` keys every call on the
+id and resolves the display name from it, and this is not a preference. lore does not
+enforce unique display names, and the rule that an entry id must never come from
+member-supplied text (§12) rests on the client being able to check which space an entry
+actually lives in. That check is worth nothing if two spaces can answer to one name.
+
+The failure mode is what makes it worth a heading rather than a footnote. lore's own
+tools accept either form, and its `lore_put` argument is lenient, so a display name here
+**writes successfully and fails on the first read**. A household would configure it,
+capture memories for a week, and discover on the first retrieval that nothing comes back
+— with the writes already permanent, since lore has no delete. `kenward doctor` therefore
+treats a name it cannot resolve to a space as a configuration fault and exits 2, telling
+the operator to run `lore spaces` and take the id column, and saying explicitly that a
+name fails only on reads.
 
 Validation rules that are errors, not warnings:
 
@@ -663,9 +682,11 @@ Telegram bot usernames are publicly discoverable and anyone may `/start`. Theref
    an expiry (default 24h). Codes are stored hashed.
 2. A stranger messaging the bot gets **no reply at all** until a valid code is
    presented. Not an error, not a prompt — silence.
-3. On a valid code: bind `telegram_id` → member, create/attach the private space, mark
-   the code consumed, and run the short onboarding explaining the two memories and how
-   capture works.
+3. On a valid code: bind `telegram_id` → member, mark the code consumed, and run the
+   short onboarding explaining the two memories and how capture works. **The private
+   space is not created here.** Nothing in kenward creates a lore space, anywhere; the
+   space named in `private_space` must already exist, and enrolment binds a person to a
+   configuration entry rather than provisioning storage.
 4. Codes are single-use, expiring, rate-limited (5 attempts per chat per hour) and
    compared in constant time.
 

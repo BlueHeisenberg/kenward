@@ -220,11 +220,12 @@ type Wizard struct {
 
 	// The lore listing, fetched once. Spaces are chosen by id, so every question
 	// about one is answered from the same snapshot.
-	spaceList    []memory.Space
-	spaceErr     error
-	spacesLoaded bool
-	loreWarned   bool
-	takenSpaces  map[string]bool
+	spaceList      []memory.Space
+	spaceErr       error
+	spacesLoaded   bool
+	loreWarned     bool
+	personalWarned bool
+	takenSpaces    map[string]bool
 
 	mode      config.Mode
 	household config.HouseholdConfig
