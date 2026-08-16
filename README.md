@@ -11,12 +11,15 @@ boundary is separate stores, separate keys and separate processes — not a
 It runs on hardware you already own, routing each request to whichever of your machines
 is awake, and falling back to a cloud provider only where you allow it.
 
-> **Status: in development, and not yet released.** Everything needed to publish is
-> wired: a tag builds six binaries, a container image, `.deb`/`.rpm` packages and a
-> signed update manifest. No tag has been cut, so the releases page is still empty and
-> there is nothing to install yet. [docs/INSTALL.md](docs/INSTALL.md) describes the
-> install the first tag turns on; [docs/RELEASING.md](docs/RELEASING.md) describes cutting
-> it.
+> **Status: v0.1.0 — first release.** Six binaries, a container image at
+> `ghcr.io/blueheisenberg/kenward`, `.deb`/`.rpm` packages and a signed update manifest.
+> `curl -fsSL https://raw.githubusercontent.com/BlueHeisenberg/kenward/main/install.sh | sh`
+> installs it; see [docs/INSTALL.md](docs/INSTALL.md).
+>
+> It has not yet run a household for a week. Everything here has been exercised against
+> real Telegram, real Podman and a real model, but a first release is a first release.
+> The binaries are **unsigned** — macOS needs right-click → Open once, and Windows will
+> warn until there is a code-signing certificate.
 
 ## The gap it fills
 
