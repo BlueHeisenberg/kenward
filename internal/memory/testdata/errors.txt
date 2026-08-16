@@ -15,5 +15,5 @@ user-model	refused: "profile/preferences" is a user-model entry (profile/, feedb
 user-model	refused: user-model entries (profile/, feedback/) never leave the personal space
 busy	search: database is locked (5) (SQLITE_BUSY)
 busy	spaces: SQLITE_BUSY: database is locked
-none	no personal space (run `lore init`): store closed
-none	share: context canceled
+store-unavailable	no personal space (run `lore init`): store closed
+canceled	share: context canceled

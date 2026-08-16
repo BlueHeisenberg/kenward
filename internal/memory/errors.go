@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -45,6 +46,13 @@ var ErrWriteUncertain = errors.New("memory: write may or may not have been store
 // single connection and a five second busy timeout, so a concurrent writer —
 // typically a `lore serve` sync round — can hold a call off.
 var ErrBusy = errors.New("memory: lore store is busy")
+
+// ErrStoreUnavailable is returned when lore reports that its store is not usable
+// at all — "store closed", which lore says when its home was never initialised or
+// its store was shut down under it. Unlike ErrBusy it does not clear itself on a
+// retry: it is an operator fault, and it is typed so that it can be reported as
+// one rather than as an unrecognised rejection.
+var ErrStoreUnavailable = errors.New("memory: lore store is unavailable")
 
 // ToolError is a failure lore reported inside a successful MCP response.
 //
@@ -219,6 +227,12 @@ func classify(text string) error {
 		return ErrNotWriter
 	case isBusy(lower):
 		return ErrBusy
+	case strings.Contains(lower, "store closed"):
+		return ErrStoreUnavailable
+	case strings.Contains(lower, "context canceled"):
+		return context.Canceled
+	case strings.Contains(lower, "context deadline exceeded"):
+		return context.DeadlineExceeded
 	case strings.Contains(lower, "is required") ||
 		strings.Contains(lower, "are required") ||
 		strings.Contains(lower, "pass exactly one of") ||

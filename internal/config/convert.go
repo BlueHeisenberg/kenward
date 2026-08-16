@@ -70,16 +70,31 @@ func (c *Config) RoutingEndpoints() []routing.Endpoint {
 // A member whose telegram_id is still zero is never returned, and a zero id never
 // matches anyone: an unclaimed member and an unknown sender must be indistinguishable
 // to everything upstream, or an unenrolled row would become a way in.
+//
+// Two members bound to one Telegram account resolve to nobody rather than to the first
+// of them. Validation rejects that configuration, but this is the lookup scope.Resolve
+// makes its authorization decision with, and Resolve is documented as being called with
+// configurations it did not validate. First-match-wins would answer one of two people's
+// messages into the other's private space; answering neither is the only reading that is
+// not a guess about whose memory this is.
 func (c *Config) MemberByTelegramID(id int64) (domain.Member, bool) {
 	if id == 0 {
 		return domain.Member{}, false
 	}
-	for _, m := range c.Members {
-		if m.TelegramID == id {
-			return m.Domain(), true
+	found := -1
+	for i, m := range c.Members {
+		if m.TelegramID != id {
+			continue
 		}
+		if found >= 0 {
+			return domain.Member{}, false
+		}
+		found = i
 	}
-	return domain.Member{}, false
+	if found < 0 {
+		return domain.Member{}, false
+	}
+	return c.Members[found].Domain(), true
 }
 
 // MemberByID finds a member by their stable internal id.

@@ -74,8 +74,14 @@ type runnerConfig struct {
 	drainTimeout      time.Duration
 	restartBackoff    time.Duration
 	maxRestartBackoff time.Duration
-	now               func() time.Time
-	privacyMode       privacy.Mode
+	// healthyReset is how long a unit must serve after a panic before its
+	// backoff schedule returns to base.
+	healthyReset time.Duration
+	// cancelGrace is how long a drain that has already run out of patience waits
+	// for cancelled goroutines to observe it before giving up on them.
+	cancelGrace time.Duration
+	now         func() time.Time
+	privacyMode privacy.Mode
 }
 
 // runner runs units as goroutines in this process: one transport, one Mux fanning
@@ -120,6 +126,11 @@ type runner struct {
 	stoppedCh chan struct{}
 	stopOnce  sync.Once
 	stopErr   error
+
+	// testHookBackoff observes each restart delay before it is slept, so tests
+	// can assert the schedule without measuring wall time. Never set in
+	// production; set before start and read-only after.
+	testHookBackoff func(unitKey, time.Duration)
 
 	mu       sync.Mutex
 	started  bool
@@ -482,8 +493,12 @@ func (r *runner) launch(ctx context.Context, pu pendingUnit) error {
 // holds no state a crash can corrupt beyond the turn that crashed.
 func (r *runner) runUnit(k unitKey, u *assistant.Unit, ch <-chan transport.Inbound) {
 	defer r.workerDone()
+	defer r.recoverPump(k, "unit")
 	r.tracker.set(k, StateReady)
 	bo := newBackoff(r.rc.restartBackoff, r.rc.maxRestartBackoff)
+	// lastPanic dates the schedule so a unit that has been up since well before
+	// this panic starts over at the base delay; see restartAfterPanic.
+	var lastPanic time.Time
 	panicCh := make(chan error, 1)
 	for {
 		// Prefer the drain signal over queued backlog: drained means "stop
@@ -494,11 +509,9 @@ func (r *runner) runUnit(k unitKey, u *assistant.Unit, ch <-chan transport.Inbou
 			r.tracker.set(k, StateStopped)
 			return
 		case <-panicCh:
-			if !r.sleep(bo.next()) {
-				r.tracker.set(k, StateStopped)
+			if !r.restartAfterPanic(k, bo, &lastPanic) {
 				return
 			}
-			r.tracker.set(k, StateReady)
 			continue
 		default:
 		}
@@ -507,11 +520,9 @@ func (r *runner) runUnit(k unitKey, u *assistant.Unit, ch <-chan transport.Inbou
 			r.tracker.set(k, StateStopped)
 			return
 		case <-panicCh:
-			if !r.sleep(bo.next()) {
-				r.tracker.set(k, StateStopped)
+			if !r.restartAfterPanic(k, bo, &lastPanic) {
 				return
 			}
-			r.tracker.set(k, StateReady)
 		case in, ok := <-ch:
 			if !ok {
 				r.tracker.set(k, StateStopped)
@@ -520,6 +531,53 @@ func (r *runner) runUnit(k unitKey, u *assistant.Unit, ch <-chan transport.Inbou
 			r.dispatchTurn(k, u, in, panicCh)
 		}
 	}
+}
+
+// restartAfterPanic pauses intake for the unit's backoff and puts it back in
+// service, reporting false when the drain arrived first.
+//
+// A unit that stayed up for healthyReset after its last panic has its schedule
+// returned to base before the pause is computed: without that, the delay only
+// ever doubles, and one panic long ago leaves the next restart waiting the
+// maximum delay for a unit that has been serving perfectly since. It is the same
+// judgement the isolated supervisor makes on HealthyReset, made from the last
+// failure rather than from an uptime clock because a pump between turns is
+// otherwise indistinguishable from one that has never run.
+func (r *runner) restartAfterPanic(k unitKey, bo *backoff, lastPanic *time.Time) bool {
+	now := r.rc.now()
+	if !lastPanic.IsZero() && now.Sub(*lastPanic) >= r.rc.healthyReset {
+		bo.reset()
+	}
+	*lastPanic = now
+	d := bo.next()
+	if r.testHookBackoff != nil {
+		r.testHookBackoff(k, d)
+	}
+	if !r.sleep(d) {
+		r.tracker.set(k, StateStopped)
+		return false
+	}
+	r.tracker.set(k, StateReady)
+	return true
+}
+
+// recoverPump contains a panic raised by a pump goroutine itself, outside any
+// turn. Only the turn handler had this: a panic in the enrolment pump, the
+// backstop or a unit's own loop took the process with it, and one member's
+// trouble taking the whole household down is the single thing the design
+// promises never happens. The pump is over either way — there is no member
+// waiting on a reply here, and nothing to restart — but the household keeps
+// running and the failure is loud in the log.
+func (r *runner) recoverPump(k unitKey, what string) {
+	rec := recover()
+	if rec == nil {
+		return
+	}
+	err := fmt.Errorf("supervisor: %s pump panicked: %v", what, rec)
+	r.logger.Error("supervisor: pump crashed; the rest of the household keeps running",
+		"pump", what, "unit", k.member, "group", k.group, "error", err)
+	r.tracker.fail(k, err)
+	r.tracker.set(k, StateStopped)
 }
 
 // dispatchTurn runs one message's turn on its own goroutine, tracked for the
@@ -636,6 +694,7 @@ func (r *runner) launchBackstop(ctx context.Context) error {
 // which is logged as the bug it is rather than quietly absorbed.
 func (r *runner) runBackstop(ch <-chan transport.Inbound) {
 	defer r.workerDone()
+	defer r.recoverPump(unitKey{}, "scope backstop")
 	for {
 		select {
 		case <-r.draining:
@@ -674,6 +733,7 @@ func scopeUnitKey(sc domain.Scope) unitKey {
 // confirm the bot exists, which is the fact silence protects.
 func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound) {
 	defer r.workerDone()
+	defer r.recoverPump(unitKey{}, "enrolment")
 	for {
 		select {
 		case <-r.draining:
@@ -796,6 +856,12 @@ func (r *runner) shutdown(ctx context.Context) error {
 		// member are owed a finish.
 		close(r.draining)
 
+		// pumpsDone records whether every pump was seen to exit. Waiting on
+		// turnWg is only meaningful once they have: a pump still in dispatchTurn
+		// can Add while this goroutine Waits, which is the one thing a WaitGroup
+		// forbids, and the count it would be waiting on is not a closed set
+		// anyway.
+		pumpsDone := true
 		if started && !idle {
 			select {
 			case <-r.allDone:
@@ -806,31 +872,36 @@ func (r *runner) shutdown(ctx context.Context) error {
 				r.turnCancel()
 				select {
 				case <-r.allDone:
-				case <-time.After(5 * time.Second):
+				case <-time.After(r.rc.cancelGrace):
 					r.logger.Error("supervisor: pumps did not exit after cancellation")
+					pumpsDone = false
 				}
 			}
 		}
 
 		// The pumps have stopped dispatching; now wait for the turns they already
 		// dispatched, capture questions included. No pump is left to add more, so
-		// this wait is against a closed set.
-		turnsDone := make(chan struct{})
-		go func() {
-			r.turnWg.Wait()
-			close(turnsDone)
-		}()
-		select {
-		case <-turnsDone:
-		case <-ctx.Done():
-			if r.stopErr == nil {
-				r.stopErr = ctx.Err()
-			}
-			r.turnCancel()
+		// this wait is against a closed set. A wedged pump is the exception: its
+		// turns have been cancelled and are not waited for, because there is no
+		// closed set to wait on and the drain has already been reported unclean.
+		if pumpsDone {
+			turnsDone := make(chan struct{})
+			go func() {
+				r.turnWg.Wait()
+				close(turnsDone)
+			}()
 			select {
 			case <-turnsDone:
-			case <-time.After(5 * time.Second):
-				r.logger.Error("supervisor: turns did not exit after cancellation")
+			case <-ctx.Done():
+				if r.stopErr == nil {
+					r.stopErr = ctx.Err()
+				}
+				r.turnCancel()
+				select {
+				case <-turnsDone:
+				case <-time.After(r.rc.cancelGrace):
+					r.logger.Error("supervisor: turns did not exit after cancellation")
+				}
 			}
 		}
 

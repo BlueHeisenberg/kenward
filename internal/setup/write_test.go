@@ -205,7 +205,7 @@ func TestTheFileReadsLikeSomebodyWroteIt(t *testing.T) {
 		"# The household itself",
 		"tiers: [local]",            // a chain reads as a chain, not as a bullet list
 		"lore_command: [lore, mcp]", // and so does an argv
-		"idle_timeout: 30m0s",       // defaults are visible rather than implied
+		"idle_timeout: 0s",          // defaults are visible rather than implied, including "off"
 		"max_proposals_per_turn: 1", //
 	} {
 		if !strings.Contains(body, want) {

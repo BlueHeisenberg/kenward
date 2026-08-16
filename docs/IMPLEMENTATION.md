@@ -246,12 +246,12 @@ own bot).
 
 ```go
 type Endpoint struct {
-    Name      string
-    BaseURL   string
-    Model     string
-    APIKeyEnv string    // env var name; never the key itself
-    Tags      []string  // tier names
-    Timeout   time.Duration
+    Name    string
+    BaseURL string
+    Model   string
+    // No credential field. See "An endpoint carries no credential" below.
+    Tags    []string  // tier names
+    Timeout time.Duration
 }
 
 type Message struct {
@@ -294,14 +294,47 @@ type Completion struct {
     Latency      time.Duration
 }
 
+// Router is routing policy: which machine answers, given the chain.
 type Router interface {
     Complete(ctx context.Context, chain []string, req Request) (Completion, error)
 }
+
+// Completer is the wire protocol against one endpoint. Pool decides who to ask,
+// a Completer does the asking, tests inject fakes.
+type Completer interface {
+    Complete(ctx context.Context, ep Endpoint, req Request) (Completion, error)
+}
+
+// KeyFunc resolves one endpoint's API key at the moment of use. Empty value with
+// a nil error means the endpoint needs no authentication.
+type KeyFunc func(ep Endpoint) (string, error)
+
+func NewPool(endpoints []Endpoint, c Completer) *Pool   // *Pool implements Router
+func NewHTTPCompleter(client *http.Client, key KeyFunc) Completer
 
 // ErrNoBackend carries what was tried, so the refusal can be specific.
 type NoBackendError struct{ Chain []string; Tried []string }
 func (e *NoBackendError) Error() string
 ```
+
+**An endpoint carries no credential.** `routing.Endpoint` has no `APIKeyEnv` — the
+configuration type of the same name still does, being one of the sources — and no key
+field of any other name, because a key may come from a file, an environment variable or a systemd
+credential (§4), and a struct field naming one of the three is misinformation the moment
+an operator chooses another. Precedence across those sources — and the rule that naming
+two sources for one secret is a validation error — is implemented once, in
+`internal/config`; routing never learns where a key lives.
+
+**Routing resolves at the point of use and retains nothing.** The completer is
+constructed with a `KeyFunc` and calls it per attempt, so a rotated credential is picked
+up without rebuilding the router, and the value goes straight into the `Authorization`
+header. It is stored on no struct this package keeps, so no log line, error string or
+`%#v` can meet it. A key that will not resolve is a configuration fault: it is returned
+to the caller as-is and never triggers failover, because trying a different machine
+cannot conjure a key.
+
+Anyone auditing where this household's keys live should read `internal/config`, not this
+package. Routing is the wrong place to look, and that is the design.
 
 **Semantics, in order:**
 
@@ -335,8 +368,23 @@ type Sessions interface {
 }
 ```
 
-Keys are unwrapped into memory only, never written to disk, and zeroed on `Lock`. Idle
-expiry defaults to 30 minutes, configurable. `LockAll` runs on shutdown signals.
+Keys are unwrapped into memory only, never written to disk, and zeroed on `Lock`.
+`LockAll` runs on shutdown signals.
+
+**Idle expiry is off by default** (`session.idle_timeout`, `session.DefaultIdleTimeout`
+is zero). That follows from D-019: a passphrase never travels over Telegram, so a member
+whose key is zeroed has no way to unlock again from a chat — someone has to be at the
+machine to start the process with the passphrase. A default timeout would therefore not
+degrade an idle member, it would break them, in exchange for a marginal at-rest gain
+while the process is still running anyway. What holds either way is the claim that was
+ever true: nothing is readable from a disk, from a backup, or from a process nobody has
+unlocked.
+
+Setting a positive `idle_timeout` turns expiry on and it works as written — a household
+that wants it can have it, knowing an expired member stays silent until someone attends
+to the machine. The isolated-mode privacy statement in `internal/privacy` is worded to
+be true in both configurations, and its golden test pins that; the two must not drift
+apart again.
 
 Mode difference, stated honestly in the docs and in `kenward doctor` output:
 
@@ -396,7 +444,7 @@ memory:
   search_limit: 8
 
 session:
-  idle_timeout: 30m
+  idle_timeout: 0s            # off, and the default; see §"Idle expiry is off by default"
 
 capture:
   max_proposals_per_turn: 1
@@ -460,9 +508,13 @@ about this secret that is not true, and interrupting them costs one error messag
 The automatic credential does not collide with anything, because it is not a *stated*
 source: it is the fallback consulted only when the configuration says nothing.
 
-**Files.** The value is the file's contents with the trailing newline trimmed — and only
-that, because every tool that writes a credential adds one and a token carrying `\n` is
-rejected by Telegram with an error that names nothing useful. A file that is group- or
+**Files.** The value is the file's contents with trailing line endings trimmed — every
+trailing `\r` and `\n`, and nothing else. Every tool that writes a credential adds one, a
+CRLF editor adds two bytes, `printf '%s\n\n'` adds more, and a token carrying any of them
+is rejected by Telegram with an error that names nothing useful. Interior whitespace is
+left alone, because a secret with a space in the middle is a secret rather than a
+mistake, and no credential may legitimately end in a newline; a file that is nothing but
+newlines is reported empty rather than resolved to `""`. A file that is group- or
 world-readable is **refused**, with its mode in the message: a `0644` token file is a
 finding rather than a preference, since everything with a shell on that host then holds
 the household's bot, and failing loudly is the only way the operator who created it ever
@@ -553,14 +605,17 @@ lore. lore holds distilled knowledge, not transcripts.
 ## 6. Capture
 
 Model proposals arrive as a structured tool call: `{title, body, domain, confidence,
-markers, target: personal|shared|unsure}`.
+markers, target: personal|shared|unsure}` on the `remember` tool.
+
+A second tool, `publish`, carries the promotion flow and is offered in a direct
+conversation only. It takes `{title}` and no id — see *Promotion* below.
 
 | Situation | Behaviour |
 | --- | --- |
 | Direct chat, target `unsure` | Ask: `[Personal] [Household] [Don't save]` |
 | Direct chat, target known | Ask to confirm: `[Save to X] [Don't save]` |
 | Group chat, any target | Ask: `[Household] [Don't save]` — **"Personal" is never offered** |
-| Promotion of an existing private entry to shared | Separate flow: show the full text that will be published, then `[Publish to household] [Cancel]` |
+| Promotion of an existing private entry to shared | Separate flow, triggered by the `publish` tool: show the full text that will be published, then `[Publish to household] [Cancel]` |
 
 Rules:
 
@@ -570,6 +625,27 @@ Rules:
 - The answer is only accepted from `AllowedUserID`.
 - Promotion uses `memory.Share`, never a read-then-put, so lore's own provenance is
   preserved.
+
+**Promotion.** It is the one memory act a member asks for rather than being offered, so
+it needs a trigger, and the trigger is the `publish` tool. The member asks; the model
+calls `publish` with the *title* of an entry, never an id.
+
+The absence of an id is the point. lore's ids are global and `lore_get` is not
+space-scoped, so an id is a capability: whoever holds one can name an entry in any
+space (§12). An id may only originate from a search performed inside the current Scope,
+and the model is not such a source — everything it writes derives from what the member
+just said, so an id from the model is an id from the member. The node therefore
+resolves the title against **this turn's own retrieval**, in the space the Scope writes
+to, and uses the id that search returned. A title matching no retrieved entry, or more
+than one, is dropped with a log line exactly as a malformed `remember` is: nothing is
+asked, and nothing reaches memory — not even the `Get` behind the preview. A group
+scope is never offered the tool, and `OfferPromotion` refuses one anyway.
+
+Promotions are neither counted against the per-turn proposal budget nor suppressed by
+the decline history: they are a deliberate act the member asked for, not a suggestion.
+When one turn carries both a `publish` call and a `remember` proposal, the publish wins
+— the request outranks the suggestion, and exactly one question reaches the member
+either way.
 - **A write that fails after the member said yes is reported to them, not just logged.**
   lore may have stored the entry and lost the answer, and lore has no delete, so a retry
   that duplicates it is permanent (§12). The member is told that it cannot be confirmed
@@ -757,16 +833,29 @@ notices, chosen so that each one tells the member the truth about what they can 
 | What happened | What is sent |
 | --- | --- |
 | Rate limited (HTTP 429) | "The model is busy right now. Try again in a moment." |
-| A rejected key, an unknown model, a request the endpoint will not parse (401, 403, 404, invalid request) | "Something is wrong with this household's setup — tell whoever runs it." |
+| A rejected key, an unknown model, a request the endpoint will not parse (400, 401, 403, 404, invalid request) | "Something is wrong with this household's setup — tell whoever runs it." |
 | Anything else | "Something went wrong reaching the model, and your message wasn't answered. Try again in a moment." |
 
 The middle row is the one that earns its place: no amount of retrying fixes a rejected
 key, the member cannot repair it, and the operator can — so the notice sends them to the
-person who can. Two further notices come from outside the router: a model that declined
-the turn produces "The model declined to answer this.", and a direct message arriving
-while the member's key is locked produces "Your assistant is locked. It needs to be
-unlocked on the machine it runs on." All of them are golden-tested alongside the
-refusals.
+person who can. **400 belongs in that row, not in the transient one.** It is the endpoint
+saying it will not parse this request — the same permanent fault as `ErrInvalidRequest`,
+caught one hop later — and telling a member to try again for it sends them back to a
+wall.
+
+Three further notices come from outside the router. A model that declined the turn
+produces "The model declined to answer this."; a direct message arriving while the
+member's key is locked produces "Your assistant is locked. It needs to be unlocked on the
+machine it runs on."; and a turn that ran to the end and produced nothing the member
+could see produces "I didn't get a usable answer to that. Try asking again."
+
+That last one covers the two ways a turn can succeed and still say nothing: a completion
+with no text and no tool call, and a bare tool call whose capture proposal was suppressed
+without asking. Neither is a failure the node can classify further, and neither may be
+answered with silence — this section promises every message produces something, and until
+this notice existed that promise had two paths where it was untrue.
+
+All of them are golden-tested alongside the refusals.
 
 The classification reads `keel/llm`'s error vocabulary, which the routing seam passes
 through unchanged; a content-filter decline commonly arrives as an empty response

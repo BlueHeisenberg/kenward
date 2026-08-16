@@ -29,8 +29,10 @@ type child struct {
 	stdout io.ReadCloser
 	stderr *ringWriter
 
-	exited  chan struct{}
-	waitErr error
+	// exited is closed once the process has been reaped. Its exit status is not
+	// kept: nothing reads it, and a field written by the reaping goroutine and
+	// read later would be a race.
+	exited chan struct{}
 
 	stopOnce sync.Once
 }
@@ -70,7 +72,7 @@ func startChild(cfg Config) (*child, error) {
 
 	c := &child{cmd: cmd, stdin: inW, stdout: outR, stderr: stderr, exited: make(chan struct{})}
 	go func() {
-		c.waitErr = cmd.Wait()
+		_ = cmd.Wait()
 		close(c.exited)
 	}()
 	return c, nil

@@ -32,6 +32,10 @@ const (
 	// simpleSessionsFile is where the default session manager persists wrapped
 	// keys, under the configuration's data directory.
 	simpleSessionsFile = "sessions.json"
+	// defaultCancelGrace is how long a drain whose patience has already run out
+	// waits for the goroutines it just cancelled to notice, before it stops
+	// waiting on them at all.
+	defaultCancelGrace = 5 * time.Second
 )
 
 // SimpleOptions configures a Simple supervisor. Every dependency left nil is built
@@ -178,6 +182,12 @@ func (rc *runnerConfig) normalize() {
 	}
 	if rc.maxRestartBackoff <= 0 {
 		rc.maxRestartBackoff = DefaultMaxRestartBackoff
+	}
+	if rc.healthyReset <= 0 {
+		rc.healthyReset = DefaultHealthyReset
+	}
+	if rc.cancelGrace <= 0 {
+		rc.cancelGrace = defaultCancelGrace
 	}
 	if rc.now == nil {
 		rc.now = time.Now

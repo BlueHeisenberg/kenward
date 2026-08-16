@@ -291,6 +291,30 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
+			// The chat and the flag disagree, which the package doc has always said
+			// is a rejection. The only way to produce one is a group_chat_id that is
+			// really somebody's private chat, and answering it either way is a guess
+			// about whether the household is listening.
+			name:    "the configured group's chat id on a message that is not a group message",
+			cfg:     household(),
+			in:      transport.Inbound{ChatID: groupChatID, UserID: davidID, Text: "hello"},
+			wantErr: true,
+		},
+		{
+			// The same fault seen from the direction that costs something: a
+			// group_chat_id misconfigured to a member's own Telegram id. Their
+			// direct messages must not be answered into the shared space, where the
+			// whole household reads them.
+			name: "group chat id set to a member's own telegram id",
+			cfg: func() *config.Config {
+				c := household()
+				c.Household.GroupChatID = davidID
+				return c
+			}(),
+			in:      direct(davidID),
+			wantErr: true,
+		},
+		{
 			name: "member's chat id differing from their user id still resolves by sender",
 			cfg:  household(),
 			in:   transport.Inbound{ChatID: 77, UserID: davidID, Text: "hello"},
@@ -491,6 +515,14 @@ func TestGroupScopeNeverExposesAPrivateSpaceOverGeneratedConfigs(t *testing.T) {
 			if got.Member != nil {
 				t.Fatalf("config %d, inbound %+v: group scope carries member %+v", i, in, *got.Member)
 			}
+			// A group scope is only ever reached from a group message. The
+			// generated households above sometimes give group_chat_id a member's
+			// own chat id, which is the only way a direct message can carry it —
+			// and answering that into the shared space publishes their private
+			// conversation to the household.
+			if !in.IsGroup {
+				t.Fatalf("config %d, inbound %+v: a message that is not a group message resolved to a group scope", i, in)
+			}
 			// The admission gate: reaching a group scope at all requires the sender to
 			// be an enrolled member. Being in the household's Telegram group is not
 			// enrolment, and the shared space is not open to whoever was added to it.
@@ -544,6 +576,20 @@ func generateHousehold(rng *rand.Rand) *config.Config {
 	if rng.Intn(5) == 0 {
 		// A configuration validation would reject. Resolve must still hold the line.
 		cfg.Household.SharedSpace = cfg.Members[rng.Intn(n)].PrivateSpace
+	}
+	if rng.Intn(5) == 0 {
+		// A group_chat_id that is really a member's own chat — a misconfiguration
+		// validation rejects, and one the generator could not previously produce
+		// because every group id it made was negative and every member id positive.
+		// It is the collision that costs something: the group is matched on chat id
+		// before the sender is looked at, so this is a member's direct messages
+		// arriving at the household's scope.
+		for _, m := range cfg.Members {
+			if m.TelegramID != 0 {
+				cfg.Household.GroupChatID = m.TelegramID
+				break
+			}
+		}
 	}
 	if rng.Intn(7) == 0 {
 		cfg.Household.GroupChatID = 0

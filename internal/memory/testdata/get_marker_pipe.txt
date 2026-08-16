@@ -1,0 +1,4 @@
+# Marker vocabulary
+id a1b2c3d4-0000-4000-8000-000000000007 (v2) | space household | domain home/misc | validated | origin convention | [CONTEXT | STAGING] [NON-NEGOTIABLE] | copied from 9f8e7d6c-0000-4000-8000-00000000000b | updated 2026-05-06T07:08:09.000000000Z
+
+A marker lore normalised with a pipe in it.

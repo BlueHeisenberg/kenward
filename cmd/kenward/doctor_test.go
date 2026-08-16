@@ -261,3 +261,46 @@ func TestDoctorReportsUnknownSpaceAsFactNotFailure(t *testing.T) {
 		t.Errorf("output does not report the missing space as a fact:\n%s", h.stdout())
 	}
 }
+
+// TestDoctorSaysWhichWayIdleExpiryIsSet.
+//
+// The privacy statement names session.idle_timeout and is deliberately true whichever
+// way it is set, because internal/privacy cannot see a household's configuration.
+// doctor can, and this is the screen somebody reads to find out which case is theirs.
+// A household that has switched expiry on has armed something with no in-band way back
+// (D-019): the assistant stops answering after that much quiet and needs somebody at
+// the machine. That is worth saying before it happens, and it is a warning rather than
+// a failure, because it is the household's own choice.
+func TestDoctorSaysWhichWayIdleExpiryIsSet(t *testing.T) {
+	t.Parallel()
+
+	t.Run("off", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, simpleYAML, fullEnvironment())
+		if code := h.run("doctor"); code != exitOK {
+			t.Fatalf("exit = %d, want 0\n%s", code, h.both())
+		}
+		if !strings.Contains(h.stdout(), "do not expire on idle") {
+			t.Errorf("doctor does not say idle expiry is off:\n%s", h.stdout())
+		}
+	})
+
+	t.Run("on", func(t *testing.T) {
+		t.Parallel()
+		on := simpleYAML + "session:\n  idle_timeout: 30m\n"
+		h := newHarness(t, on, fullEnvironment())
+		if code := h.run("doctor"); code != exitOK {
+			t.Fatalf("exit = %d, want 0: a configured timeout is a warning, not a failure\n%s", code, h.both())
+		}
+		out := h.stdout()
+		for _, want := range []string{
+			"expire after 30m0s of quiet",
+			"stops answering",
+			"no way back from a chat",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("doctor does not warn about idle expiry (%q missing):\n%s", want, out)
+			}
+		}
+	})
+}

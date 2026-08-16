@@ -43,6 +43,22 @@ func TestSearchRefusesAnEmptySpaceSet(t *testing.T) {
 	}
 }
 
+// TestSearchRefusesAnEmptySpaceID closes the same hole from the inside: a slice
+// with an empty id in it has not named a space either, and lore reads an empty
+// space argument as an invitation to work one out for itself.
+func TestSearchRefusesAnEmptySpaceID(t *testing.T) {
+	f := newFake(t, fakeScript{}, nil)
+	for _, spaces := range [][]domain.SpaceID{{""}, {spacePrivate, ""}} {
+		_, err := f.Search(ctxT(t), SearchQuery{Text: "anything", Spaces: spaces})
+		if !errors.Is(err, ErrEmptySpaceSet) {
+			t.Fatalf("Spaces %q: want ErrEmptySpaceSet, got %v", spaces, err)
+		}
+	}
+	if got := f.calls(t); len(got) != 0 {
+		t.Fatalf("an unnamed space must not reach lore, got %d calls", len(got))
+	}
+}
+
 func TestSearchRefusesEmptyText(t *testing.T) {
 	f := newFake(t, fakeScript{}, nil)
 	_, err := f.Search(ctxT(t), SearchQuery{Text: "   ", Spaces: []domain.SpaceID{spacePrivate}})
@@ -59,6 +75,7 @@ func TestSearchRefusesEmptyText(t *testing.T) {
 // never re-ranked across spaces.
 func TestSearchGroupsInCallerOrder(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {
 			{Match: string(spacePrivate), Text: golden(t, "search_basic.txt"), DelayMS: 60},
 			{Match: string(spaceHousehold), Text: golden(t, "search_markers.txt")},
@@ -113,6 +130,7 @@ func TestSearchGroupsInCallerOrder(t *testing.T) {
 // highlighting stripped, and it must announce itself as partial.
 func TestSearchReturnsExcerptsNotEntries(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {{Text: golden(t, "search_basic.txt")}},
 	}}, nil)
 
@@ -273,11 +291,12 @@ func TestPartialSurvivesTheWriteFallbacks(t *testing.T) {
 
 func TestSearchDeduplicatesSpaces(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {{Text: golden(t, "search_markers.txt")}},
 	}}, nil)
 	got, err := f.Search(ctxT(t), SearchQuery{
 		Text:   "boiler",
-		Spaces: []domain.SpaceID{spacePrivate, spacePrivate},
+		Spaces: []domain.SpaceID{spaceHousehold, spaceHousehold},
 	})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
@@ -292,6 +311,7 @@ func TestSearchDeduplicatesSpaces(t *testing.T) {
 
 func TestSearchPassesDomainAndLimit(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {{Text: golden(t, "search_none.txt")}},
 	}}, nil)
 	if _, err := f.Search(ctxT(t), SearchQuery{
@@ -312,6 +332,7 @@ func TestSearchPassesDomainAndLimit(t *testing.T) {
 // answer, which is worse than an error.
 func TestSearchFailsWhenAnySpaceFails(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {
 			{Match: string(spacePrivate), Text: golden(t, "search_basic.txt")},
 			{Match: string(spaceHousehold), Text: `unknown space "x" (try lore_spaces)`, IsError: true},
@@ -327,6 +348,7 @@ func TestSearchFailsWhenAnySpaceFails(t *testing.T) {
 
 func TestSearchSurfacesAFormatChange(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {{Text: golden(t, "bad_search_header.txt")}},
 	}}, nil)
 	_, err := f.Search(ctxT(t), SearchQuery{Text: "bin", Spaces: []domain.SpaceID{spacePrivate}})
@@ -602,13 +624,14 @@ func TestShareUserModelRefusal(t *testing.T) {
 
 func TestBusyIsRetried(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {
 			{Text: "search: database is locked (5) (SQLITE_BUSY)", IsError: true},
 			{Text: "search: database is locked (5) (SQLITE_BUSY)", IsError: true},
 			{Text: golden(t, "search_markers.txt")},
 		},
 	}}, nil)
-	got, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spacePrivate}})
+	got, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spaceHousehold}})
 	if err != nil {
 		t.Fatalf("Search: %v", err)
 	}
@@ -622,6 +645,7 @@ func TestBusyIsRetried(t *testing.T) {
 
 func TestBusyRetriesAreBounded(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {{Text: "search: database is locked", IsError: true}},
 	}}, func(c *Config) { c.BusyRetries = 2 })
 	_, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spacePrivate}})
@@ -636,12 +660,14 @@ func TestBusyRetriesAreBounded(t *testing.T) {
 // TestSubprocessIsRestarted: a lore that dies must not be a permanent failure.
 func TestSubprocessIsRestarted(t *testing.T) {
 	f := newFake(t, fakeScript{
-		DieOnCall: 1,
+		// The listing is call 1; the search itself is the one that dies.
+		DieOnCall: 2,
 		Replies: map[string][]fakeReply{
+			toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 			toolSearch: {{Text: golden(t, "search_markers.txt")}},
 		},
 	}, nil)
-	got, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spacePrivate}})
+	got, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spaceHousehold}})
 	if err != nil {
 		t.Fatalf("a read must survive one subprocess death: %v", err)
 	}
@@ -732,6 +758,7 @@ func TestUncertainWrites(t *testing.T) {
 
 	t.Run("rejections and reads are certain", func(t *testing.T) {
 		f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+			toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 			toolPut:    {{Text: "put: space household: this account is not a writer/owner of the space", IsError: true}},
 			toolSearch: {{Text: "search: database is locked", IsError: true}},
 		}}, func(c *Config) { c.BusyRetries = 1 })
@@ -754,18 +781,25 @@ func TestUncertainWrites(t *testing.T) {
 	})
 }
 
-// TestHungSubprocessDoesNotHangTheCaller bounds a wedged lore.
+// TestHungSubprocessDoesNotHangTheCaller bounds a wedged lore, and pins the
+// recovery: a process that is alive but no longer answering is as useless as a
+// dead one, so it must be retired rather than handed to the next call. Without
+// that, one timeout wedges every later call for the life of the client.
 func TestHungSubprocessDoesNotHangTheCaller(t *testing.T) {
 	f := newFake(t, fakeScript{
-		HangOnCall: 1,
-		Replies:    map[string][]fakeReply{toolSearch: {{Text: golden(t, "search_markers.txt")}}},
+		// The listing is call 1; the search is the call that never answers.
+		HangOnCall: 2,
+		Replies: map[string][]fakeReply{
+			toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
+			toolSearch: {{Text: golden(t, "search_markers.txt")}},
+		},
 	}, func(c *Config) {
 		c.CallTimeout = 250 * time.Millisecond
 		c.BusyRetries = 1
 	})
 
 	start := time.Now()
-	_, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spacePrivate}})
+	_, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spaceHousehold}})
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("want a timeout error")
@@ -775,6 +809,17 @@ func TestHungSubprocessDoesNotHangTheCaller(t *testing.T) {
 	}
 	if elapsed > 5*time.Second {
 		t.Errorf("the call took %s; a hung lore must not hold a conversation open", elapsed)
+	}
+
+	got, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spaceHousehold}})
+	if err != nil {
+		t.Fatalf("the next search should reach a fresh subprocess: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d entries, want 1", len(got))
+	}
+	if n := len(pids(f.calls(t))); n != 2 {
+		t.Fatalf("the wedged subprocess was reused: saw %d pids", n)
 	}
 }
 
@@ -808,9 +853,10 @@ func TestStartFailureExplainsItself(t *testing.T) {
 
 func TestCloseTerminatesTheSubprocess(t *testing.T) {
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {{Text: golden(t, "search_markers.txt")}},
 	}}, nil)
-	if _, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spacePrivate}}); err != nil {
+	if _, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spaceHousehold}}); err != nil {
 		t.Fatalf("Search: %v", err)
 	}
 
@@ -832,7 +878,7 @@ func TestCloseTerminatesTheSubprocess(t *testing.T) {
 	if err := f.Close(); err != nil {
 		t.Fatalf("Close must be idempotent: %v", err)
 	}
-	_, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spacePrivate}})
+	_, err := f.Search(ctxT(t), SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spaceHousehold}})
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("want ErrClosed, got %v", err)
 	}
@@ -854,7 +900,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 			},
 		}, nil)
 		ctx := ctxT(t)
-		if _, err := f.Search(ctx, SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spacePrivate}}); err != nil {
+		if _, err := f.Search(ctx, SearchQuery{Text: "boiler", Spaces: []domain.SpaceID{spaceHousehold}}); err != nil {
 			t.Fatalf("Search: %v", err)
 		}
 		if _, err := f.Get(ctx, spacePrivate, "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f"); err != nil {
@@ -888,6 +934,7 @@ func TestNewClientRejectsAnEmptyCommand(t *testing.T) {
 func TestLoreHomeIsPerClient(t *testing.T) {
 	home := t.TempDir()
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {{Text: golden(t, "search_none.txt")}},
 	}}, func(c *Config) { c.LoreHome = home })
 	if _, err := f.Search(ctxT(t), SearchQuery{Text: "x", Spaces: []domain.SpaceID{spacePrivate}}); err != nil {

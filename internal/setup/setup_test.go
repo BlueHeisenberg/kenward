@@ -480,6 +480,51 @@ func TestExistingEnvFileIsLeftAlone(t *testing.T) {
 	}
 }
 
+// TestForceDoesNotReplaceAnExistingEnvFile: --force means "replace the configuration
+// I wrote", and .env is not that file. It is the name compose, systemd and half the
+// tools on the machine already read, so the one beside kenward.yaml is quite likely to
+// hold a database password nobody has another copy of. Truncating it to save the
+// operator pasting three lines is not a trade, it is data loss.
+func TestForceDoesNotReplaceAnExistingEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, DefaultConfigFileName)
+	if err := os.WriteFile(configPath, []byte("mode: simple\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(dir, EnvFileName)
+	const existing = "POSTGRES_PASSWORD=somebody-elses-secret\nSMTP_PASSWORD=another\n"
+	if err := os.WriteFile(envPath, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	w, _, io, err := runWizard(t, "linux",
+		Options{ConfigPath: configPath, Force: true}, simpleAnswers()...)
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, io.Transcript())
+	}
+
+	// The configuration is what --force replaces, and it did.
+	assertLoadable(t, configPath, w)
+
+	got, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != existing {
+		t.Errorf("--force rewrote the .env and destroyed what was in it:\nwant %q\ngot  %q", existing, got)
+	}
+	if w.EnvFilePath() != "" {
+		t.Errorf("EnvFilePath() = %q, but nothing was written", w.EnvFilePath())
+	}
+	transcript := io.Transcript()
+	if !strings.Contains(transcript, "already exists") || !strings.Contains(transcript, "KENWARD_BOT_TOKEN") {
+		t.Errorf("the operator was not told to add the variables themselves:\n%s", transcript)
+	}
+	if strings.Contains(transcript, realToken) {
+		t.Error("the token was printed to the terminal")
+	}
+}
+
 // TestNoSecretIsEverPrinted covers the transcript as a whole, including the paths
 // where the wizard repeats a question.
 func TestNoSecretIsEverPrinted(t *testing.T) {

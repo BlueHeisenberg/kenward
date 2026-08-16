@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -204,6 +205,13 @@ const (
 	// droppedText is sent when the queue behind a running turn is full. Dropping
 	// with a notice is honest; dropping silently would read as being ignored.
 	droppedText = "I'm backed up and had to drop that message. Send it again in a moment."
+	// noAnswerText is sent when the turn ran to the end and produced nothing the
+	// member could see: the model returned no text and no tool call, or it returned
+	// only a tool call whose proposal the capture engine suppressed without asking.
+	// Neither is a failure the node can classify further, and neither is a reason to
+	// go quiet — a turn that ends in silence teaches a household the assistant is
+	// broken (IMPLEMENTATION.md sections 5 and 10).
+	noAnswerText = "I didn't get a usable answer to that. Try asking again."
 )
 
 // Unit is one conversation's assistant: a member's direct chat, or the household
@@ -435,6 +443,22 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		u.deps.Logger.Warn("assistant: reply text sanitized", "reason", warn)
 	}
 
+	// A publish request resolves to an entry id or to nothing. A title that did not
+	// come back from this turn's search in this scope is dropped with a log line,
+	// exactly like a malformed remember: the node does not guess at an id, because
+	// an id it did not retrieve itself is an id it cannot vouch for.
+	publishID := ""
+	title, warn := extractPublishTitle(comp.ToolCalls)
+	if title != "" {
+		var ok bool
+		if publishID, ok = publishTarget(sc, groups, title); !ok {
+			warn = joinWarn(warn, "publish title matched no single entry retrieved from this scope this turn")
+		}
+	}
+	if warn != "" {
+		u.deps.Logger.Warn("assistant: publish call dropped", "reason", warn)
+	}
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -448,10 +472,26 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// which several local chat templates reject or silently merge. History is
 		// unit-local, bounded and in memory only; it is never written to lore.
 		u.history.add(in.Text, reply)
-	} else if proposal == nil {
+	} else if proposal == nil && publishID == "" {
+		// Nothing to say, nothing to propose and nothing to publish. The model
+		// misbehaved, but the member still sent a message, so they still get an
+		// answer.
 		u.deps.Logger.Warn("assistant: model returned an empty reply", "chat", in.ChatID)
+		return nil, u.send(ctx, sc, in, noAnswerText)
 	}
 
+	// A publish is something the member asked for; a remember proposal is something
+	// the assistant volunteered. If the model does both in one turn the request
+	// wins, and either way exactly one question reaches the member.
+	if publishID != "" {
+		return func(fctx context.Context) {
+			if _, err := u.deps.Capture.OfferPromotion(fctx, sc, publishID, in.UserID); err != nil {
+				// As with capture, the engine has already spoken to the member
+				// wherever they saw anything; this is for the operator.
+				u.deps.Logger.Warn("assistant: publish failed", "error", err)
+			}
+		}, nil
+	}
 	if proposal == nil {
 		return nil, nil
 	}
@@ -460,12 +500,65 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// releases the turn slot — it waits on a button, not on the node.
 	p := *proposal
 	return func(fctx context.Context) {
-		if _, err := u.deps.Capture.Offer(fctx, sc, p, in.UserID); err != nil {
+		out, err := u.deps.Capture.Offer(fctx, sc, p, in.UserID)
+		if err != nil {
 			// The capture engine has already told the member what happened on
 			// every path where they saw anything; this is for the operator.
 			u.deps.Logger.Warn("assistant: capture failed", "error", err)
+			return
+		}
+		// A suppressed proposal asks nothing, by design. On a turn that also had
+		// no reply text that leaves the member with nothing at all, so the node
+		// says so — the suppression is the assistant's business, not theirs.
+		if reply == "" && (out.Kind == capture.OutcomeDuplicate || out.Kind == capture.OutcomeLimited) {
+			if err := u.send(fctx, sc, in, noAnswerText); err != nil {
+				u.deps.Logger.Warn("assistant: reporting an empty turn", "error", err)
+			}
 		}
 	}, nil
+}
+
+// publishTarget resolves a publish request to an entry id using this turn's own
+// retrieval, and nothing else.
+//
+// This is the whole reason the publish tool takes a title rather than an id. lore's
+// ids are global and lore_get is not space-scoped, so an id is a capability: whoever
+// holds one can name an entry in any space, including one this conversation may not
+// read. An id must therefore originate from a search performed inside the current
+// Scope (CLAUDE.md; IMPLEMENTATION.md section 12), and the model is not a source —
+// everything it writes is derived from member text. So the model names a title, and
+// the id comes from the search hit that title matched, in the space this scope writes.
+//
+// Anything less than exactly one match resolves to nothing: an unmatched title is a
+// title the member's private memory did not return this turn, and two entries sharing
+// a title is a choice the node must not make on the member's behalf.
+func publishTarget(sc domain.Scope, groups []spaceGroup, title string) (string, bool) {
+	if !sc.AllowsPrivateCapture() {
+		return "", false
+	}
+	want := normalizeTitle(title)
+	var id string
+	for _, g := range groups {
+		if g.space != sc.Write {
+			continue
+		}
+		for _, e := range g.entries {
+			if normalizeTitle(e.Title) != want || e.ID == "" {
+				continue
+			}
+			if id != "" {
+				return "", false
+			}
+			id = e.ID
+		}
+	}
+	return id, id != ""
+}
+
+// normalizeTitle makes the match insensitive to the cosmetic differences a model
+// produces when it copies a title back out of the prompt.
+func normalizeTitle(title string) string {
+	return strings.ToLower(strings.Join(strings.Fields(title), " "))
 }
 
 // spaceGroup is one space's retrieval result, kept in scope order.

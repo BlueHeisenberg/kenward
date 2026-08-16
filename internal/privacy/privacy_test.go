@@ -67,6 +67,19 @@ func TestStatementsAreGolden(t *testing.T) {
 		// returns, the statement is promising idle-locking that does not exist.
 		mustNotContain(t, s, "while you are away",
 			"this claim was withdrawn in D-019 and must not reappear")
+
+		// M-13: the text once stated the no-expiry behaviour as fact while
+		// internal/session zeroed keys after thirty minutes. The statement is
+		// printed by `kenward doctor` without knowing the setting, so it has to
+		// hold for a household that turned expiry on as well as one that did not.
+		// Naming the knob is what makes it hold; delete the name and the sentence
+		// silently becomes a promise again.
+		mustContain(t, s, "session.idle_timeout",
+			"the idle knob must be named, or the statement is only true for its default")
+		mustContain(t, s, "it is off unless someone did",
+			"the default must be stated, since a member cannot read the configuration")
+		mustContain(t, s, "stops answering until somebody at the machine starts it again",
+			"a household that turns expiry on must be told there is no in-band way back")
 	})
 
 	t.Run("both modes state the guarantees that do not depend on topology", func(t *testing.T) {

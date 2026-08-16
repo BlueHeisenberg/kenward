@@ -115,8 +115,8 @@ func TestHappyPathDirect(t *testing.T) {
 	if got := rig.router.chains[0]; len(got) != 1 || got[0] != "local" {
 		t.Errorf("router chain %v, want [local]", got)
 	}
-	if len(req.Tools) != 1 || req.Tools[0].Name != "remember" {
-		t.Errorf("request tools %+v, want exactly the remember tool", req.Tools)
+	if len(req.Tools) != 2 || req.Tools[0].Name != "remember" || req.Tools[1].Name != "publish" {
+		t.Errorf("request tools %+v, want remember and publish", req.Tools)
 	}
 
 	// The session was touched, nothing was written, and the turn was recorded.
@@ -581,6 +581,14 @@ func TestRouterFailuresGetReplies(t *testing.T) {
 			golden: "misconfigured.golden",
 		},
 		{
+			// A request the endpoint will not parse is permanent, whichever side
+			// of the wire rejects it: retry advice would send the member back to
+			// the same wall.
+			name:   "rejected request",
+			err:    &llm.APIError{StatusCode: 400, Status: "400 Bad Request", Endpoint: "monster"},
+			golden: "misconfigured.golden",
+		},
+		{
 			name:   "invalid request",
 			err:    fmt.Errorf("building request: %w", llm.ErrInvalidRequest),
 			golden: "misconfigured.golden",
@@ -750,6 +758,241 @@ func TestToolCallOnlyTurnIsNotRecorded(t *testing.T) {
 	}
 	if got := len(rig.unit.history.snapshot()); got != 0 {
 		t.Fatalf("history holds %d turns, want 0 for a turn with no assistant side", got)
+	}
+}
+
+// TestEmptyCompletionGetsNotice: a completion with no text and no tool call is not a
+// content filter and not a router error, so nothing else in the turn speaks for it.
+// The member still gets an answer — silence is the one wrong response.
+func TestEmptyCompletionGetsNotice(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{FinishReason: routing.FinishStop, Endpoint: "monster", Tier: "local"}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("hi")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	texts := rig.tr.sentTexts()
+	if len(texts) != 1 {
+		t.Fatalf("sent %v, want exactly the empty-turn notice", texts)
+	}
+	golden(t, "no_answer.golden", texts[0])
+	if len(rig.unit.history.snapshot()) != 0 {
+		t.Error("a turn with no reply was recorded in history")
+	}
+}
+
+// TestSuppressedProposalOnBareToolCallGetsNotice: the second silence path. The model
+// says nothing and only calls the tool, and the capture engine suppresses the
+// proposal as a duplicate — so it asks nothing either, and without a notice the
+// member's message produces no message at all.
+func TestSuppressedProposalOnBareToolCallGetsNotice(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoiceDecline, UserID: testUserID}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{
+			ToolCalls: []routing.ToolCall{{
+				ID:        "tc-1",
+				Name:      "remember",
+				Arguments: json.RawMessage(`{"title": "Coffee order", "body": "Oat milk.", "target": "personal"}`),
+			}},
+			FinishReason: routing.FinishToolCalls,
+		}, nil
+	}
+
+	// First turn: the member is asked and declines. They saw a question, so nothing
+	// further is owed to them.
+	if err := rig.unit.Handle(context.Background(), directInbound("remember this")); err != nil {
+		t.Fatalf("first Handle: %v", err)
+	}
+	if got := len(rig.tr.sentTexts()); got != 0 {
+		t.Fatalf("sent %v after a declined question, want nothing", rig.tr.sentTexts())
+	}
+
+	// Second turn: the same title, now suppressed as a duplicate without asking.
+	in := directInbound("remember this")
+	in.MessageID = 2
+	if err := rig.unit.Handle(context.Background(), in); err != nil {
+		t.Fatalf("second Handle: %v", err)
+	}
+	if rig.tr.askCount() != 1 {
+		t.Fatalf("asked %d questions, want 1 — the duplicate must not be asked again", rig.tr.askCount())
+	}
+	texts := rig.tr.sentTexts()
+	if len(texts) != 1 {
+		t.Fatalf("sent %v, want exactly the empty-turn notice", texts)
+	}
+	golden(t, "no_answer.golden", texts[0])
+	if rig.mem.putCount() != 0 {
+		t.Error("memory written on a suppressed proposal")
+	}
+}
+
+// publishCompletion is a bare publish call for the named title.
+func publishCompletion(title string) routing.Completion {
+	return routing.Completion{
+		Text: "Here it is.",
+		ToolCalls: []routing.ToolCall{{
+			ID:        "tc-1",
+			Name:      publishToolName,
+			Arguments: json.RawMessage(fmt.Sprintf(`{"title": %q}`, title)),
+		}},
+		FinishReason: routing.FinishToolCalls,
+	}
+}
+
+// TestPublishGoesThroughShareWithARetrievedID: the promotion flow, end to end. The
+// member asks, the model names a title it can see, and the id handed to memory is the
+// one this turn's search returned — never one the model or the member wrote.
+func TestPublishGoesThroughShareWithARetrievedID(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.bySpace["david-private"] = []memory.Entry{
+		entry("david-private", "Dentist", "Appointment on the first Monday of October.", "validated"),
+	}
+	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoicePublish, UserID: testUserID}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		// The tool is offered here, and its schema takes no id.
+		var found bool
+		for _, spec := range req.Tools {
+			if spec.Name == publishToolName {
+				found = true
+				if strings.Contains(string(spec.Schema), `"id"`) {
+					t.Error("the publish schema accepts an id; ids may not come from the model")
+				}
+			}
+		}
+		if !found {
+			t.Error("publish tool not offered in a direct scope")
+		}
+		// The model copies the title back out of the prompt, cosmetics and all.
+		return publishCompletion("  dentist  "), nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("publish my dentist note")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	shares := rig.mem.sharedCalls()
+	if len(shares) != 1 {
+		t.Fatalf("Share called %d times, want 1: %+v", len(shares), shares)
+	}
+	if got := shares[0]; got.from != "david-private" || got.to != "household" || got.entryID != "id-Dentist" {
+		t.Errorf("shared %+v, want id-Dentist from david-private to household", got)
+	}
+	// Share, never a read-then-put: lore's provenance survives a promotion.
+	if rig.mem.putCount() != 0 {
+		t.Error("promotion wrote a new entry instead of sharing the existing one")
+	}
+	// The member saw the full text before deciding.
+	if rig.tr.askCount() != 1 {
+		t.Fatalf("asked %d questions, want the publication preview", rig.tr.askCount())
+	}
+	rig.tr.mu.Lock()
+	preview := rig.tr.asked[0].Text
+	rig.tr.mu.Unlock()
+	if !strings.Contains(preview, "Appointment on the first Monday of October.") {
+		t.Errorf("preview %q does not show the entry's full text", preview)
+	}
+	if !strings.Contains(preview, "cannot be unpublished") {
+		t.Errorf("preview %q does not say publication is irreversible", preview)
+	}
+}
+
+// TestPublishIDNeverComesFromModelText is the provenance rule as an assertion: a
+// publish call for a title this turn's search did not return writes nothing, asks
+// nothing, and does not reach memory at all. lore's ids are global and lore_get is
+// not space-scoped, so an id the node did not retrieve itself is an id it cannot
+// vouch for — and the model is where member text arrives.
+func TestPublishIDNeverComesFromModelText(t *testing.T) {
+	tests := []struct {
+		name  string
+		title string
+	}{
+		{"a title that was never retrieved", "Someone else's private note"},
+		{"a raw lore id passed off as a title", "id-Dentist"},
+		{"a title retrieved from the shared space, not the private one", "Bin day"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.mem.bySpace["david-private"] = []memory.Entry{
+				entry("david-private", "Dentist", "Appointment in October.", "validated"),
+			}
+			rig.mem.bySpace["household"] = []memory.Entry{
+				entry("household", "Bin day", "Bins go out Thursday night.", "hardened"),
+			}
+			rig.tr.answer = transport.Answer{ChoiceID: capture.ChoicePublish, UserID: testUserID}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return publishCompletion(tc.title), nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound("publish that")); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			// The id never reaches memory at all — not Share, and not the Get
+			// behind the preview. Anything else would mean the node acted on an id
+			// it did not retrieve itself.
+			if got := rig.mem.gotIDs(); len(got) != 0 {
+				t.Errorf("memory read with %v; an unretrieved id reached the store", got)
+			}
+			if got := rig.mem.sharedCalls(); len(got) != 0 {
+				t.Errorf("Share reached with %+v; the id did not come from this scope's search", got)
+			}
+			if rig.tr.askCount() != 0 {
+				t.Error("a member was asked to confirm publishing an entry this turn never retrieved")
+			}
+			if rig.mem.putCount() != 0 {
+				t.Error("memory written on a dropped publish call")
+			}
+			// The turn still answered: the reply carried it.
+			if texts := rig.tr.sentTexts(); len(texts) != 1 || texts[0] != "Here it is." {
+				t.Errorf("sent %v, want just the reply", texts)
+			}
+		})
+	}
+}
+
+// TestGroupScopeIsNotOfferedPublish: publishing from the household group is
+// meaningless — the entry is already there — so the tool is not offered, and a model
+// that calls it anyway is refused by the scope, not by luck.
+func TestGroupScopeIsNotOfferedPublish(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testGroupScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.bySpace["household"] = []memory.Entry{
+		entry("household", "Bin day", "Bins go out Thursday night.", "hardened"),
+	}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		for _, spec := range req.Tools {
+			if spec.Name == publishToolName {
+				t.Error("publish tool offered in a group scope")
+			}
+		}
+		return publishCompletion("Bin day"), nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), groupInbound("publish the bin day note")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := rig.mem.sharedCalls(); len(got) != 0 {
+		t.Errorf("a group turn reached Share: %+v", got)
+	}
+	if rig.tr.askCount() != 0 {
+		t.Error("a group turn asked a publication question")
 	}
 }
 

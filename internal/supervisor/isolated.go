@@ -298,6 +298,24 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 		secrets = config.NewSecrets(config.SecretOptions{LookupEnv: opts.LookupEnv})
 	}
 
+	// A pod name is the isolation boundary made physical: one name is one
+	// container, one work volume, one lore instance, one bot token. Sanitisation
+	// is not injective — "a.b" and "a-b" both become "a-b" — and configuration
+	// validation rejects only empty and exactly-duplicate ids, so two members can
+	// arrive here mapping to one name. Whoever came second would find the first
+	// member's pod already running and report itself ready on it. The mapping is
+	// therefore proved injective here, at the layer where the damage would
+	// happen, rather than trusted from the layer above.
+	names := make(map[string]string, len(i.cfg.Members)+1)
+	claimName := func(name, owner string) error {
+		if prev, ok := names[name]; ok {
+			return fmt.Errorf("supervisor: %s and %s both name pod %q; refusing to start rather than serve one from the other's pod, with the other's lore volume and the other's bot token",
+				prev, owner, name)
+		}
+		names[name] = owner
+		return nil
+	}
+
 	var missing []string
 	for _, mc := range i.cfg.Members {
 		m := mc.Domain()
@@ -316,6 +334,9 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 		}
 		k := unitKey{member: m.ID}
 		name := podName(opts.NamePrefix, "member-"+string(m.ID))
+		if err := claimName(name, "member "+string(m.ID)); err != nil {
+			return nil, err
+		}
 		p := &pod{
 			key:   k,
 			name:  name,
@@ -341,6 +362,9 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 		} else {
 			k := unitKey{group: true}
 			name := podName(opts.NamePrefix, "group")
+			if err := claimName(name, "the household group"); err != nil {
+				return nil, err
+			}
 			p := &pod{
 				key:   k,
 				name:  name,
@@ -462,8 +486,10 @@ func (i *Isolated) specFor(p *pod) (sandbox.Spec, error) {
 }
 
 // podName builds a sandbox name from the parts, restricted to the [A-Za-z0-9_-]
-// alphabet sandbox.Spec.Name requires. Anything else becomes a hyphen; member ids
-// are unique in configuration, so names stay unique.
+// alphabet sandbox.Spec.Name requires. Anything else becomes a hyphen, which
+// makes the mapping lossy: distinct member ids can produce one name, and unique
+// ids therefore do not imply unique names. newIsolated proves the names it
+// builds are distinct before any pod exists.
 func podName(prefix, suffix string) string {
 	sanitize := func(s string) string {
 		out := make([]byte, 0, len(s))
@@ -537,6 +563,13 @@ func (i *Isolated) logStartup() {
 // runPod owns one pod's lifecycle: bring it up, watch it, and bring it back with
 // backoff when it exits unexpectedly. Every backend call is bounded by its own
 // timeout so a hung runtime cannot wedge shutdown.
+//
+// What it observes is the container, and only the container. StateReady here
+// means the pod's process is running — docs/IMPLEMENTATION.md §9's "health =
+// process up" — and never that the unit inside it answered anything: a pod whose
+// image starts and whose unit then wedges is reported ready. Observing the unit
+// itself would need a readiness surface inside the pod that does not exist; the
+// backend's Inspect returns liveness and nothing else.
 //
 // Each tick takes the pod's operation lock with TryLock and stands aside when a
 // rolling update holds it: a pod that is down because Roll is deliberately
@@ -747,7 +780,7 @@ func (i *Isolated) shutdown(ctx context.Context) error {
 // Roll brings every pod up to the current image by recreating each in turn:
 // graceful stop — SIGTERM, so the pod finishes its in-flight turn and locks its
 // session exactly as any drain — then recreation from the pod's full spec on the
-// current image, then a wait for the new pod to hold healthy before the next pod
+// current image, then a wait for the new pod to hold running before the next pod
 // is touched. One member is briefly unavailable at a time; the household is
 // never entirely down. The order is deterministic: members in configuration file
 // order, the household group last, so the group's pod — the one every member
@@ -825,7 +858,7 @@ func (i *Isolated) rollOne(ctx context.Context, p *pod) error {
 		}
 	}
 
-	if err := i.awaitHealthy(ctx, p); err != nil {
+	if err := i.awaitRunning(ctx, p); err != nil {
 		i.tracker.fail(p.key, err)
 		return err
 	}
@@ -833,11 +866,17 @@ func (i *Isolated) rollOne(ctx context.Context, p *pod) error {
 	return nil
 }
 
-// awaitHealthy waits for a freshly recreated pod to be observed running on two
+// awaitRunning waits for a freshly recreated pod to be observed running on two
 // consecutive polls — running once and then gone is the signature of an image
 // that crashes on startup, and moving on after a single sighting would roll that
 // crash across the household.
-func (i *Isolated) awaitHealthy(ctx context.Context, p *pod) error {
+//
+// Two sightings of a running container is the whole of the check, and the name
+// says so: it catches an image that will not stay up, not a unit that starts and
+// then serves nobody. A roll can therefore complete across a household whose new
+// image runs and wedges. Catching that would need the pod to report its own
+// readiness, which nothing in the image does today.
+func (i *Isolated) awaitRunning(ctx context.Context, p *pod) error {
 	deadline := i.opts.Now().Add(i.opts.RollTimeout)
 	seenRunning := false
 	for {
@@ -866,7 +905,11 @@ func (i *Isolated) awaitHealthy(ctx context.Context, p *pod) error {
 // Health reports every pod's condition from the supervisor's own observations —
 // the monitor goroutines write, Health reads a snapshot. It never calls the
 // container runtime and never touches anything external, so it is callable before
-// Start, after Stop, and while a pod is mid-crash-loop. Members who have not
+// Start, after Stop, and while a pod is mid-crash-loop.
+//
+// In this mode StateReady is an observation of the container, not of the member's
+// conversation: it says the pod is running, and a pod that runs while the unit
+// inside it is wedged reports it. See runPod. Members who have not
 // enrolled appear with StateNotEnrolled: they have no pod, which is a known
 // situation, not a failure.
 func (i *Isolated) Health(_ context.Context) ([]UnitHealth, error) {

@@ -393,7 +393,16 @@ func (w *Wizard) writeEnvFile() error {
 	}
 
 	path := filepath.Join(filepath.Dir(w.configPath), EnvFileName)
-	err := writeFile(path, renderEnvFile(withValues), envFileMode, w.opts.Force)
+	// Force is deliberately not passed on. It means "replace the configuration I
+	// wrote", and .env is not that file: `.env` is the name compose, systemd and half
+	// the tools on the machine already read, so the one beside the config is quite
+	// likely to hold a database password that has nothing to do with kenward.
+	// Truncating it would destroy secrets nobody has a copy of, to save the operator
+	// pasting three lines. Merging was the alternative and was not taken: it means
+	// parsing a format with no specification, and getting quoting or a duplicate key
+	// wrong there breaks the file just as thoroughly, only quietly. So the wizard
+	// never overwrites an existing .env, which is also what docs/CLI.md promises.
+	err := writeFile(path, renderEnvFile(withValues), envFileMode, false)
 	switch {
 	case errors.Is(err, ErrExists):
 		// An existing .env is somebody else's file and may hold secrets for

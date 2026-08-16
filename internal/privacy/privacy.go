@@ -74,6 +74,16 @@ or Docker.
 // history, and in simple mode to whoever holds the bot token. Refusing to do that is
 // the right call, and the honest consequence is that your key stays in your own
 // process's memory while that process is running.
+//
+// The idle paragraph then says both halves of that out loud, because for a while the
+// text stated the no-expiry behaviour as fact while internal/session shipped a
+// thirty-minute default that zeroed the key anyway. Two user-facing surfaces disagreeing
+// about a fact a member is asked to trust is the exact failure this package exists to
+// prevent, so the wording now describes the knob rather than one of its settings:
+// session.idle_timeout is off by default, and a household that turns it on is buying a
+// member who stops answering until somebody walks to the machine. Whichever way a
+// household has it, the sentences below are true — which is what lets `kenward doctor`
+// print them without knowing the setting.
 const isolatedStatement = `Your assistant runs in its own process, with its own key and its own Telegram
 bot. Nobody else in the household can read your private memory, and neither can
 the person who runs this machine — not from the disk, not from a backup, and
@@ -85,6 +95,12 @@ to Telegram's servers and leave it in your message history, which would be
 worse than the problem it solved. The consequence is that once your assistant
 is unlocked and running, your key stays in that process's memory until it
 stops or you lock it.
+
+kenward does not lock it for you after a quiet spell, because there would be
+no way to unlock it again from a chat. Your household can switch that on —
+session.idle_timeout in kenward.yaml — and it is off unless someone did. Where
+it is on, an assistant that has been quiet for that long stops answering until
+somebody at the machine starts it again.
 
 The honest limit: kenward has to see your words in plain text to answer them,
 and it is the second member of your private space. That is the price of an

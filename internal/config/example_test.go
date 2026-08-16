@@ -217,6 +217,14 @@ var allowedZeroFields = map[string]string{
 	"Members[0].EnrolledAt": "yaml:\"-\"; only MergeState from state.json sets it, and this example has none",
 	"Members[1].EnrolledAt": "yaml:\"-\"; only MergeState from state.json sets it, and this example has none",
 
+	// idle_timeout's default is 0 — idle expiry off — and the example states it as
+	// "0s" rather than dropping the key, because a knob the example never mentions is
+	// a knob nobody knows exists. Setting a non-zero duration here to satisfy this test
+	// would be worse than the gap it closes: it would put a value in the file every
+	// household copies that stops a member's assistant answering with no in-band way
+	// back (D-019), which is exactly why the default moved to off.
+	"Session.IdleTimeout": "0s is the default and the correct value; the example states the key and explains the trade in a comment",
+
 	// api_key_env is documented in config.go as "Empty for endpoints that need no
 	// authentication, which is the usual case for a machine on the household's own
 	// network" — monster and battlestation are exactly that case. Requiring a value

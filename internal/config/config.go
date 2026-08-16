@@ -51,8 +51,18 @@ const (
 // Default values applied before validation. They are exported so `kenward doctor` and
 // the setup wizard can show an operator what they will get if they say nothing.
 const (
-	DefaultSearchLimit         = 8
-	DefaultIdleTimeout         = 30 * time.Minute
+	DefaultSearchLimit = 8
+	// DefaultIdleTimeout is zero: idle expiry is off unless a household turns it on.
+	//
+	// It mirrors session.DefaultIdleTimeout and must keep mirroring it, because this is
+	// the value the run path actually hands the session manager. A passphrase never
+	// travels over Telegram (D-019), so a member whose key is expired has no way back
+	// in — the only re-unlock is somebody at the machine. A timeout therefore does not
+	// degrade an idle member, it silently stops their assistant answering; and the
+	// claim that survives either way is the one that matters, that nothing is readable
+	// from a disk, a backup, or a process nobody has unlocked. Zero is not "unset" here
+	// and is not rewritten: see ApplyDefaults.
+	DefaultIdleTimeout         = time.Duration(0)
 	DefaultMaxProposalsPerTurn = 1
 	DefaultUpdateChannel       = UpdateStable
 	DefaultCheckInterval       = 6 * time.Hour
@@ -185,7 +195,10 @@ type MemoryConfig struct {
 
 // SessionConfig configures key lifetime.
 type SessionConfig struct {
-	// IdleTimeout is how long an unlocked key stays in memory without use.
+	// IdleTimeout is how long an unlocked key stays in memory without use. Zero —
+	// the default — means it stays until the process stops or the member locks it.
+	// Setting it is choosing the trade knowingly: the key leaves memory sooner, and
+	// the member's assistant stops answering until somebody unlocks it at the machine.
 	IdleTimeout Duration `yaml:"idle_timeout"`
 }
 
@@ -329,9 +342,10 @@ func (c *Config) ApplyDefaults() {
 	if c.Memory.SearchLimit == 0 {
 		c.Memory.SearchLimit = DefaultSearchLimit
 	}
-	if c.Session.IdleTimeout == 0 {
-		c.Session.IdleTimeout = Duration(DefaultIdleTimeout)
-	}
+	// session.idle_timeout is deliberately not defaulted. Zero is the default and zero
+	// is also what "idle_timeout: 0s" means, so there is nothing to rewrite: normalising
+	// an unset value to a duration here is what kept a 30-minute expiry on the run path
+	// after the session package had turned it off.
 	if c.Capture.MaxProposalsPerTurn == 0 {
 		c.Capture.MaxProposalsPerTurn = DefaultMaxProposalsPerTurn
 	}

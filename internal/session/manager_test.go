@@ -203,6 +203,37 @@ func TestFileRelocationRejected(t *testing.T) {
 	}
 }
 
+// TestIdleExpiryIsOffByDefault pins the default a member's assistant depends on.
+//
+// D-019 leaves no in-band re-unlock path, so an expired member is a broken member
+// until somebody walks to the machine. A default duration here would break them
+// silently, and the isolated-mode privacy statement would be lying while it did.
+// If this test starts failing because someone gave DefaultIdleTimeout a duration,
+// the statement in internal/privacy has to change in the same commit.
+func TestIdleExpiryIsOffByDefault(t *testing.T) {
+	if DefaultIdleTimeout != 0 {
+		t.Fatalf("DefaultIdleTimeout = %s, want 0 (off); see D-019", DefaultIdleTimeout)
+	}
+
+	ctx := context.Background()
+	m := newTestManager(t, ModeIsolated, NewMemStore())
+	mustProvision(t, m, "ada", "pw")
+	if err := m.Unlock(ctx, "ada", "pw"); err != nil {
+		t.Fatalf("Unlock: %v", err)
+	}
+
+	// Backdate the session far past any timeout anyone would configure, then
+	// let the sweeper run over it. Nothing should touch it.
+	m.mu.Lock()
+	m.sessions["ada"].lastActive = time.Now().Add(-24 * time.Hour)
+	m.mu.Unlock()
+	m.expireIdle(time.Now())
+
+	if _, ok := m.Key("ada"); !ok {
+		t.Fatal("session expired with no idle timeout configured")
+	}
+}
+
 func TestIdleExpirySweepsWithoutAccess(t *testing.T) {
 	ctx := context.Background()
 	m := newTestManager(t, ModeIsolated, NewMemStore(), WithIdleTimeout(100*time.Millisecond))
@@ -588,8 +619,8 @@ func TestNewManagerValidation(t *testing.T) {
 	if _, err := NewManager(ModeSimple, nil); err == nil {
 		t.Fatal("nil store accepted")
 	}
-	if _, err := NewManager(ModeSimple, NewMemStore(), WithIdleTimeout(0)); err == nil {
-		t.Fatal("zero idle timeout accepted")
+	if _, err := NewManager(ModeSimple, NewMemStore(), WithIdleTimeout(-time.Second)); err == nil {
+		t.Fatal("negative idle timeout accepted")
 	}
 	if _, err := NewManager(ModeSimple, NewMemStore(), WithMaxConcurrentDerivations(0)); err == nil {
 		t.Fatal("zero derivation concurrency accepted")

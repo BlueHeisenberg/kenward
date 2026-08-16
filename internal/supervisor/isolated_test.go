@@ -794,6 +794,87 @@ func TestIsolatedPodTokenFromFileAndCredential(t *testing.T) {
 	}
 }
 
+// TestIsolatedRefusesCollidingPodNames.
+//
+// Pod names are sanitised into the alphabet sandbox.Spec.Name allows, which is
+// lossy: the distinct member ids "ana.smith" and "ana-smith" produce one name.
+// Configuration rejects empty and exactly-duplicate ids and nothing else, so
+// both reach the supervisor. If both pods were built, the second member's
+// monitor would inspect a pod that is already running — the first member's —
+// find it up, and report its own member ready on it. That member's turns would
+// then be served by another member's pod, with that member's lore volume and
+// that member's bot token. The supervisor must refuse instead, whatever the
+// layer above did or did not check.
+func TestIsolatedRefusesCollidingPodNames(t *testing.T) {
+	// The premise: two ids, one name.
+	if a, b := podName("kenward", "member-ana.smith"), podName("kenward", "member-ana-smith"); a != b {
+		t.Fatalf("sanitisation no longer collides these ids (%q vs %q); rewrite this test around ones that do", a, b)
+	}
+
+	cfg := isolatedTestConfig()
+	cfg.Members = []config.MemberConfig{
+		{ID: "ana.smith", Name: "Ana", TelegramID: 1, PrivateSpace: "a", Tiers: []string{"local"}, BotTokenEnv: "TOK_A"},
+		{ID: "ana-smith", Name: "Anna", TelegramID: 2, PrivateSpace: "b", Tiers: []string{"local"}, BotTokenEnv: "TOK_B"},
+	}
+	backend := newFakeBackend()
+
+	sup, err := newIsolated(cfg, isolatedTestOptions(backend), "linux")
+	if err == nil {
+		_ = sup.Stop(context.Background())
+		t.Fatal("newIsolated accepted two members whose pod names collide; the second would be served by the first's pod")
+	}
+	for _, want := range []string{"ana.smith", "ana-smith", "kenward-member-ana-smith"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not name %q", err, want)
+		}
+	}
+	if sup != nil {
+		t.Fatal("newIsolated returned a supervisor alongside the refusal")
+	}
+	// Refused before anything existed: no pod was created, so none could be
+	// adopted.
+	if n := len(backend.created); n != 0 {
+		t.Fatalf("refusal created %d pods, want none", n)
+	}
+}
+
+// TestIsolatedReadyMeansTheContainerIsRunning pins what StateReady claims in
+// this mode, because the honest answer is weaker than the word suggests: the
+// backend reports whether the container process is alive and nothing finer, so
+// a pod whose image starts and whose unit then wedges is reported ready and the
+// supervisor cannot tell the difference. Nothing here probes the unit — no
+// exec, no readiness call — and if that ever changes, this test and the
+// documentation on StateReady, Healthy and runPod change together.
+func TestIsolatedReadyMeansTheContainerIsRunning(t *testing.T) {
+	h := newIsolatedHarness(t, nil)
+	h.start(t)
+	h.waitAllReady(t)
+
+	for name, u := range mustHealth(t, h.sup) {
+		if name == "ana" {
+			continue // never enrolled, no pod
+		}
+		if !u.Healthy() {
+			t.Fatalf("%s = %v, want ready", name, u.State)
+		}
+	}
+
+	// The only questions asked of the backend were lifecycle ones. A readiness
+	// probe would show up here as something other than create/start/stop.
+	h.backend.mu.Lock()
+	events := append([]string(nil), h.backend.events...)
+	h.backend.mu.Unlock()
+	for _, e := range events {
+		switch verb, _, _ := strings.Cut(e, " "); verb {
+		case "create", "start", "stop", "recreate":
+		default:
+			t.Fatalf("unexpected backend call %q: readiness is documented as container liveness only", e)
+		}
+	}
+
+	h.stop(t)
+}
+
 func TestIsolatedNoGoroutineLeaksAfterStop(t *testing.T) {
 	before := runtime.NumGoroutine()
 

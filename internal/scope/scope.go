@@ -57,6 +57,19 @@ func Resolve(cfg *config.Config, in transport.Inbound) (domain.Scope, error) {
 	// conversation may touch, not the person. GroupChatID zero means no group is
 	// configured, and must not match the zero-valued ChatID of a malformed update.
 	if household.GroupChatID != 0 && in.ChatID == household.GroupChatID {
+		// The chat and the flag have to agree. A message carrying the household's
+		// chat id but not marked as a group message is contradictory, and the only
+		// way to produce one is a group_chat_id that is really some member's own
+		// chat: their direct messages would then arrive here and be answered into
+		// the shared space, where the whole household reads them. Configuration
+		// validation rejects that collision, and this is what stands behind it for
+		// the configurations Resolve is handed without having validated. There is no
+		// safe guess between "this is the household" and "this is a private chat",
+		// so neither is made.
+		if !in.IsGroup {
+			return domain.Scope{}, ErrNotEnrolled
+		}
+
 		// Being in the group chat is not enrolment. Any member can add anyone to a
 		// Telegram group, deliberately or by accident, and the shared space holds
 		// household knowledge — door codes, keys, logistics — that being added to a

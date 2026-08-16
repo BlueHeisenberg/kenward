@@ -202,11 +202,14 @@ memory:
 # session configures how long an unlocked key stays usable without activity.
 session:
   # idle_timeout is how long an unlocked session key stays in memory after the last
-  # message before it locks again and needs re-unlocking. Kenward's default is 30
-  # minutes; set explicitly to the same value here. Too long and a key sits unlocked in
-  # memory long after a conversation ended; too short and a member is asked to unlock
-  # again mid-conversation.
-  idle_timeout: 30m
+  # message before it is zeroed. Kenward's default is 0s — off — and that is what is
+  # set here, because there is no way for a member to unlock again from Telegram: a
+  # passphrase never travels over the chat. Turning this on therefore does not shorten
+  # a key's life at the cost of one extra prompt, it stops that member's assistant
+  # answering after a quiet afternoon, until somebody starts it again at the machine.
+  # Set a duration only if that is a trade you want: the key leaves memory sooner, and
+  # nothing gets it back in without physical access.
+  idle_timeout: 0s
 
 # capture bounds how often the assistant proactively asks to remember something it
 # noticed in the conversation.

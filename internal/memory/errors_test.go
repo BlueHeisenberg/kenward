@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -20,6 +21,10 @@ func TestClassifyGolden(t *testing.T) {
 		"not-writer":    ErrNotWriter,
 		"busy":          ErrBusy,
 		"invalid":       ErrInvalidArgument,
+		// An operational failure of lore's own store is typed too, so it can be
+		// reported as one instead of as an unrecognised rejection.
+		"store-unavailable": ErrStoreUnavailable,
+		"canceled":          context.Canceled,
 	}
 
 	lines := strings.Split(golden(t, "errors.txt"), "\n")
@@ -174,6 +179,7 @@ func TestSearchParseFailureDoesNotLeakThroughTheClient(t *testing.T) {
 	// A well-formed header followed by a line lore's format no longer produces —
 	// and that line is a member's entry title, because that is what lore renders.
 	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
 		toolSearch: {{Text: "1 result(s) for boiler\n" + loreSecret + "\n"}},
 	}}, nil)
 

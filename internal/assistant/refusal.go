@@ -67,8 +67,9 @@ const (
 	// right advice.
 	modelBusyText = "The model is busy right now. Try again in a moment."
 	// misconfiguredText covers failures no retry will fix — a rejected key, an
-	// unknown model, a request the endpoint refuses to parse. The member cannot
-	// repair any of these; the operator can.
+	// unknown model, a request the endpoint refuses to parse (400 and
+	// llm.ErrInvalidRequest are both that request, rejected on either side of the
+	// wire). The member cannot repair any of these; the operator can.
 	misconfiguredText = "Something is wrong with this household's setup — tell whoever runs it."
 	// turnFailedText covers everything else. It promises nothing it does not know:
 	// the message arrived, no answer was produced.
@@ -94,7 +95,10 @@ func completionFailureText(err error) string {
 		switch ae.StatusCode {
 		case 429:
 			return modelBusyText
-		case 401, 403, 404:
+		case 400, 401, 403, 404:
+			// 400 is the endpoint saying it will not parse this request — the same
+			// permanent fault as ErrInvalidRequest, caught one hop later. Advising a
+			// retry for it would send the member back to a wall.
 			return misconfiguredText
 		}
 		return turnFailedText

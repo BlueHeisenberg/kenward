@@ -28,7 +28,14 @@ const (
 	StateUnknown State = iota
 	// StateStarting means the unit has been asked to run but has not reported ready.
 	StateStarting
-	// StateReady means the unit is serving.
+	// StateReady means the unit has been brought up and nothing has been observed
+	// wrong with it. What "brought up" means differs by mode, and the difference
+	// matters to anyone reading it: in simple and single-unit mode the unit's own
+	// goroutine is running in this process, and in isolated mode the member's pod
+	// is running — observed through the container runtime, which reports liveness
+	// and nothing finer. Neither is a statement that the unit answered a message.
+	// A pod whose image starts and whose unit then wedges is StateReady, exactly
+	// as docs/IMPLEMENTATION.md §9's "health = process up" says it is.
 	StateReady
 	// StateStopped means the unit exited or was stopped deliberately.
 	StateStopped
@@ -85,7 +92,10 @@ type UnitHealth struct {
 	Err error
 }
 
-// Healthy reports whether the unit is serving.
+// Healthy reports whether the unit is up: StateReady, with the meaning that
+// constant carries. It is deliberately not a claim that this member is being
+// served — nothing here has spoken to the unit — and a caller who needs that
+// stronger fact cannot get it from this package.
 func (u UnitHealth) Healthy() bool { return u.State == StateReady }
 
 // ErrUnsupportedMode is returned when a mode cannot run on this host — in practice,

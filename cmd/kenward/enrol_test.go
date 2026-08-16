@@ -45,12 +45,43 @@ func TestInvitePrintsTheCodeAndNothingElse(t *testing.T) {
 		}
 	}
 	// Nothing that would carry the code somewhere it can be read later.
+	//
+	// Scanned around the code rather than through it: the code is random Crockford
+	// Base32, so it contains "QR" — or any other banned pair — by chance often enough
+	// to fail this test roughly one run in four. A code is not a QR image, and a test
+	// about QR images must not depend on which letters the generator picked. The code
+	// is printed alone on its own indented line, so the rest of the output is exactly
+	// the prose this assertion is about.
+	code, prose := splitClaimCode(t, out)
 	for _, unwanted := range []string{"http://", "https://", "t.me/", "QR", "qr"} {
-		if strings.Contains(out, unwanted) {
+		if strings.Contains(prose, unwanted) {
 			t.Errorf("invite printed %q, which would leak the code into a chat log:\n%s", unwanted, out)
 		}
 	}
+	// And the code itself appears once, in that one place. A deep link would carry a
+	// second copy, which is the leak the substrings above are a proxy for.
+	if n := strings.Count(out, code); n != 1 {
+		t.Errorf("the claim code appears %d times, want 1 — a second copy is a second place it can be read:\n%s", n, out)
+	}
 	h.assertNoSecrets(t)
+}
+
+// splitClaimCode returns the claim code `invite` printed and the rest of the output.
+// The code is the one non-empty indented line; everything else is prose.
+func splitClaimCode(t *testing.T, out string) (code, prose string) {
+	t.Helper()
+	var rest []string
+	for _, line := range strings.Split(out, "\n") {
+		if code == "" && strings.HasPrefix(line, "    ") && strings.TrimSpace(line) != "" {
+			code = strings.TrimSpace(line)
+			continue
+		}
+		rest = append(rest, line)
+	}
+	if code == "" {
+		t.Fatalf("invite printed no claim code on a line of its own:\n%s", out)
+	}
+	return code, strings.Join(rest, "\n")
 }
 
 // TestInviteRefusesAnUndeclaredMember.

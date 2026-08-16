@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -173,6 +174,12 @@ type Excerpt struct {
 	// Snippet is lore's snippet verbatim, with the FTS5 match brackets still in
 	// it. It is kept for diagnosing retrieval, not for showing to anyone.
 	Snippet string
+
+	// spaceName is the space display name lore echoed for this hit. It is not
+	// exported because it is not authoritative — display names are neither
+	// unique nor stable, and Entry.Space is the id the caller asked for — but it
+	// is checked against that id before the hit is returned.
+	spaceName string
 }
 
 // IsExcerpt reports whether e is a search excerpt rather than a whole entry. It
@@ -218,7 +225,12 @@ func (c *Client) Search(ctx context.Context, q SearchQuery) ([]Entry, error) {
 // Limit applies per space, not to the whole result set, so that a second space
 // cannot be crowded out by the first. Zero leaves lore's own default of eight.
 func (c *Client) SearchExcerpts(ctx context.Context, q SearchQuery) ([]Excerpt, error) {
-	if len(q.Spaces) == 0 {
+	// The space set is the authorization decision, so it is checked as one: an
+	// empty slice and an empty id inside a non-empty slice are the same failure,
+	// a call that has not named a space it is entitled to. lore reads an empty
+	// space argument as "work it out from the working directory", which is the
+	// one thing this client never lets it do.
+	if len(q.Spaces) == 0 || slices.Contains(q.Spaces, "") {
 		return nil, ErrEmptySpaceSet
 	}
 	if strings.TrimSpace(q.Text) == "" {
@@ -251,7 +263,18 @@ func (c *Client) SearchExcerpts(ctx context.Context, q SearchQuery) ([]Excerpt, 
 }
 
 // searchSpace runs lore_search against exactly one space.
+//
+// As in Get, the space lore echoes for each hit is checked against the space the
+// caller asked for. lore scopes a search to the space argument, so a hit from
+// anywhere else is lore misbehaving rather than an authorization hole — but this
+// is the only path that would otherwise stamp the caller's space id onto an entry
+// without ever having looked at what lore said. The check is as weak as lore's
+// display names, exactly as it is in Get.
 func (c *Client) searchSpace(ctx context.Context, space domain.SpaceID, q SearchQuery) ([]Excerpt, error) {
+	want, err := c.spaceNameFor(ctx, space)
+	if err != nil {
+		return nil, err
+	}
 	args := map[string]any{
 		"query": q.Text,
 		"space": string(space),
@@ -271,6 +294,10 @@ func (c *Client) searchSpace(ctx context.Context, space domain.SpaceID, q Search
 		return nil, err
 	}
 	for i := range xs {
+		if xs[i].spaceName != want {
+			return nil, fmt.Errorf("memory: search of space %s returned an entry from lore space %q: %w",
+				space, xs[i].spaceName, ErrNotFound)
+		}
 		xs[i].Entry.Space = space
 	}
 	return xs, nil
@@ -583,6 +610,12 @@ func (c *Client) callTool(ctx context.Context, tool string, args map[string]any,
 		case err != nil && ctx.Err() != nil:
 			return "", uncertain(fmt.Errorf("memory: %s: %w", tool, ctx.Err()))
 		case err != nil && timedOut:
+			// The subprocess is alive but did not answer, so acquire would hand
+			// it to the next call and that one would time out too, for as long
+			// as the process stays wedged. It is retired here instead: process
+			// death is not the only way lore stops being usable.
+			c.discard(s)
+			c.cfg.Logger.Warn("lore: subprocess did not answer in time, discarding it", "tool", tool)
 			return "", uncertain(fmt.Errorf("memory: %s: no answer within %s: %w", tool, c.cfg.CallTimeout, err))
 		case err != nil:
 			if !s.waitDead(deadGrace) {

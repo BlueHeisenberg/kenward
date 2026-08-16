@@ -1,7 +1,8 @@
-// The remember tool: its specification on the routing seam and the defensive parsing
-// of what the model does with it.
+// The two tools kenward offers the model — remember and publish — their
+// specifications on the routing seam, and the defensive parsing of what the model
+// does with them.
 //
-// The schema is docs/PROMPT.md's, verbatim. Proposals arrive as native tool calls;
+// The schemas are docs/PROMPT.md's, verbatim. Proposals arrive as native tool calls;
 // routing.ToolCall.Arguments is raw JSON precisely because a malformed call is a
 // parsing decision for the caller that understands the tool, and the rules here are
 // fixed: a malformed call is dropped with a log line, never a crashed turn and never
@@ -18,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/BlueHeisenberg/kenward/internal/capture"
+	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
 )
@@ -39,13 +41,43 @@ const rememberSchema = `{
   }
 }`
 
-// rememberTools is the tool list attached to every turn's request.
-func rememberTools() []routing.ToolSpec {
-	return []routing.ToolSpec{{
+// publishToolName is the second tool: the member asking for an entry they already
+// recorded privately to be published to the household.
+const publishToolName = "publish"
+
+// publishSchema is the input schema from docs/PROMPT.md, verbatim.
+//
+// It takes a title and no id, and that is the whole security design of the tool.
+// lore's ids are global and lore_get is not space-scoped, so an id is a capability:
+// whoever holds one can name an entry in any space. The model is a place member text
+// arrives, so an id it produced would be an id the member supplied. The title is
+// resolved against this turn's own retrieval instead — see publishTarget.
+const publishSchema = `{
+  "type": "object",
+  "required": ["title"],
+  "properties": {
+    "title": {"type": "string", "description": "The title of the entry to publish, exactly as it appears in the private memory section above."}
+  }
+}`
+
+// toolSpecs is the tool list attached to a turn's request. The publish tool is
+// offered only in a direct scope: publishing from the household group is meaningless
+// — the entry would already be there — and the capture engine refuses it anyway.
+// Offering a tool whose every call must be dropped only teaches the model to call it.
+func toolSpecs(sc domain.Scope) []routing.ToolSpec {
+	specs := []routing.ToolSpec{{
 		Name:        rememberToolName,
 		Description: "Propose storing something in memory. The member confirms before anything is written.",
 		Schema:      json.RawMessage(rememberSchema),
 	}}
+	if sc.AllowsPrivateCapture() {
+		specs = append(specs, routing.ToolSpec{
+			Name:        publishToolName,
+			Description: "Publish an entry from the member's private memory to the household. The member sees its full text and confirms before anything is published.",
+			Schema:      json.RawMessage(publishSchema),
+		})
+	}
+	return specs
 }
 
 // rememberCall mirrors the tool schema. Unknown fields are tolerated: models
@@ -68,6 +100,9 @@ type rememberCall struct {
 func extractProposal(calls []routing.ToolCall) (p *capture.Proposal, warn string) {
 	var payload json.RawMessage
 	for _, c := range calls {
+		if c.Name == publishToolName {
+			continue // the other tool, read by extractPublishTitle
+		}
 		if c.Name != rememberToolName {
 			warn = joinWarn(warn, fmt.Sprintf("model called unknown tool %q; dropped", c.Name))
 			continue
@@ -135,6 +170,33 @@ func parseRemember(payload json.RawMessage) (rememberCall, error) {
 		return rememberCall{}, fmt.Errorf("remember call has no body")
 	}
 	return call, nil
+}
+
+// extractPublishTitle reads the completion's tool calls for a publish request and
+// returns the title it named. Only the first call is considered, for the same reason
+// as remember: one question per turn reaches the member. A malformed call returns an
+// empty title and a warning for the log, never a guess.
+func extractPublishTitle(calls []routing.ToolCall) (title string, warn string) {
+	for _, c := range calls {
+		if c.Name != publishToolName {
+			continue
+		}
+		if title != "" {
+			warn = joinWarn(warn, "model made more than one publish call; using the first")
+			continue
+		}
+		var call struct {
+			Title string `json:"title"`
+		}
+		if err := json.NewDecoder(strings.NewReader(string(c.Arguments))).Decode(&call); err != nil {
+			warn = joinWarn(warn, fmt.Sprintf("publish arguments are not valid JSON: %v", err))
+			continue
+		}
+		if title = strings.TrimSpace(call.Title); title == "" {
+			warn = joinWarn(warn, "publish call has no title")
+		}
+	}
+	return title, warn
 }
 
 // strayRememberBlock matches a fenced block labelled remember in reply text. The

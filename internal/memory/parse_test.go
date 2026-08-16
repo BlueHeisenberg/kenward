@@ -269,6 +269,50 @@ func TestParseEntryGolden(t *testing.T) {
 			},
 		},
 		{
+			// A marker is a free-form string, so a member or a model can put
+			// lore's own field separator inside one. That used to shift every
+			// later field and make the entry unreadable for good.
+			name:    "a marker containing the field separator",
+			fixture: "get_marker_pipe.txt",
+			want: rendered{
+				Entry: Entry{
+					ID:         "a1b2c3d4-0000-4000-8000-000000000007",
+					Domain:     "home/misc",
+					Title:      "Marker vocabulary",
+					Body:       "A marker lore normalised with a pipe in it.",
+					Confidence: "validated",
+					Origin:     "convention",
+					Markers:    []string{"[CONTEXT | STAGING]", "[NON-NEGOTIABLE]"},
+					UpdatedAt:  mustTime(t, "2026-05-06T07:08:09.000000000Z"),
+				},
+				SpaceName:   "household",
+				Version:     2,
+				SourceEntry: "9f8e7d6c-0000-4000-8000-00000000000b",
+			},
+		},
+		{
+			// An ordinary note about lore's own output: a horizontal rule, a
+			// blank line, and then something shaped like an entry head. A get by
+			// id renders one entry, so all of it is body.
+			name:    "a body containing a horizontal rule and an entry head",
+			fixture: "get_body_rule.txt",
+			want: rendered{
+				Entry: Entry{
+					ID:     "a1b2c3d4-0000-4000-8000-000000000008",
+					Domain: "home/notes",
+					Title:  "How lore renders an entry",
+					Body: "Notes on the format, with a horizontal rule and then a worked example:\n\n---\n\n" +
+						"# Second entry\nid a1b2c3d4-0000-4000-8000-000000000009 (v1) | space household | " +
+						"domain home/notes | validated | origin directive | updated 2026-05-06T07:08:09.000000000Z",
+					Confidence: "provisional",
+					Origin:     "evidence",
+					UpdatedAt:  mustTime(t, "2026-05-06T07:08:09.000000000Z"),
+				},
+				SpaceName: "hearth-private",
+				Version:   1,
+			},
+		},
+		{
 			name:    "clock-skew padding on updated_at",
 			fixture: "get_clock_skew.txt",
 			want: rendered{
@@ -325,6 +369,21 @@ func TestParseRenderedDomainMode(t *testing.T) {
 	}
 	if got[0].SpaceName != "household" || got[1].SpaceName != "hearth-private" {
 		t.Errorf("space names: %q / %q", got[0].SpaceName, got[1].SpaceName)
+	}
+
+	// Domain mode cuts at lore's rule only where an entry head follows it, so a
+	// body that merely contains a rule stays one entry. Where a body forges a
+	// head as well, domain mode cannot tell — which is exactly why a get by id,
+	// the path Get, Share and Put's read-back use, does not split at all.
+	withRule := strings.Replace(golden(t, "get_minimal.txt"),
+		"The green bin goes out Tuesday night.",
+		"The green bin goes out Tuesday night.\n\n---\n\nAnd the black one on Friday.", 1)
+	one, err := parseRendered(withRule)
+	if err != nil {
+		t.Fatalf("parseRendered on a body with a horizontal rule: %v", err)
+	}
+	if len(one) != 1 {
+		t.Errorf("a horizontal rule in a body split the entry into %d", len(one))
 	}
 
 	empty, err := parseRendered(golden(t, "get_domain_none.txt"))
@@ -462,6 +521,31 @@ func TestParseMarkers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := parseMarkerRun(tc.run); !slices.Equal(got, tc.want) {
 				t.Errorf("parseMarkerRun(%q) = %v, want %v", tc.run, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseMarkerList covers lore_get's space-joined marker field, where the
+// bracket — not the space — is the delimiter, because a marker can contain a
+// space or lore's own field separator.
+func TestParseMarkerList(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"none", "", nil},
+		{"one", "[CONTEXT]", []string{"[CONTEXT]"}},
+		{"several", "[CONTEXT] [UPDATED]", []string{"[CONTEXT]", "[UPDATED]"}},
+		{"a marker with a space", "[NEEDS REVIEW] [CONTEXT]", []string{"[NEEDS REVIEW]", "[CONTEXT]"}},
+		{"a marker with the field separator", "[A | B] [C]", []string{"[A | B]", "[C]"}},
+		{"unbracketed falls back to fields", "custom marker", []string{"custom", "marker"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseMarkerList(tc.in); !slices.Equal(got, tc.want) {
+				t.Errorf("parseMarkerList(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -285,6 +286,44 @@ func TestConsentNeverApprovesWithoutAYes(t *testing.T) {
 			}
 			if !strings.Contains(h.stdout(), "needs your agreement") {
 				t.Errorf("the prompt does not explain itself:\n%s", h.stdout())
+			}
+		})
+	}
+}
+
+// TestApplyOutcomesAreReported.
+//
+// An unanswered consent prompt is a non-decision, not a runtime fault: it must exit
+// cleanly like a decline and say which of the two it was, because a decline is the
+// household deciding and silence is the question coming round again. Falling through
+// to the generic failure branch printed a second, contradictory error and exited 1
+// immediately after the prompt had said it was not a decision.
+func TestApplyOutcomesAreReported(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+		code int
+		want []string
+	}{
+		{"applied", nil, exitOK, []string{"Updated to 2.0.0"}},
+		{"restart pending", keelupdate.ErrRestartPending, exitOK, []string{"Restart kenward"}},
+		{"declined", keelupdate.ErrConsentDeclined, exitOK, []string{"Declined", "Nothing on disk changed"}},
+		{"unanswered", keelupdate.ErrConsentUnanswered, exitOK, []string{"nothing was decided", "offered again"}},
+		{"locked", keelupdate.ErrLocked, exitOK, []string{"Another process"}},
+		{"preflight", keelupdate.ErrPreflight, exitFailure, []string{"would not run on this machine"}},
+		{"anything else", errors.New("disk on fire"), exitFailure, []string{"applying the update"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, simpleYAML, fullEnvironment())
+			if code := reportApply(h.e, tc.err, "2.0.0"); code != tc.code {
+				t.Errorf("exit = %d, want %d\n%s", code, tc.code, h.both())
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(h.both(), want) {
+					t.Errorf("output does not contain %q:\n%s", want, h.both())
+				}
 			}
 		})
 	}

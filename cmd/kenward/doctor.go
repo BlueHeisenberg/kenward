@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
@@ -275,6 +276,7 @@ func doctorSessions(ctx context.Context, e *env, cfg *config.Config) []check {
 		Text: fmt.Sprintf("%s a wrapped key on disk",
 			plural(len(res.Provisioned), "1 member has", fmt.Sprintf("%d members have", len(res.Provisioned)))),
 	})
+	checks = append(checks, idleExpiryCheck(cfg.Session.IdleTimeout.Duration()))
 	for _, id := range res.MissingKey {
 		checks = append(checks, check{
 			Status: statusWarn,
@@ -287,6 +289,38 @@ func doctorSessions(ctx context.Context, e *env, cfg *config.Config) []check {
 		})
 	}
 	return checks
+}
+
+// idleExpiryCheck says which way this household has session.idle_timeout set.
+//
+// The privacy statement names the knob and is true either way, deliberately: it cannot
+// know a household's configuration. doctor can, and this is the screen somebody reads to
+// find out which case is theirs.
+//
+// A configured timeout is a warning rather than an ok line because there is no in-band
+// way back. A passphrase never travels over Telegram (D-019), so a key zeroed after a
+// quiet afternoon is only replaced by somebody at the machine — until then the assistant
+// simply stops answering, which reads as broken rather than locked. It is still not a
+// failure: it is a household's own knowing choice, and doctor exits non-zero for three
+// things and this is not one of them.
+func idleExpiryCheck(d time.Duration) check {
+	if d <= 0 {
+		return check{
+			Status: statusOK,
+			Text:   "unlocked keys do not expire on idle (session.idle_timeout is off)",
+		}
+	}
+	return check{
+		Status: statusWarn,
+		Text:   fmt.Sprintf("unlocked keys expire after %s of quiet (session.idle_timeout)", d),
+		Detail: []string{
+			"after that long without a message the member's key is zeroed and their " +
+				"assistant stops answering, which looks like a broken assistant rather " +
+				"than a locked one",
+			"there is no way back from a chat: a passphrase never travels over Telegram, " +
+				"so someone has to start the process again at the machine",
+		},
+	}
 }
 
 // doctorTransport authorises every bot token this configuration names.

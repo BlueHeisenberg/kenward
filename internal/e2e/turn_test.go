@@ -75,8 +75,11 @@ func TestDirectMessageRoundTripsAndPromptCarriesBothMemories(t *testing.T) {
 	if req.UserText() != "when do the bins go out?" {
 		t.Errorf("user message = %q, want the member's own words", req.UserText())
 	}
-	if len(req.Tools) != 1 || req.Tools[0].Function.Name != "remember" {
-		t.Errorf("tools on the wire = %+v, want exactly the remember tool", req.Tools)
+	// A direct conversation is offered both tools: remember, and publish for the
+	// promotion flow. The group is offered only remember — asserted where the group
+	// turn is tested.
+	if len(req.Tools) != 2 || req.Tools[0].Function.Name != "remember" || req.Tools[1].Function.Name != "publish" {
+		t.Errorf("tools on the wire = %+v, want remember and publish", req.Tools)
 	}
 }
 

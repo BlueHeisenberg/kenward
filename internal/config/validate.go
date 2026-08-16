@@ -197,37 +197,89 @@ func (c *Config) validateTiers(p *problems, where string, chain []string, tags m
 	}
 }
 
+// householdOwner is the owner index used for the household's own bot token in the token
+// maps below: not a member, so not a members[N] index.
+const householdOwner = -1
+
+// sanitizeMemberID mirrors podName in internal/supervisor, which collapses everything
+// outside [A-Za-z0-9_-] to a hyphen when it builds a pod name from a member id. Two ids
+// that differ only in characters it collapses become one pod name, and a member served
+// by another member's pod holds that member's lore volume and bot token. The supervisor
+// refuses the collision as well, but a configuration that cannot be run is worth
+// refusing at the file rather than at the third pod.
+func sanitizeMemberID(id string) string {
+	out := make([]byte, 0, len(id))
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+			out = append(out, c)
+		default:
+			out = append(out, '-')
+		}
+	}
+	return string(out)
+}
+
 func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 	ids := make(map[string]int)
+	sanitized := make(map[string]string)
 	spaces := make(map[string]int)
 	telegrams := make(map[int64]int)
 	tokens := make(map[string]int)
 	tokenFiles := make(map[string]int)
 
+	// The household's own bot token joins the member-vs-member check rather than being
+	// checked only against itself. In isolated mode it is the group pod's token, so a
+	// member naming the same source puts the group pod and that member's pod on one
+	// bot — the isolation loss the mode exists to prevent, and one that member-vs-member
+	// uniqueness alone never sees. It is seeded whether or not household.group_chat_id
+	// is set: a group added later must not turn a file that validated into one that
+	// leaks.
+	if c.Mode == ModeIsolated {
+		if env := strings.TrimSpace(c.Telegram.BotTokenEnv); env != "" {
+			tokens[env] = householdOwner
+		}
+		if file := strings.TrimSpace(c.Telegram.BotTokenFile); file != "" {
+			tokenFiles[file] = householdOwner
+		}
+	}
+
 	for i, m := range c.Members {
 		where := fmt.Sprintf("members[%d]", i)
 
+		// Every uniqueness map below is keyed on the trimmed value, because the
+		// emptiness checks trim too: keying on the raw one would let " david" and
+		// "david" both through a check whose whole purpose is that they cannot.
+		id := strings.TrimSpace(m.ID)
 		switch {
-		case strings.TrimSpace(m.ID) == "":
+		case id == "":
 			p.addf("%s.id: required", where)
 		default:
-			if first, dup := ids[m.ID]; dup {
+			if first, dup := ids[id]; dup {
 				p.addf("%s.id: duplicate member id %q, already used by members[%d]", where, m.ID, first)
 			} else {
-				ids[m.ID] = i
+				ids[id] = i
+			}
+			if key := sanitizeMemberID(id); sanitized[key] != "" && sanitized[key] != id {
+				p.addf("%s.id: %q and %q are different ids but the same pod name %q, so one member would be served by the other's pod; change one of them", where, id, sanitized[key], key)
+			} else {
+				sanitized[key] = id
 			}
 		}
 
+		space := strings.TrimSpace(m.PrivateSpace)
+		shared := strings.TrimSpace(c.Household.SharedSpace)
 		switch {
-		case strings.TrimSpace(m.PrivateSpace) == "":
+		case space == "":
 			p.addf("%s.private_space: required", where)
 		default:
-			if first, dup := spaces[m.PrivateSpace]; dup {
+			if first, dup := spaces[space]; dup {
 				p.addf("%s.private_space: %q is already members[%d]'s private space; two members sharing a private space is not a private space", where, m.PrivateSpace, first)
 			} else {
-				spaces[m.PrivateSpace] = i
+				spaces[space] = i
 			}
-			if c.Household.SharedSpace != "" && m.PrivateSpace == c.Household.SharedSpace {
+			if shared != "" && space == shared {
 				p.addf("%s.private_space: %q is also household.shared_space; a private space that is the shared space publishes everything the member says", where, m.PrivateSpace)
 			}
 		}
@@ -240,30 +292,45 @@ func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 			} else {
 				telegrams[m.TelegramID] = i
 			}
+			// scope.Resolve matches the group on chat id before it looks at the
+			// sender, so a group_chat_id that is also a member's telegram id would
+			// route that member's direct messages into the group scope. Resolve is
+			// fail-closed about it and answers neither, which is the safe reading and
+			// also a member who is silently served nothing.
+			if c.Household.GroupChatID != 0 && m.TelegramID == c.Household.GroupChatID {
+				p.addf("%s.telegram_id: %d is also household.group_chat_id; a member's own chat cannot also be the household group, and their direct messages would resolve to neither", where, m.TelegramID)
+			}
 		}
 
 		c.validateTiers(p, where+".tiers", m.Tiers, tags)
 
 		// Whether each member has a token at all is settled in validateSecrets,
 		// which knows about files and systemd credentials as well as variables.
-		// What is settled here is that no two members share one: two pods on one
-		// bot is not isolation, whichever form the token arrives in.
+		// What is settled here is that no two pods share one: two pods on one bot
+		// is not isolation, whichever form the token arrives in and whether the
+		// other pod is a member's or the household group's.
 		if c.Mode == ModeIsolated {
-			if env := strings.TrimSpace(m.BotTokenEnv); env != "" {
-				if first, dup := tokens[env]; dup {
-					p.addf("%s.bot_token_env: %s is already members[%d]'s token variable; sharing a bot defeats isolated mode", where, env, first)
-				} else {
-					tokens[env] = i
-				}
-			}
-			if file := strings.TrimSpace(m.BotTokenFile); file != "" {
-				if first, dup := tokenFiles[file]; dup {
-					p.addf("%s.bot_token_file: %s is already members[%d]'s token file; sharing a bot defeats isolated mode", where, file, first)
-				} else {
-					tokenFiles[file] = i
-				}
-			}
+			c.checkTokenSource(p, where, "bot_token_env", "variable", strings.TrimSpace(m.BotTokenEnv), tokens, i)
+			c.checkTokenSource(p, where, "bot_token_file", "file", strings.TrimSpace(m.BotTokenFile), tokenFiles, i)
 		}
+	}
+}
+
+// checkTokenSource records one member's token source and reports it if something else
+// already claimed it. seen maps the source to its first claimant: a members[] index, or
+// household for telegram.bot_token.
+func (c *Config) checkTokenSource(p *problems, where, field, kind, value string, seen map[string]int, i int) {
+	if value == "" {
+		return
+	}
+	first, dup := seen[value]
+	switch {
+	case !dup:
+		seen[value] = i
+	case first == householdOwner:
+		p.addf("%s.%s: %s is also telegram.%s, the household bot's; in isolated mode the group conversation runs on that bot, so this member's pod and the group's would be one bot and one message stream", where, field, value, field)
+	default:
+		p.addf("%s.%s: %s is already members[%d]'s token %s; sharing a bot defeats isolated mode", where, field, value, first, kind)
 	}
 }
 
@@ -345,9 +412,13 @@ func (c *Config) secretRefs() []secretRef {
 	seenEnv := make(map[string]bool)
 	seenFile := make(map[string]bool)
 	add := func(ref SecretRef, required string) {
-		// A variable or a file named twice is one thing to check and one thing to
-		// say. Whether naming it twice is itself wrong is isolated mode's question,
-		// answered in validateMembers.
+		// A variable or a file named twice is one thing to *read* and one thing to
+		// say about reading it, so the second reference is dropped here. That is
+		// only safe because whether naming it twice is wrong at all is answered
+		// elsewhere and in full: validateMembers now checks every member's token
+		// against every other member's and against the household's, so no sharing
+		// reaches this dedup unreported. Two endpoints on one API key variable is
+		// the case that remains legitimate, and it is one check.
 		if (ref.Env != "" && seenEnv[ref.Env]) || (ref.File != "" && seenFile[ref.File]) {
 			return
 		}
@@ -396,7 +467,13 @@ func (c *Config) secretRefs() []secretRef {
 // no fault message quotes one.
 func (c *Config) validateSecrets(p *problems, s *Secrets) {
 	s = s.orDefault()
+	c.validateSecretSources(p)
 	for _, ref := range c.secretRefs() {
+		if ref.File != "" && ref.Env != "" {
+			// Already reported by validateSecretSources, which sees the secrets
+			// this mode does not use as well. Resolving would say it twice.
+			continue
+		}
 		_, err := s.Resolve(ref.SecretRef)
 		if err == nil {
 			continue
@@ -426,6 +503,36 @@ func (c *Config) validateSecrets(p *problems, s *Secrets) {
 		if se.MissingEnv != "" {
 			p.missingEnv = append(p.missingEnv, se.MissingEnv)
 		}
+	}
+}
+
+// validateSecretSources enforces the one rule that is a property of the file rather than
+// of the mode: a secret names exactly one source.
+//
+// It walks every secret in the document, including the ones the selected mode never
+// reads — a per-member token in a simple-mode file, the household token in an isolated
+// file with no group. Those are inert today, which is exactly why the contradiction has
+// to be reported now: left to Resolve, which validation calls only for the secrets in
+// use, the file validates clean and fails the day somebody changes one line at the top
+// of it.
+func (c *Config) validateSecretSources(p *problems) {
+	refs := []SecretRef{c.BotTokenRef()}
+	for i, m := range c.Members {
+		ref := m.BotTokenRef()
+		ref.Where = fmt.Sprintf("members[%d].bot_token", i)
+		refs = append(refs, ref)
+	}
+	for i, e := range c.Endpoints {
+		ref := e.APIKeyRef()
+		ref.Where = fmt.Sprintf("endpoints[%d].api_key", i)
+		refs = append(refs, ref)
+	}
+	for _, ref := range refs {
+		if ref.File == "" || ref.Env == "" {
+			continue
+		}
+		fileField, envField := ref.fields()
+		p.addf("%s: %s", ref.Where, bothSourcesDetail(fileField, envField))
 	}
 }
 

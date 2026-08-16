@@ -144,9 +144,25 @@ func TestRememberSchemaIsValidJSON(t *testing.T) {
 	if !ok || len(req) != 3 {
 		t.Fatalf("schema required = %v, want [title body target]", schema["required"])
 	}
-	tools := rememberTools()
-	if len(tools) != 1 || tools[0].Name != "remember" {
-		t.Fatalf("tools = %+v, want exactly the remember tool", tools)
+	var pub map[string]any
+	if err := json.Unmarshal([]byte(publishSchema), &pub); err != nil {
+		t.Fatalf("publish schema is not valid JSON: %v", err)
+	}
+	// The publish tool takes a title and nothing else. An id property would be an id
+	// arriving from the model, which is where member text arrives.
+	props, _ := pub["properties"].(map[string]any)
+	if len(props) != 1 {
+		t.Fatalf("publish schema properties = %v, want only title", props)
+	}
+	if _, ok := props["title"]; !ok {
+		t.Fatalf("publish schema properties = %v, want title", props)
+	}
+
+	if tools := toolSpecs(testDirectScope()); len(tools) != 2 || tools[0].Name != "remember" || tools[1].Name != "publish" {
+		t.Fatalf("direct tools = %+v, want remember and publish", tools)
+	}
+	if tools := toolSpecs(testGroupScope()); len(tools) != 1 || tools[0].Name != "remember" {
+		t.Fatalf("group tools = %+v, want exactly the remember tool", tools)
 	}
 }
 

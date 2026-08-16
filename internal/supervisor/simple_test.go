@@ -399,6 +399,204 @@ func TestSimpleEnrolmentMintsUnitMidRun(t *testing.T) {
 	h.stop(t)
 }
 
+// panicBinder blows up inside the enrolment pump — outside any turn, where the
+// recover around a unit's Handle cannot help.
+type panicBinder struct {
+	mu     sync.Mutex
+	called bool
+}
+
+func (b *panicBinder) Bind(context.Context, domain.MemberID, string, int64, time.Time) (domain.Member, error) {
+	b.mu.Lock()
+	b.called = true
+	b.mu.Unlock()
+	panic("panicBinder: scripted panic")
+}
+
+func (b *panicBinder) Unbind(_ context.Context, id domain.MemberID) (domain.Member, error) {
+	return domain.Member{ID: id}, nil
+}
+
+func (b *panicBinder) wasCalled() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.called
+}
+
+// TestEnrolmentPumpPanicLeavesTheHouseholdServing.
+//
+// Panic containment used to cover the turn handler alone. A panic raised in the
+// enrolment pump — one claim, one broken dependency — unwound through the
+// goroutine and took the process with it, and with it every other member's
+// assistant. One member's trouble is never the household's outage, and that
+// applies to the pumps as much as to the turns they dispatch.
+func TestEnrolmentPumpPanicLeavesTheHouseholdServing(t *testing.T) {
+	binder := &panicBinder{}
+	claimer, err := enrol.New(enrol.NewMemStore(), binder)
+	if err != nil {
+		t.Fatalf("enrol.New: %v", err)
+	}
+	code, err := claimer.Mint(context.Background(), "Ana", time.Hour)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	h := newSimpleHarness(t, simpleTestConfig(), func(o *SimpleOptions) { o.Enrol = claimer })
+	h.start(t)
+
+	// A valid code from a stranger reaches the binder, which panics. Without
+	// containment the test binary dies right here.
+	const anaTelegramID = int64(333)
+	h.fake.Inject(transport.Inbound{ChatID: anaTelegramID, UserID: anaTelegramID, Text: code, MessageID: 1})
+	waitFor(t, "the enrolment pump to panic", binder.wasCalled)
+
+	// David's assistant is untouched by someone else's failed claim.
+	h.fake.Inject(transport.Inbound{ChatID: davidTelegramID, UserID: davidTelegramID, Text: "still there?", MessageID: 2})
+	waitFor(t, "david's reply", func() bool {
+		for _, o := range h.fake.Sent() {
+			if o.ChatID == davidTelegramID && o.Text == "via:local" {
+				return true
+			}
+		}
+		return false
+	})
+	if hs := mustHealth(t, h.sup); !hs["david"].Healthy() || !hs["group"].Healthy() {
+		t.Fatalf("units after an enrolment panic: david=%v group=%v, want both serving", hs["david"].State, hs["group"].State)
+	}
+
+	h.stop(t)
+}
+
+// testClock is a hand-wound clock, so a test can put a unit's uptime well past
+// HealthyReset without waiting for it.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func newTestClock() *testClock {
+	return &testClock{t: time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *testClock) now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *testClock) advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// TestUnitBackoffReturnsToBaseAfterRecovery.
+//
+// The per-unit backoff only ever doubled. A unit that panicked once months ago
+// and has served perfectly since would wait the maximum delay before its next
+// restart, punishing it for ancient history. Isolated mode resets a pod's
+// schedule once it has stayed up for HealthyReset; an in-process unit gets the
+// same treatment, measured from its last panic.
+func TestUnitBackoffReturnsToBaseAfterRecovery(t *testing.T) {
+	const base = 2 * time.Millisecond
+	clock := newTestClock()
+	h := newSimpleHarness(t, simpleTestConfig(), func(o *SimpleOptions) {
+		o.Now = clock.now
+		o.RestartBackoff = base
+		o.MaxRestartBackoff = 64 * time.Millisecond
+	})
+
+	var mu sync.Mutex
+	var delays []time.Duration
+	h.sup.run.testHookBackoff = func(_ unitKey, d time.Duration) {
+		mu.Lock()
+		delays = append(delays, d)
+		mu.Unlock()
+	}
+
+	panicOnNextTurn := func() {
+		h.router.mu.Lock()
+		h.router.panicOnce = true
+		h.router.mu.Unlock()
+	}
+	restarted := func(n int) func() bool {
+		return func() bool {
+			d := mustHealth(t, h.sup)["david"]
+			return d.Restarts == n && d.State == StateReady
+		}
+	}
+
+	panicOnNextTurn()
+	h.start(t)
+	h.fake.Inject(transport.Inbound{ChatID: davidTelegramID, UserID: davidTelegramID, Text: "boom", MessageID: 1})
+	waitFor(t, "the first restart", restarted(1))
+
+	// The unit then serves for far longer than HealthyReset before the next
+	// unrelated panic.
+	clock.advance(2 * DefaultHealthyReset)
+	panicOnNextTurn()
+	h.fake.Inject(transport.Inbound{ChatID: davidTelegramID, UserID: davidTelegramID, Text: "boom again", MessageID: 2})
+	waitFor(t, "the second restart", restarted(2))
+
+	mu.Lock()
+	got := append([]time.Duration(nil), delays...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("restart delays = %v, want two", got)
+	}
+	if got[0] != base || got[1] != base {
+		t.Fatalf("restart delays = %v, want both at the base %v: a recovered unit starts its schedule over", got, base)
+	}
+
+	h.stop(t)
+}
+
+// TestDrainAfterAWedgedPumpDoesNotWaitOnTurns.
+//
+// On the drain-timeout branch the pumps have not been seen to exit, so one of
+// them may still be between receiving a message and dispatching its turn. The
+// drain used to go on and Wait on the turn WaitGroup anyway, which is the one
+// thing a WaitGroup forbids: an Add racing a Wait. With the pumps unaccounted
+// for there is no closed set to wait on, and the drain has already been
+// reported unclean, so it must not wait at all.
+func TestDrainAfterAWedgedPumpDoesNotWaitOnTurns(t *testing.T) {
+	h := newSimpleHarness(t, simpleTestConfig(), nil)
+	r := h.sup.run
+	r.rc.cancelGrace = 20 * time.Millisecond
+
+	// A pump that never exits, holding a turn it dispatched: allDone never
+	// closes and turnWg never comes back to zero.
+	r.mu.Lock()
+	r.started = true
+	r.launched = true
+	r.active = 1
+	r.mu.Unlock()
+	r.turnWg.Add(1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := r.shutdown(ctx); err == nil {
+		t.Fatal("a drain that ran out of patience reported itself clean")
+	}
+	if n := waitersInsideShutdown(); n != 0 {
+		t.Fatalf("%d goroutines left waiting on the turn WaitGroup; a pump that never exited can still Add to it", n)
+	}
+	_ = h.fake.Close()
+}
+
+// waitersInsideShutdown counts goroutines parked in a WaitGroup inside shutdown.
+func waitersInsideShutdown() int {
+	buf := make([]byte, 1<<19)
+	n := runtime.Stack(buf, true)
+	count := 0
+	for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+		if strings.Contains(g, "sync.(*WaitGroup).Wait") && strings.Contains(g, "(*runner).shutdown") {
+			count++
+		}
+	}
+	return count
+}
+
 func TestSimpleTransportDeathIsFatal(t *testing.T) {
 	h := newSimpleHarness(t, simpleTestConfig(), nil)
 	h.start(t)

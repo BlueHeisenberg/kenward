@@ -16,6 +16,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
+	"github.com/BlueHeisenberg/kenward/internal/session"
 )
 
 // env returns a LookupEnvFunc over a fixed map, so no test touches the real process
@@ -420,13 +421,10 @@ func TestDurationParsing(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Decode() error: %v", err)
 			}
-			// Zero is replaced by the default, so an explicit empty reads as unset.
-			want := tt.want
-			if want == 0 {
-				want = config.DefaultIdleTimeout
-			}
-			if got := cfg.Session.IdleTimeout.Duration(); got != want {
-				t.Errorf("idle_timeout = %v, want %v", got, want)
+			// Zero stands: idle expiry is off by default and an empty value is
+			// not rewritten into a duration behind the operator's back.
+			if got := cfg.Session.IdleTimeout.Duration(); got != tt.want {
+				t.Errorf("idle_timeout = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -629,6 +627,115 @@ members:
 `,
 			env:  map[string]string{"T_ONE": "t"},
 			want: []string{"members[1].bot_token_env: T_ONE is already members[0]'s token variable"},
+		},
+		{
+			// Uniqueness used to be checked member-vs-member only, so the one bot
+			// that serves the whole household could also be a member's own and
+			// nothing said so: the group pod and that member's pod on one token,
+			// reading each other's messages, in the mode whose entire purpose is
+			// that they cannot.
+			name: "isolated mode with a member on the household's bot token variable",
+			yaml: `
+mode: isolated
+household: {shared_space: household, group_chat_id: -1001234567890, tiers: [local]}
+telegram: {bot_token_env: T_HOUSE}
+members:
+  - {id: david, private_space: dp, tiers: [local], bot_token_env: T_HOUSE}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			env:  map[string]string{"T_HOUSE": "t"},
+			want: []string{"members[0].bot_token_env: T_HOUSE is also telegram.bot_token_env"},
+		},
+		{
+			// The file form of the same fault, and with no group chat configured:
+			// isolated mode does not use the household token until a group exists,
+			// and a file that validates today must not become a shared bot the day
+			// somebody adds group_chat_id.
+			name: "isolated mode with a member on the household's bot token file",
+			yaml: `
+mode: isolated
+household: {shared_space: household, tiers: [local]}
+telegram: {bot_token_file: /etc/kenward/token}
+members:
+  - {id: david, private_space: dp, tiers: [local], bot_token_file: /etc/kenward/token}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			want: []string{"members[0].bot_token_file: /etc/kenward/token is also telegram.bot_token_file"},
+		},
+		{
+			// The supervisor builds a pod name by collapsing everything outside
+			// [A-Za-z0-9_-] to a hyphen, so these two ids are one pod: whoever
+			// starts second is served by the first member's pod, with the first
+			// member's lore volume and bot token.
+			name: "member ids that differ only where the pod name is sanitised",
+			yaml: `
+mode: isolated
+household: {shared_space: household, tiers: [local]}
+members:
+  - {id: a.b, private_space: dp, tiers: [local], bot_token_env: T_ONE}
+  - {id: a-b, private_space: mp, tiers: [local], bot_token_env: T_TWO}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			env:  map[string]string{"T_ONE": "t", "T_TWO": "t"},
+			want: []string{`members[1].id: "a-b" and "a.b" are different ids but the same pod name "a-b"`},
+		},
+		{
+			// The emptiness checks trim; the uniqueness maps used not to, so a
+			// leading space was a way to write the same id twice and be told
+			// nothing.
+			name: "ids and private spaces differing only in whitespace",
+			yaml: `
+mode: simple
+household: {shared_space: household, tiers: [local]}
+telegram: {bot_token_env: T}
+members:
+  - {id: david, private_space: dp, tiers: [local]}
+  - {id: "david ", private_space: " dp", tiers: [local]}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			env: map[string]string{"T": "t"},
+			want: []string{
+				"duplicate member id",
+				"is already members[0]'s private space",
+			},
+		},
+		{
+			// scope.Resolve matches the group on chat id before it looks at the
+			// sender, so this collision would put a member's direct messages in the
+			// household's scope. Resolve refuses both now; the file is still wrong.
+			name: "group chat id that is also a member's telegram id",
+			yaml: `
+mode: simple
+household: {shared_space: household, group_chat_id: 4242, tiers: [local]}
+telegram: {bot_token_env: T}
+members:
+  - {id: david, telegram_id: 4242, private_space: dp, tiers: [local]}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			env:  map[string]string{"T": "t"},
+			want: []string{"members[0].telegram_id: 4242 is also household.group_chat_id"},
+		},
+		{
+			// A member token is inert in simple mode, so the two-sources rule used
+			// to go unchecked on it: the file validated, and the contradiction
+			// surfaced only for whoever later switched the mode.
+			name: "two sources for a secret this mode does not use",
+			yaml: `
+mode: simple
+household: {shared_space: household, tiers: [local]}
+telegram: {bot_token_env: T}
+members:
+  - {id: david, private_space: dp, tiers: [local], bot_token_env: T_DAVID, bot_token_file: /etc/kenward/david.token}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			env:  map[string]string{"T": "t", "T_DAVID": "t"},
+			want: []string{"members[0].bot_token: bot_token_file and bot_token_env are both set"},
 		},
 		{
 			// The group pod runs on the household bot even when every member has
@@ -1198,6 +1305,70 @@ func TestMemberLookups(t *testing.T) {
 	}
 	if _, ok := cfg.MemberByID("nobody"); ok {
 		t.Error("MemberByID(nobody) matched")
+	}
+}
+
+// TestIdleTimeoutIsOffUnlessAskedFor is the half of the session package's decision that
+// takes effect at runtime. session.DefaultIdleTimeout is zero because a passphrase never
+// travels over Telegram (D-019), so an expired key strands a member until somebody
+// unlocks it at the machine — but this package had its own 30-minute default and
+// ApplyDefaults rewrote an unset value into it, and this is the value cmd/kenward hands
+// the manager. A configuration that says nothing must reach the manager saying nothing.
+func TestIdleTimeoutIsOffUnlessAskedFor(t *testing.T) {
+	if config.DefaultIdleTimeout != session.DefaultIdleTimeout {
+		t.Errorf("config.DefaultIdleTimeout = %v, session.DefaultIdleTimeout = %v; the run path passes the former to the latter's package and they have to agree",
+			config.DefaultIdleTimeout, session.DefaultIdleTimeout)
+	}
+
+	const silent = `
+mode: simple
+household: {shared_space: household, tiers: [local]}
+telegram: {bot_token_env: TOKEN}
+members:
+  - {id: david, private_space: dp, tiers: [local]}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`
+	cfg, err := config.ParseWithEnv(strings.NewReader(silent), env(map[string]string{"TOKEN": "t"}))
+	if err != nil {
+		t.Fatalf("ParseWithEnv() error: %v", err)
+	}
+	if got := cfg.Session.IdleTimeout.Duration(); got != 0 {
+		t.Errorf("session.idle_timeout = %v for a file that does not mention it; want 0, meaning the key stays until the process stops or the member locks it", got)
+	}
+
+	// Still configurable: a household that wants expiry says so and gets it.
+	chosen, err := config.Decode(strings.NewReader("session:\n  idle_timeout: 45m\n"))
+	if err != nil {
+		t.Fatalf("Decode() error: %v", err)
+	}
+	if got, want := chosen.Session.IdleTimeout.Duration(), 45*time.Minute; got != want {
+		t.Errorf("session.idle_timeout = %v, want %v", got, want)
+	}
+}
+
+// TestMemberByTelegramIDIsFailClosed: two members bound to one Telegram account is a
+// configuration Load rejects, but this lookup is what scope.Resolve authorises with, and
+// Resolve is documented as being handed configurations nobody validated — a Config built
+// in Go by a test, a tool, or the next package that finds it convenient. Answering the
+// first of the two would write one person's messages into the other's private space.
+func TestMemberByTelegramIDIsFailClosed(t *testing.T) {
+	cfg := &config.Config{
+		Mode:      config.ModeSimple,
+		Household: config.HouseholdConfig{SharedSpace: "household"},
+		Members: []config.MemberConfig{
+			{ID: "david", TelegramID: 7, PrivateSpace: "dp"},
+			{ID: "maria", TelegramID: 7, PrivateSpace: "mp"},
+			{ID: "sam", TelegramID: 9, PrivateSpace: "sp"},
+		},
+	}
+
+	if m, ok := cfg.MemberByTelegramID(7); ok {
+		t.Errorf("MemberByTelegramID(7) = (%+v, true); an ambiguous binding must resolve to nobody", m)
+	}
+	// The rest of the household is unaffected: one bad row is not an outage.
+	if m, ok := cfg.MemberByTelegramID(9); !ok || m.ID != "sam" {
+		t.Errorf("MemberByTelegramID(9) = (%+v, %v), want sam", m, ok)
 	}
 }
 

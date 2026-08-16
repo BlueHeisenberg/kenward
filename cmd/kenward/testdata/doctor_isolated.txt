@@ -22,6 +22,7 @@ Sessions
       whether a key is unwrapped right now is not visible from here: unwrapped
       keys live in the running node's memory and this is a different process
   ✓ 2 members have a wrapped key on disk
+  ✓ unlocked keys do not expire on idle (session.idle_timeout is off)
 
 Transport
   ✓ David: Telegram authorises as @david_kenward_bot
@@ -49,6 +50,12 @@ to Telegram's servers and leave it in your message history, which would be
 worse than the problem it solved. The consequence is that once your assistant
 is unlocked and running, your key stays in that process's memory until it
 stops or you lock it.
+
+kenward does not lock it for you after a quiet spell, because there would be
+no way to unlock it again from a chat. Your household can switch that on —
+session.idle_timeout in kenward.yaml — and it is off unless someone did. Where
+it is on, an assistant that has been quiet for that long stops answering until
+somebody at the machine starts it again.
 
 The honest limit: kenward has to see your words in plain text to answer them,
 and it is the second member of your private space. That is the price of an

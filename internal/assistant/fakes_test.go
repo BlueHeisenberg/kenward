@@ -18,6 +18,8 @@ type fakeMemory struct {
 	mu       sync.Mutex
 	searches []memory.SearchQuery
 	puts     []putCall
+	gets     []string
+	shares   []shareCall
 	bySpace  map[domain.SpaceID][]memory.Entry
 	errFor   map[domain.SpaceID]error
 	putErr   error
@@ -26,6 +28,11 @@ type fakeMemory struct {
 type putCall struct {
 	space domain.SpaceID
 	draft memory.Draft
+}
+
+type shareCall struct {
+	from, to domain.SpaceID
+	entryID  string
 }
 
 func newFakeMemory() *fakeMemory {
@@ -48,7 +55,19 @@ func (f *fakeMemory) Search(ctx context.Context, q memory.SearchQuery) ([]memory
 	return f.bySpace[q.Spaces[0]], nil
 }
 
+// Get serves whole entries out of the same canned spaces Search draws excerpts from,
+// so a test can only Get what that space actually holds — which is the property the
+// promotion flow depends on.
 func (f *fakeMemory) Get(ctx context.Context, space domain.SpaceID, id string) (memory.Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.gets = append(f.gets, id)
+	for _, e := range f.bySpace[space] {
+		if e.ID == id {
+			e.Partial = false
+			return e, nil
+		}
+	}
 	return memory.Entry{}, memory.ErrNotFound
 }
 
@@ -63,7 +82,28 @@ func (f *fakeMemory) Put(ctx context.Context, space domain.SpaceID, d memory.Dra
 }
 
 func (f *fakeMemory) Share(ctx context.Context, from, to domain.SpaceID, entryID string) (memory.Entry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.shares = append(f.shares, shareCall{from: from, to: to, entryID: entryID})
+	for _, e := range f.bySpace[from] {
+		if e.ID == entryID {
+			e.Space = to
+			return e, nil
+		}
+	}
 	return memory.Entry{}, memory.ErrNotFound
+}
+
+func (f *fakeMemory) gotIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.gets...)
+}
+
+func (f *fakeMemory) sharedCalls() []shareCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]shareCall(nil), f.shares...)
 }
 
 func (f *fakeMemory) Close() error { return nil }

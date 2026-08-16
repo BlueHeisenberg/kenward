@@ -36,14 +36,6 @@ var confidences = map[string]bool{
 	"hardened":     true,
 }
 
-// origins is lore's origin enum, enforced the same way as confidences.
-var origins = map[string]bool{
-	"evidence":   true,
-	"directive":  true,
-	"convention": true,
-	"constraint": true,
-}
-
 var (
 	// searchHeadRe matches "{entry_id}  space:{name}  domain:{domain}".
 	searchHeadRe = regexp.MustCompile(`^(\S+)  space:(.*?)  domain:(.*)$`)
@@ -51,9 +43,26 @@ var (
 	// is greedy so a title that itself ends in a parenthesised word does not
 	// steal the confidence.
 	searchTitleRe = regexp.MustCompile(`^  (.*) \((experimental|provisional|validated|hardened)\)(.*)$`)
-	// metaIDRe matches the "id {entry_id} (v{version})" segment of an entry's
-	// metadata line.
-	metaIDRe = regexp.MustCompile(`^id (\S+) \(v(\d+)\)$`)
+	// metaLineRe matches a whole rendered entry's metadata line in one pass:
+	//
+	//	id {id} (v{n}) | space {name} | domain {d} | {confidence} | origin {origin}[ | {markers}][ | copied from {id}] | updated {ts}
+	//
+	// It is anchored on the parts lore controls — the id shape, the two enums
+	// and the trailing timestamp — rather than split on " | ", because markers
+	// are free-form: a marker lore normalises to "[A | B]" used to inject a
+	// separator and make its own entry permanently unreadable. The name and
+	// domain groups are lazy so the first enum pair wins, and the optional
+	// group is greedy so the last "updated" wins; a marker can therefore hold
+	// any of those words without shifting a field.
+	metaLineRe = regexp.MustCompile(`^id (\S+) \(v(\d+)\) \| space (.*?) \| domain (.*?) \| (experimental|provisional|validated|hardened) \| origin (evidence|directive|convention|constraint)(?: \| (.*))? \| updated (\S+)$`)
+	// metaCopiedRe matches the provenance field, which lore emits last, just
+	// before "updated". Anchoring it to the end of the optional middle is what
+	// lets the markers field in front of it contain a " | ".
+	metaCopiedRe = regexp.MustCompile(`(?:^| \| )copied from (\S+)$`)
+	// entryHeadRe matches the two lines a rendered entry starts with. It is what
+	// makes splitting domain-mode output safe: lore's horizontal rule is a
+	// separator only when a real entry head follows it.
+	entryHeadRe = regexp.MustCompile(`^# [^\n]*\nid \S+ \(v\d+\) \| `)
 	// storedRe matches lore_put's success line. Confidence and origin are
 	// anchored to their enums so a domain containing ", confidence " cannot
 	// shift the fields.
@@ -84,7 +93,9 @@ func stripHighlights(s string) string {
 // The returned excerpts carry ID, Domain, Title, Confidence and Markers, with
 // Entry.Body holding the de-highlighted snippet and Snippet the raw one. Space is
 // left zero for the caller to fill in, because lore prints a space display name,
-// which is neither unique nor stable across lore instances.
+// which is neither unique nor stable across lore instances; that echoed name is
+// kept on Excerpt.spaceName so the caller can still check it against the space it
+// asked for.
 func parseSearch(text string) ([]Excerpt, error) {
 	text = strings.TrimRight(text, "\n")
 	if text == "" {
@@ -101,29 +112,41 @@ func parseSearch(text string) ([]Excerpt, error) {
 	}
 
 	var (
-		out     []Excerpt
-		cur     *Entry
-		body    []string
-		haveTop bool
+		out       []Excerpt
+		cur       *Entry
+		spaceName string
+		body      []string
+		haveTop   bool
+		head      string
+		headLine  int
 	)
-	flush := func() {
+	flush := func() error {
 		if cur == nil {
-			return
+			return nil
+		}
+		// A result whose title line never arrived is a truncated or changed
+		// format, not an entry with an empty title.
+		if !haveTop {
+			return parseErrf(toolSearch, headLine, head, "expected %q", "  {title} ({confidence}){markers}")
 		}
 		raw := strings.Join(body, "\n")
 		cur.Body = stripHighlights(raw)
 		// A search hit is an excerpt: the body is elided and lore reports no
 		// origin and no timestamps for it.
 		cur.Partial = true
-		out = append(out, Excerpt{Entry: *cur, Snippet: raw})
+		out = append(out, Excerpt{Entry: *cur, Snippet: raw, spaceName: spaceName})
 		cur, body = nil, nil
+		return nil
 	}
 
 	for i := 1; i < len(lines); i++ {
 		line := lines[i]
 		if m := searchHeadRe.FindStringSubmatch(line); m != nil {
-			flush()
+			if err := flush(); err != nil {
+				return nil, err
+			}
 			cur = &Entry{ID: m[1], Domain: m[3]}
+			spaceName, head, headLine = m[2], line, i+1
 			haveTop = false
 			continue
 		}
@@ -147,7 +170,9 @@ func parseSearch(text string) ([]Excerpt, error) {
 		}
 		body = append(body, strings.TrimPrefix(line, "  "))
 	}
-	flush()
+	if err := flush(); err != nil {
+		return nil, err
+	}
 
 	if len(out) == 0 {
 		return nil, parseErrf(toolSearch, 0, text, "header promised results but none parsed")
@@ -181,7 +206,7 @@ func parseRendered(text string) ([]rendered, error) {
 		return nil, nil
 	}
 	var out []rendered
-	for _, block := range strings.Split(text, "\n---\n\n") {
+	for _, block := range splitEntryBlocks(text) {
 		r, err := parseEntryBlock(block)
 		if err != nil {
 			return nil, err
@@ -191,16 +216,41 @@ func parseRendered(text string) ([]rendered, error) {
 	return out, nil
 }
 
+// splitEntryBlocks cuts domain-mode output at lore's horizontal rule, but only
+// where a rendered entry head actually follows it. A body containing a rule and a
+// blank line is body text, not a new entry.
+func splitEntryBlocks(text string) []string {
+	const sep = "\n---\n\n"
+	var out []string
+	start, i := 0, 0
+	for {
+		j := strings.Index(text[i:], sep)
+		if j < 0 {
+			return append(out, text[start:])
+		}
+		next := i + j + len(sep)
+		if !entryHeadRe.MatchString(text[next:]) {
+			i += j + 1
+			continue
+		}
+		out = append(out, text[start:i+j])
+		start, i = next, next
+	}
+}
+
 // parseEntry reads lore_get's output for a single entry, by id.
+//
+// It does not split: a get by id renders exactly one entry, so everything after
+// the metadata line is body — including a line that looks like a separator, or
+// like the head of another entry. Splitting here is what let an ordinary note
+// containing a horizontal rule make itself unreadable. Domain mode, which really
+// can return several entries, is parseRendered's problem.
 func parseEntry(text string) (rendered, error) {
-	rs, err := parseRendered(text)
-	if err != nil {
-		return rendered{}, err
+	text = strings.TrimRight(text, "\n")
+	if text == "" {
+		return rendered{}, parseErrf(toolGet, 0, "", "empty output")
 	}
-	if len(rs) != 1 {
-		return rendered{}, parseErrf(toolGet, 0, text, "expected exactly one entry, got %d", len(rs))
-	}
-	return rs[0], nil
+	return parseEntryBlock(text)
 }
 
 // parseEntryBlock reads one rendered entry: a title line, a metadata line and an
@@ -232,75 +282,42 @@ func parseEntryBlock(block string) (rendered, error) {
 	return r, nil
 }
 
-// parseEntryMeta reads the pipe-separated metadata line:
+// parseEntryMeta reads the metadata line, matching it whole rather than splitting
+// it on " | ".
 //
-//	id {id} (v{n}) | space {name} | domain {d} | {confidence} | origin {origin}[ | {markers}][ | copied from {id}] | updated {ts}
+// Splitting was what a free-form marker could break: markers are arbitrary
+// strings in lore, so a marker containing " | " injected a separator that shifted
+// every later field and left the entry unreadable for good. Matching against
+// metaLineRe pins the fields lore's own model constrains — the id, the two enums,
+// the trailing timestamp — and lets the two free-form ones absorb whatever they
+// contain. The price is that an unrecognised extra field is no longer rejected:
+// it lands among the markers, which is where lore's leniency already lives.
 func parseEntryMeta(line string, r *rendered) error {
-	e := &r.Entry
-	seg := strings.Split(line, " | ")
-	if len(seg) < 6 {
-		return parseErrf(toolGet, 2, line, "expected at least 6 pipe-separated metadata fields, got %d", len(seg))
-	}
-	m := metaIDRe.FindStringSubmatch(seg[0])
+	m := metaLineRe.FindStringSubmatch(line)
 	if m == nil {
-		return parseErrf(toolGet, 2, seg[0], "expected %q", "id {entry_id} (v{version})")
+		return parseErrf(toolGet, 2, line, "expected %q",
+			"id {id} (v{n}) | space {name} | domain {d} | {confidence} | origin {origin}[ | {markers}][ | copied from {id}] | updated {ts}")
 	}
-	e.ID = m[1]
 	v, err := strconv.Atoi(m[2])
 	if err != nil {
 		return parseErrf(toolGet, 2, m[2], "unparseable version")
 	}
-	r.Version = v
-
-	if !strings.HasPrefix(seg[1], "space ") {
-		return parseErrf(toolGet, 2, seg[1], "expected a %q field", "space ")
-	}
-	r.SpaceName = strings.TrimPrefix(seg[1], "space ")
-	if !strings.HasPrefix(seg[2], "domain ") {
-		return parseErrf(toolGet, 2, seg[2], "expected a %q field", "domain ")
-	}
-	e.Domain = strings.TrimPrefix(seg[2], "domain ")
-
-	if !confidences[seg[3]] {
-		return parseErrf(toolGet, 2, seg[3], "not one of lore's confidence values")
-	}
-	e.Confidence = seg[3]
-
-	if !strings.HasPrefix(seg[4], "origin ") {
-		return parseErrf(toolGet, 2, seg[4], "expected an %q field", "origin ")
-	}
-	origin := strings.TrimPrefix(seg[4], "origin ")
-	if !origins[origin] {
-		return parseErrf(toolGet, 2, origin, "not one of lore's origin values")
-	}
-	e.Origin = origin
-
-	last := seg[len(seg)-1]
-	if !strings.HasPrefix(last, "updated ") {
-		return parseErrf(toolGet, 2, last, "expected a trailing %q field", "updated ")
-	}
-	ts, err := parseLoreTime(strings.TrimPrefix(last, "updated "))
+	ts, err := parseLoreTime(m[8])
 	if err != nil {
-		return parseErrf(toolGet, 2, last, "unparseable updated timestamp")
+		return parseErrf(toolGet, 2, m[8], "unparseable updated timestamp")
 	}
+
+	e := &r.Entry
+	e.ID, r.Version, r.SpaceName = m[1], v, m[3]
+	e.Domain, e.Confidence, e.Origin = m[4], m[5], m[6]
 	e.UpdatedAt = ts
 
-	middle := seg[5 : len(seg)-1]
-	if len(middle) > 2 {
-		return parseErrf(toolGet, 2, line, "unexpected extra metadata fields: %d, want at most 2", len(middle))
+	markers := m[7]
+	if cp := metaCopiedRe.FindStringSubmatch(markers); cp != nil {
+		r.SourceEntry = cp[1]
+		markers = strings.TrimSuffix(markers, cp[0])
 	}
-	seenMarkers := false
-	for _, f := range middle {
-		if strings.HasPrefix(f, "copied from ") {
-			r.SourceEntry = strings.TrimPrefix(f, "copied from ")
-			continue
-		}
-		if seenMarkers {
-			return parseErrf(toolGet, 2, f, "second unrecognised metadata field")
-		}
-		e.Markers = parseMarkerList(f)
-		seenMarkers = true
-	}
+	e.Markers = parseMarkerList(markers)
 	return nil
 }
 
@@ -436,14 +453,26 @@ func parseMarkerRun(s string) []string {
 
 // parseMarkerList splits lore_get's marker field, which is the marker list joined
 // with single spaces. Markers are not validated against any vocabulary.
+//
+// lore wraps a marker in brackets unless it already starts with one, so a clean
+// run of bracketed tokens is split on the brackets: that keeps a marker holding a
+// space, or a " | ", whole. Anything else falls back to whitespace fields, which
+// is the best guess available for a marker lore did not bracket.
 func parseMarkerList(s string) []string {
 	var out []string
-	for _, f := range strings.Split(s, " ") {
-		if f != "" {
-			out = append(out, f)
+	rest := s
+	for strings.HasPrefix(rest, "[") {
+		i := strings.IndexByte(rest, ']')
+		if i < 0 {
+			break
 		}
+		out = append(out, rest[:i+1])
+		rest = strings.TrimPrefix(rest[i+1:], " ")
 	}
-	return out
+	if rest == "" {
+		return out
+	}
+	return strings.Fields(s)
 }
 
 // parseLoreTime parses one of lore's timestamps.
@@ -451,21 +480,21 @@ func parseMarkerList(s string) []string {
 // lore writes RFC3339 with nine fractional digits in UTC. When a new version is
 // written faster than the clock advances, lore appends literal "0" characters to
 // force the string strictly greater than the previous value, which makes the
-// timestamp no longer valid RFC3339. Those are stripped before giving up.
+// timestamp no longer valid RFC3339. Those are stripped before giving up — one
+// per same-tick write, with no ceiling, because the number of writes in a tick is
+// lore's business and a capped strip turns a burst into a parse failure.
 func parseLoreTime(s string) (time.Time, error) {
-	const maxSkewPadding = 8
 	cur := s
 	var err error
-	for range maxSkewPadding + 1 {
+	for {
 		var t time.Time
 		t, err = time.Parse(time.RFC3339Nano, cur)
 		if err == nil {
 			return t.UTC(), nil
 		}
 		if !strings.HasSuffix(cur, "0") {
-			break
+			return time.Time{}, err
 		}
 		cur = cur[:len(cur)-1]
 	}
-	return time.Time{}, err
 }

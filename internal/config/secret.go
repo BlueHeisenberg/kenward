@@ -14,9 +14,9 @@ package config
 //
 // So a secret now has three possible sources, and exactly one of them may be stated:
 //
-//  1. <name>_file — a path. The trailing newline is trimmed, because every tool that
-//     writes a credential file adds one and a token with "\n" on the end fails in a way
-//     nobody enjoys diagnosing.
+//  1. <name>_file — a path. Trailing line endings are trimmed, because every tool that
+//     writes a credential file adds one and a token with "\n" (or "\r\n") on the end
+//     fails in a way nobody enjoys diagnosing.
 //  2. <name>_env — an environment variable. Unchanged, and still the right answer for a
 //     hand-run binary.
 //  3. A systemd credential — no configuration at all. If $CREDENTIALS_DIRECTORY is set
@@ -181,6 +181,14 @@ func (r SecretRef) fields() (fileField, envField string) {
 // stated reports whether the operator wrote a source down for this secret.
 func (r SecretRef) stated() bool { return r.File != "" || r.Env != "" }
 
+// bothSourcesDetail is the sentence for a secret that names two sources. Resolve says it
+// for the secrets a mode uses and validateSecretSources for the rest, and they say it in
+// the same words because it is the same fault.
+func bothSourcesDetail(fileField, envField string) string {
+	return fmt.Sprintf("%s and %s are both set; a secret has exactly one source, and naming two means one of them is a belief about where the value comes from that is not true — remove one",
+		fileField, envField)
+}
+
 // SecretError explains why a secret could not be resolved. It names the field, the
 // variable, the path and the mode; it never carries a value.
 type SecretError struct {
@@ -320,11 +328,7 @@ func (s *Secrets) Resolve(ref SecretRef) (Secret, error) {
 
 	switch {
 	case ref.File != "" && ref.Env != "":
-		return Secret{}, &SecretError{
-			Where: ref.Where,
-			Detail: fmt.Sprintf("%s and %s are both set; a secret has exactly one source, and naming two means one of them is a belief about where the value comes from that is not true — remove one",
-				fileField, envField),
-		}
+		return Secret{}, &SecretError{Where: ref.Where, Detail: bothSourcesDetail(fileField, envField)}
 
 	case ref.File != "":
 		v, err := s.readSecretFile(ref.File)
@@ -385,8 +389,8 @@ func (s *Secrets) resolveCredential(ref SecretRef, fileField, envField string) (
 	return newSecret(v, "systemd credential "+ref.Credential), nil
 }
 
-// readSecretFile reads a credential file, refuses a permissive one, and trims the
-// trailing newline. The returned error names the path and the mode and nothing else.
+// readSecretFile reads a credential file, refuses a permissive one, and trims trailing
+// line endings. The returned error names the path and the mode and nothing else.
 func (s *Secrets) readSecretFile(path string) (string, error) {
 	data, mode, err := s.fsys.ReadSecretFile(path)
 	if err != nil {
@@ -401,9 +405,12 @@ func (s *Secrets) readSecretFile(path string) (string, error) {
 	if err := s.checkMode(path, mode); err != nil {
 		return "", err
 	}
-	// Trim the trailing newline, and only that: printf, editors, `echo`, Kubernetes
-	// and systemd's own credential tooling all add one, and a token carrying "\n" is
-	// rejected by Telegram with an error that names nothing useful.
+	// Trim trailing line endings, and only those: printf, editors, `echo`, Kubernetes
+	// and systemd's own credential tooling all add one, an editor configured for CRLF
+	// adds two bytes, and a token carrying either is rejected by Telegram with an error
+	// that names nothing useful. Interior whitespace is left alone — a secret with a
+	// space in the middle is a secret, not a mistake — and a file that is nothing but
+	// newlines is reported empty rather than resolved to "".
 	v := strings.TrimRight(string(data), "\r\n")
 	if strings.TrimSpace(v) == "" {
 		return "", fmt.Errorf("%s: file is empty", path)

@@ -128,19 +128,35 @@ func cmdUpdate(e *env, args []string) int {
 		return exitOK
 	}
 
-	err = up.Apply(e.context(), *status.Release)
+	return reportApply(e, up.Apply(e.context(), *status.Release), status.Latest)
+}
+
+// reportApply says what became of an Apply and returns the exit code.
+//
+// It is a function of its own so every outcome can be checked without a signed
+// manifest and a real binary swap — the consent outcomes in particular, which are
+// the ones a household meets most and the ones that must not read as faults.
+func reportApply(e *env, err error, latest string) int {
 	switch {
 	case err == nil:
-		e.printf("\nUpdated to %s.\n", status.Latest)
+		e.printf("\nUpdated to %s.\n", latest)
 		return exitOK
 	case errors.Is(err, keelupdate.ErrRestartPending):
 		// No Restart hook: this is an operator at a terminal, and restarting the
 		// household's node out from under them is not this command's decision.
-		e.printf("\nUpdated to %s on disk. Restart kenward to finish: the new binary health-checks\n", status.Latest)
+		e.printf("\nUpdated to %s on disk. Restart kenward to finish: the new binary health-checks\n", latest)
 		e.printf("itself on its next start and rolls back automatically if it does not come up.\n")
 		return exitOK
 	case errors.Is(err, keelupdate.ErrConsentDeclined):
-		e.printf("\nNot applied. Nothing on disk changed.\n")
+		// A decision, and said as one.
+		e.printf("\nDeclined. Nothing on disk changed, and %s is not applied.\n", latest)
+		return exitOK
+	case errors.Is(err, keelupdate.ErrConsentUnanswered):
+		// Not a failure, and not a decision either: nobody said no, so the
+		// question comes round again rather than being settled here. Exiting
+		// non-zero would report the absence of an answer as a broken update.
+		e.printf("\nNot applied: nothing was answered, so nothing was decided. Nothing on disk\n")
+		e.printf("changed, and %s will be offered again on the next check.\n", latest)
 		return exitOK
 	case errors.Is(err, keelupdate.ErrLocked):
 		e.printf("\nAnother process on this machine is updating the same binary. Nothing was done.\n")

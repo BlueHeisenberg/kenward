@@ -69,8 +69,21 @@ var (
 // Options; none of them can be configured away entirely.
 const (
 	// DefaultIdleTimeout is how long an unwrapped key survives without a
-	// Touch before it is zeroed.
-	DefaultIdleTimeout = 30 * time.Minute
+	// Touch before it is zeroed. Zero means never, and zero is the default:
+	// idle expiry is a capability this package offers, not a behaviour it
+	// assumes.
+	//
+	// That default is a consequence of D-019, not an oversight, and it should
+	// not be "fixed" back to a duration. A passphrase never travels over
+	// Telegram, so a member has no in-band way to unlock again; the only
+	// re-unlock path is somebody at the machine starting the process with the
+	// passphrase. An idle timeout therefore does not degrade an idle member,
+	// it breaks them — their assistant simply stops answering after a quiet
+	// afternoon. Against that, the at-rest gain is marginal: the process is
+	// still running and still holds whatever else it was unlocked with, and
+	// the claim that survives is unchanged either way — nothing is readable
+	// from a disk, from a backup, or from a process nobody has unlocked.
+	DefaultIdleTimeout time.Duration = 0
 
 	// DefaultMaxConcurrentDerivations bounds how many passphrase derivations
 	// run at once. Each derivation allocates the KDF's memory cost (64 MiB at
@@ -104,11 +117,19 @@ const attemptRetention = 15 * time.Minute
 // Option configures a Manager.
 type Option func(*Manager) error
 
-// WithIdleTimeout overrides DefaultIdleTimeout.
+// WithIdleTimeout overrides DefaultIdleTimeout. Zero keeps idle expiry off; a
+// positive duration turns it on and works exactly as it says.
+//
+// A household that sets one is choosing the trade knowingly, and the trade is
+// this: after that much quiet, the member's key is zeroed and their assistant
+// stops answering until someone at the machine starts the process again with
+// the passphrase. There is no in-band way back — see DefaultIdleTimeout and
+// D-019. A negative duration is a mistake rather than a shorthand for off, so
+// it is rejected.
 func WithIdleTimeout(d time.Duration) Option {
 	return func(m *Manager) error {
-		if d <= 0 {
-			return errors.New("session: idle timeout must be positive")
+		if d < 0 {
+			return errors.New("session: idle timeout must not be negative; zero means no idle expiry")
 		}
 		m.idle = d
 		return nil
@@ -172,7 +193,8 @@ type attemptState struct {
 // persisted through a Store.
 //
 // Unwrapped keys live in this process's memory and nowhere else. They are
-// zeroed on Lock, LockAll, idle expiry and Close — best effort, in the same
+// zeroed on Lock, LockAll, Close and — only if a household configured an idle
+// timeout, which is off by default — on idle expiry. Best effort, in the same
 // sense keel/vault means it: Go's runtime may hold copies in registers, in
 // stack frames it has moved, or in heap memory the collector has not reused,
 // and none of that is reachable from here. Zeroing narrows the window in
@@ -235,8 +257,9 @@ type Manager struct {
 var _ Sessions = (*Manager)(nil)
 
 // NewManager returns a Manager in the given mode, persisting wrapped keys
-// through store. It starts a sweeper goroutine that zeroes idle keys on its
-// own schedule; Close stops it.
+// through store. It starts a sweeper goroutine that prunes failure bookkeeping
+// and, where an idle timeout is configured, zeroes idle keys on its own
+// schedule; Close stops it.
 func NewManager(mode Mode, store Store, opts ...Option) (*Manager, error) {
 	if !mode.valid() {
 		return nil, fmt.Errorf("session: invalid mode %d", int(mode))
@@ -272,7 +295,13 @@ func (m *Manager) Mode() Mode { return m.mode }
 
 // sweepInterval picks how often the sweeper wakes: often enough that a key
 // does not outlive its idle window by much, rarely enough to cost nothing.
+//
+// With expiry off there is no window to honour, but the sweeper still runs —
+// slowly — because it is also what prunes failure bookkeeping.
 func sweepInterval(idle time.Duration) time.Duration {
+	if idle <= 0 {
+		return time.Minute
+	}
 	iv := idle / 8
 	if iv < 10*time.Millisecond {
 		iv = 10 * time.Millisecond
@@ -526,9 +555,10 @@ func (m *Manager) Close() {
 	m.LockAll()
 }
 
-// expired reports whether the session's idle window has lapsed. Callers hold mu.
+// expired reports whether the session's idle window has lapsed. With no idle
+// timeout configured nothing ever expires, which is the default. Callers hold mu.
 func (m *Manager) expired(s *unlocked, now time.Time) bool {
-	return now.Sub(s.lastActive) >= m.idle
+	return m.idle > 0 && now.Sub(s.lastActive) >= m.idle
 }
 
 // drop zeroes a session's key and removes it. Callers hold mu.
@@ -541,6 +571,8 @@ func (m *Manager) drop(id domain.MemberID, s *unlocked) {
 // sweep is the background expiry loop. Lazy checks in Key and Touch make
 // expiry correct regardless; the sweeper exists so a key whose member simply
 // went away is zeroed on schedule rather than lingering until someone asks.
+// With no idle timeout configured expireIdle drops nothing and the loop only
+// prunes failure bookkeeping.
 func (m *Manager) sweep(interval time.Duration) {
 	defer close(m.done)
 	t := time.NewTicker(interval)
