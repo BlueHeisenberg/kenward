@@ -1305,17 +1305,29 @@ Telegram bot usernames are publicly discoverable and anyone may `/start`. Theref
 2. A stranger messaging the bot gets **no reply at all** until a valid code is
    presented. Not an error, not a prompt — silence.
 3. On a valid code: bind `telegram_id` → member, mark the code consumed, provision and
-   unlock that member's key, and run the short onboarding explaining the two memories
-   and how capture works. **The private space is not created here.** Nothing in kenward
-   creates a lore space, anywhere; the space named in `private_space` must already
-   exist, and enrolment binds a person to a configuration entry rather than
-   provisioning storage.
+   unlock that member's key, and greet them. Then a short setup conversation — language,
+   the agent's name under `household.agents: per_member`, register, character — and the
+   explanation of the two memories and how capture works. **The private space is not
+   created here.** Nothing in kenward creates a lore space, anywhere; the space named in
+   `private_space` must already exist, and enrolment binds a person to a configuration
+   entry rather than provisioning storage.
+
+   The setup questions are a convenience and the explanation is not: it is sent on every
+   ending, including the ones where the member answered nothing, and a node that died
+   between the greeting and it sends it on the next start
+   (`enrol.FinishInterrupted`). Each answer is committed as it is given, to
+   `members[].persona` in `state.json`, so an abandoned tutorial and one that never
+   started are the same thing downstream — unanswered fields are empty, and empty means
+   "the household's". The member is served by no unit until the tutorial ends, because
+   until then their messages have to keep reaching the enrolment pump for it to read;
+   whatever they say in the group chat in that window is unrouted, which is bounded by
+   `enrol.DefaultTutorialTimeout`.
 4. Codes are single-use, expiring, rate-limited (5 attempts per chat per hour) and
    compared in constant time.
 
 **A claim mid-run completes without a restart, key included.** Keys were once
 provisioned and unlocked at startup only, so somebody who claimed while the node was
-running got their unit and their onboarding and then "Your assistant is locked" on
+running got their unit and their setup conversation and then "Your assistant is locked" on
 their first private message — a notice whose only remedy is an operator restarting the
 node, on the first thing a household ever does with kenward, addressed to the one
 person who cannot perform it. The process that binds a claim is the process that will
