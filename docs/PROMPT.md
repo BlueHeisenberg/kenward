@@ -208,12 +208,42 @@ If this conversation contains something worth remembering — a durable fact, a
 preference, a decision, something the household will want recalled later — you may
 propose storing it by calling the remember tool.
 
+Before you propose anything, ask whether it will still be true a year from now.
+This week's arrangements and today's mood will not be, however useful they are
+right now.
+
 Propose at most one thing per reply, and only when it is genuinely durable. Do not
 propose remembering: the content of this conversation as a summary, anything already in
 the memory shown above, anything that will be false next week, or anything the member
 has already declined.
 
 ```
+
+**The middle paragraph is there because the list below it was not enough**, and it
+is the only paragraph in this document that was written from a measurement rather
+than from an argument.
+
+The prohibition on storing what will be false next week was already the third of
+four items in the list, and `TestCaptureJudgement` — the evaluation in
+`internal/assistant` that scores whether the model *decides* to capture, as opposed
+to whether a dictated call reaches the store — found it inert. Given "I'm in at the
+office every day this week, back working from home on Monday", a 27B proposed
+storing it in three samples out of three, titling one *"David's work location
+pattern"*. A prohibition buried mid-list is one the model reads and does not apply.
+Restating the same rule as a question the model puts to itself, in a paragraph of
+its own, moved that case from 0 of 3 right to 2 of 3, and the suite overall from
+87% to 92% (Qwen3.8-27B, 13 cases, 3 samples each). Nothing regressed: proposals
+on the six cases that should be captured stayed at 16 of 18.
+
+Two honesties about that number. It is a handful of samples against one model on
+one afternoon, so it is evidence and not proof. And the paragraph was written after
+reading which case failed, which is the definition of fitting to the test — the
+mitigation is that it restates a rule the document already held rather than adding
+a new one, so it teaches the model nothing that was not already policy.
+
+The redundancy with the list is deliberate. A prompt is not code and the second
+statement of a rule is not dead: the list is the enumeration, and the paragraph is
+the test that makes it operable.
 
 **Group scope adds**, and its last sentence is the whole of the write policy there —
 one destination, and it is never written without being asked about:

@@ -1405,7 +1405,12 @@ func TestRetrievalLineReportsWhatReachedTheModel(t *testing.T) {
 	if shown == 0 || shown == 8 {
 		t.Fatalf("the budget dropped %d of 8 entries; this test needs some dropped and some kept", 8-shown)
 	}
-	if want := fmt.Sprintf("the household memory (%d entries)", shown); !strings.Contains(line, want) {
+	// Built with readCount rather than a format string, so the assertion survives
+	// the budget leaving exactly one entry. It used to spell the count itself and
+	// always pluralised, which meant a prompt three lines longer — enough to drop
+	// one more entry — failed this test with "(1 entry)" against a wanted
+	// "(1 entries)": a fault in the expectation, reported as a fault in the code.
+	if want := "the household memory " + readCount(false, shown); !strings.Contains(line, want) {
 		t.Errorf("retrieval line %q does not say %q — it is counting search hits rather than what the model saw", line, want)
 	}
 }
