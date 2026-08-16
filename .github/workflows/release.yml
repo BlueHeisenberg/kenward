@@ -30,6 +30,13 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GOWORK: off
+    # The desktop bundles are built on three other runners, and each of them has
+    # to stamp the daemon it ships exactly as GoReleaser stamps the one on the
+    # release page. Working it out once here and handing it down is the only way
+    # those four answers cannot drift apart.
+    outputs:
+      pkgversion: ${{ steps.stamp.outputs.pkgversion }}
+      ldflags: ${{ steps.stamp.outputs.ldflags }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -63,6 +70,41 @@ jobs:
             *[!A-Za-z0-9.+_-]*) echo "tag '$GITHUB_REF_NAME' contains a character that must never reach a shell"; exit 1 ;;
           esac
 
+      # Two versions and one linker line, worked out once.
+      #
+      # `version` is the tag verbatim, leading "v" and all, and it is what gets
+      # compiled into the daemon, for the reason .goreleaser.yaml gives:
+      # version.Short() names the pod image tag, and a binary stamped "0.1.0"
+      # looks for an image tag that is not there.
+      #
+      # `pkgversion` drops the "v" and is what the three installer formats use.
+      # None of them will take the tag as written: a Debian version must start
+      # with a digit, and CFBundleVersion must be period-separated integers. So
+      # the archives and bare binaries carry "v0.1.1" and the bundles carry
+      # "0.1.1", which is the same split .goreleaser.yaml already makes between
+      # its archives and its .deb.
+      #
+      # On a workflow_dispatch rehearsal there is no tag, and the version is an
+      # obviously-fake one rather than a plausible-looking guess — a dispatched
+      # .dmg must never be mistakable for a published one.
+      - name: Version stamp
+        id: stamp
+        env:
+          # The PUBLIC half of the release signing key. Read through env rather
+          # than interpolated into the script: a repository variable is not
+          # attacker-controlled here, but a ${{ }} inside a run: body is how
+          # every workflow-injection bug starts, and this one would end up in
+          # the linker line of a binary every household runs.
+          KEYS: ${{ vars.KENWARD_RELEASE_KEYS }}
+        run: |
+          version=v0.0.0-snapshot
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; fi
+          pkg=github.com/BlueHeisenberg/kenward/internal/version
+          echo "pkgversion=${version#v}" >>"$GITHUB_OUTPUT"
+          echo "ldflags=-X $pkg.Version=$version -X $pkg.Commit=$(git rev-parse --short HEAD)" \
+               "-X $pkg.Date=$(git show -s --format=%cI)" \
+               "-X main.releaseTrustedKeys=$KEYS" >>"$GITHUB_OUTPUT"
+
       - name: Check formatting (gofmt)
         run: |
           unformatted="$(gofmt -l .)"
@@ -71,6 +113,29 @@ jobs:
             echo "$unformatted"
             exit 1
           fi
+
+      # Two invariants the desktop wrapper makes it possible to break silently.
+      #
+      # The daemon must keep linking without cgo, because the distroless image
+      # has no libc — Dockerfile:66 sets CGO_ENABLED=0 and would fail at build
+      # time, but only after a tag exists. The tray needs cgo on macOS, and one
+      # import reaching from cmd/kenward into anything cgo-touching would break
+      # the image without breaking a single test.
+      #
+      # And the tray must never enter the image: it would pull a menu-bar
+      # library into a distroless container that has no display, no session bus
+      # and nobody to look at it. That one would not fail at all. It would just
+      # ship.
+      - name: The daemon builds without cgo, and the tray stays out of the image
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go build -o "$RUNNER_TEMP/kenward-nocgo" ./cmd/kenward
+          if grep -q 'kenward-desktop' Dockerfile; then
+            echo "Dockerfile mentions kenward-desktop: the tray does not belong in a distroless image"
+            exit 1
+          fi
+
       - run: go vet ./...
       - run: go test -race ./...
 
@@ -196,3 +261,251 @@ jobs:
             DATE=${{ steps.commit.outputs.date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # The desktop wrapper.
+  #
+  # Three jobs on three runners, and not one of them is GoReleaser's, because
+  # GoReleaser cannot do this. cmd/kenward-desktop needs cgo on darwin (menu bar
+  # is Objective-C) and cgo does not cross-compile, so darwin has to be built on
+  # a Mac; splitting one GoReleaser run across runners and merging the halves is
+  # `--split` plus `goreleaser continue`, which is Pro. So the tray is built
+  # outside GoReleaser entirely, and .goreleaser.yaml stays a daemon-only
+  # config. That is a deliberate division, not an oversight.
+  #
+  # Each job builds the pair — wrapper and daemon — because every bundle ships
+  # both: kenward-desktop resolves the daemon beside its own executable
+  # (cmd/kenward-desktop/main.go, kenwardBinary), which is what makes the .app,
+  # the Windows install directory and /usr/bin work with nothing on PATH.
+  #
+  # They depend on gate only, not on artifacts, so they run alongside GoReleaser
+  # rather than behind it; desktop-publish is what waits for the draft release
+  # to exist. And none of them holds a write token: they hand their output to
+  # desktop-publish as a workflow artifact, and that one job does the uploading.
+  # ---------------------------------------------------------------------------
+
+  desktop-linux:
+    name: desktop (linux)
+    needs: gate
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: off
+      # CGO_ENABLED=0 for both binaries. The tray talks StatusNotifierItem over
+      # D-Bus in pure Go — no GTK, no libayatana, no X11 — which is why
+      # packaging/linux/nfpm.yaml can declare no dependencies and the result
+      # runs on glibc and musl alike.
+      CGO_ENABLED: '0'
+      LDFLAGS: ${{ needs.gate.outputs.ldflags }}
+      # nfpm reads ${VERSION} out of the environment; the "v"-less form is the
+      # only one dpkg will take. See the gate job.
+      VERSION: ${{ needs.gate.outputs.pkgversion }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25'
+          cache: false   # see the gate job
+
+      - name: Build the pair, both architectures
+        run: |
+          for arch in amd64 arm64; do
+            mkdir -p "build/$arch"
+            GOARCH="$arch" go build -trimpath -ldflags "$LDFLAGS" -o "build/$arch/kenward" ./cmd/kenward
+            GOARCH="$arch" go build -trimpath -o "build/$arch/kenward-desktop" ./cmd/kenward-desktop
+          done
+
+      # nfpm reads packaging/linux/nfpm.yaml rather than a translated `nfpms:`
+      # block in .goreleaser.yaml, so the package layout has one definition. It
+      # is fetched with `go run pkg@version` — pinned, no new action to audit,
+      # and the toolchain is already here.
+      #
+      # nfpm expands ${VERSION} and ${ARCH} in scalar fields but not inside
+      # `contents` globs, which is why the binaries are staged into dist/nfpm
+      # once per architecture rather than pointed at.
+      - name: Package .deb and .rpm
+        env:
+          NFPM: github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+        run: |
+          mkdir -p dist/nfpm
+          for arch in amd64 arm64; do
+            cp "build/$arch/kenward" "build/$arch/kenward-desktop" dist/nfpm/
+            for fmt in deb rpm; do
+              ARCH="$arch" go run "$NFPM" pkg -f packaging/linux/nfpm.yaml -p "$fmt" -t dist/
+            done
+          done
+          ls -l dist/*.deb dist/*.rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: |
+            dist/*.deb
+            dist/*.rpm
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop-macos:
+    name: desktop (macos)
+    needs: gate
+    runs-on: macos-latest
+    env:
+      GOWORK: off
+      LDFLAGS: ${{ needs.gate.outputs.ldflags }}
+      # The "v"-less form: it becomes CFBundleVersion, which Apple requires to
+      # be period-separated integers. See the gate job.
+      VERSION: ${{ needs.gate.outputs.pkgversion }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25'
+          cache: false   # see the gate job
+
+      # One universal .app rather than two single-architecture .dmgs. macOS has
+      # carried fat binaries since it existed, `lipo` ships with the toolchain,
+      # and one download that works on every Mac is the whole reason the format
+      # is there. It also means packaging/macos/bundle.sh needs no change: it
+      # takes one wrapper and one daemon and produces
+      # kenward_<version>_macos.dmg, which is the name docs/DESKTOP.md promises.
+      #
+      # The daemon is CGO_ENABLED=0 here as everywhere — only the tray needs
+      # cgo, and only because the menu bar is Objective-C. macos-latest is
+      # arm64, so darwin/amd64 of the tray is a cross-cgo build; Go passes
+      # `-arch x86_64` to clang for it and Xcode's SDK carries both slices.
+      - name: Build the pair, universal
+        run: |
+          mkdir -p build
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOARCH="$arch" go build -trimpath -ldflags "$LDFLAGS" \
+              -o "build/kenward.$arch" ./cmd/kenward
+            CGO_ENABLED=1 GOARCH="$arch" go build -trimpath \
+              -o "build/kenward-desktop.$arch" ./cmd/kenward-desktop
+          done
+          lipo -create build/kenward.amd64 build/kenward.arm64 -output build/kenward
+          lipo -create build/kenward-desktop.amd64 build/kenward-desktop.arm64 -output build/kenward-desktop
+          lipo -info build/kenward build/kenward-desktop
+
+      # Unsigned and un-notarised, by decision. The consequence is a first-launch
+      # dialogue that reads as though the download is damaged, which is why the
+      # .dmg carries FIRST-LAUNCH.txt beside the app. docs/DESKTOP.md, "macOS".
+      - name: Bundle the .app and .dmg
+        run: |
+          mkdir -p dist
+          packaging/macos/bundle.sh "$VERSION" build/kenward-desktop build/kenward dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop-windows:
+    name: desktop (windows)
+    needs: gate
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      GOWORK: off
+      CGO_ENABLED: '0'   # the tray uses Win32 through golang.org/x/sys, no cgo
+      LDFLAGS: ${{ needs.gate.outputs.ldflags }}
+      # The "v"-less form: it becomes the installer's AppVersion, which is what
+      # Settings › Apps shows. See the gate job.
+      VERSION: ${{ needs.gate.outputs.pkgversion }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25'
+          cache: false   # see the gate job
+
+      # amd64 only, and that covers every Windows machine: the installer sets
+      # ArchitecturesAllowed=x64compatible, which includes arm64 running x64
+      # under emulation. A separate arm64 installer would be a second artifact
+      # for a rounding error of users. (windows/arm64 of the *daemon* is still
+      # published by GoReleaser, for people running it headless.)
+      #
+      # -H=windowsgui is the load-bearing flag. Without it the tray launches a
+      # console window behind its own icon on every start.
+      - name: Build the pair
+        run: |
+          mkdir -p dist/windows_amd64
+          GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" \
+            -o dist/windows_amd64/kenward.exe ./cmd/kenward
+          GOARCH=amd64 go build -trimpath -ldflags "-H=windowsgui" \
+            -o dist/windows_amd64/kenward-desktop.exe ./cmd/kenward-desktop
+
+      # Inno Setup 6 is preinstalled on windows-latest (the runner image
+      # installs the `innosetup` Chocolatey package). That package runs the
+      # official installer, which puts ISCC.exe under Program Files and does not
+      # always leave a shim on PATH — hence looking in both places and failing
+      # with a sentence rather than "command not found" if the image changes.
+      #
+      # /DSourceDir is not passed: the script defaults to ..\..\dist\windows_amd64
+      # relative to itself, which is exactly where the previous step staged the
+      # pair. OutputDir in the script puts the result in dist/.
+      - name: Compile the installer
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) {
+            throw "no Inno Setup compiler on this runner; the windows-latest image no longer ships one"
+          }
+          & $iscc "/DVersion=$env:VERSION" packaging\windows\kenward.iss
+          if ($LASTEXITCODE -ne 0) { throw "iscc failed with $LASTEXITCODE" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: dist/*_setup.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  # The one job that can write to the release. It waits for the draft to exist
+  # (needs: artifacts) and for all three bundles, then attaches them and extends
+  # checksums.txt to cover them — GoReleaser only checksums what GoReleaser
+  # built, and a checksums.txt that silently omits three of the release's
+  # artifacts is worse than not having one.
+  #
+  # Skipped on workflow_dispatch, which is what makes the dispatch a rehearsal:
+  # the three jobs above still run and still leave their output as workflow
+  # artifacts to be downloaded and opened, and nothing is published anywhere.
+  desktop-publish:
+    name: desktop (publish)
+    needs: [artifacts, desktop-linux, desktop-macos, desktop-windows]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          merge-multiple: true
+          path: desktop
+
+      - name: Attach to the draft release
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          files=$(ls)
+          echo "$files"
+          # Fetched rather than rebuilt: this is the file install.sh verifies
+          # against, and rewriting it here would drop GoReleaser's lines.
+          gh release download "$TAG" --pattern checksums.txt
+          # shellcheck disable=SC2086
+          sha256sum $files >>checksums.txt
+          # shellcheck disable=SC2086
+          gh release upload "$TAG" --clobber $files checksums.txt

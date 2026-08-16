@@ -221,30 +221,97 @@ the generator is committed so they can be changed — a binary nobody can regene
 binary nobody can review. The mark is a placeholder ring, deliberately in neither of
 the tray's status colours.
 
-## What the release pipeline has to do
+## What the release pipeline does
 
-Owned elsewhere (`.goreleaser.yml`, `.github/workflows/`); listed here so it is not
-guessed at.
+Built in `.github/workflows/release.yml`, jobs `desktop-linux`, `desktop-macos`,
+`desktop-windows` and `desktop-publish`. This section used to be a list of what the
+pipeline *had* to do, written before it did any of it; it now describes what is there,
+and where the plan and the implementation differ it says which won.
 
-1. **Build `cmd/kenward-desktop` per platform.** `CGO_ENABLED=0` for
-   `windows/amd64`, `linux/amd64` and `linux/arm64`; `CGO_ENABLED=1` on a
-   **macOS runner** for `darwin/amd64` and `darwin/arm64`. Darwin cannot be
-   cross-compiled from Linux, so the release needs a `macos-latest` job. The existing
-   `cmd/kenward` matrix is unchanged and must stay `CGO_ENABLED=0`.
-2. **Link Windows with `-ldflags "-H=windowsgui"`** in addition to the version
-   `-X` flags, or every launch opens a console window.
-3. **Ship the daemon beside the wrapper** in all three bundles. Both binaries, one
-   directory.
-4. **Run the three packagers**: `packaging/macos/bundle.sh` on the macOS runner,
-   `iscc` on the Windows runner (Inno Setup is preinstalled on GitHub's
-   `windows-latest` image), and nfpm — natively or through goreleaser's own `nfpms:`
-   block, translating `packaging/linux/nfpm.yaml`.
-5. **Publish**: `kenward_<version>_macos.dmg`,
-   `kenward_<version>_windows_amd64_setup.exe`, `kenward-desktop_<version>_<arch>.deb`
-   and `kenward-desktop-<version>-1.<arch>.rpm`, plus the bare binaries for anyone who
-   wants them.
-6. **Do not sign or notarise.** Out of scope by decision. The install page should carry
-   the same right-click→Open and SmartScreen notes as above, so a user meets the
-   warning already knowing what it is.
-7. **The container image is untouched.** `cmd/kenward-desktop` must never enter the
-   Dockerfile: it would pull a tray library into a distroless image with no display.
+**None of it goes through GoReleaser, and that is deliberate.** `cmd/kenward-desktop`
+needs cgo on darwin and cgo does not cross-compile, so darwin must be built on a Mac.
+Splitting one GoReleaser run across runners and merging the halves is `--split` plus
+`goreleaser continue`, which is a Pro feature. So `.goreleaser.yaml` stays a
+daemon-only configuration and contains no mention of the wrapper — not an oversight,
+a division.
+
+1. **Three runners, three bundles.** `ubuntu-latest` for `.deb` and `.rpm`,
+   `macos-latest` for the `.dmg`, `windows-latest` for the installer. Each depends on
+   the `gate` job only, so all three run alongside GoReleaser rather than behind it.
+2. **The daemon is `CGO_ENABLED=0` everywhere, including on the Mac.** Only the
+   wrapper needs cgo, and only on darwin. The gate job asserts the daemon still links
+   without cgo, and that `kenward-desktop` has not appeared in the Dockerfile.
+3. **Windows is amd64 only.** The installer declares
+   `ArchitecturesAllowed=x64compatible`, so it installs and runs on ARM Windows under
+   emulation; a second arm64 installer would be an artifact for a rounding error. The
+   arm64 *daemon* is still published, for headless use.
+4. **macOS is one universal `.app`.** Both architectures of both binaries are built and
+   `lipo`'d into fat binaries before `packaging/macos/bundle.sh` sees them, so there is
+   one `.dmg` rather than two. `bundle.sh` needed no change for this.
+5. **`-H=windowsgui`** is passed when linking the wrapper for Windows, or every launch
+   opens a console window behind the tray icon. Nothing else needs it, and the wrapper
+   takes no version `-X` flags: it does not import `internal/version` and has no
+   `--version` to print. The daemon it ships beside is stamped exactly as GoReleaser
+   stamps the published one, from a single definition in the `gate` job.
+6. **Linux packaging shells out to `packaging/linux/nfpm.yaml`** rather than
+   translating it into a `nfpms:` block. One definition of the package layout, and the
+   file the manual instructions above use is the file CI uses. nfpm is fetched with
+   `go run …/cmd/nfpm@<pinned>`; the toolchain is already on the runner and there is no
+   extra action to audit.
+7. **Published:** `kenward_<version>_macos.dmg`,
+   `kenward_<version>_windows_amd64_setup.exe`,
+   `kenward-desktop_<version>_{amd64,arm64}.deb` and
+   `kenward-desktop-<version>-1.{x86_64,aarch64}.rpm`. All four use the tag **without**
+   its leading `v`, because not one of the three formats will take it with: a Debian
+   version must start with a digit, and `CFBundleVersion` must be period-separated
+   integers. The daemon inside them is still stamped with the tag as written — the pod
+   image tag depends on that — so `v0.1.1` in `kenward version` and `0.1.1` on the
+   filename is correct, not a slip.
+8. **No bare `kenward-desktop_<goos>_<goarch>` binaries.** The plan asked for them; this
+   is the one item overruled. `cmd/kenward-release`'s manifest builder reads a platform
+   out of any filename shaped `*_<goos>_<goarch>`, deliberately not pinning the leading
+   name, so a bare desktop binary sitting in the directory a manifest is built from
+   parses as that platform and collides with the daemon. It fails loudly rather than
+   silently — the builder refuses two files claiming one platform — but the failure
+   lands on the maintainer mid-signing, and nothing needs the bare binary that the
+   three packages do not already cover. See "The wrapper is not in the update manifest"
+   below.
+9. **`checksums.txt` covers the bundles too.** GoReleaser checksums only what
+   GoReleaser built; `desktop-publish` appends the three bundles' digests to the same
+   file before attaching them, because one authoritative checksums file that silently
+   omits three artifacts is worse than none.
+10. **Nothing is signed or notarised.** Out of scope by decision, and
+    `docs/INSTALL.md` carries the right-click→Open and SmartScreen notes so a user meets
+    the warning already knowing what it is.
+11. **The container image is untouched.** `cmd/kenward-desktop` must never enter the
+    Dockerfile: it would pull a tray library into a distroless image with no display.
+    The gate job greps for it.
+
+A `workflow_dispatch` run is the rehearsal, and it is worth using before a tag rather
+than after one: all three desktop jobs run and leave their bundles as downloadable
+workflow artifacts, versioned `0.0.0-snapshot` so they cannot be mistaken for a release,
+while `desktop-publish` is skipped and nothing is attached to anything. It is the only
+way to find out whether the macOS and Windows halves work without cutting a tag to ask.
+
+## The wrapper is not in the update manifest
+
+`kenward update` reads a signed manifest whose artifact map is keyed `GOOS/GOARCH` —
+**one artifact per platform**, and that artifact is the daemon. There is no second slot,
+so "add the wrapper to the manifest" is not a thing the format can express. Nor should
+it be:
+
+- The updater replaces the running binary and expects a service manager to restart it;
+  `kenward run` exits non-zero on purpose after the swap. For a desktop install the
+  wrapper *is* that service manager. A wrapper that updated itself would have nothing to
+  restart it.
+- `defaultPlatforms` in `cmd/kenward-release/manifest.go` must therefore stay exactly the
+  daemon's six. A platform listed there and not built strands every installation on it;
+  a platform built and not listed never updates. The wrapper is in the second category
+  on purpose, and updates by downloading a new bundle.
+
+One consequence worth knowing: the daemon inside a `.deb` or `.rpm` lives in `/usr/bin`
+and is not writable by the user running the tray, so it cannot self-update either. It
+updates when the package does. The `.app` and the Windows per-user install are both in
+user-writable directories, so the daemon inside them updates normally and the wrapper
+restarts it — which is the path the "restarted immediately if it survived thirty
+seconds" rule above exists for.
