@@ -115,7 +115,7 @@ func TestKeyFuncComposesWithConfigSecrets(t *testing.T) {
 				return "", nil
 			}
 
-			c := routing.NewHTTPCompleter(nil, resolver)
+			c := routing.NewHTTPCompleter(nil, resolver, nil)
 			e := routing.Endpoint{Name: tc.ec.Name, BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 			if _, err := c.Complete(context.Background(), e, routing.Request{
 				Messages: []routing.Message{{Role: "user", Content: "hi"}},

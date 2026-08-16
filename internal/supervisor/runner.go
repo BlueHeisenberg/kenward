@@ -234,7 +234,7 @@ func (r *runner) buildDeps() error {
 	}
 	if r.rc.router == nil {
 		r.rc.router = routing.NewPool(r.cfg.RoutingEndpoints(),
-			routing.NewHTTPCompleter(nil, r.rc.endpointKey))
+			routing.NewHTTPCompleter(nil, r.rc.endpointKey, r.logger))
 	}
 	if r.rc.sessions == nil {
 		store := session.NewFileStore(filepath.Join(r.cfg.DataDir, simpleSessionsFile))

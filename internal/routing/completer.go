@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/BlueHeisenberg/keel/llm"
@@ -56,9 +57,14 @@ type KeyFunc func(ep Endpoint) (string, error)
 // households whose endpoints all sit on their own network. The key goes into
 // the Authorization header and appears nowhere else: not in errors, not in
 // logs, not on any stored struct.
-func NewHTTPCompleter(client *http.Client, key KeyFunc) Completer {
+// logger receives keel/llm's own request and warning lines (including its
+// tool-call-argument-repair warning) through kenward's configured handler;
+// nil falls back to slog.Default(), keel's own convention, so passing nothing
+// here changes nothing — production must pass its real logger to get keel's
+// lines into its structured log rather than loose text on stderr.
+func NewHTTPCompleter(client *http.Client, key KeyFunc, logger *slog.Logger) Completer {
 	return &httpCompleter{
-		provider: llm.New(llm.Options{Client: client}),
+		provider: llm.New(llm.Options{Client: client, Logger: logger}),
 		key:      key,
 	}
 }

@@ -180,7 +180,7 @@ func TestOutOfChainIsolation(t *testing.T) {
 	p := NewPool([]Endpoint{
 		{Name: "monster", BaseURL: localURL, Model: "m", Tags: []string{"local"}, Timeout: time.Second},
 		{Name: "openrouter", BaseURL: cloudSrv.URL, Model: "m", Tags: []string{"cloud"}, Timeout: time.Second},
-	}, NewHTTPCompleter(nil, nil))
+	}, NewHTTPCompleter(nil, nil, nil))
 
 	req := Request{Messages: []Message{{Role: "user", Content: "private"}}}
 	for _, chain := range [][]string{{"local"}, nil, {"gpu"}} {
@@ -441,7 +441,7 @@ func TestEndpointTimeoutCoolsAndFailsOver(t *testing.T) {
 	p := NewPool([]Endpoint{
 		{Name: "slow", BaseURL: slow.URL, Model: "m", Tags: []string{"local"}, Timeout: 50 * time.Millisecond},
 		{Name: "fast", BaseURL: fast.URL, Model: "m", Tags: []string{"local"}, Timeout: time.Second},
-	}, NewHTTPCompleter(nil, nil))
+	}, NewHTTPCompleter(nil, nil, nil))
 
 	comp, err := p.Complete(context.Background(), []string{"local"},
 		Request{Messages: []Message{{Role: "user", Content: "hi"}}})
@@ -480,7 +480,7 @@ func emptyVsHealthyPool(t *testing.T, body string) (p *Pool, healthyHits *int32)
 	p = NewPool([]Endpoint{
 		{Name: "empty", BaseURL: empty.URL, Model: "m", Tags: []string{"local"}, Timeout: time.Second},
 		{Name: "healthy", BaseURL: healthy.URL, Model: "m", Tags: []string{"local"}, Timeout: time.Second},
-	}, NewHTTPCompleter(nil, nil))
+	}, NewHTTPCompleter(nil, nil, nil))
 	return p, &hits
 }
 

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,7 +45,7 @@ func TestHTTPCompleterSuccess(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPCompleter(nil, fixedKey("sekrit"))
+	c := NewHTTPCompleter(nil, fixedKey("sekrit"), nil)
 	e := Endpoint{
 		Name: "srv", BaseURL: srv.URL + "/v1", Model: "m1",
 		Timeout: time.Second,
@@ -99,7 +101,7 @@ func TestHTTPCompleterExplicitZeroTemperature(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPCompleter(nil, nil)
+	c := NewHTTPCompleter(nil, nil, nil)
 	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 	zero := 0.0
 	if _, err := c.Complete(context.Background(), e, Request{
@@ -132,7 +134,7 @@ func TestHTTPCompleterAPIErrorScrubbed(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPCompleter(nil, nil)
+	c := NewHTTPCompleter(nil, nil, nil)
 	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 	_, err := c.Complete(context.Background(), e, Request{
 		Messages: []Message{{Role: "user", Content: secret}},
@@ -165,7 +167,7 @@ func TestHTTPCompleterConnectRefused(t *testing.T) {
 	base := "http://" + l.Addr().String()
 	l.Close()
 
-	c := NewHTTPCompleter(nil, nil)
+	c := NewHTTPCompleter(nil, nil, nil)
 	e := Endpoint{Name: "gone", BaseURL: base, Model: "m", Timeout: time.Second}
 	_, err = c.Complete(context.Background(), e, Request{})
 	var te *llm.TransportError
@@ -185,7 +187,7 @@ func TestHTTPCompleterTimeout(t *testing.T) {
 	defer srv.Close()
 	defer close(release)
 
-	c := NewHTTPCompleter(nil, nil)
+	c := NewHTTPCompleter(nil, nil, nil)
 	e := Endpoint{Name: "slow", BaseURL: srv.URL, Model: "m", Timeout: 30 * time.Millisecond}
 	_, err := c.Complete(context.Background(), e, Request{})
 	var te *llm.TransportError
@@ -225,7 +227,7 @@ func TestHTTPCompleterToolSpecOnWire(t *testing.T) {
 	defer srv.Close()
 
 	schema := json.RawMessage(`{"type":"object","properties":{"title":{"type":"string"}}}`)
-	c := NewHTTPCompleter(nil, nil)
+	c := NewHTTPCompleter(nil, nil, nil)
 	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 	_, err := c.Complete(context.Background(), e, Request{
 		Messages: []Message{{Role: "user", Content: "hi"}},
@@ -259,7 +261,7 @@ func TestHTTPCompleterToolCallsReturned(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewHTTPCompleter(nil, nil)
+	c := NewHTTPCompleter(nil, nil, nil)
 	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 	comp, err := c.Complete(context.Background(), e, Request{
 		Messages: []Message{{Role: "user", Content: "hi"}},
@@ -302,7 +304,7 @@ func TestHTTPCompleterMalformedToolArgs(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			c := NewHTTPCompleter(nil, nil)
+			c := NewHTTPCompleter(nil, nil, nil)
 			e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 			comp, err := c.Complete(context.Background(), e, Request{
 				Messages: []Message{{Role: "user", Content: "hi"}},
@@ -346,7 +348,7 @@ func TestHTTPCompleterFinishReason(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			c := NewHTTPCompleter(nil, nil)
+			c := NewHTTPCompleter(nil, nil, nil)
 			e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 			comp, err := c.Complete(context.Background(), e, Request{
 				Messages: []Message{{Role: "user", Content: "hi"}},
@@ -374,7 +376,7 @@ func TestHTTPCompleterKeyResolutionError(t *testing.T) {
 	defer srv.Close()
 
 	errResolve := errors.New("endpoints[0].api_key_file: no such file")
-	c := NewHTTPCompleter(nil, func(Endpoint) (string, error) { return "", errResolve })
+	c := NewHTTPCompleter(nil, func(Endpoint) (string, error) { return "", errResolve }, nil)
 	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 	_, err := c.Complete(context.Background(), e, Request{})
 	if !errors.Is(err, errResolve) {
@@ -405,7 +407,7 @@ func TestHTTPCompleterNoKeySendsNoAuth(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			c := NewHTTPCompleter(nil, kf)
+			c := NewHTTPCompleter(nil, kf, nil)
 			e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
 			if _, err := c.Complete(context.Background(), e, Request{
 				Messages: []Message{{Role: "user", Content: "hi"}},
@@ -416,5 +418,72 @@ func TestHTTPCompleterNoKeySendsNoAuth(t *testing.T) {
 				t.Fatalf("Authorization header = %q, want none", gotAuth)
 			}
 		})
+	}
+}
+
+// recordingHandler is a slog.Handler that keeps every record it receives, so a
+// test can assert not just that a log line was emitted, but that it reached
+// THIS handler rather than whatever slog.Default() happened to be at the time.
+type recordingHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r)
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *recordingHandler) WithGroup(name string) slog.Handler       { return h }
+
+func (h *recordingHandler) find(msg string) (slog.Record, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, r := range h.records {
+		if r.Message == msg {
+			return r, true
+		}
+	}
+	return slog.Record{}, false
+}
+
+// TestHTTPCompleterRepairedToolArgsReachInjectedLogger pins the wiring this
+// package is responsible for: NewHTTPCompleter must hand its logger parameter
+// to keel/llm, so that keel's own warnings (like the tool-call-argument-repair
+// warning tested here) land on kenward's configured handler rather than on
+// slog.Default() — which would mean they escape as loose text on stderr
+// instead of going through whatever structured handler the operator set up.
+// Without passing logger through to llm.Options.Logger, this test fails
+// because the record never reaches h.
+func TestHTTPCompleterRepairedToolArgsReachInjectedLogger(t *testing.T) {
+	// A stray trailing brace after otherwise-valid arguments: keel's sanitizer
+	// repairs this shape rather than dropping it, and logs the repair.
+	const args = `{\"path\":\"/w\"}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"remember","arguments":"`+
+			args+`"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer srv.Close()
+
+	h := &recordingHandler{}
+	c := NewHTTPCompleter(nil, nil, slog.New(h))
+	e := Endpoint{Name: "srv", BaseURL: srv.URL, Model: "m", Timeout: time.Second}
+	if _, err := c.Complete(context.Background(), e, Request{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	rec, ok := h.find("llm: repaired malformed tool call arguments")
+	if !ok {
+		t.Fatal("repair warning did not reach the completer's injected logger handler")
+	}
+	if rec.Level != slog.LevelWarn {
+		t.Errorf("level = %v, want Warn", rec.Level)
 	}
 }
