@@ -27,7 +27,7 @@ func cmdRevoke(e *env, args []string) int {
 	id := domain.MemberID(positionals[0])
 
 	path := resolveConfigPath(e, *configPath)
-	cfg, err := loadConfig(path, resolveDataDir(e, *dataDir), e.secrets())
+	cfg, err := loadConfigWithoutSecrets(path, resolveDataDir(e, *dataDir))
 	if err != nil {
 		fmt.Fprint(e.stderr, renderConfigError(path, err))
 		return exitUsage

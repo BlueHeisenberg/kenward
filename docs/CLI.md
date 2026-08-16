@@ -96,6 +96,17 @@ Runs the node. This is what the container entrypoint and the systemd unit call.
 per-OS state location. It is what the container image sets, since a container's home
 directory is not where anyone expects state to live.
 
+**It refuses to start unless lore actually answers.** Before anything is built, `run`
+looks for `memory.lore_command[0]` on `$PATH` and then completes one bounded MCP
+handshake with it — the same one `doctor` performs. Both halves are needed: a missing
+binary and an uninitialised `LORE_HOME` produce the same outcome, a node that runs,
+answers and records nothing, and only the handshake catches the second. `lore mcp` exits
+before the handshake against a store with no account, which is the state every fresh
+container volume is in, so the refusal names `lore init` as the usual remedy. A space
+lore does not hold is *not* a refusal — that is one space's problem and `doctor` reports
+it. The isolated **host supervisor** is exempt: it starts pods and holds no memory client
+of its own, and each pod asks this question of its own image on its own way up.
+
 `--member` and `--group` exist for **isolated mode only**, where each pod runs exactly
 one unit: a member's pod is started with `--member david`, the household's with
 `--group`. In simple mode both are omitted and one process runs every unit. Passing
@@ -194,6 +205,14 @@ hours. Until they use it, the bot will not reply to them at all.
 
 The code is stored hashed. Nothing else is printed — no QR, no link, no deep link that
 would leak the code into a chat log.
+
+**It reads no secret, and so demands none.** `invite` writes a digest; it opens no bot,
+unwraps no key and calls no provider. It loads `kenward.yaml` for its structure alone —
+the household roster, the modes, the paths — and resolves not one bot token, passphrase
+or API key. `revoke` is the same. That is not a convenience: unscoped, both commands
+demanded *every* member's secrets, and in isolated mode no container holds a sibling's,
+so neither could be run anywhere at all. What is still refused is unchanged: a file that
+cannot describe a household, and a `--name` or member id the file does not declare.
 
 **In isolated mode it also writes the digest where the member's pod will find it**, and
 says so:

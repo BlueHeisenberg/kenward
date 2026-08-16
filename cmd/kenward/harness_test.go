@@ -370,6 +370,17 @@ func everythingAsleep(base probes) probes {
 	return base
 }
 
+// loreUninitialised is the world a fresh container volume is in: the binary is on PATH
+// and `lore mcp` exits before the MCP handshake because LORE_HOME holds no account.
+// The message is lore's own, measured against a real container.
+func loreUninitialised(base probes) probes {
+	base.lore = func(context.Context, *config.Config, config.UnitScope) loreResult {
+		return loreResult{Err: errors.New("lore MCP handshake failed: lore: load account (run `lore init` first?): " +
+			"no account at /home/nonroot/.lore/account.json (run `lore init`)")}
+	}
+	return base
+}
+
 func loreDown(base probes) probes {
 	base.lore = func(context.Context, *config.Config, config.UnitScope) loreResult {
 		return loreResult{Err: errors.New("lore mcp: exec: \"lore\": executable file not found in $PATH")}

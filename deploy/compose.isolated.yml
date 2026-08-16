@@ -37,10 +37,11 @@
 #
 #      `lore mcp` refuses to start against an uninitialised LORE_HOME — "no
 #      account at /var/lib/kenward/lore/account.json (run `lore init`)" — and
-#      kenward does not notice: `run` only checks that the binary is on PATH, so
-#      the pod starts, authorises, greets, and records nothing. Only `kenward
-#      doctor` reports it, as "lore mcp did not respond". Keep each recovery code
-#      `init` prints; nothing else can recover that member's store.
+#      so does kenward: `run` completes an MCP handshake with lore before it
+#      serves anything, so a pod whose store was never initialised exits 1
+#      saying exactly that, instead of starting, authorising, greeting and
+#      recording nothing. Keep each recovery code `init` prints; nothing else
+#      can recover that member's store.
 #
 #      SHARED SPACE, AND IT IS NOT SOLVED HERE: every pod resolves
 #      household.shared_space against ITS OWN lore store — a member's pod reads
@@ -68,13 +69,14 @@
 #      the mount creates a directory in its place, and jordan's pod refuses to
 #      start. The code is then unusable and there is no copy of it anywhere.
 #
-#      Note also that this command has to run somewhere holding the WHOLE
-#      household's secrets: it loads kenward.yaml unscoped, so it demands every
-#      member's bot token and passphrase. That is the host, where `.env` already
-#      is. It cannot be run as `docker compose run` against a service here — no
-#      service holds another member's secrets, which is the point of the mode, so
-#      every one of them fails this command's validation on its siblings' missing
-#      variables.
+#      It needs no secrets at all — it mints a digest, and opens no bot and
+#      unwraps no key — so it will also run as `docker compose run --rm --no-deps
+#      kenward-jordan invite --name Jordan`, from a service holding only its own.
+#      Prefer the host anyway, and for a reason that has nothing to do with
+#      secrets: a code minted inside a service lands in THAT service's named
+#      volume, which no other service and no host path can mount, so it reaches
+#      nobody. `--data-dir .` on the host is what puts it where the mount below
+#      can find it.
 #
 #      What that writes is the digests of jordan's outstanding codes, and nobody
 #      else's — which the service below mounts read-only. This is the whole of

@@ -77,6 +77,21 @@ type UnitScope struct {
 	Member string
 	// Group marks the household group's pod.
 	Group bool
+	// NoSecrets asks for the file to be checked and none of its secrets resolved.
+	//
+	// It is for the commands that read no secret at all. `kenward invite` mints a
+	// digest and `kenward revoke` clears a binding; neither opens a bot, unwraps a key
+	// or calls a provider, and demanding the household's tokens of them made both
+	// unrunnable in isolated mode — where, by design, no container holds a sibling's
+	// secrets, so there was nowhere left to run a documented operator command.
+	//
+	// It drops resolution and nothing else. Every structural rule still applies,
+	// including the one rule about secrets that is a property of the file rather than
+	// of the environment: naming both a _file and an _env source for one secret is
+	// still reported, because it is wrong whoever reads it. `run` and `doctor` never
+	// set it — they are about to serve, and a node that starts half-configured is the
+	// failure the resolution exists to prevent.
+	NoSecrets bool
 }
 
 // ServesGroup reports whether this scope covers the household group's conversation, and
@@ -578,6 +593,9 @@ type secretRef struct {
 // leaving these unscoped would refuse a local-only member's pod for not holding the
 // provider key its own configuration forbids it to use.
 func (c *Config) secretRefs(scope UnitScope) []secretRef {
+	if scope.NoSecrets {
+		return nil
+	}
 	var refs []secretRef
 	seenEnv := make(map[string]bool)
 	seenFile := make(map[string]bool)
@@ -603,6 +621,14 @@ func (c *Config) secretRefs(scope UnitScope) []secretRef {
 
 	if c.Mode == ModeSimple {
 		add(c.BotTokenRef(), "required in simple mode; the household shares one bot")
+		// Optional, and deliberately: the node passphrase has three sources this file
+		// cannot see — a systemd credential, KENWARD_PASSPHRASE, and a person typing at
+		// a terminal — and every one of them is a legitimate way to run simple mode. So
+		// a file that names no source is not a fault. A file that *names* one is held to
+		// the same standard as every other secret: an unset variable or an unreadable
+		// path is reported here, by name, at load, which is what a member's
+		// passphrase_env already got and this one did not. See SessionPassphraseRef.
+		add(c.SessionPassphraseRef(), "")
 	}
 	if c.Mode == ModeIsolated && c.Household.GroupChatID != 0 && scope.ServesGroup() {
 		// Per-member bots cover the members; the household group conversation still
@@ -707,7 +733,7 @@ func (c *Config) validateSecrets(p *problems, s *Secrets, scope UnitScope) {
 // use, the file validates clean and fails the day somebody changes one line at the top
 // of it.
 func (c *Config) validateSecretSources(p *problems) {
-	refs := []SecretRef{c.BotTokenRef()}
+	refs := []SecretRef{c.BotTokenRef(), c.SessionPassphraseRef()}
 	for i, m := range c.Members {
 		ref := m.BotTokenRef()
 		ref.Where = fmt.Sprintf("members[%d].bot_token", i)

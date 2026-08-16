@@ -28,10 +28,11 @@
 #      then put the id `lore spaces` prints into household.shared_space and
 #      each member's private_space. `lore mcp` refuses to start against an
 #      uninitialised store — "no account at …/account.json (run `lore init`)"
-#      — and kenward does not notice: `run` only checks the binary is on PATH,
-#      so the node starts, authorises, greets, and records nothing. Only
-#      `kenward doctor` reports it, as "lore mcp did not respond". Store the
-#      recovery code `init` prints; nothing else can recover this store.
+#      — and kenward will not start either: `run` completes an MCP handshake
+#      with lore before it serves anything, so this container exits 1 saying
+#      the store was never initialised rather than running with no memory.
+#      Store the recovery code `init` prints; nothing else can recover this
+#      store.
 #
 # Secrets never appear in this file: every token/key is named by environment
 # variable only, sourced from `.env`, exactly as kenward.yaml itself only ever
@@ -61,31 +62,50 @@ services:
       KENWARD_BOT_TOKEN: ${KENWARD_BOT_TOKEN}
       # The one node passphrase that wraps every member's key in simple mode.
       # Not optional and not defaultable: without it kenward refuses to start
-      # and this container restart-loops on exit 2 forever, because the three
-      # ways to supply one are a systemd credential (no systemd here), this
-      # variable, and a terminal prompt (nothing is attached to answer it).
-      # kenward.service's LoadCredential=kenward-passphrase is the same secret
-      # by the better mechanism; a container has no portable equivalent, so it
-      # arrives here as an environment variable — see deploy/README.md.
+      # and this container restart-loops on exit 2 forever, because the ways to
+      # supply one are a source named in kenward.yaml, a systemd credential (no
+      # systemd here), this variable, and a terminal prompt (nothing is attached
+      # to answer it). kenward.service's LoadCredential=kenward-passphrase is
+      # the same secret by the better mechanism; a container has no portable
+      # equivalent, so it arrives here as an environment variable — see
+      # deploy/README.md.
+      #
+      # NAME IT IN kenward.yaml, not just here:
+      #
+      #   session:
+      #     passphrase_env: KENWARD_PASSPHRASE
+      #
+      # The variable alone works, but nothing checks for it until the session
+      # manager is built, and what an operator sees then is a general refusal
+      # listing every mechanism rather than "KENWARD_PASSPHRASE is not set".
+      # Named in the file, an empty or missing value is one line at load with
+      # the variable in it — the same quality of message a member's
+      # passphrase_env already gives isolated mode, and the reason this file
+      # once shipped with no passphrase at all and crash-looped.
       #
       # Lose or change this value and no member's key unwraps again: it is the
       # wrapping secret for everything under kenward-data, not a login.
       #
       # A file is better than this variable if you can manage one, because an
       # environment variable is inherited by the `lore` subprocess kenward
-      # spawns. Unlike the tokens there is no `*_file` config field for the node
-      # passphrase, but the systemd path works here too: set
-      # CREDENTIALS_DIRECTORY and mount the secret at that path as
-      # `kenward-passphrase`. Drop the line above and use instead:
+      # spawns. Two ways to do that, and pick exactly one:
       #
-      #   environment:
-      #     CREDENTIALS_DIRECTORY: /run/secrets
-      #   volumes:
-      #     - ./kenward-passphrase:/run/secrets/kenward-passphrase:ro
+      #   1. kenward.yaml's own `session: passphrase_file: /run/secrets/…`,
+      #      mounted read-only at 0600. Drop the line below and the
+      #      passphrase_env above; naming both sources is a validation error.
+      #   2. The systemd credential path, which works here too: set
+      #      CREDENTIALS_DIRECTORY and mount the secret at that path as
+      #      `kenward-passphrase`. Drop the line below and name NOTHING in
+      #      kenward.yaml — a named source the deployment does not supply is
+      #      itself a refusal.
       #
-      # kenward then reports `source=/run/secrets/kenward-passphrase` at
-      # startup rather than `source=KENWARD_PASSPHRASE`, which is how you check
-      # which one it actually used.
+      #        environment:
+      #          CREDENTIALS_DIRECTORY: /run/secrets
+      #        volumes:
+      #          - ./kenward-passphrase:/run/secrets/kenward-passphrase:ro
+      #
+      # kenward reports which one it used at startup — `source=…` on the
+      # sessions line — which is how you check.
       KENWARD_PASSPHRASE: ${KENWARD_PASSPHRASE}
       # Where the `lore` this container spawns keeps its store. It must be
       # under the data volume below and it must be stated: unset, lore falls

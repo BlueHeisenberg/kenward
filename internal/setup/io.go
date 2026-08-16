@@ -189,6 +189,20 @@ func choiceRange(n int) string {
 	return fmt.Sprintf("a number from 1 to %d", n)
 }
 
+// IsTerminal reports whether f is a terminal somebody could be sitting at.
+//
+// It is the terminal ioctl noEchoFor already has to perform, exported so that a caller
+// deciding whether to prompt at all asks the same question this package asks before it
+// suppresses echo. The cheap approximation — a character device — is not enough:
+// `docker run` without -i gives a process /dev/null on standard input, /dev/null is a
+// character device, and every non-interactive container therefore printed a passphrase
+// prompt to its log immediately before refusing to start for want of an answer.
+//
+// On a platform this package cannot silence a console on, it reports false and the
+// caller does not prompt: reading a secret that would be echoed into a log is worse than
+// not offering the prompt.
+func IsTerminal(f *os.File) bool { return f != nil && noEchoFor(f) != nil }
+
 // ConsoleIO is the IO a person interacts with.
 type ConsoleIO struct {
 	prompter

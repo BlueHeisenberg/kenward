@@ -18,7 +18,7 @@ import (
 // the reason. Anything not on this list that the wizard fails to write is a field
 // that will silently never appear in a generated configuration.
 //
-// All four entries are the *_file half of a secret source. The wizard writes the
+// The first four entries are the *_file half of a secret source. The wizard writes the
 // *_env half, for two reasons:
 //
 //   - It is the one form that works in every deployment. The file form needs a path
@@ -36,11 +36,23 @@ import (
 // Stating both forms for one secret is a validation error rather than a precedence
 // (see config/secret.go), so emitting the file form "as well" is not an option
 // either: it would be the one configuration the loader refuses.
+//
+// session.passphrase_* is a fifth entry and a different case: not a choice between two
+// forms of one source, but a choice the wizard is in no position to make. Simple mode's
+// node passphrase has four legitimate deliveries — a named variable, a named file, a
+// systemd credential, and somebody typing it — and only the first two go in the file. A
+// named source that the deployment does not supply is a validation error, so a wizard
+// that wrote session.passphrase_env: KENWARD_PASSPHRASE would refuse to load under the
+// systemd unit this project ships, which delivers exactly that secret by
+// LoadCredential=kenward-passphrase. Writing nothing keeps all four open; the refusal at
+// startup names all four, and an operator who has chosen one adds the line themselves.
 var notWritten = map[string]string{
 	"telegram.bot_token_file": "the wizard writes bot_token_env; naming both sources is a validation error",
 	"members.bot_token_file":  "the wizard writes bot_token_env; naming both sources is a validation error",
 	"members.passphrase_file": "the wizard writes passphrase_env; naming both sources is a validation error",
 	"endpoints.api_key_file":  "the wizard writes api_key_env; naming both sources is a validation error",
+	"session.passphrase_env":  "the wizard cannot know which of the four node-passphrase deliveries this household uses, and naming the wrong one is a refusal to load",
+	"session.passphrase_file": "as session.passphrase_env; the wizard names no source for the node passphrase",
 }
 
 // TestDocumentCoversTheWholeSchema is the guard on the one shortcut this package

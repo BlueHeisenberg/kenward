@@ -66,6 +66,23 @@ func loadConfig(path, dataDir string, secrets *config.Secrets) (*config.Config, 
 	return loadConfigForUnit(path, dataDir, secrets, config.UnitScope{})
 }
 
+// loadConfigWithoutSecrets is loadConfig for a command that reads no secret: `invite`,
+// which mints a digest, and `revoke`, which clears a binding. Neither opens a bot,
+// unwraps a key or calls a provider.
+//
+// Unscoped, both demanded every member's bot token and passphrase, and in isolated mode
+// no container holds a sibling's secrets — that is the mode — so neither command could be
+// run anywhere: not on a member's service, not on the group's, and the host has no
+// container to run them in. A documented operator command was unrunnable by construction.
+//
+// The file is still checked in full. What is dropped is resolution, not validation: see
+// config.UnitScope.NoSecrets for exactly what remains, and note that a command naming
+// somebody the file does not declare is still refused — by the command itself, which has
+// to know who they are anyway in order to mint or revoke for them.
+func loadConfigWithoutSecrets(path, dataDir string) (*config.Config, error) {
+	return loadConfigForUnit(path, dataDir, nil, config.UnitScope{NoSecrets: true})
+}
+
 // loadConfigForUnit is loadConfig for a process that runs one unit: `run` in a pod, and
 // the `doctor` its health check invokes.
 //

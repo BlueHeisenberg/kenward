@@ -24,12 +24,18 @@ differently depending on the path:
   next to the compose file, holding bot token(s) and any provider API key
   kenward.yaml's `bot_token_env` / `api_key_env` fields name — plus the session
   passphrase, which is not optional in either mode. Simple mode takes one node
-  passphrase in `KENWARD_PASSPHRASE`; isolated mode takes one per member, named
-  by that member's `passphrase_env`, never one shared, because each member's key
-  is wrapped under their own and that is what stops one container's compromise
-  opening another member's memory. Leave it out and kenward refuses to start:
-  a container has neither systemd's credentials nor a terminal to be prompted
-  at, so the service restart-loops on exit 2 until the variable exists.
+  passphrase in `KENWARD_PASSPHRASE`, which `session.passphrase_env` in
+  kenward.yaml should also name — the variable alone works, but only a named
+  source is checked when the file loads, and "KENWARD_PASSPHRASE is not set" at
+  startup beats discovering it from a restart loop. Isolated mode takes one per
+  member, named by that member's `passphrase_env`, never one shared, because
+  each member's key is wrapped under their own and that is what stops one
+  container's compromise opening another member's memory. Leave it out and
+  kenward refuses to start: a container has neither systemd's credentials nor a
+  terminal to be prompted at, so the service restart-loops on exit 2 until the
+  variable exists. Name a source only if it is really how the passphrase
+  arrives — a named variable the deployment does not set is itself a refusal,
+  which is why the systemd path below names none.
 - **systemd (`kenward.service`)**: individual files under
   `/etc/kenward/credentials/`, one per secret, loaded via `LoadCredential=`
   — see that file's comments for the exact names.
@@ -53,11 +59,11 @@ For the container paths you also need a `lore` binary on the host to
 bind-mount in — see the Dockerfile's note on why it isn't baked into the
 image — and you need its store **initialised**, once per `LORE_HOME`, with
 `lore init`. Supplying only the binary is not enough: `lore mcp` exits
-immediately against an empty store ("no account at …/account.json"), and
-kenward does not notice, because `run` checks only that the program is on
-`$PATH`. The node then starts, authorises its bot, answers, and records
-nothing. `kenward doctor` is the only thing that says so, as "lore mcp did not
-respond". Each compose file's header gives the exact commands.
+immediately against an empty store ("no account at …/account.json"). kenward
+refuses to serve without memory and checks both halves before it starts —
+the binary on `$PATH`, then one MCP handshake with it — so an uninitialised
+store is an exit 1 that names `lore init`, not a node that quietly records
+nothing. Each compose file's header gives the exact commands.
 
 `compose.isolated.yml` additionally needs one file per member holding that
 member's outstanding claim codes: run `kenward invite --name NAME` on the host
@@ -97,11 +103,13 @@ has, so run it as a one-off against the same service rather than a bare
 docker compose -f compose.simple.yml run --rm kenward invite --name David
 ```
 
-**This works in Simple mode only.** In Isolated mode there is no service to
-target: `invite` loads `kenward.yaml` unscoped and so demands every member's bot
-token and passphrase, and no container there holds another member's secrets —
-that is the mode, not an oversight. Every service fails the command on its
-siblings' missing variables:
+`invite` and `revoke` need no secrets — one mints a digest and the other
+clears a binding, and neither opens a bot, unwraps a key or calls a provider —
+so both load `kenward.yaml` for its structure alone and run from a container
+holding only its own member's variables. They did not always: unscoped, they
+demanded every member's bot token and passphrase, and since no container in
+Isolated mode holds a sibling's secrets — that is the mode, not an oversight —
+every service failed the command on variables it correctly did not have:
 
 ```
 kenward: /etc/kenward/kenward.yaml cannot be served (problems):
@@ -109,11 +117,12 @@ kenward: /etc/kenward/kenward.yaml cannot be served (problems):
   - members[0].passphrase_env: environment variable KENWARD_PASSPHRASE_DAVID is not set
 ```
 
-And even if it ran, it would write the digest into that service's own named
-volume, which no other service can mount. In Isolated mode `invite` and `revoke`
-run **on the host**, where `.env` already is, with `--data-dir` pointing at the
-directory the compose file bind-mounts from — see `compose.isolated.yml`'s
-header, steps 5 and "TO REVOKE A MEMBER LATER".
+**In Isolated mode, run them on the host anyway**, and for a reason that has
+nothing to do with secrets: a code minted inside a service is written to *that
+service's* named volume, which no other service and no host path can mount, so
+it reaches nobody. Run them where `.env` already is, with `--data-dir` pointing
+at the directory the compose file bind-mounts from — see
+`compose.isolated.yml`'s header, step 5 and "TO REVOKE A MEMBER LATER".
 
 `run` here reuses that service's image, volumes and
 environment, so the claim code lands in the same data directory and store

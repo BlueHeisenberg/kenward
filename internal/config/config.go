@@ -214,6 +214,18 @@ type SessionConfig struct {
 	// Setting it is choosing the trade knowingly: the key leaves memory sooner, and
 	// the member's assistant stops answering until somebody unlocks it at the machine.
 	IdleTimeout Duration `yaml:"idle_timeout"`
+	// PassphraseEnv names the variable holding the node passphrase: simple mode's one
+	// secret, which wraps every member's session key. Optional — the passphrase may
+	// still arrive as a systemd credential, as KENWARD_PASSPHRASE, or typed at a
+	// terminal, and all three still work — but naming it here is what makes its
+	// absence a validation error with the variable named, the way
+	// members[].passphrase_env already is in isolated mode. Ignored in isolated mode,
+	// where each member's key is wrapped under their own.
+	PassphraseEnv string `yaml:"passphrase_env"`
+	// PassphraseFile names a file holding it — the better form in a container, where
+	// an environment variable is readable by every process and is inherited by the
+	// `lore` subprocess. One source only: stating this and PassphraseEnv is an error.
+	PassphraseFile string `yaml:"passphrase_file"`
 }
 
 // CaptureConfig bounds how often the assistant may ask to remember something.

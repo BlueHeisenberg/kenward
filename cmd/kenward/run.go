@@ -108,7 +108,7 @@ func cmdRun(e *env, args []string) int {
 	// machine, not of the file, and a validation that failed on one host would make
 	// `doctor` useless for checking a configuration before shipping it. So the machine
 	// asks here, on the machine, at the one moment a process commits to serving.
-	if code := checkLoreInstalled(e, cfg, sel); code != exitOK {
+	if code := checkLore(e, cfg, sel); code != exitOK {
 		return code
 	}
 
@@ -178,8 +178,8 @@ func cmdRun(e *env, args []string) int {
 	return serve(e, sup, sched, restart, logger)
 }
 
-// checkLoreInstalled refuses to serve when the program memory.lore_command names is
-// not on this machine's PATH. It returns exitOK when it is.
+// checkLore refuses to serve unless lore actually answers on this machine. It returns
+// exitOK when it does.
 //
 // It is a refusal rather than a warning, and that is the whole point of it. Nothing
 // downstream fails on a missing lore: memory.NewClient only checks the command is
@@ -213,7 +213,22 @@ func cmdRun(e *env, args []string) int {
 //	machine's PATH. …
 //
 // with no pod started, on a host that was never going to touch lore.
-func checkLoreInstalled(e *env, cfg *config.Config, sel unitSelection) int {
+//
+// # Why a PATH lookup is not enough
+//
+// It was, until the compose paths were run for the first time. `lore mcp` exits before
+// the MCP handshake when LORE_HOME holds no account — "no account at
+// /home/nonroot/.lore/account.json (run `lore init`)" — and an uninitialised store is
+// the state every fresh volume is in. The program was on PATH, the check passed, and
+// the node started into exactly the silence the check exists to prevent. So the
+// question asked here is the one that matters: not "is lore installed" but "does lore
+// answer", which only a handshake can settle. It is the same handshake `doctor`
+// performs, through the same seam, so the two cannot drift.
+//
+// Only lore failing to answer is fatal. A space lore does not hold is one space's
+// problem and `doctor`'s to report; refusing a household its assistant over a
+// mistyped space id would be a second, larger outage than the one being prevented.
+func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 	if cfg.Mode == config.ModeIsolated && !sel.single() {
 		return exitOK
 	}
@@ -221,22 +236,52 @@ func checkLoreInstalled(e *env, cfg *config.Config, sel unitSelection) int {
 	if len(cmd) == 0 {
 		return exitOK // internal/config has already reported this.
 	}
-	if _, err := e.look()(cmd[0]); err == nil {
-		return exitOK
+	if _, err := e.look()(cmd[0]); err != nil {
+		e.errorf("memory.lore_command starts %q, and there is no such program on this machine's\n"+
+			"PATH. kenward will not start without it: spawning `lore mcp` is its only route to\n"+
+			"memory, so this node would run, answer, and record nothing — and nothing else\n"+
+			"would report it.\n\n"+
+			"In a container the image deliberately does not carry lore (see the Dockerfile).\n"+
+			"Supply it one of two ways, built for the image's own OS and architecture:\n"+
+			"  - bind-mount it at /usr/local/bin/lore, which is what\n"+
+			"    deploy/compose.isolated.yml does for every service;\n"+
+			"  - or build a derived image that COPYs it there. That is the only route open to\n"+
+			"    a pod started by `kenward run` in isolated mode, which has no bind-mount to\n"+
+			"    offer; pass the derived image with --image.", cmd[0])
+		return exitFailure
 	}
-	e.errorf("memory.lore_command starts %q, and there is no such program on this machine's\n"+
-		"PATH. kenward will not start without it: spawning `lore mcp` is its only route to\n"+
-		"memory, so this node would run, answer, and record nothing — and nothing else\n"+
-		"would report it.\n\n"+
-		"In a container the image deliberately does not carry lore (see the Dockerfile).\n"+
-		"Supply it one of two ways, built for the image's own OS and architecture:\n"+
-		"  - bind-mount it at /usr/local/bin/lore, which is what\n"+
-		"    deploy/compose.isolated.yml does for every service;\n"+
-		"  - or build a derived image that COPYs it there. That is the only route open to\n"+
-		"    a pod started by `kenward run` in isolated mode, which has no bind-mount to\n"+
-		"    offer; pass the derived image with --image.", cmd[0])
-	return exitFailure
+
+	ctx, cancel := context.WithTimeout(e.context(), loreHandshakeTimeout)
+	defer cancel()
+	if res := e.probes.loreProbe()(ctx, cfg, sel.scope()); res.Err != nil {
+		e.errorf("%q is on this machine's PATH but did not answer: %v\n\n"+
+			"kenward will not start without memory. Spawning `lore mcp` is its only route to\n"+
+			"it, so this node would run, answer, and record nothing — and nothing else would\n"+
+			"report it.\n\n"+
+			"The usual cause is a LORE_HOME that was never initialised. `lore mcp` exits before\n"+
+			"the MCP handshake when there is no account there. Initialise it once, against the\n"+
+			"same LORE_HOME this node uses, and create the spaces kenward.yaml names:\n\n"+
+			"    lore init --name kenward\n"+
+			"    lore space create <name>\n\n"+
+			"then put the ids `lore spaces` prints into household.shared_space and each\n"+
+			"member's private_space. `kenward doctor` reports the same thing in more detail.",
+			cmd[0], res.Err)
+		return exitFailure
+	}
+	return exitOK
 }
+
+// loreHandshakeTimeout bounds the startup handshake above.
+//
+// The refusal it guards is a hard one, and that is a deliberate trade over the silent
+// failure it replaces: a node that cannot reach memory does not start. It is affordable
+// because there is no network in this path. `lore mcp` is a local subprocess over a
+// local SQLite store, so its only transient failure is store contention, which
+// internal/memory already retries with backoff before reporting anything. Whatever has
+// not answered by now is not momentary, and a node that hangs on startup is worse than
+// one that refuses and says why — a container runtime restarts it either way, but only
+// the refusal leaves a line an operator can read.
+const loreHandshakeTimeout = 30 * time.Second
 
 // resumeUpdate finishes a pending update. The bool reports whether the process
 // should stop now rather than serve.

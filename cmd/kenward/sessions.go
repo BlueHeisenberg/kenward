@@ -151,25 +151,21 @@ func trimNewline(b []byte) []byte {
 //
 // A pipe, a file and a socket are definitely not a terminal, and prompting into one
 // would block a service nobody is watching — a worse failure than refusing to start.
-// A character device usually is one.
 //
-// "Usually" is the catch, and it is worth stating because it cost a confusing failure
-// in the container: `docker run` without -i gives the process /dev/null on standard
-// input, and /dev/null is a character device. So this is a necessary condition, not a
-// sufficient one, and the caller must also treat an immediate end-of-input as nobody
-// being there. Deciding it properly needs a terminal ioctl per platform, which
-// internal/setup already implements and does not export; a second copy of that here
-// is not worth it when the caller has to handle end-of-input anyway.
+// It asks internal/setup, which performs the per-platform terminal ioctl it needs
+// anyway in order to suppress echo. The cheap test this used to make — a character
+// device — was a necessary condition and not a sufficient one, and the gap was not
+// theoretical: `docker run` without -i gives the process /dev/null on standard input,
+// /dev/null is a character device, so every non-interactive container wrote
+// "Passphrase for this node's member keys: " to its log and then refused to start on
+// the end-of-input that was always going to come. The prompt is now offered only where
+// somebody could answer it, which is also the only place it could be typed unechoed.
+//
+// End-of-input is still handled by the caller. A person at a real terminal may press
+// Ctrl-D, and that is nobody being there after all.
 func isTerminal(r any) bool {
 	f, ok := r.(*os.File)
-	if !ok {
-		return false
-	}
-	info, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return info.Mode()&os.ModeCharDevice != 0
+	return ok && setup.IsTerminal(f)
 }
 
 // noPassphraseHelp is the refusal.
@@ -195,10 +191,14 @@ func noPassphraseHelp() string {
 		"nowhere else. With neither field, the systemd credential passphrase.david is used.\n\n" +
 		"In simple mode one node passphrase wraps every member's key. Supply it in one of\n" +
 		"these, in order of preference:\n" +
-		"  1. a systemd credential: LoadCredential=" + credentialName + ":/path/to/file in the\n" +
+		"  1. name it in kenward.yaml, which is the only one of these whose absence is\n" +
+		"     reported at load with the variable or path named:\n\n" +
+		"       session:\n" +
+		"         passphrase_file: /run/secrets/kenward-passphrase   # or passphrase_env: NAME\n\n" +
+		"  2. a systemd credential: LoadCredential=" + credentialName + ":/path/to/file in the\n" +
 		"     unit, which kenward reads from $" + envCredentialsDirectory + "/" + credentialName + "\n" +
-		"  2. the " + envPassphrase + " environment variable\n" +
-		"  3. type it at the prompt, if you are starting kenward by hand at a terminal\n\n" +
+		"  3. the " + envPassphrase + " environment variable\n" +
+		"  4. type it at the prompt, if you are starting kenward by hand at a terminal\n\n" +
 		"It is never asked for over Telegram, in either direction: sending it in a chat\n" +
 		"message would hand it to Telegram's servers and leave it in the message history."
 }

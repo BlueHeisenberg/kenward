@@ -88,15 +88,22 @@ func TestReadPassphrasePrecedence(t *testing.T) {
 	})
 }
 
-// TestNoOperatorAtACharacterDevice is a regression test from the container.
+// TestNoOperatorAtACharacterDevice is a regression test from the container, and it has
+// two halves because it was fixed twice.
 //
-// `docker run` without -i hands the process /dev/null on standard input, and
-// /dev/null is a character device — so the "is anyone there" check passed, kenward
+// `docker run` without -i hands the process /dev/null on standard input, and /dev/null
+// is a character device — so the first "is anyone there" check passed, kenward
 // prompted, the read hit end-of-input immediately, and the operator got the setup
-// wizard's "input ended before the wizard finished" and exit 1 instead of the refusal
-// that lists the three ways to supply a passphrase and exit 2. The character-device
-// test is necessary but not sufficient, and an immediate end-of-input is the rest of
-// the answer.
+// wizard's "input ended" and exit 1 instead of the refusal that lists the ways to
+// supply a passphrase. Treating an immediate end-of-input as nobody being there fixed
+// the exit code and left the prompt: every non-interactive container logged
+//
+//	Passphrase for this node's member keys:
+//
+// and then refused, one line apart, which reads as a node waiting for an answer that
+// nobody was ever going to be asked for. The prompt is now offered only where the
+// terminal ioctl says somebody could answer it — which is also the only place it could
+// be typed without being echoed into that same log.
 func TestNoOperatorAtACharacterDevice(t *testing.T) {
 	t.Parallel()
 	devNull, err := os.Open(os.DevNull)
@@ -105,19 +112,89 @@ func TestNoOperatorAtACharacterDevice(t *testing.T) {
 	}
 	t.Cleanup(func() { devNull.Close() })
 
-	// Precondition: this is the shape that fooled the check in the first place.
-	if !isTerminal(devNull) {
+	// The shape that fooled the first check: a character device that is not a
+	// terminal. If a platform's null device is not one, the case cannot arise there.
+	if info, err := devNull.Stat(); err != nil || info.Mode()&os.ModeCharDevice == 0 {
 		t.Skip("this platform's null device is not a character device, so the case cannot arise")
 	}
+	if isTerminal(devNull) {
+		t.Fatalf("%s is reported as a terminal; the prompt would be written to a log nobody can answer", os.DevNull)
+	}
 
+	stderr := &bytes.Buffer{}
 	e := &env{
 		stdin:     devNull,
-		stderr:    &bytes.Buffer{},
+		stderr:    stderr,
 		lookupEnv: lookup(nil),
 	}
 	if _, err := readPassphrase(e, nil); !errors.Is(err, errNoPassphrase) {
 		t.Fatalf("err = %v, want errNoPassphrase: nothing was there to answer the prompt", err)
 	}
+	if stderr.Len() != 0 {
+		t.Errorf("a prompt was written where nobody can answer it: %q", stderr.String())
+	}
+}
+
+// TestSimpleModeCanNameItsNodePassphrase is the simple-mode half of the defect isolated
+// mode had first.
+//
+// A member's passphrase is a configuration field, so an isolated pod handed none is
+// refused at load with the variable named. Simple mode's node passphrase had no field,
+// so the same mistake — the one deploy/compose.simple.yml shipped with — reached the
+// session manager instead and the container restart-looped there forever, with nothing
+// upstream able to say which variable was missing.
+//
+// The three sources that were already there keep working, because an existing
+// deployment states none of this and must not break.
+func TestSimpleModeCanNameItsNodePassphrase(t *testing.T) {
+	t.Parallel()
+	const named = "mode: simple\nsession:\n  passphrase_env: KENWARD_NODE_PASSPHRASE\n"
+	namedYAML := strings.Replace(simpleYAML, "mode: simple\n", named, 1)
+
+	t.Run("a named variable that is not set is refused at load, by name", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, namedYAML, fullEnvironment())
+		if code := h.run("run"); code != exitUsage {
+			t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h.both())
+		}
+		if !strings.Contains(h.stderr(), "KENWARD_NODE_PASSPHRASE") {
+			t.Errorf("stderr does not name the variable, which is the whole point of naming it:\n%s", h.stderr())
+		}
+	})
+
+	t.Run("a named variable that is set is what unwraps the keys", func(t *testing.T) {
+		t.Parallel()
+		vars := fullEnvironment()
+		vars["KENWARD_NODE_PASSPHRASE"] = "from-the-configured-variable"
+		// Present as well, and must lose: a file that names a source means it.
+		vars[envPassphrase] = "from-KENWARD_PASSPHRASE"
+		cfg := mustLoadWith(t, namedYAML, testSecrets(vars))
+
+		e := &env{lookupEnv: lookup(vars)}
+		p, err := readPassphrase(e, passphraseRefFor(cfg, cfg.DomainMembers()))
+		if err != nil {
+			t.Fatalf("readPassphrase: %v", err)
+		}
+		if p.reveal() != "from-the-configured-variable" {
+			t.Errorf("the node unwrapped with the passphrase from %s, want the configured variable", p.source)
+		}
+	})
+
+	t.Run("naming nothing leaves the three older sources alone", func(t *testing.T) {
+		t.Parallel()
+		// simpleYAML has no session.passphrase_* at all — the shape of every simple
+		// household that already works.
+		cfg := mustLoad(t, simpleYAML)
+		vars := map[string]string{envPassphrase: "from-KENWARD_PASSPHRASE"}
+		e := &env{lookupEnv: lookup(vars)}
+		p, err := readPassphrase(e, passphraseRefFor(cfg, cfg.DomainMembers()))
+		if err != nil {
+			t.Fatalf("readPassphrase: %v", err)
+		}
+		if p.source != envPassphrase {
+			t.Errorf("source = %q, want %s; an existing deployment names no source and must keep working", p.source, envPassphrase)
+		}
+	})
 }
 
 // TestPassphraseZeroed: the buffer this process read is overwritten once it has been
@@ -372,7 +449,7 @@ func TestMemberPodTakesItsOwnMembersPassphrase(t *testing.T) {
 		vars[envPassphrase] = "the-node-wide-passphrase"
 		e := &env{lookupEnv: lookup(vars)}
 
-		ref := memberPassphraseRef(cfg, []domain.Member{david})
+		ref := passphraseRefFor(cfg, []domain.Member{david})
 		if ref == nil {
 			t.Fatal("a member's pod in isolated mode resolved no member passphrase reference")
 		}
@@ -390,17 +467,20 @@ func TestMemberPodTakesItsOwnMembersPassphrase(t *testing.T) {
 
 	t.Run("simple mode and the group pod use the node passphrase", func(t *testing.T) {
 		t.Parallel()
-		// Both are the same rule seen twice: only a pod serving exactly one member
-		// in isolated mode has a member passphrase to take.
-		if ref := memberPassphraseRef(cfg, nil); ref != nil {
-			t.Errorf("the group pod resolved a member passphrase reference: %+v", ref)
+		// Only a pod serving exactly one member in isolated mode has a member
+		// passphrase to take. The group pod has no key at all, so it takes nothing.
+		if ref := passphraseRefFor(cfg, nil); ref != nil {
+			t.Errorf("the group pod resolved a passphrase reference: %+v", ref)
 		}
-		if ref := memberPassphraseRef(cfg, cfg.DomainMembers()); ref != nil {
-			t.Errorf("a whole-household process resolved one member's passphrase: %+v", ref)
+		if ref := passphraseRefFor(cfg, cfg.DomainMembers()); ref != nil {
+			t.Errorf("a whole-household isolated process resolved one member's passphrase: %+v", ref)
 		}
+		// Simple mode takes the node passphrase, which may now be named in the file
+		// as session.passphrase_* — never a member's, whichever member it is serving.
 		simple := mustLoad(t, simpleYAML)
-		if ref := memberPassphraseRef(simple, []domain.Member{mustMember(t, simple, "david")}); ref != nil {
-			t.Errorf("simple mode resolved a per-member passphrase: %+v", ref)
+		ref := passphraseRefFor(simple, []domain.Member{mustMember(t, simple, "david")})
+		if ref == nil || ref.Where != "session.passphrase" {
+			t.Errorf("simple mode resolved %+v, want the node's session.passphrase reference", ref)
 		}
 	})
 

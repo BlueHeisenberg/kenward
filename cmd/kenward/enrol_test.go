@@ -92,6 +92,109 @@ func splitClaimCode(t *testing.T, out string) (code, prose string) {
 	return code, strings.Join(rest, "\n")
 }
 
+// TestInviteAndRevokeNeedNoSecrets is the defect the compose paths hit the first time
+// they were run: two documented operator commands that could not be run at all.
+//
+// Both loaded the household configuration unscoped, so both demanded every member's
+// bot token and passphrase — though neither reads a token or a passphrase: `invite`
+// writes a digest and `revoke` clears a binding. In isolated mode no container holds a
+// sibling's secrets, because that is the mode, so no service could run either one and
+// deploy/README.md documented a command that was unrunnable by construction.
+//
+// The environment here is david's pod's: his own two secrets and nothing else, which
+// is the most a correctly-isolated container ever holds.
+func TestInviteAndRevokeNeedNoSecrets(t *testing.T) {
+	t.Parallel()
+	// A fresh map per subtest: newHarness writes the data directory into whatever it
+	// is handed, and these run in parallel.
+	davidsPod := func() map[string]string {
+		return map[string]string{
+			"KENWARD_BOT_TOKEN_DAVID":  fakeDavidToken,
+			"KENWARD_PASSPHRASE_DAVID": fakeDavidPassphrase,
+		}
+	}
+
+	t.Run("invite", func(t *testing.T) {
+		t.Parallel()
+		// jordan has not claimed, so there is a code to mint for them — from a pod
+		// that holds none of jordan's secrets.
+		yaml := strings.Replace(isolatedYAML, "    telegram_id: 87654321\n", "", 1)
+		h := newHarness(t, yaml, davidsPod())
+		if code := h.run("invite", "--name", "Jordan"); code != exitOK {
+			t.Fatalf("exit = %d, want 0; invite reads no secret and must not demand one\n%s", code, h.both())
+		}
+		if !strings.Contains(h.stdout(), "Claim code for Jordan:") {
+			t.Errorf("no code was minted:\n%s", h.both())
+		}
+	})
+
+	t.Run("revoke", func(t *testing.T) {
+		t.Parallel()
+		yaml := strings.Replace(isolatedYAML, "    telegram_id: 87654321\n", "", 1)
+		h := newHarness(t, yaml, davidsPod())
+		h.claimedInState(t, "jordan", 87654321)
+		if code := h.run("revoke", "jordan"); code != exitOK {
+			t.Fatalf("exit = %d, want 0; revoke reads no secret and must not demand one\n%s", code, h.both())
+		}
+	})
+
+	// What is dropped is resolution, not validation. A file that cannot describe a
+	// household is still refused, and so is a member the file does not declare —
+	// otherwise this would trade one unrunnable command for two commands that appear
+	// to work and change nothing.
+	t.Run("the structure of the file is still checked", func(t *testing.T) {
+		t.Parallel()
+		broken := strings.Replace(isolatedYAML,
+			"    private_space: 5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19\n",
+			"    private_space: 7d5047bb-d939-4539-b3db-8b6221a2e245\n", 1)
+		h := newHarness(t, broken, davidsPod())
+		if code := h.run("invite", "--name", "Jordan"); code != exitUsage {
+			t.Fatalf("exit = %d, want %d; two members on one private space is not a private space\n%s",
+				code, exitUsage, h.both())
+		}
+		if !strings.Contains(h.stderr(), "private_space") {
+			t.Errorf("stderr does not name the fault:\n%s", h.stderr())
+		}
+
+		// Including the one rule about secrets that is a property of the file rather
+		// than of the environment. Nothing is resolved, and naming two sources for one
+		// secret is still wrong whoever reads it.
+		twoSources := strings.Replace(isolatedYAML,
+			"    bot_token_env: KENWARD_BOT_TOKEN_DAVID\n",
+			"    bot_token_env: KENWARD_BOT_TOKEN_DAVID\n    bot_token_file: /run/secrets/david\n", 1)
+		h2 := newHarness(t, twoSources, davidsPod())
+		if code := h2.run("invite", "--name", "Jordan"); code != exitUsage {
+			t.Fatalf("exit = %d, want %d; a secret has exactly one source\n%s", code, exitUsage, h2.both())
+		}
+	})
+
+	t.Run("a member the file does not declare is still refused", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, isolatedYAML, davidsPod())
+		if code := h.run("invite", "--name", "Nobody"); code != exitUsage {
+			t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h.both())
+		}
+		h2 := newHarness(t, isolatedYAML, davidsPod())
+		if code := h2.run("revoke", "nobody"); code != exitUsage {
+			t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h2.both())
+		}
+	})
+
+	// And `run` and `doctor` are untouched: they are about to serve, and a node that
+	// starts half-configured is the failure the resolution exists to prevent.
+	t.Run("run still demands the secrets it will use", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, isolatedYAML, davidsPod())
+		if code := h.run("run", "--member", "jordan"); code != exitUsage {
+			t.Fatalf("exit = %d, want %d; jordan's pod holds none of jordan's secrets here\n%s",
+				code, exitUsage, h.both())
+		}
+		if !strings.Contains(h.stderr(), "KENWARD_BOT_TOKEN_JORDAN") {
+			t.Errorf("stderr does not name the missing token:\n%s", h.stderr())
+		}
+	})
+}
+
 // TestInviteRefusesAnUndeclaredMember.
 //
 // The Binder can create a member the configuration does not declare, but the state

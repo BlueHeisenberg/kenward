@@ -278,6 +278,100 @@ func TestRunRefusesToServeWithoutLore(t *testing.T) {
 	}
 }
 
+// TestRunRefusesToServeWhenLoreDoesNotAnswer is the half of the check above that a
+// PATH lookup cannot make, and the half that a real container actually hits.
+//
+// An uninitialised LORE_HOME is the state every fresh volume is in. `lore mcp` exits
+// before the MCP handshake against one — "no account at /home/nonroot/.lore/account.json
+// (run `lore init`)" — so exec.LookPath succeeds, the guard passes, and the node starts
+// into exactly the silence the guard exists to prevent: it authorises, greets, and
+// records nothing. Measured on a real container before this test existed.
+//
+// The exemption is unchanged and is in the table for the same reason it is in the one
+// above: the isolated host supervisor holds no memory client, and demanding lore of it
+// refused every correct isolated household the first time that was got wrong.
+func TestRunRefusesToServeWhenLoreDoesNotAnswer(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		yaml    string
+		args    []string
+		refused bool
+	}{
+		{"simple: every unit runs here", simpleYAML, []string{"run"}, true},
+		{"isolated: a member's pod", isolatedYAML, []string{"run", "--member", "david"}, true},
+		{"isolated: the group's pod", isolatedYAML, []string{"run", "--group"}, true},
+		{"isolated: the host supervisor, which never touches lore", isolatedYAML, []string{"run"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, tc.yaml, fullEnvironment())
+			// lore is on PATH. It just does not answer, which is what an
+			// uninitialised LORE_HOME looks like from here.
+			h.e.probes = loreUninitialised(healthyProbes())
+			built := false
+			h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+				built = true
+				return stubSupervisor{}, nil
+			}
+			code := h.run(tc.args...)
+			if !tc.refused {
+				if code != exitOK || !built {
+					t.Fatalf("exit = %d, supervisor built = %v; the host supervisor holds no lore client and must start\n%s",
+						code, built, h.both())
+				}
+				return
+			}
+			if code != exitFailure {
+				t.Fatalf("exit = %d, want %d — a node whose lore does not answer has no memory\n%s",
+					code, exitFailure, h.both())
+			}
+			if built {
+				t.Error("the supervisor was built anyway; nothing may be served without memory")
+			}
+			// The remedy, not just the fault: an operator reading this has to be told
+			// the store needs initialising, which is the one thing a PATH check could
+			// never tell them.
+			for _, want := range []string{"did not answer", "LORE_HOME", "lore init"} {
+				if !strings.Contains(h.stderr(), want) {
+					t.Errorf("stderr does not mention %q, so an operator is not told how to fix it:\n%s", want, h.stderr())
+				}
+			}
+		})
+	}
+}
+
+// TestRunStartsWhenOnlyOneSpaceIsUnknown draws the other edge of the same check.
+//
+// A space lore does not hold is one space's problem and `doctor`'s to report. Refusing
+// the whole household its assistant over a mistyped space id would be a second and
+// larger outage than the silent one this check exists to prevent, so lore answering is
+// the whole of the question `run` asks.
+func TestRunStartsWhenOnlyOneSpaceIsUnknown(t *testing.T) {
+	t.Parallel()
+	// simpleYAML's spaces are ids, so the harness's healthy probe answers for them;
+	// this one refuses every space while lore itself answers.
+	h := newHarness(t, simpleYAML, fullEnvironment())
+	base := healthyProbes()
+	h.e.probes = base
+	h.e.probes.lore = func(_ context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
+		var res loreResult
+		for _, s := range configuredSpaces(cfg, scope) {
+			res.Spaces = append(res.Spaces, spaceResult{Space: s, Err: unknownSpaceErr(s)})
+		}
+		return res
+	}
+	built := false
+	h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+		built = true
+		return stubSupervisor{}, nil
+	}
+	if code := h.run("run"); code != exitOK || !built {
+		t.Fatalf("exit = %d, supervisor built = %v; lore answered, so the household must be served\n%s",
+			code, built, h.both())
+	}
+}
+
 // TestRunRefusesUnknownMember: a pod told to serve somebody the configuration does
 // not name has nothing to serve, and starting anyway would look like it worked.
 func TestRunRefusesUnknownMember(t *testing.T) {

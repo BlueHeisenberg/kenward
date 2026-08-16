@@ -234,6 +234,25 @@ session:
   # nothing gets it back in without physical access.
   idle_timeout: 0s
 
+  # passphrase_env names the variable holding the one node passphrase that wraps every
+  # member's key in simple mode. It is optional, and naming it here is the reason to:
+  # a passphrase can also arrive as a systemd credential (kenward-passphrase), as the
+  # KENWARD_PASSPHRASE variable with nothing said about it here, or typed at a terminal,
+  # and all three still work — but only a named source is checked when the file loads.
+  # Unnamed, a missing passphrase is discovered further in, where a container has
+  # nothing to do but exit 2 and be restarted forever; named, it is one line at startup
+  # saying which variable is not set, which is what a member's passphrase_env already
+  # gave isolated mode.
+  #
+  # Name it only if this is really how the passphrase arrives. A file that names a
+  # variable the deployment does not set is refused, so a systemd install using
+  # LoadCredential=kenward-passphrase should leave both of these out.
+  #
+  # passphrase_file: /run/secrets/kenward-passphrase is the better form in a container,
+  # where an environment variable is readable by every process in it and is inherited
+  # by the `lore` subprocess kenward spawns. One source only: naming both is an error.
+  passphrase_env: KENWARD_PASSPHRASE
+
 # capture bounds how often the assistant proactively asks to remember something it
 # noticed in the conversation.
 capture:

@@ -514,6 +514,29 @@ func (m MemberConfig) Passphrase(s *Secrets) (Secret, error) {
 	return s.orDefault().Resolve(m.PassphraseRef())
 }
 
+// SessionPassphraseRef describes simple mode's one node passphrase, which wraps every
+// member's session key.
+//
+// It exists because its absence was the one secret nothing checked. A member's
+// passphrase is a configuration field, so an isolated pod handed no passphrase is
+// refused at load with the variable named; simple mode's had no field, so the same
+// mistake — the one deploy/compose.simple.yml shipped with — got as far as the session
+// manager and restart-looped there instead.
+//
+// Credential is deliberately empty. The systemd credential for a node passphrase is
+// read by cmd/kenward's readPassphrase directly, under a name that predates this
+// reference, and two code paths reading one file under two sets of rules is worse than
+// one path fewer here: this reference covers the two sources the file can state, and
+// resolves to NotFound when it states neither, which is exactly the case where the
+// other three mechanisms are meant to apply.
+func (c *Config) SessionPassphraseRef() SecretRef {
+	return SecretRef{
+		Where: "session.passphrase",
+		File:  strings.TrimSpace(c.Session.PassphraseFile),
+		Env:   strings.TrimSpace(c.Session.PassphraseEnv),
+	}
+}
+
 // APIKeyRef describes this endpoint's key.
 func (e EndpointConfig) APIKeyRef() SecretRef {
 	return SecretRef{

@@ -205,7 +205,7 @@ func isolatedOptions(e *env, opts runOptions, logger *slog.Logger) (supervisor.I
 // anything it protects here. The alternative is a household where onboarding ends in
 // a lock message.
 func startSessions(e *env, cfg *config.Config, logger *slog.Logger, members []domain.Member) (session.Sessions, supervisor.UnlockOnEnrol, error) {
-	pass, err := readPassphrase(e, memberPassphraseRef(cfg, members))
+	pass, err := readPassphrase(e, passphraseRefFor(cfg, members))
 	if err != nil {
 		if errors.Is(err, errNoPassphrase) {
 			return nil, nil, errNoPassphrase
@@ -250,16 +250,27 @@ func startSessions(e *env, cfg *config.Config, logger *slog.Logger, members []do
 	return mgr, onEnrol, nil
 }
 
-// memberPassphraseRef names the passphrase this process should unwrap with, or nil for
-// the node passphrase.
+// passphraseRefFor names the passphrase source this process's configuration states, or
+// nil when it states none and readPassphrase's own mechanisms are the whole answer.
 //
 // It is derived here rather than passed in because the rule is exactly the shape of
-// what the two callers already differ by: isolated mode serving one member is a pod,
-// and a pod unwraps that member's key under that member's own passphrase. Simple mode
-// serves the household from one process under one node passphrase, and isolated mode's
-// group pod holds no key at all, so both get nil and the node mechanisms apply.
-func memberPassphraseRef(cfg *config.Config, members []domain.Member) *config.SecretRef {
-	if cfg.Mode != config.ModeIsolated || len(members) != 1 {
+// what the two callers already differ by:
+//
+//   - Isolated mode serving one member is a pod, and a pod unwraps that member's key
+//     under that member's own passphrase — members[].passphrase_env / _file.
+//   - Simple mode serves the household from one process under one node passphrase, and
+//     session.passphrase_env / _file is where a file may now name it. Optional, so a
+//     household using the systemd credential, KENWARD_PASSPHRASE or a terminal states
+//     nothing and this resolves to NotFound, which readPassphrase treats as "carry on".
+//   - Isolated mode's group pod holds no key at all, so it gets nil: a node passphrase
+//     there would unwrap nothing, and reading one would be reading a secret it has no
+//     business holding.
+func passphraseRefFor(cfg *config.Config, members []domain.Member) *config.SecretRef {
+	if cfg.Mode != config.ModeIsolated {
+		ref := cfg.SessionPassphraseRef()
+		return &ref
+	}
+	if len(members) != 1 {
 		return nil
 	}
 	for _, mc := range cfg.Members {

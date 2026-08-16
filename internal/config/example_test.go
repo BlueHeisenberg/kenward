@@ -27,6 +27,10 @@ func exampleEnv() config.LookupEnvFunc {
 	vars := map[string]string{
 		"KENWARD_BOT_TOKEN":  "123456789:AAExampleTokenNotARealSecret",
 		"OPENROUTER_API_KEY": "sk-or-v1-example-not-a-real-secret",
+		// The example names session.passphrase_env, and a named source is checked at
+		// load — that being the whole reason to name one. Leaving it out here would
+		// make this test assert the example is broken.
+		"KENWARD_PASSPHRASE": "correct horse battery staple",
 	}
 	return func(name string) (string, bool) {
 		v, ok := vars[name]
@@ -245,6 +249,7 @@ var allowedZeroFields = map[string]string{
 	"Members[1].BotTokenFile":   "the file form is an alternative to bot_token_env, not an addition to it",
 	"Members[0].PassphraseFile": "the file form is an alternative to passphrase_env, not an addition to it",
 	"Members[1].PassphraseFile": "the file form is an alternative to passphrase_env, not an addition to it",
+	"Session.PassphraseFile":    "the file form is an alternative to session.passphrase_env, not an addition to it",
 	"Endpoints[0].APIKeyFile":   "monster is a local endpoint with no key in front of it",
 	"Endpoints[1].APIKeyFile":   "battlestation is a local endpoint with no key in front of it",
 	"Endpoints[2].APIKeyFile":   "api_key_env is the source here; stating both is a validation error",

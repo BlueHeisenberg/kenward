@@ -64,7 +64,14 @@ LoadCredential=bot_token.david:/etc/kenward/credentials/bot_token.david
 LoadCredential=api_key.openrouter:/etc/kenward/credentials/api_key.openrouter
 # The session passphrase, without which no member's key can be unwrapped and
 # every private message is answered with the locked notice. Which line you want
-# depends on the mode, and they are not interchangeable:
+# depends on the mode, and they are not interchangeable.
+#
+# Leave `session: passphrase_env` / `passphrase_file` OUT of kenward.yaml when
+# you use the credential below. Those fields exist for the compose path, where
+# there is no credentials directory and naming the source is what turns a
+# missing passphrase into a message; here the credential IS the source, and a
+# kenward.yaml naming a variable this unit deliberately never sets would be
+# refused at load for the variable's absence.
 #   simple   — one node passphrase wraps every member's key:
 LoadCredential=kenward-passphrase:/etc/kenward/credentials/kenward-passphrase
 #   isolated — one per member, wrapping that member's key and nobody else's.

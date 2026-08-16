@@ -489,6 +489,11 @@ memory:
 
 session:
   idle_timeout: 0s            # off, and the default; see §"Idle expiry is off by default"
+  # simple mode only, and optional: the one node passphrase that wraps every member's
+  # key. Name it and its absence is reported at load, by name; leave both out and the
+  # systemd credential, KENWARD_PASSPHRASE and the terminal prompt still apply.
+  passphrase_env: KENWARD_PASSPHRASE
+  # passphrase_file: /run/secrets/kenward-passphrase   # or this; never both
 
 capture:
   max_proposals_per_turn: 1
@@ -607,6 +612,21 @@ rather than relaxed: a process told to serve a member the file does not name is 
 because a scope that selects nobody would otherwise select no secrets and report itself
 healthy.
 
+**There is a fourth row, and it has no unit at all.** `kenward invite` mints a digest and
+`kenward revoke` clears a binding; neither opens a bot, unwraps a key or calls a provider,
+so both load the file with every secret unresolved (`UnitScope.NoSecrets`). Unscoped —
+which is what they were — they demanded *every* member's bot token and passphrase, and in
+isolated mode no container holds a sibling's, which is the mode rather than an oversight.
+The result was that no service could run either command, on a host that has no container
+of its own to run them in, and `deploy/README.md` documented an operator command that was
+unrunnable by construction. What is dropped is resolution and nothing else: every
+structural rule above still applies, "one source per secret" included, because that one is
+a property of the file rather than of the environment; and a command naming somebody the
+file does not declare is still refused, by the command itself, which has to find them
+before it can mint or revoke for them anyway. `run` and `doctor` never set it — they are
+about to serve, and a node that starts half-configured is the failure resolution exists to
+prevent.
+
 ### Where a secret comes from
 
 **The configuration names secrets. It never holds one.** That has always been true; what
@@ -622,16 +642,32 @@ So a secret has three possible sources:
 
 | Source | Form | Applies to |
 | --- | --- | --- |
-| A file | `bot_token_file`, `members[].bot_token_file`, `members[].passphrase_file`, `endpoints[].api_key_file` | any deployment that can mount a file |
-| An environment variable | `bot_token_env`, `members[].bot_token_env`, `members[].passphrase_env`, `endpoints[].api_key_env` | a hand-run binary, and the compose path |
+| A file | `bot_token_file`, `members[].bot_token_file`, `members[].passphrase_file`, `session.passphrase_file`, `endpoints[].api_key_file` | any deployment that can mount a file |
+| An environment variable | `bot_token_env`, `members[].bot_token_env`, `members[].passphrase_env`, `session.passphrase_env`, `endpoints[].api_key_env` | a hand-run binary, and the compose path |
 | A systemd credential | no configuration at all | the systemd unit |
 
 `members[].passphrase_*` is the isolated-mode session passphrase, and it is a secret the
 configuration *names* like any other — the invariant is untouched, no value goes in the
-file. Simple mode has no such field: there one node passphrase wraps everybody's key, and
-it reaches the process through `$CREDENTIALS_DIRECTORY/kenward-passphrase`,
-`KENWARD_PASSPHRASE`, or a terminal prompt, in that order. Those three still work inside a
-pod for an operator running one by hand; what a pod uses first is its own member's.
+file.
+
+`session.passphrase_*` is simple mode's, where one node passphrase wraps everybody's key.
+It is **optional**, and that is the one asymmetry in this table. A node passphrase has
+three deliveries the file cannot see — `$CREDENTIALS_DIRECTORY/kenward-passphrase`,
+`KENWARD_PASSPHRASE`, and a terminal prompt, tried in that order — and every one of them
+is a legitimate way to run simple mode, so a file that names no source is not a fault and
+all three still work exactly as before. What naming a source buys is the thing its
+absence cost: a *stated* variable that is not set, or a *stated* path that cannot be read,
+is reported at load with the name in it, the way `members[].passphrase_env` already was
+in isolated mode. Unnamed, a missing node passphrase is discovered further in, where a
+container has nothing left to do but exit 2 and be restarted forever —
+`deploy/compose.simple.yml` shipped in exactly that state.
+
+The corollary is worth stating because it is the trap: **name a source only if that is
+really how the passphrase arrives.** A named variable the deployment does not set is a
+refusal, so the systemd unit — which delivers this secret by
+`LoadCredential=kenward-passphrase` — must leave both fields out, and `kenward setup`
+writes neither for the same reason. When a source is named, it wins over all three
+fallbacks; a pod in isolated mode uses its own member's and never this.
 
 Resolution is `_file` → `_env` → credential.
 
@@ -1085,11 +1121,37 @@ non-empty and spawns nothing until the first call, and a turn that cannot read a
 degrades that space rather than failing (§5). So a pod with no lore came up, reported
 itself ready — the supervisor observes the container, not the unit — authorised its bot,
 and then remembered nothing anyone told it, with the only trace a "could not be read"
-line inside a prompt. `run` now asks `exec.LookPath` for `memory.lore_command[0]` before
-it builds anything and exits 1 naming both remedies. The check belongs there rather than
-in validation because whether lore is installed is a property of the machine, not of the
-file — a validation that failed on one host would make `doctor` useless for checking a
-configuration before shipping it (§4).
+line inside a prompt. `run` now settles the question before it builds anything, and exits
+1 naming the remedy. The check belongs there rather than in validation because whether
+lore works is a property of the machine, not of the file — a validation that failed on
+one host would make `doctor` useless for checking a configuration before shipping it
+(§4).
+
+**The question is "does lore answer", not "is lore installed", and the difference is
+where this was wrong first.** `exec.LookPath` on `memory.lore_command[0]` was the whole
+of the check, and it stops one step short of the failure it exists to prevent: `lore mcp`
+exits *before* the MCP handshake when `LORE_HOME` holds no account —
+
+```
+lore: load account (run `lore init` first?): no account at /home/nonroot/.lore/account.json (run `lore init`)
+```
+
+— which is the state every fresh container volume is in. Measured against a real
+container, the binary was on `$PATH`, the check passed, and the node started into exactly
+the silence the check exists to prevent. So `run` now does both: the PATH lookup, whose
+refusal names the two ways to get a binary into an image, and then one bounded MCP
+handshake through the same seam `doctor` probes with, so the two cannot drift. Its
+refusal names `lore init`.
+
+Two lines are drawn deliberately. **Only lore failing to answer is fatal** — a space lore
+does not hold is one space's problem and `doctor`'s to report, and refusing a household
+its assistant over a mistyped space id would be a larger outage than the silent one being
+prevented. And the handshake is a **hard** refusal, bounded at thirty seconds, rather than
+a warning with a retry: `lore mcp` is a local subprocess over a local SQLite store, there
+is no network in this path, and its one transient failure — store contention — is already
+retried with backoff inside `internal/memory`. Whatever has not answered by then is not
+momentary. A node that hangs at startup is worse than one that refuses: a container
+runtime restarts it either way, and only the refusal leaves a line an operator can read.
 
 The one process exempt is the **isolated host supervisor**, and not as a concession: it
 starts pods and holds no memory client, no transport and no key. Each pod spawns its own
@@ -1177,6 +1239,15 @@ sentence as two members naming the same bot token.
 **The group's pod gets none.** It serves the shared space and holds no member's key, so a
 passphrase there would unwrap nothing — and a secret that opens a member's memory, sitting
 in the one pod every member talks to, is exactly what the mode exists to keep out of it.
+
+**And simple mode had the same hole, one layer up.** Isolated mode's passphrase is a
+configuration field, so a pod handed none is refused at load with the variable named.
+Simple mode's node passphrase was not a field at all, so nothing validated its absence:
+`deploy/compose.simple.yml` shipped without one and the container restart-looped on exit 2
+forever, with the refusal listing three mechanisms and naming no variable, because there
+was no variable in the file to name. `session.passphrase_env` / `_file` closes it — see §4
+for why the field is optional, why naming a source the deployment does not supply is worse
+than naming none, and why `kenward setup` writes neither.
 
 ### How a supervisor-started pod gets a claim code
 
