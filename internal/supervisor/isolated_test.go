@@ -856,7 +856,11 @@ func TestIsolatedPodConfigProvisioning(t *testing.T) {
 		if p.key.group {
 			wantFlag = "--group"
 		}
-		want := []string{"--config=" + PodConfigPath, "--data-dir=" + DefaultPodDataDir, wantFlag}
+		// Starting with the subcommand, because the image's ENTRYPOINT is the
+		// bare binary: a list that starts with a flag replaces `run` instead of
+		// following it, and the pod exits 2 with `kenward: unknown command
+		// "--config=…"`. See PodCommand.
+		want := PodCommand(wantFlag)
 		if len(spec.Command) != len(want) {
 			t.Fatalf("pod %s command = %v, want %v", p.name, spec.Command, want)
 		}

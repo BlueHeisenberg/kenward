@@ -84,7 +84,13 @@ services:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
       - kenward-david-data:/var/lib/kenward
       - ./bin/lore:/usr/local/bin/lore:ro
+    # `run` first, and it is not optional: the image's ENTRYPOINT is the bare
+    # binary and `run` lives in its CMD, so a `command:` here REPLACES `run`
+    # rather than adding to it. Without it the container exits 2 on startup with
+    # `kenward: unknown command "--config=/etc/kenward/kenward.yaml"`, restarts,
+    # and does that forever. Same for every service below.
     command:
+      - "run"
       - "--config=/etc/kenward/kenward.yaml"
       - "--data-dir=/var/lib/kenward"
       - "--member=david"
@@ -120,6 +126,7 @@ services:
       - kenward-jordan-data:/var/lib/kenward
       - ./bin/lore:/usr/local/bin/lore:ro
     command:
+      - "run"
       - "--config=/etc/kenward/kenward.yaml"
       - "--data-dir=/var/lib/kenward"
       - "--member=jordan"
@@ -152,6 +159,7 @@ services:
       - kenward-household-data:/var/lib/kenward
       - ./bin/lore:/usr/local/bin/lore:ro
     command:
+      - "run"
       - "--config=/etc/kenward/kenward.yaml"
       - "--data-dir=/var/lib/kenward"
       - "--group"

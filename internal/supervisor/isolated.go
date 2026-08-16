@@ -409,6 +409,34 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 	return i, nil
 }
 
+// PodCommand is the command line a pod is started with, for the unit
+// `--member=ID` or `--group` names. Both isolated deployment paths use it: this
+// supervisor puts it in the pod's sandbox.Spec, and deploy/compose.isolated.yml
+// writes the same list in every service's `command:`.
+//
+// It begins with the subcommand, and that is the whole reason this is a function
+// rather than three strings written out twice. The image's ENTRYPOINT is the bare
+// binary and `run` lives in its CMD (see the Dockerfile, which says so), so
+// anything supplied here REPLACES `run` rather than adding to it. A list that
+// starts with a flag reaches cmd/kenward's dispatch as the command name, and the
+// pod dies before it reads anything:
+//
+//	$ podman logs sbx-kenward-member-david
+//	kenward: unknown command "--config=/etc/kenward/kenward.yaml"
+//	(exit 2, on every restart, forever)
+//
+// TestPodCommandIsSomethingThisBinaryRuns in cmd/kenward puts this list through
+// the real dispatcher, because that is the layer that decides whether it is a
+// command at all.
+func PodCommand(unitFlag string) []string {
+	return []string{
+		"run",
+		"--config=" + PodConfigPath,
+		"--data-dir=" + DefaultPodDataDir,
+		unitFlag,
+	}
+}
+
 // podSpec builds one pod's complete description. When the household
 // configuration was supplied, the pod also gets the compose-identical argv and
 // the configuration provisioned at PodConfigPath, so the sandbox-managed and
@@ -424,11 +452,7 @@ func (i *Isolated) podSpec(name string, env map[string]string, unitFlag string, 
 		EgressProxyAddr: i.opts.EgressProxyAddr,
 	}
 	if len(configYAML) > 0 {
-		spec.Command = []string{
-			"--config=" + PodConfigPath,
-			"--data-dir=" + DefaultPodDataDir,
-			unitFlag,
-		}
+		spec.Command = PodCommand(unitFlag)
 		spec.Files = []sandbox.File{{
 			Path: PodConfigPath,
 			Data: append([]byte(nil), configYAML...),
