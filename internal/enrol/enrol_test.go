@@ -183,8 +183,8 @@ func TestMintRedeem(t *testing.T) {
 	if !res.Member.Enrolled() {
 		t.Error("bound member does not report Enrolled")
 	}
-	if got := len(res.Messages); got != 3 {
-		t.Fatalf("onboarding is %d messages, want 3", got)
+	if got := len(res.Messages); got != 1 {
+		t.Fatalf("a claim sends %d messages before the tutorial, want 1 (the greeting)", got)
 	}
 	for i, m := range res.Messages {
 		if m.ChatID != 500 {
@@ -450,7 +450,7 @@ func TestConcurrentRedemption(t *testing.T) {
 					mu.Lock()
 					defer mu.Unlock()
 					switch {
-					case err == nil && res.Enrolled && len(res.Messages) == 3:
+					case err == nil && res.Enrolled && len(res.Messages) == 1:
 						wins++
 					case errors.Is(err, ErrCodeConsumed):
 						losses++
@@ -685,7 +685,7 @@ func TestDefaultWorkFactor(t *testing.T) {
 	}
 }
 
-func TestOnboardingCopy(t *testing.T) {
+func TestExplanationCopy(t *testing.T) {
 	// The third message describes the buttons the member is about to be shown, so
 	// it has to differ with capture.private_writes. Under the default a private
 	// note is written and then announced with Undo; under "ask" it is a question
@@ -718,9 +718,9 @@ func TestOnboardingCopy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msgs := Onboarding(500, "David", tc.askPrivate)
+			msgs := Explanation(500, english, tc.askPrivate)
 			if len(msgs) != 3 {
-				t.Fatalf("onboarding is %d messages, want 3", len(msgs))
+				t.Fatalf("explanation is %d messages, want 3", len(msgs))
 			}
 			all := ""
 			for _, m := range msgs {
@@ -728,12 +728,11 @@ func TestOnboardingCopy(t *testing.T) {
 					t.Errorf("message addressed to chat %d", m.ChatID)
 				}
 				if m.ReplyTo != 0 {
-					t.Errorf("onboarding should not reply to a message id")
+					t.Errorf("the explanation should not reply to a message id")
 				}
 				all += m.Text + "\n"
 			}
 			want := append([]string{
-				"David",
 				"your private memory",
 				"household group chat is the shared memory",
 			}, tc.want...)

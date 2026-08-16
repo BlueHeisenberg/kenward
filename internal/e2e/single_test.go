@@ -461,7 +461,7 @@ func TestPodForAnUnenrolledMemberStartsClaimOnlyAndServesNothingUntilClaimed(t *
 	// is: with nothing. The claim behind it is the barrier — same pump, in order.
 	h.tr.InjectText(samChatID, samTelegramID, "hello? anyone?", false)
 	h.tr.InjectText(samChatID, samTelegramID, code, false)
-	onboarding := h.waitForReply(samChatID, 3)
+	onboarding := h.waitForReply(samChatID, onboardingMessages)
 
 	if !strings.Contains(onboarding[0].Text, "Hello Sam") {
 		t.Errorf("onboarding opens with %q, want the member greeted by name", onboarding[0].Text)
@@ -480,9 +480,9 @@ func TestPodForAnUnenrolledMemberStartsClaimOnlyAndServesNothingUntilClaimed(t *
 		return memberHealth(t, h, samMemberID).State == supervisor.StateReady
 	})
 	h.tr.InjectText(samChatID, samTelegramID, "what's the bike lock code?", false)
-	sent := h.waitForReply(samChatID, 4)
-	if replyBody(sent[3].Text) != "8812." {
-		t.Errorf("reply after the claim = %q, want the model's text", sent[3].Text)
+	sent := h.waitForReply(samChatID, onboardingMessages+1)
+	if replyBody(sent[onboardingMessages].Text) != "8812." {
+		t.Errorf("reply after the claim = %q, want the model's text", sent[onboardingMessages].Text)
 	}
 	searched := h.mem.searchedSpaces()
 	if len(searched) != 2 || !containsSpace(searched, samSpace) || !containsSpace(searched, sharedSpace) {
@@ -526,18 +526,18 @@ func TestAnotherMembersCodeOnThisBotBindsThemButMintsNoUnitHere(t *testing.T) {
 	// Not served: no unit here is theirs. Sam's own claim behind it is the barrier.
 	h.tr.InjectText(patChatID, patTelegramID, "so what can you do?", false)
 	h.tr.InjectText(samChatID, samTelegramID, samCode, false)
-	h.waitForReply(samChatID, 3)
+	h.waitForReply(samChatID, onboardingMessages)
 	waitFor(t, "sam's unit to be serving", func() bool {
 		return memberHealth(t, h, samMemberID).State == supervisor.StateReady
 	})
 	h.tr.InjectText(samChatID, samTelegramID, "hello", false)
-	h.waitForReply(samChatID, 4)
+	h.waitForReply(samChatID, onboardingMessages+1)
 	if err := h.stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	if got := h.sentTo(patChatID); len(got) != 3 {
-		t.Errorf("pat received %d messages, want only the 3 onboarding ones: %+v; "+
+	if got := h.sentTo(patChatID); len(got) != onboardingMessages {
+		t.Errorf("pat received %d messages, want only their onboarding: %+v; "+
 			"their conversation belongs to their own pod", len(got), got)
 	}
 	health, err := h.sup.Health(context.Background())
