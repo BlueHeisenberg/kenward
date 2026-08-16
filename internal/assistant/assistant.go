@@ -515,8 +515,13 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	return func(fctx context.Context) {
 		out, err := u.deps.Capture.Offer(fctx, sc, p, in.UserID)
 		if err != nil {
-			// The capture engine has already told the member what happened on
-			// every path where they saw anything; this is for the operator.
+			// The capture engine speaks for every failure the member could be
+			// waiting on, including the ones on a bare-tool-call turn; this is
+			// for the operator. There is deliberately no generic fallback here
+			// to mirror the publish callback's: an unmarked error says nothing
+			// about whether the write landed, so "try asking again" would be
+			// safe for a failed one and an invitation to duplicate a stored one.
+			// The engine is where that distinction exists, so the engine speaks.
 			u.deps.Logger.Warn("assistant: capture failed", "error", err)
 			return
 		}

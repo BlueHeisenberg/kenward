@@ -903,6 +903,82 @@ func TestPutFailureReportsUncertainty(t *testing.T) {
 	}
 }
 
+// TestOfferQuestionFailureSpeaks: the model named the household, the scope has no
+// household space to name, and so no question can be built at all. The member never
+// saw a button — and a remember turn is routinely a bare tool call with no prose of
+// its own, so a quiet return here is a turn that answers nothing (IMPLEMENTATION.md
+// section 10). Same reasoning as every failure in OfferPromotion.
+func TestOfferQuestionFailureSpeaks(t *testing.T) {
+	e, mem, tr := newEngine(t)
+	sc := directScope()
+	sc.Read = []domain.SpaceID{personal}
+	e.BeginTurn(sc, "turn-1")
+
+	_, err := e.Offer(context.Background(), sc, proposal(TargetShared), davidID)
+	if !errors.Is(err, ErrNoSharedSpace) {
+		t.Fatalf("err = %v, want ErrNoSharedSpace", err)
+	}
+	if !errors.Is(err, ErrMemberNotified) {
+		t.Errorf("err = %v, not marked as spoken for; the caller will speak over it", err)
+	}
+	if len(tr.asks) != 0 || len(mem.puts) != 0 {
+		t.Fatalf("asks = %v, puts = %+v, want neither for a question that was never built", tr.asks, mem.puts)
+	}
+	if len(tr.sends) != 1 {
+		t.Fatalf("sends = %v, want exactly one notice", tr.sends)
+	}
+	if got := tr.sends[0].Text; !strings.Contains(got, "nothing was written") {
+		t.Errorf("notice %q does not say nothing was written", got)
+	}
+}
+
+// TestConfirmationFailureDoesNotInviteARetry: the entry landed and only the
+// confirmation failed to send. An unmarked error there hands the caller its generic
+// "try asking again", which invites the member to repeat the one act this flow states
+// cannot be taken back — the same shape as the bug that made the marking mechanical
+// in the first place. So the error is marked even though what failed to reach the
+// member was the confirmation rather than a notice about a failure.
+func TestConfirmationFailureDoesNotInviteARetry(t *testing.T) {
+	boom := errors.New("telegram is unreachable")
+
+	// assert is shared by both flows: the outcome still says stored, the error is
+	// marked, and the engine did not follow a failed confirmation with a second
+	// message — two "Saved …" lines for one write read as two writes.
+	assert := func(t *testing.T, out Outcome, err error, tr *stubTransport, want string) {
+		t.Helper()
+		if !out.Stored() {
+			t.Fatal("the write happened; the outcome must still say so")
+		}
+		if !errors.Is(err, ErrMemberNotified) {
+			t.Errorf("err = %v, not marked; the caller answers a stored entry with a retry", err)
+		}
+		if len(tr.sends) != 1 {
+			t.Fatalf("sends = %v, want the one confirmation attempt and nothing after it", tr.sends)
+		}
+		if got := tr.sends[0].Text; !strings.Contains(got, want) {
+			t.Errorf("the attempted notice %q is not the confirmation", got)
+		}
+	}
+
+	t.Run("offer", func(t *testing.T) {
+		e, _, tr := newEngine(t, accept(ChoicePersonal))
+		tr.sendErr = boom
+		sc := directScope()
+		e.BeginTurn(sc, "turn-1")
+
+		out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+		assert(t, out, err, tr, "Saved")
+	})
+
+	t.Run("promotion", func(t *testing.T) {
+		e, m, tr := newEngine(t, accept(ChoicePublish))
+		m.entry, tr.sendErr = memory.Entry{Title: "Where the spare key lives"}, boom
+
+		out, err := e.OfferPromotion(context.Background(), directScope(), "entry-7", davidID)
+		assert(t, out, err, tr, "Published")
+	})
+}
+
 // TestUnsureWithoutSharedSpaceOffersPersonalOnly: destinations are resolved before
 // they are offered, so a scope with no shared space never shows a Household button
 // whose tap could only fail.

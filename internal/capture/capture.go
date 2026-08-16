@@ -154,11 +154,13 @@ var (
 	// choice that was never offered; nothing is written.
 	ErrPersonalNotAllowed = errors.New("capture: personal destination not allowed in this scope")
 	// ErrMemberNotified is joined onto every error this package returns after it has
-	// already put a notice about that failure in the chat. It is for a caller whose
-	// own fallback is a generic "no answer" notice: telling the member twice, in two
-	// different words, is worse than either message alone — and after a failed
-	// publication the generic one reads as an invitation to retry an act that cannot
-	// be taken back. Its absence means the member saw nothing and the caller speaks.
+	// already put a notice about that failure in the chat — or tried to and could
+	// not, which comes to the same thing for a caller deciding whether to speak. It
+	// is for a caller whose own fallback is a generic "no answer" notice: telling the
+	// member twice, in two different words, is worse than either message alone — and
+	// after a failed publication the generic one reads as an invitation to retry an
+	// act that cannot be taken back. Its absence means the member saw nothing and the
+	// caller speaks.
 	ErrMemberNotified = errors.New("capture: the member was told")
 )
 
@@ -359,7 +361,10 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		// proposal that never became a question must not consume the one question
 		// this turn is allowed.
 		e.refundOffer(sc, askUserID, turn)
-		return Outcome{}, err
+		// A remember turn is routinely a bare tool call with no prose, so a silent
+		// return here is a turn that answers nothing at all — the same class of
+		// defect as the publish paths below.
+		return Outcome{}, e.told(ctx, sc, "I couldn't save that — nothing was written.", err)
 	}
 
 	ans, err := e.tr.Ask(ctx, q)
@@ -439,7 +444,11 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		ChatID: sc.ChatID,
 		Text:   fmt.Sprintf("Saved %q to %s (%s).", title, destinationPhrase(sc, entry.Space), entry.Space),
 	}); err != nil {
-		return out, fmt.Errorf("capture: confirming entry %s stored in %s: %w", out.EntryID, entry.Space, err)
+		// The notice the member needed was this confirmation, and it has already been
+		// attempted; there is nothing useful left to say to a transport that just
+		// failed. Marking it stops the caller's generic "try asking again" from
+		// inviting a second write of an entry that landed, which lore cannot delete.
+		return out, marked(fmt.Errorf("capture: confirming entry %s stored in %s: %w", out.EntryID, entry.Space, err))
 	}
 	return out, nil
 }
@@ -529,7 +538,10 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 		ChatID: sc.ChatID,
 		Text:   fmt.Sprintf("Published %q to the household memory (%s). Everyone can see it now.", entry.Title, shared.Space),
 	}); err != nil {
-		return out, fmt.Errorf("capture: confirming publication of entry %s as %s in %s: %w", entryID, out.EntryID, shared.Space, err)
+		// As in Offer, and worse: the publication happened and cannot be taken back,
+		// so an unmarked error here would put "try asking again" in front of a member
+		// whose entry is already in the household memory.
+		return out, marked(fmt.Errorf("capture: confirming publication of entry %s as %s in %s: %w", entryID, out.EntryID, shared.Space, err))
 	}
 	return out, nil
 }
@@ -682,8 +694,14 @@ func (e *Engine) refundOffer(sc domain.Scope, speaker int64, turn int) {
 // error that matters, and a transport that cannot send will report the same fault there.
 func (e *Engine) told(ctx context.Context, sc domain.Scope, text string, err error) error {
 	_ = e.tr.Send(ctx, transport.Outbound{ChatID: sc.ChatID, Text: text})
-	return fmt.Errorf("%w; %w", ErrMemberNotified, err)
+	return marked(err)
 }
+
+// marked is told without the sending, for the one shape where the notice the member
+// needed was the confirmation the flow already tried to send. Repeating it would risk
+// two "Saved …" lines for one write, which reads as two writes; saying something else
+// would contradict a confirmation that may well have arrived.
+func marked(err error) error { return fmt.Errorf("%w; %w", ErrMemberNotified, err) }
 
 // recordDecline remembers a refusal so the same title is not put to that member
 // again for the next DeclineWindow turns. The speaker is part of the record: in the
