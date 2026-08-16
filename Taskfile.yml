@@ -76,7 +76,11 @@ tasks:
       # Only the one platform the container runs; the point of the exercise is
       # install.sh's branching, not the cross-compiler.
       - GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOWORK=off go build -ldflags "{{.LDFLAGS}}" -o ./dist/release/kenward_linux_amd64 ./cmd/kenward
-      - (cd ./dist/release && sha256sum kenward_linux_amd64 > checksums.txt)
+      # The unit ships as a release asset and is checksummed like the binary —
+      # it is installed as root, so install.sh must be able to check it.
+      # .goreleaser.yaml does the same thing for a real release.
+      - cp deploy/kenward.service ./dist/release/kenward.service
+      - (cd ./dist/release && sha256sum kenward_linux_amd64 kenward.service > checksums.txt)
       - >-
         docker run --rm
         -v "$PWD:/mnt:ro" -v "$PWD/dist/release:/release:ro"

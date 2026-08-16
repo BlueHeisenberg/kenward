@@ -32,10 +32,37 @@ jobs:
       GOWORK: off
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
-          cache: true
+          # No shared build cache in the release path. setup-go's cache is
+          # keyed by go.sum and shared across every branch of this repository,
+          # and the Go build cache is content-addressed but not re-verified
+          # against the source when an entry is reused. Anything that can write
+          # that cache — any branch push — could otherwise plant an object that
+          # a release build links in, which would quietly undo -trimpath and
+          # mod_timestamp. A release happens rarely; a cold build is cheap.
+          cache: false
+
+      # A tag can be any string git accepts, and it reaches a shell: the
+      # Dockerfile's build stage interpolates ${VERSION} into a `RUN` command
+      # (Dockerfile:68-74), and git permits " $ ( ) ; & | ' ` in a ref name.
+      # Refusing anything that is not a plain version here covers the image
+      # job, the metadata action and GoReleaser in one place, before any of
+      # them sees it.
+      - name: The tag must be a version
+        if: github.event_name == 'push'
+        run: |
+          case "$GITHUB_REF_NAME" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "refusing to release from tag '$GITHUB_REF_NAME': expected vMAJOR.MINOR.PATCH[-prerelease]"; exit 1 ;;
+          esac
+          case "$GITHUB_REF_NAME" in
+            *[!A-Za-z0-9.+_-]*) echo "tag '$GITHUB_REF_NAME' contains a character that must never reach a shell"; exit 1 ;;
+          esac
+
       - name: Check formatting (gofmt)
         run: |
           unformatted="$(gofmt -l .)"
@@ -59,18 +86,28 @@ jobs:
           # GoReleaser derives the version and the changelog from tag history;
           # a shallow clone gives it neither.
           fetch-depth: 0
+          # checkout otherwise leaves this job's contents:write token in
+          # .git/config as an http.extraheader, readable by every later step —
+          # including a third-party action. GoReleaser gets its token through
+          # env: and never needs the git credential.
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
-          cache: true
+          cache: false   # see the gate job
 
       - name: Build and draft the release
         uses: goreleaser/goreleaser-action@v6
         with:
           version: '~> v2'
+          # Keyed on the EVENT, not the ref. workflow_dispatch can be pointed
+          # at a tag ref, and `startsWith(github.ref, 'refs/tags/')` would then
+          # read as a real release — publishing a draft and moving :latest from
+          # a button, which is the opposite of the rehearsal this trigger
+          # documents itself as. Only a tag push releases.
           args: >-
-            ${{ startsWith(github.ref, 'refs/tags/') && 'release --clean' || 'release --snapshot --clean' }}
+            ${{ github.event_name == 'push' && 'release --clean' || 'release --snapshot --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOWORK: off
@@ -84,7 +121,7 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       - name: Keep the snapshot for inspection
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: github.event_name != 'push'
         uses: actions/upload-artifact@v4
         with:
           name: snapshot
@@ -96,13 +133,19 @@ jobs:
   image:
     name: image
     needs: gate
-    if: startsWith(github.ref, 'refs/tags/')
+    # A tag push, never a dispatch: unlike the GitHub release, a ghcr push is
+    # immediate and public — there is no draft to sign first — and :latest is
+    # what deploy/compose.*.yml pin. Dispatching this workflow at an old tag
+    # ref would otherwise republish that tag and drag :latest backwards.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # Built from the repository's own Dockerfile rather than through
       # GoReleaser's docker support: that would need a second Dockerfile that

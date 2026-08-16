@@ -91,6 +91,14 @@ checksum:
   # .../releases/latest/download/checksums.txt and a version-stamped name
   # would make that URL unguessable.
   name_template: checksums.txt
+  extra_files:
+    # The systemd unit is installed into /etc/systemd/system as root, so it
+    # decides what runs as root — which makes it every bit as security-relevant
+    # as the binary, and it must be checkable the same way. install.sh verifies
+    # it against this file before writing it. Listing it here rather than only
+    # under release.extra_files is the whole point: release.extra_files uploads
+    # a file, checksum.extra_files is what gets it a line in checksums.txt.
+    - glob: deploy/kenward.service
 
 nfpms:
   - id: kenward
@@ -157,6 +165,11 @@ release:
     # A copy of the installer pinned to this release, so `curl … | sh` can be
     # audited at the exact version somebody ran.
     - glob: install.sh
+    # The systemd unit, so install.sh can fetch it from the same release as the
+    # binary and check it against checksums.txt. It used to come from
+    # raw.githubusercontent.com/…/main/, which meant a file installed as root
+    # was whatever was on the branch at that moment, verified by nothing.
+    - glob: deploy/kenward.service
   footer: |
     ---
 

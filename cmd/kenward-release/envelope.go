@@ -3,9 +3,29 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/BlueHeisenberg/keel/update"
 )
+
+// isHex64 reports whether s is exactly 64 hexadecimal characters — the shape
+// of a SHA-256 digest. Length alone is not enough: keel compares the digest it
+// computed against this string, so 64 characters that are not hex can never
+// match anything, and the update simply never applies. That failure is silent
+// on every installation at once, which is exactly the class of mistake this
+// function exists to catch before a manifest is signed.
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
 
 // inputKind distinguishes the two things a manifest file on disk can be: the
 // unsigned payload the manifest command writes, or the signed envelope that
@@ -58,8 +78,18 @@ func checkManifest(m update.Manifest) error {
 			if art.URL == "" {
 				return fmt.Errorf("channel %q, %s: artifact has no URL", name, platform)
 			}
-			if len(art.SHA256) != 64 {
-				return fmt.Errorf("channel %q, %s: sha256 is not a 64-character hex digest", name, platform)
+			// A signature makes the digest authoritative, so a foreign host
+			// cannot substitute content — but it can still watch. Over plain
+			// HTTP the exact version every household downloads is readable by
+			// anyone on the path, and a mistyped --base-url is the likeliest
+			// way to get there. Signing is the last moment this is cheap to
+			// catch: once published, every installation acts on it.
+			if !strings.HasPrefix(art.URL, "https://") {
+				return fmt.Errorf("channel %q, %s: artifact URL %q is not https — "+
+					"a release manifest may only name https artifact URLs", name, platform, art.URL)
+			}
+			if !isHex64(art.SHA256) {
+				return fmt.Errorf("channel %q, %s: sha256 %q is not a 64-character hex digest", name, platform, art.SHA256)
 			}
 		}
 	}

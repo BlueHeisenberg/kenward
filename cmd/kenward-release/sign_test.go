@@ -154,6 +154,61 @@ func TestSignRefusesRubbish(t *testing.T) {
 	}
 }
 
+// A signature is the whole authority behind an update, so the two things it
+// makes authoritative — where the artifact is fetched from, and what digest it
+// must have — are checked before one is applied, not after publishing.
+//
+// The URL case is the one with teeth. The digest is signed, so a foreign host
+// cannot substitute content; but over plain HTTP anyone on the path reads which
+// household is fetching which version, and a mistyped --base-url is the
+// likeliest way a release ends up there. The digest case is the quieter one: 64
+// characters that are not hex can never equal the digest keel computes, so the
+// update never applies, silently, on every installation at once.
+func TestSignRefusesAnArtifactItWouldRegret(t *testing.T) {
+	priv, _ := newKey(t, "")
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out.json")
+
+	manifest := func(url, digest string) string {
+		return `{"schema":1,"channels":{"edge":{"version":"v1.0.0","artifacts":{"linux/amd64":{` +
+			`"url":"` + url + `","sha256":"` + digest + `"}}}}}`
+	}
+	goodDigest := strings.Repeat("a", 64)
+
+	refuse := []struct{ name, body string }{
+		{"plain http", manifest("http://example.test/kenward_linux_amd64", goodDigest)},
+		{"a foreign plain-http host", manifest("http://evil.example.com/pwn/kenward_linux_amd64", goodDigest)},
+		{"no scheme at all", manifest("example.test/kenward_linux_amd64", goodDigest)},
+		{"a file URL", manifest("file:///tmp/kenward", goodDigest)},
+		{"64 characters that are not hex", manifest("https://example.test/k", strings.Repeat("z", 64))},
+		{"a digest with a space in it", manifest("https://example.test/k", strings.Repeat("a", 63)+" ")},
+	}
+	for _, tc := range refuse {
+		in := filepath.Join(dir, "in.json")
+		if err := os.WriteFile(in, []byte(tc.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		code, _, errb := exec(t, "sign", "--key", priv, "--in", in, "--out", out)
+		if code == 0 {
+			t.Errorf("%s: signed a manifest that should have been refused", tc.name)
+			continue
+		}
+		if !strings.Contains(errb, "https") && !strings.Contains(errb, "hex digest") {
+			t.Errorf("%s: refused, but the reason does not say which rule was broken: %q", tc.name, errb)
+		}
+	}
+
+	// And the honest shape still signs: a rule that refuses everything is not
+	// a rule, it is an outage.
+	in := filepath.Join(dir, "good.json")
+	if err := os.WriteFile(in, []byte(manifest("https://example.test/kenward_linux_amd64", goodDigest)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, errb := exec(t, "sign", "--key", priv, "--in", in, "--out", out); code != 0 {
+		t.Errorf("refused an honest https manifest: exit %d\n%s", code, errb)
+	}
+}
+
 // A payload this tooling did not format still takes a second signature, and
 // the signature already on it stays valid: the payload bytes are signed and
 // re-encoded verbatim, never re-serialised from the decoded manifest.
