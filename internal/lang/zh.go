@@ -204,6 +204,7 @@ var chinese = Catalogue{
 	WrittenHint:     "撤销按钮会把它移除。",
 	PromotionOpener: "这条内容会原样发布给整个家庭，并且无法撤回：",
 	PromotionCloser: "要发布吗？",
+	AlsoKnownAs:     func(words []string) string { return "也称：" + strings.Join(words, "、") },
 
 	BtnUndo:             "撤销",
 	BtnPublishHousehold: "发布给家庭",

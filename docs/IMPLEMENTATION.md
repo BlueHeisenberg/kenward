@@ -1161,7 +1161,9 @@ other way:
 ## 6. Capture
 
 Model proposals arrive as a structured tool call: `{title, body, domain, confidence,
-markers, target: personal|shared|unsure}` on the `remember` tool.
+markers, aliases, target: personal|shared|unsure}` on the `remember` tool. `aliases` is
+the member's own words for what the entry is about — see *Finding it again in the
+language it was said in* below.
 
 A second tool, `publish`, carries the promotion flow and is offered in a direct
 conversation only. It takes `{title}` and no id — see *Promotion* below.
@@ -1291,6 +1293,60 @@ either way.
   for the next ten turns so the model does not immediately re-propose the thing they were
   just asked to verify. This holds on both paths: the write is the same write whether a
   tap authorised it or the policy did.
+
+### Finding it again in the language it was said in
+
+A household that chose Spanish said the garden gate code in Spanish, kenward stored it,
+and forty seconds later *"¿Cuál es el código de la puerta del jardín?"* retrieved
+nothing and the member was told it had never been said. *"What is the garden gate
+code?"* retrieved it, from the same entry, forty seconds later. Three links: the
+tutorial invites the member to choose a language and the assistant answers in it; the
+model writes the entry in English anyway, because the entire prompt is English and
+`persona.language` is documented as reaching the model's *answers*; and lore's search is
+a conjunctive lexical match over title, body and domain with no stemming and no
+translation (§12), so a Spanish word cannot match an English entry.
+
+**Titles and bodies stay English. The member's own words ride alongside them.** The
+`remember` tool takes an `aliases` array — a few words, in the language the conversation
+is held in, for the thing the entry is about — and `capture` folds them into the stored
+body as one line, labelled from `internal/lang` in the member's language:
+
+```
+Garden gate code
+The code for the garden gate is 4821.
+
+También: código de la puerta del jardín, cancela
+```
+
+The line goes in the *body* because that is the only place lore's index can reach it:
+markers are a filter and are not searched. It is folded before anything reads the draft,
+so the body that is stored, the body put as a question and the body announced back are
+one string — an alias line added on the way past would make *"kenward tells you what it
+wrote"* false in the one way nobody would notice. An alias whose every word is already
+in the entry is dropped, so an English conversation stores exactly what it stored
+before; the line is bounded at six aliases of 64 runes, because the field is
+model-written text arriving out of a member's conversation.
+
+Why not simply write the entry in the member's language:
+
+| | Cost |
+| --- | --- |
+| **Write in the member's language** | Fixes one household and breaks the next. The shared space of a household with a Spanish and a German member ends up half-invisible to each of them, the group scope has no member's language to write in, and every entry the household wrote before it switched languages stops being retrievable by anyone. |
+| **Write English, translate the query** | Complete, and the most expensive: retrieval happens *before* the completion, so translating the query is a second model round trip in front of every turn's search — and it mistranslates exactly the proper nouns a household memory is full of. |
+| **Store both** | What this does. Storage, and a decision about which is shown: the entry is the English one, and the aliases are shown with it because they were stored with it. |
+| **Wait for a better search in lore** | lore's index is lexical by design and on its own release cycle. Nothing here needs it to change. |
+
+**Already-written entries are untouched, and stay findable.** English is the one language
+every entry is guaranteed to hold, before this change and after it, so a household that
+switches to Spanish on a Tuesday can still retrieve everything it wrote on the Monday —
+in English. What it does not get is those old entries retroactively aliased: they gain
+Spanish words only if something re-proposes them. That is the price of not rewriting a
+household's memory behind its back, and it is the right way round — the alternative
+loses entries rather than merely not improving them.
+
+The bound this does not clear: Ana's German-speaking housemate finds her household entry
+by its English words and not by German ones. A lexical index cannot match a word that is
+not there, and English is where the household meets.
 
 ---
 

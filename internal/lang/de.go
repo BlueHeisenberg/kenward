@@ -205,6 +205,7 @@ var german = Catalogue{
 	WrittenHint:     "Der Rückgängig-Knopf entfernt es wieder.",
 	PromotionOpener: "Das würde genau in dieser Form im Haushalt veröffentlicht und kann nicht zurückgezogen werden:",
 	PromotionCloser: "Veröffentlichen?",
+	AlsoKnownAs:     func(words []string) string { return "Auch: " + latinList(words) },
 
 	BtnUndo:             "Rückgängig",
 	BtnPublishHousehold: "Im Haushalt veröffentlichen",

@@ -214,6 +214,7 @@ var english = Catalogue{
 	WrittenHint:     "The Undo button removes it.",
 	PromotionOpener: "This would be published to the household exactly as it stands, and cannot be unpublished:",
 	PromotionCloser: "Publish it?",
+	AlsoKnownAs:     func(words []string) string { return "Also known as: " + latinList(words) },
 
 	BtnUndo:             "Undo",
 	BtnPublishHousehold: "Publish to household",

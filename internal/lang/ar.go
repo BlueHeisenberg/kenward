@@ -325,6 +325,7 @@ var arabic = Catalogue{
 	WrittenHint:     "زر التراجع يزيله.",
 	PromotionOpener: "سيُنشر هذا للمنزل كما هو تمامًا، ولا يمكن التراجع عن نشره:",
 	PromotionCloser: "هل أنشره؟",
+	AlsoKnownAs:     func(words []string) string { return "أيضًا: " + strings.Join(words, "، ") },
 
 	BtnUndo:             "تراجع",
 	BtnPublishHousehold: "نشر للمنزل",

@@ -213,6 +213,7 @@ var spanish = Catalogue{
 	WrittenHint:     "El botón Deshacer lo retira.",
 	PromotionOpener: "Esto se publicaría en el hogar tal y como está, y no se puede despublicar:",
 	PromotionCloser: "¿Lo publico?",
+	AlsoKnownAs:     func(words []string) string { return "También: " + latinList(words) },
 
 	BtnUndo:             "Deshacer",
 	BtnPublishHousehold: "Publicar en el hogar",

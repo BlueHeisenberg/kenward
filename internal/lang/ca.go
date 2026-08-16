@@ -201,6 +201,7 @@ var catalan = Catalogue{
 	WrittenHint:     "El botó Desfer ho retira.",
 	PromotionOpener: "Això es publicaria a la llar exactament tal com està, i no es pot despublicar:",
 	PromotionCloser: "Ho publico?",
+	AlsoKnownAs:     func(words []string) string { return "També: " + latinList(words) },
 
 	BtnUndo:             "Desfer",
 	BtnPublishHousehold: "Publicar a la llar",
