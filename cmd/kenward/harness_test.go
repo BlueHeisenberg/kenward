@@ -326,6 +326,21 @@ func healthyProbes() probes {
 				Elapsed: 412 * time.Millisecond,
 			}
 		},
+		// A pod whose sync daemon is up and has found the household's other pods.
+		// Seamed like every other probe, and for one reason more than the others:
+		// the real one reads this machine's LORE_HOME, and a test must never go
+		// looking at the developer's own lore store.
+		sync: func(context.Context) syncResult {
+			return syncResult{
+				Home: "/var/lib/kenward/lore",
+				Status: memory.SyncStatus{
+					Running:  true,
+					DeviceID: "1533791a80e3",
+					Peers:    2,
+					LastSync: time.Date(2026, 8, 16, 10, 50, 25, 0, time.UTC),
+				},
+			}
+		},
 		sessions: func(_ context.Context, cfg *config.Config) sessionsResult {
 			var res sessionsResult
 			for _, m := range cfg.DomainMembers() {
@@ -340,6 +355,27 @@ func healthyProbes() probes {
 			return res
 		},
 	}
+}
+
+// syncDaemonDown is the defect isolated mode shipped with: a pod whose lore store
+// holds the household's shared space and has nothing carrying entries in or out.
+func syncDaemonDown(base probes) probes {
+	base.sync = func(context.Context) syncResult {
+		return syncResult{Home: "/var/lib/kenward/lore", Err: memory.ErrNoSyncDaemon}
+	}
+	return base
+}
+
+// syncFoundNobody is the half-wired case: the daemon runs and has met no sibling, so
+// every pod's shared space is a separate copy.
+func syncFoundNobody(base probes) probes {
+	base.sync = func(context.Context) syncResult {
+		return syncResult{
+			Home:   "/var/lib/kenward/lore",
+			Status: memory.SyncStatus{Running: true, DeviceID: "1533791a80e3"},
+		}
+	}
+	return base
 }
 
 // noKeysProvisioned is the failure the operator cannot otherwise see: members are

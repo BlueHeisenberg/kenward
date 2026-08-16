@@ -1,0 +1,72 @@
+kenward <VERSION> — mode: isolated — this pod runs only member david
+
+Configuration
+  ✓ kenward.yaml parses and validates
+      <CONFIG>
+  ✓ every secret this unit needs can be read
+
+Memory
+  ✓ lore mcp responds
+  ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
+  ✓ space "7d5047bb-d939-4539-b3db-8b6221a2e245" reachable
+  ✓ shared memory is syncing: this store holds the household's space and reaches
+    2 other lore instances
+      last sync round finished 2026-08-16T10:50:25Z
+      the daemon reports instances it can reach, not which of them are in the
+      household's space; what is in that memory is not this command's to report
+
+Sessions
+  ✓ key custody: isolated mode. Each member's key (members: david, jordan) is
+    wrapped by that member's own passphrase; no single passphrase unlocks more
+    than one member. While a member is in session their unwrapped key is in that
+    pod's memory — root on the host still wins.
+      whether a key is unwrapped right now is not visible from here: unwrapped
+      keys live in the running node's memory and this is a different process
+  ✓ 2 members have a wrapped key on disk
+  ✓ unlocked keys do not expire on idle (session.idle_timeout is off)
+
+Transport
+  ✓ David: Telegram authorises as @david_kenward_bot
+      token from environment variable KENWARD_BOT_TOKEN_DAVID
+
+Endpoints
+  ✓ monster     local  answered in 412ms
+  ✓ openrouter  cloud  answered in 412ms
+
+Privacy
+
+Your assistant runs in its own process, with its own key and its own Telegram
+bot. Nobody else in the household can read your private memory, and neither can
+the person who runs this machine — not from the disk, not from a backup, and
+not before your process has been unlocked.
+
+Your passphrase is given to your own process when it starts, and never travels
+over Telegram. That is deliberate: sending it in a chat message would hand it
+to Telegram's servers and leave it in your message history, which would be
+worse than the problem it solved. The consequence is that once your assistant
+is unlocked and running, your key stays in that process's memory until it
+stops or you lock it.
+
+kenward does not lock it for you after a quiet spell, because there would be
+no way to unlock it again from a chat. Your household can switch that on —
+session.idle_timeout in kenward.yaml — and it is off unless someone did. Where
+it is on, an assistant that has been quiet for that long stops answering until
+somebody at the machine starts it again.
+
+The honest limit: kenward has to see your words in plain text to answer them,
+and it is the second member of your private space. That is the price of an
+assistant that answers when your laptop is shut. Someone with root access to
+this machine, while your assistant is running, could reach your key. There is
+no way around that for any assistant that runs on a server and answers
+questions — what changes is that reaching it means deliberately attacking your
+own household, rather than opening a file.
+
+Two things hold whichever mode you are in. A conversation whose tier chain
+names only machines in the house never reaches a provider: when none of them
+answers, kenward refuses rather than reaching further, and there is no setting
+that changes that. And nothing is written to memory without the member seeing
+the exact words first and saying yes.
+
+Where each conversation may go
+
+  David: [local] — will refuse rather than use a provider

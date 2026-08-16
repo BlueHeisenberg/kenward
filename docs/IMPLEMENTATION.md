@@ -1215,6 +1215,79 @@ real-podman run of this check did, refusing before a single pod was started.
 The `Unit` implementation is identical in all three. If a change to `Unit` needs to know
 which one it is running under, that change is wrong.
 
+### How the household's shared memory works in isolated mode
+
+**It did not.** Every pod resolves `household.shared_space` against its own lore store,
+and lore isolates instances by `LORE_HOME`, not by machine — so a household of three pods
+is three lore *accounts* with three id spaces, and the one space id in `kenward.yaml`
+could only ever be real in whichever store created it. Both deployment paths had it and
+both were silent about it. On real podman:
+
+```
+############ doctor in kenward-david ############
+  ✗ space "…" is not a space this lore store holds
+```
+
+A member's private memory was never affected — that is the property the mode exists for,
+and it holds because a private space lives in that member's own store — but the household
+group's memory reached exactly one container, and a member's pod could neither read the
+household's knowledge nor publish anything to it.
+
+Two things are needed and lore has both. Membership: a store joins a space through the
+invite handshake, which gives it the space's row and its key. And a sync daemon: `lore
+mcp` reads and writes the local store and never syncs, so `lore serve` is what carries an
+entry from one lore home to another. Nothing in kenward ran one.
+
+**kenward runs the daemon; membership stays the operator's.** `run` starts `lore serve
+--lan` for the life of an isolated unit (`cmd/kenward`'s `startSyncDaemon`, over
+`internal/memory`'s `RunSyncDaemon`) and restarts it on a backoff if it exits. Both
+deployment paths get it identically and neither has anything to configure, because it
+lives inside the binary the image already runs — which is what D-022 asks of a change
+like this. `--lan` is required rather than a widening: `lore serve` binds and advertises
+on loopback only by default, and a pod's siblings are separate network namespaces on the
+container runtime's bridge. mDNS is left on so no address has to be written down
+anywhere; a pod's address changes on every recreation, so a static peer list would be
+stale by the first rolling update.
+
+Membership is provisioned out of band, exactly as `lore init` and `lore space create`
+already are, and that is a decision rather than an omission. kenward never creates a lore
+space, and lore's own embeddable API declines to expose space creation or membership at
+all — *"spaces are made out of band by a person who chose a name and a sharing posture; an
+embedder joins spaces that already exist"*. An assistant that minted its own household
+memberships would be taking a decision that is not its to take. The recipe, once per
+household and once per member, is in `deploy/compose.isolated.yml` §4b for the compose
+path; through the supervisor it is the same two commands against the pods keel named
+`sbx-kenward-group` and `sbx-kenward-member-<id>`:
+
+```
+podman exec sbx-kenward-group        /usr/local/bin/lore space invite <space-id> --lan --yes
+podman exec sbx-kenward-member-david /usr/local/bin/lore join <code> --yes
+```
+
+**What a pod can and cannot reach, and why it is not kenward's promise to keep.** lore
+opens every sync exchange with a blinded space-id intersection —
+`HMAC(space_key, "lore-blind" || space_id)` — so two stores exchange a space only when
+both already hold that space's id *and* its key, and the only thing that hands over a key
+is the invite handshake. A member's private space is created inside that member's own
+pod, with a key that has never left it: a sibling cannot compute its blinded id, cannot
+name it, and is refused if it asks. lore adds a second gate for its own `personal` space,
+which never crosses accounts at all. So running a daemon in every pod makes exactly one
+more space reachable from each of them — the household's — and the guarantee does not
+depend on kenward configuring anything correctly. Peer *discovery* grants nothing: a pod
+discovers every lore instance on the bridge, verifies each over mTLS, and still exchanges
+nothing with one it shares no space with.
+
+Verified on real podman against a three-pod household: jordan's pod wrote into the
+household space and david's pod and the group's pod both read it; david's pod wrote and
+jordan's and the group's read that; and each member's private-space entry stayed in its
+own store, with the other two holding no such space to search. Two things that run
+surfaced, both worth knowing before an operator meets them. `lore init` run as root
+leaves a 0700 store the pod's own uid 65532 cannot open, and the pod then refuses with
+the same message an *uninitialised* store gives — provision with `--user 65532:65532`.
+And lore's daemon never forgets a peer it has discovered, so every rolling update leaves
+the replaced pods' addresses behind as rows that will never answer again; `doctor` treats
+some peers failing as normal and only warns when none answered.
+
 ### How a supervisor-started pod is configured
 
 D-022's two isolated deployment paths hand a pod the same things by different means, and
@@ -1750,7 +1823,14 @@ design and several of them contradict what the architecture originally supposed.
   A machine with a fast clock wins every conflict. Household clocks should be synced,
   and nothing in kenward may assume a write it made is still there.
 - **`lore mcp` alone never syncs.** Syncing requires a separate `lore serve`. Any
-  deployment running more than one lore instance must run both.
+  deployment running more than one lore instance must run both — which in isolated mode
+  is every pod, so `run` starts one itself (§8, "How the household's shared memory works
+  in isolated mode").
+- **A store joins a space, it is never given one.** Two lore homes exchange a space only
+  when both hold its key, which comes from the invite handshake and from nowhere else;
+  the wire exchange is over *blinded* space ids, so a store cannot even name a space it
+  is not in. That is what makes one lore per pod safe, and it is lore's guarantee rather
+  than kenward's.
 - **Invites are not exposed over MCP.** Enrolment drives the lore CLI, which has
   non-interactive flags but emits no JSON.
 - **There is no delete.** Anything kenward stores is permanent from lore's side.
