@@ -231,15 +231,18 @@ office every day this week, back working from home on Monday", a 27B proposed
 storing it in three samples out of three, titling one *"David's work location
 pattern"*. A prohibition buried mid-list is one the model reads and does not apply.
 Restating the same rule as a question the model puts to itself, in a paragraph of
-its own, moved that case from 0 of 3 right to 2 of 3, and the suite overall from
-87% to 92% (Qwen3.8-27B, 13 cases, 3 samples each). Nothing regressed: proposals
-on the six cases that should be captured stayed at 16 of 18.
+its own, moved that case from 0 of 3 right to 4 of 6, and the suite from 87% to 95%
+(Qwen3.8-27B, 13 cases; 3 samples before, two runs of 3 after). Nothing regressed —
+the six cases that should be captured went from 16 of 18 to 34 of 36 — and both
+after-runs reproduced the same result on the case that prompted the change.
 
-Two honesties about that number. It is a handful of samples against one model on
-one afternoon, so it is evidence and not proof. And the paragraph was written after
-reading which case failed, which is the definition of fitting to the test — the
-mitigation is that it restates a rule the document already held rather than adding
-a new one, so it teaches the model nothing that was not already policy.
+Three honesties about that number. It is dozens of samples against one model on one
+afternoon, so it is evidence and not proof. The paragraph was written after reading
+which case failed, which is the definition of fitting to the test; the mitigation is
+that it restates a rule the document already held rather than adding a new one, so
+it teaches the model nothing that was not already policy. And it did nothing
+measurable for a small model: qwen2.5:3b scored 54%, 62% and 54% across the same
+three runs, which is noise around an unchanged number.
 
 The redundancy with the list is deliberate. A prompt is not code and the second
 statement of a rule is not dead: the list is the enumeration, and the paragraph is
