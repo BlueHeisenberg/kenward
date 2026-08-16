@@ -62,6 +62,21 @@ func inviteStore(cfg *config.Config) *enrol.FileStore {
 	return enrol.NewFileStore(filepath.Join(cfg.DataDir, inviteStoreFileName))
 }
 
+// personaFileName is where each member's own answers from the Telegram tutorial
+// live: their language, their agent's name, its register and its character.
+//
+// ponytail: it is a file of this node's own beside the invite store because
+// internal/config does not own personas yet. When it does, this and
+// enrol.PersonaFile both go, and the tutorial writes through whatever that package
+// provides — the interface it writes against is one method wide for exactly that
+// reason. It is state rather than configuration in the meantime, which is why it
+// sits in the data directory and not in kenward.yaml.
+const personaFileName = "personas.json"
+
+func personaStore(cfg *config.Config) *enrol.PersonaFile {
+	return enrol.NewPersonaFile(filepath.Join(cfg.DataDir, personaFileName))
+}
+
 // revocation is what the host records for a pod to apply.
 //
 // It carries the member id as well as the time because the file is provisioned into

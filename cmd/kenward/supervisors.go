@@ -62,7 +62,7 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 		return supervisor.NewIsolated(cfg, iso)
 
 	default:
-		claimer, err := newClaimer(cfg)
+		claimer, err := newClaimer(cfg, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -284,17 +284,22 @@ func passphraseRefFor(cfg *config.Config, members []domain.Member) *config.Secre
 
 // newClaimer builds the enrolment claimer the running node uses to process claim
 // codes from senders it does not yet serve.
-func newClaimer(cfg *config.Config) (*enrol.Claimer, error) {
+func newClaimer(cfg *config.Config, logger *slog.Logger) (*enrol.Claimer, error) {
 	binder, err := newBinder(cfg)
 	if err != nil {
 		return nil, err
 	}
-	// The onboarding's third message describes the buttons this household will
+	// The explanation's third message describes the buttons this household will
 	// actually show, so it has to know which policy is in force.
-	var opts []enrol.Option
+	opts := []enrol.Option{enrol.WithPersonas(personaStore(cfg)), enrol.WithLogger(logger)}
 	if cfg.Capture.PrivateWrites == config.PrivateWriteAsk {
 		opts = append(opts, enrol.WithAskPrivateWrites())
 	}
+	// ponytail: the household's language and its one-agent-each choice are
+	// internal/config's to declare, and this is where they attach —
+	// enrol.WithLanguage(cfg.<language>) and enrol.WithOneEach() under the identity
+	// question. Until they exist the tutorial runs in English and does not ask a
+	// member to name an agent that no arrangement gives them.
 	c, err := enrol.New(inviteStore(cfg), binder, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building the enrolment claimer: %w", err)

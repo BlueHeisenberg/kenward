@@ -177,27 +177,37 @@ func (s *FileStore) load() ([]Code, error) {
 	return f.Codes, nil
 }
 
-// store writes the codes: temp file in the same directory, fsync, rename over the
-// target. Same directory matters — rename is only atomic within a filesystem.
+// store writes the codes.
 func (s *FileStore) store(codes []Code) error {
-	dir := filepath.Dir(s.path)
+	return writeAtomic(s.path, s.mode, ".codes-*.tmp",
+		codeFile{Version: fileFormatVersion, Codes: codes})
+}
+
+// writeAtomic writes v as JSON to path: temp file in the same directory, fsync,
+// rename over the target. Same directory matters — rename is only atomic within a
+// filesystem.
+//
+// Two stores in this package write a small versioned JSON file that must never be
+// observed half-written, and the sequence below is fiddly enough that two copies of
+// it would drift. pattern names the temp file so a stray one is attributable.
+func writeAtomic(path string, mode fs.FileMode, pattern string, v any) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("enrol: create %s: %w", dir, err)
 	}
-	b, err := json.MarshalIndent(codeFile{Version: fileFormatVersion, Codes: codes}, "", "  ")
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return fmt.Errorf("enrol: encode codes: %w", err)
+		return fmt.Errorf("enrol: encode %s: %w", path, err)
 	}
 	b = append(b, '\n')
 
-	tmp, err := os.CreateTemp(dir, ".codes-*.tmp")
+	tmp, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return fmt.Errorf("enrol: create temp file in %s: %w", dir, err)
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op once the rename has succeeded
 
-	mode := s.mode
 	if mode == 0 {
 		mode = 0o600
 	}
@@ -216,8 +226,8 @@ func (s *FileStore) store(codes []Code) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("enrol: close %s: %w", tmpName, err)
 	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return fmt.Errorf("enrol: replace %s: %w", s.path, err)
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("enrol: replace %s: %w", path, err)
 	}
 	syncDir(dir)
 	return nil

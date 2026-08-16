@@ -178,6 +178,14 @@ type runner struct {
 	pending  []pendingUnit
 	served   map[int64]struct{}
 	units    map[unitKey]struct{}
+	// tutorials maps a chat with an onboarding in flight to the channel that
+	// onboarding's typed answers go to.
+	//
+	// It is what makes the tutorial multi-turn without a second reader of the update
+	// stream. Between a claim and the end of the tutorial the member is served by no
+	// unit, so their messages keep arriving at the enrolment pump — the same pump —
+	// which hands them across rather than putting them to the Claimer again.
+	tutorials map[int64]chan transport.Inbound
 }
 
 // pendingUnit is a constructed unit waiting for start to give it a goroutine.
@@ -932,6 +940,14 @@ func scopeUnitKey(sc domain.Scope) unitKey {
 func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound) {
 	defer r.workerDone()
 	defer r.recoverPump(unitKey{}, "enrolment")
+
+	// A node that died between a member's greeting and the end of their tutorial
+	// owes them the explanation. Nothing else would ever send it: they are enrolled
+	// now, so they never reach this pump again.
+	if err := r.rc.claimer.FinishInterrupted(r.turnCtx, view); err != nil {
+		r.logger.Warn("supervisor: could not finish an interrupted onboarding", "error", err)
+	}
+
 	for {
 		select {
 		case <-r.draining:
@@ -939,6 +955,11 @@ func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound)
 		case in, ok := <-ch:
 			if !ok {
 				return
+			}
+			// A member part-way through onboarding is not a stranger presenting a
+			// code; what they sent is an answer, and the tutorial is waiting for it.
+			if r.deliverToTutorial(in) {
+				continue
 			}
 			res, err := r.rc.claimer.Handle(r.turnCtx, in)
 			if err != nil {
@@ -951,10 +972,82 @@ func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound)
 				}
 			}
 			if res.Enrolled {
-				r.enrolled(res.Member)
+				r.startTutorial(view, res.Member, in.ChatID)
 			}
 		}
 	}
+}
+
+// deliverToTutorial hands a message to an onboarding in flight in that chat,
+// reporting whether it took it.
+//
+// The send is non-blocking onto an unbuffered channel, so a message is delivered
+// only if the tutorial is waiting for typed input at this instant. That is the whole
+// filter: something a member types while a button question is on screen is not an
+// answer to anything, and buffering it would make it the answer to whatever question
+// comes next.
+func (r *runner) deliverToTutorial(in transport.Inbound) bool {
+	r.mu.Lock()
+	ch, ok := r.tutorials[in.ChatID]
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ch <- in:
+	default:
+	}
+	return true
+}
+
+// startTutorial walks a freshly claimed member through their personal setup, and
+// brings them into service when it ends.
+//
+// It runs on its own goroutine so that one member answering slowly does not stop the
+// household enrolling anybody else, and it is tracked on turnWg so a drain waits for
+// it exactly as it waits for a turn.
+//
+// The member is promoted afterwards rather than before, because until then their
+// messages have to keep arriving here for the tutorial to read. What that costs is
+// bounded and worth naming: for the length of the tutorial — the member's own doing,
+// and capped by enrol.DefaultTutorialTimeout — anything they say in the household
+// group is unrouted. They are at that moment reading a private walk-through, and the
+// alternative is a second reader racing this one for their next message.
+func (r *runner) startTutorial(view transport.Transport, m domain.Member, chatID int64) {
+	answers := make(chan transport.Inbound)
+	r.mu.Lock()
+	if r.tutorials == nil {
+		r.tutorials = make(map[int64]chan transport.Inbound)
+	}
+	r.tutorials[chatID] = answers
+	r.mu.Unlock()
+
+	tut := r.rc.claimer.Tutorial(view, m, chatID, answers)
+	if tut.Logger == nil {
+		tut.Logger = r.logger
+	}
+	r.turnWg.Add(1)
+	go func() {
+		defer r.turnWg.Done()
+		defer func() {
+			r.mu.Lock()
+			delete(r.tutorials, chatID)
+			r.mu.Unlock()
+			// Unconditionally: a tutorial that failed, was abandoned or panicked
+			// still leaves an enrolled member, and withholding their unit over a
+			// setup question would be the worse failure by a distance.
+			r.enrolled(m)
+		}()
+		defer func() {
+			if rec := recover(); rec != nil {
+				r.logger.Error("supervisor: onboarding tutorial panicked; the member is enrolled on defaults",
+					"member", string(m.ID), "error", rec)
+			}
+		}()
+		if err := tut.Run(r.turnCtx); err != nil {
+			r.logger.Warn("supervisor: onboarding tutorial did not finish", "member", string(m.ID), "error", err)
+		}
+	}()
 }
 
 // enrolled brings a freshly claimed member into service without a restart: fold

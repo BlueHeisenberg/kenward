@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -149,7 +150,13 @@ type Result struct {
 	Enrolled bool
 	// Member is the newly bound member. Meaningful only when Enrolled.
 	Member domain.Member
-	// Messages is the onboarding, in order. Empty on every failure path.
+	// Messages is what to send before the tutorial starts: the greeting, and
+	// nothing else. Empty on every failure path.
+	//
+	// It used to be the whole onboarding, because enrolment used to be one-shot. The
+	// rest of what a member reads is now a conversation rather than a broadcast and
+	// comes from Tutorial, which needs a transport to ask questions on and therefore
+	// cannot be a value returned from here.
 	Messages []transport.Outbound
 }
 
@@ -243,17 +250,66 @@ func WithAskPrivateWrites() Option {
 	return func(c *Claimer) { c.askPrivate = true }
 }
 
+// WithLanguage sets the household's language, which the admin chose in the wizard.
+//
+// It is the language of the greeting and of the tutorial's first question — the two
+// messages that arrive before the member has been able to say anything — and it is
+// what a member who skips the language question inherits. A tag this package does
+// not hold copy for falls back to English; see Spoken.
+func WithLanguage(tag string) Option {
+	return func(c *Claimer) {
+		if tag != "" {
+			c.language = tag
+		}
+	}
+}
+
+// WithOneEach says the household chose one agent per member rather than one for the
+// household, which is the only arrangement in which the tutorial asks a member to
+// name their agent.
+func WithOneEach() Option {
+	return func(c *Claimer) { c.oneEach = true }
+}
+
+// WithPersonas gives the Claimer somewhere to record what members choose in the
+// tutorial. Without it the tutorial still runs and nothing it collects survives the
+// conversation.
+func WithPersonas(p PersonaStore) Option {
+	return func(c *Claimer) { c.personas = p }
+}
+
+// WithTutorialTimeout bounds the wait for each of the tutorial's answers. Zero or
+// less keeps DefaultTutorialTimeout.
+func WithTutorialTimeout(d time.Duration) Option {
+	return func(c *Claimer) {
+		if d > 0 {
+			c.tutorialTimeout = d
+		}
+	}
+}
+
+// WithLogger gives the tutorial somewhere to say why an onboarding ended early.
+// Nothing it logs is ever sent to the member.
+func WithLogger(l *slog.Logger) Option {
+	return func(c *Claimer) { c.logger = l }
+}
+
 // Claimer mints claim codes and processes messages from senders who are not yet
 // members. It is safe for concurrent use.
 type Claimer struct {
-	store      Store
-	binder     Binder
-	now        func() time.Time
-	ttl        time.Duration
-	iters      int
-	limit      int
-	window     time.Duration
-	askPrivate bool
+	store           Store
+	binder          Binder
+	now             func() time.Time
+	ttl             time.Duration
+	iters           int
+	limit           int
+	window          time.Duration
+	askPrivate      bool
+	language        string
+	oneEach         bool
+	personas        PersonaStore
+	tutorialTimeout time.Duration
+	logger          *slog.Logger
 
 	mu       sync.Mutex
 	attempts map[int64][]time.Time
@@ -276,6 +332,7 @@ func New(store Store, binder Binder, opts ...Option) (*Claimer, error) {
 		iters:    kdfIterations,
 		limit:    DefaultAttemptLimit,
 		window:   DefaultAttemptWindow,
+		language: LangEnglish,
 		attempts: make(map[int64][]time.Time),
 	}
 	for _, o := range opts {
@@ -386,8 +443,41 @@ func (c *Claimer) Handle(ctx context.Context, in transport.Inbound) (Result, err
 	return Result{
 		Enrolled: true,
 		Member:   member,
-		Messages: Onboarding(in.ChatID, member.Name, c.askPrivate),
+		Messages: []transport.Outbound{Greeting(in.ChatID, member.Name, textFor(c.language))},
 	}, nil
+}
+
+// Tutorial returns the setup walk-through for a member who has just claimed, ready
+// to Run.
+//
+// It is built here rather than by the caller so that the household's answers — its
+// language, whether it chose one agent each, which capture policy it runs — travel
+// with the Claimer that already carries them, and a caller wiring a tutorial cannot
+// get a different set of them than enrolment used.
+//
+// answers must be a channel of this member's typed messages, fed by whoever owns the
+// update stream for senders no unit serves yet. It may be nil, which turns the two
+// typed questions into skips.
+func (c *Claimer) Tutorial(a Asker, m domain.Member, chatID int64, answers <-chan transport.Inbound) *Tutorial {
+	return &Tutorial{
+		Member:     m,
+		ChatID:     chatID,
+		Asker:      a,
+		Answers:    answers,
+		Personas:   c.personas,
+		Household:  c.language,
+		OneEach:    c.oneEach,
+		AskPrivate: c.askPrivate,
+		Timeout:    c.tutorialTimeout,
+		Logger:     c.logger,
+	}
+}
+
+// FinishInterrupted sends the explanation to any member whose tutorial was cut off
+// before it. See the package-level function of the same name; this is it with the
+// household's settings already filled in.
+func (c *Claimer) FinishInterrupted(ctx context.Context, a Asker) error {
+	return FinishInterrupted(ctx, a, c.personas, c.askPrivate, c.logger)
 }
 
 // Revoke unbinds a member's Telegram id.

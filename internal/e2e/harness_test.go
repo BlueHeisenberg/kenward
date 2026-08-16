@@ -37,6 +37,16 @@ const (
 	groupChatID     int64 = -1001234567890
 )
 
+// onboardingMessages is how many messages a claim produces here.
+//
+// The fake transport declines every question it is asked, so these tests exercise
+// the tutorial's abandonment path: the greeting, the line saying the rest was left
+// on the defaults, and the three messages of the explanation. A member who answers
+// gets more, and a member who answers nothing must still get all five — the
+// explanation is the part kenward owes rather than asks, and it is the reason this
+// number is not one.
+const onboardingMessages = 5
+
 // The household's spaces. davidSpace and meiSpace are private to one member
 // each; sharedSpace is the household's.
 const (
@@ -520,6 +530,10 @@ type harnessOptions struct {
 	// entirely, which is what a member who has been handed a claim code but has
 	// not presented it looks like on disk.
 	unenrolled []domain.MemberID
+	// enrolOpts are extra Claimer options this household's wiring adds. It exists
+	// for a test that needs the tutorial to ask something the default household
+	// does not — the agent name, which only "one agent each" makes meaningful.
+	enrolOpts []enrol.Option
 	// enrolFor, when set, supplies the Claimer the supervisor hands messages from
 	// senders no unit serves. It is a callback rather than a value because a
 	// Claimer is built over a Binder over the configuration, and the configuration
