@@ -201,6 +201,49 @@ task release:check       # validate .goreleaser.yaml
 task snapshot            # build every artifact into dist/, publish nothing
 ```
 
+### A clean install, walked end to end
+
+`install_test.sh` proves the installer survives those unfriendly machines and stops
+there. What it says nothing about is the next five minutes, and the next five minutes are
+the first run — the one path that exists exactly once per install and is therefore the one
+nothing ever walks a second time. `.e2e/fresh-install.sh` walks it, from nothing, every
+time:
+
+```sh
+.e2e/fresh-install.sh <bot-token>
+```
+
+A temp root with no `kenward.yaml`, no data directory, no admin account and no lore store.
+A release snapshot built and installed by `install.sh` itself over `file://`, so the
+binary under test arrived the way a stranger's does. `lore init` into this run's own
+store. The first-run dashboard, and the setup token it prints. The seven wizard screens in
+a real browser, including `/v1/models` against a real vLLM. A member added from the
+Members page. Then `kenward run` against the configuration that came out, with a real bot
+token, and `curl` against the dashboard the wizard turned on. Then all of it deleted,
+failures included.
+
+Two steps wait for a browser: the wizard and the member add. They print what to fill in
+and poll `kenward.yaml` until it says the browser did it, so Playwright drives them and so
+does a person. `KENWARD_E2E_HOLD=<seconds>` keeps the node up at the end, which is the
+door left open for claiming the code from a real Telegram account — that conversation has
+its own script and is not duplicated here. The whole thing takes about two minutes plus
+however long the browser takes.
+
+Thirty-eight assertions, and the ones that earn their place are the ones about what
+crossed a boundary rather than what a screen said: the bot token is in `.env` and nowhere
+in `kenward.yaml`; `lore` itself lists the spaces the file claims; the claim code digest is
+in `invites.json` under the member id the dashboard derived; `/overview` redirects and a
+wrong setup token gets a 403 before an account exists. The context-window assertion was
+written because the number was wrong: the endpoints step read 262144 off vLLM, displayed
+it, and wrote 16384, because `setup.EndpointAnswer` had no field to carry it through. That
+was a 262144-token machine configured as a 16384-token one, with nothing anywhere saying
+so, and nothing else in this repository would have caught it.
+
+The last step breaks the household on purpose. `LORE_HOME` is moved aside and `kenward
+run` is started again against the same configuration; it must exit non-zero within
+forty-five seconds, name what did not answer, and say `lore init`. A run that hangs fails
+this as surely as one that serves.
+
 ### Isolated mode against real Podman
 
 `cmd/kenward/isolated_podman_test.go` is the only test that starts real containers, and

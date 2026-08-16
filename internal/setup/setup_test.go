@@ -770,7 +770,8 @@ func TestNonInteractiveSimple(t *testing.T) {
 			MemberNames:   []string{"David", "María"},
 			MemberSpaces:  map[string]string{"david": davidSpaceID, "maria": testSpaces[2].ID},
 			Endpoints: []EndpointAnswer{
-				{Name: "monster", BaseURL: "http://monster.tail:8000/v1", Model: "qwen3"},
+				{Name: "monster", BaseURL: "http://monster.tail:8000/v1", Model: "qwen3",
+					ContextWindow: 262144},
 				{Name: "openrouter", BaseURL: "https://openrouter.ai/api/v1", Model: "sonnet",
 					APIKeyEnv: "OPENROUTER_API_KEY", APIKey: "sk-x"},
 			},
@@ -797,6 +798,16 @@ func TestNonInteractiveSimple(t *testing.T) {
 	}
 	if got := cfg.Endpoints[1].Tags; strings.Join(got, ",") != "cloud" {
 		t.Errorf("the provider was tagged %v, want cloud", got)
+	}
+	// A window the caller knew survives to the file, and one it did not falls
+	// back to the modest default. The dashboard wizard reads the first off
+	// /v1/models; until it was carried through, a 262144-token machine was
+	// configured as a 16384-token one with nothing on any screen saying so.
+	if got := cfg.Endpoints[0].ContextWindow; got != 262144 {
+		t.Errorf("context_window = %d, want the 262144 the answers stated", got)
+	}
+	if got := cfg.Endpoints[1].ContextWindow; got != config.DefaultContextWindow {
+		t.Errorf("unstated context_window = %d, want the default %d", got, config.DefaultContextWindow)
 	}
 	assertLoadable(t, path, w)
 	assertNoSecrets(t, path, realToken, "sk-x")
