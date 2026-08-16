@@ -142,6 +142,28 @@ func applySettingsForm(cfg *config.Config, r *http.Request) error {
 	}
 	cfg.Telegram.BotTokenEnv = strings.TrimSpace(r.PostFormValue("bot_token_env"))
 
+	// The identity question and kenward's persona, editable here for the whole life
+	// of the household: an answer available only in the first sixty seconds of setup
+	// is an answer people get wrong. A member's own persona is not on this page and
+	// must not be — it is theirs, written in Telegram, and an admin form that could
+	// overwrite it would make "your assistant is yours" false.
+	switch agents := config.Agents(strings.TrimSpace(r.PostFormValue("agents"))); agents {
+	case config.AgentsShared, config.AgentsPerMember:
+		cfg.Household.Agents = agents
+	case "":
+		cfg.Household.Agents = config.DefaultAgents
+	default:
+		return fmt.Errorf("%q is not an answer to how many assistants this household has; it is shared or per_member", agents)
+	}
+	cfg.Household.Persona = config.PersonaConfig{
+		Language:  strings.TrimSpace(r.PostFormValue("persona_language")),
+		Tone:      strings.TrimSpace(r.PostFormValue("persona_tone")),
+		Character: strings.TrimSpace(r.PostFormValue("persona_character")),
+	}
+	if err := checkPersonaLengths(cfg.Household.Persona); err != nil {
+		return err
+	}
+
 	for i := range cfg.Members {
 		p := fmt.Sprintf("member.%d.", i)
 		if v := strings.TrimSpace(r.PostFormValue(p + "name")); v != "" {

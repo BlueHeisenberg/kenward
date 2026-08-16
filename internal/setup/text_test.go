@@ -103,7 +103,19 @@ func TestPrivacyBlockPrintsTheSharedStatementVerbatim(t *testing.T) {
 		{config.ModeSimple, privacy.ModeSimple, "Privacy, in simple mode"},
 		{config.ModeIsolated, privacy.ModeIsolated, "Privacy, in isolated mode"},
 	} {
-		block := privacyBlock(tc.mode)
+		block := privacyBlock(tc.mode, config.AgentsShared)
+		// A household with one shared assistant has no per-member bots, so the note
+		// about what one buys is not printed at it: a paragraph about bots nobody has
+		// is noise in the one block somebody actually reads to the end.
+		if strings.Contains(block, privacy.OwnBotNote(tc.want)) {
+			t.Errorf("the %s block explains per-member bots to a household that has none", tc.mode)
+		}
+		// Under one agent each it is printed, immediately after the mode's own
+		// statement, because that is where somebody is deciding what their bot means.
+		withBots := privacyBlock(tc.mode, config.AgentsPerMember)
+		if !strings.Contains(withBots, privacy.OwnBotNote(tc.want)) {
+			t.Errorf("the %s block under one agent each does not say what a member's own bot buys:\n%s", tc.mode, withBots)
+		}
 		if !strings.HasPrefix(block, tc.heading) {
 			t.Errorf("%s block does not open with %q", tc.mode, tc.heading)
 		}

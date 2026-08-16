@@ -56,16 +56,17 @@ func runWizard(t *testing.T, goos string, opts Options, answers ...string) (*Wiz
 // provider, two members, and no to every widening.
 func simpleAnswers() []string {
 	return []string{
-		"1",       // trust question: our own family machine
-		"Casa",    // household name
-		"1",       // shared space: kenward-test-household
-		realToken, // bot token
-		"y",       // write .env
-		"David",   // member
-		"María",   // member
-		"",        // no more members
-		"1",       // David's private memory: kenward-test-david
-		"1",       // María's private memory: kenward-test-maria
+		"1",            // trust question: our own family machine
+		"Casa",         // household name
+		"1",            // shared space: kenward-test-household
+		realToken,      // bot token
+		"y",            // write .env
+		"David",        // member
+		"María",        // member
+		"",             // no more members
+		"1",            // David's private memory: kenward-test-david
+		"1",            // María's private memory: kenward-test-maria
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", // endpoint name
 		"http://monster.tail:8000/v1",
 		"qwen3.6-27b-awq",
@@ -163,6 +164,7 @@ func TestIsolatedModeEndToEnd(t *testing.T) {
 		realToken, // the group chat's bot
 		"y",       // write .env
 		"David", "María", "", "1", "1",
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3.6-27b-awq", "n", "local",
 		"n", // no more endpoints
 		"",  // conversation reset: the offered default, which is off
@@ -288,6 +290,7 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, everything local": {
 			"1", "Home", "1", realToken, "n",
 			"David", "", "1",
+			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
@@ -297,30 +300,35 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, several tiers on one endpoint": {
 			"1", "Home", "1", realToken, "n",
 			"David", "", "1",
+			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local, local-slow",
 			"n",
 		},
 		"simple, no token given at all": {
 			"1", "Home", "1", "", "y",
 			"David", "", "1",
+			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
 		"simple, names that collide": {
 			"1", "Home", "1", realToken, "n",
 			"David", "David", "", "1", "1", "1",
+			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
 		"simple, a name that is not Latin at all": {
 			"1", "Home", "1", realToken, "n",
 			"あかり", "", "1",
+			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
 		"simple, only a provider, opted into deliberately": {
 			"1", "Home", "1", realToken, "n",
 			"David", "", "1",
+			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud",
 			"n",
 			"y", // yes, use the provider for private conversations
@@ -328,12 +336,14 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, endpoint that did not answer": {
 			"1", "Home", "1", realToken, "n",
 			"David", "", "1",
+			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
 		"simple, a shared space that had to be slugified": {
 			"1", "Home", "1", realToken, "n",
 			"David", "", "1",
+			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
@@ -369,6 +379,7 @@ func TestIsolatedPathsAlsoLoad(t *testing.T) {
 	answers := []string{
 		"2", "Home", "1", realToken, "n",
 		"David", "María", "Ana", "", "1", "1", "1",
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
 		"", // conversation reset: off
@@ -568,6 +579,7 @@ func TestTokenShapeIsQueriedNotEnforced(t *testing.T) {
 		realToken,            // the real one
 		"n",                  // do not write .env
 		"David", "", "1",
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
 		"", // conversation reset: off
@@ -589,6 +601,7 @@ func TestTokenShapeIsQueriedNotEnforced(t *testing.T) {
 		"some-new-shape", "y", // use it anyway
 		"n",
 		"David", "", "1",
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
 		"", // conversation reset: off
@@ -605,7 +618,9 @@ func TestCloudIsNeverTheDefault(t *testing.T) {
 	answers := []string{
 		"1", "Home", "1", realToken, "n",
 		"David", "María", "", "1", "1",
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local", "y",
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud", "n",
 		"", "", "", // Enter at all three tier questions
 		"", // and at the conversation-reset question
@@ -652,6 +667,7 @@ func TestNoLocalEndpointsIsAnExplicitDecision(t *testing.T) {
 	base := []string{
 		"1", "Home", "1", realToken, "n",
 		"David", "", "1",
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud",
 		"n",
 	}
@@ -699,6 +715,7 @@ func TestAtLeastOneMemberAndOneEndpoint(t *testing.T) {
 	answers := []string{
 		"1", "Home", "1", realToken, "n",
 		"", "David", "", "1", "1",
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
 		"", // conversation reset: off
@@ -790,6 +807,7 @@ func TestMistypedURLIsCaughtDuringTheQuestion(t *testing.T) {
 	answers := []string{
 		"1", "Home", "1", realToken, "n",
 		"David", "", "1",
+		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster",
 		"monster.tail:8000", // no scheme: cannot be dialled at all
 		"http://monster.tail:8000/v1",
@@ -822,6 +840,7 @@ func TestAMachineThatIsOffIsRecordedAnyway(t *testing.T) {
 		answers := []string{
 			"1", "Home", "1", realToken, "n",
 			"David", "", "1",
+			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 			"", // conversation reset: off

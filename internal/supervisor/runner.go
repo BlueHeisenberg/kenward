@@ -359,7 +359,7 @@ func (r *runner) buildUnit(view transport.Transport, k unitKey, name string, tie
 	}
 	logger := r.logger.With("unit", name)
 	engine := r.captureEngine(view)
-	unitOpts := r.unitOptions(tiers)
+	unitOpts := r.unitOptions(k, tiers)
 	u, err := assistant.New(assistant.Deps{
 		Resolve:   r.resolve,
 		Memory:    r.memory,
@@ -412,10 +412,22 @@ func (r *runner) captureEngine(view transport.Transport) *capture.Engine {
 // sizes, and one household-wide number gets one of them wrong. Explicit seed values
 // win; otherwise both come from config.ChainLimits, and a chain that reaches no
 // endpoint with either stated falls back to the assistant's own defaults.
-func (r *runner) unitOptions(tiers []string) assistant.Options {
+func (r *runner) unitOptions(k unitKey, tiers []string) assistant.Options {
 	o := r.rc.unitOpts
 	if o.HouseholdName == "" {
 		o.HouseholdName = r.cfg.Household.Name
+	}
+	// The persona is per unit because it is per conversation. The group chat is
+	// always kenward's and always gets the household's; a member's private chat gets
+	// their own under household.agents: per_member and the household's under shared,
+	// which is what "one assistant for the household" means and is why the wizard has
+	// to say that kenward's persona is everyone's persona before an admin chooses it.
+	//
+	// Not guarded by a zero check on the seed, unlike the numbers above: an explicit
+	// seed would be a test's, and a test that sets a persona means that persona
+	// rather than "unless the configuration has one".
+	if o.Persona == (assistant.Persona{}) {
+		o.Persona = personaFor(r.cfg, k)
 	}
 	if o.SearchLimit == 0 {
 		o.SearchLimit = r.cfg.Memory.SearchLimit
@@ -444,6 +456,26 @@ func (r *runner) unitOptions(tiers []string) assistant.Options {
 	// next turn, so the group chat and a member's chat are cleared independently.
 	o.HistoryReset = r.cfg.History.ResetEvery.Duration()
 	return o
+}
+
+// personaFor maps one unit onto the persona its conversation is written in.
+//
+// Mapped rather than shared, exactly as capture.PrivateWrites is: the configuration's
+// spelling is an operator's vocabulary and the assistant's is this package's, and
+// internal/assistant must not learn the shape of a configuration file in order to
+// render a prompt. Which persona a unit gets is config.PersonaFor's decision; turning
+// it into the assistant's type is this line's.
+func personaFor(cfg *config.Config, k unitKey) assistant.Persona {
+	p := cfg.HouseholdPersona()
+	if !k.group {
+		p = cfg.PersonaFor(string(k.member))
+	}
+	return assistant.Persona{
+		Name:      p.AgentName,
+		Language:  p.Language,
+		Tone:      p.Tone,
+		Character: p.Character,
+	}
 }
 
 // start launches every unit's goroutine, begins fanning updates out, and blocks

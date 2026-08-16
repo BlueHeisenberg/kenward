@@ -246,6 +246,29 @@ func (s *Server) handleWizardSubmit(w http.ResponseWriter, r *http.Request, sess
 		st.Mode = mode
 
 	case "advanced":
+		agents := config.Agents(strings.TrimSpace(r.PostFormValue("agents")))
+		switch agents {
+		case config.AgentsShared, config.AgentsPerMember:
+			st.Agents = agents
+		case "":
+			st.Agents = config.DefaultAgents
+		default:
+			s.wizardError(w, sess, idx, "Choose one assistant for the household, or one each.")
+			return
+		}
+		st.Persona = config.PersonaConfig{
+			Language:  strings.TrimSpace(r.PostFormValue("persona_language")),
+			Tone:      strings.TrimSpace(r.PostFormValue("persona_tone")),
+			Character: strings.TrimSpace(r.PostFormValue("persona_character")),
+		}
+		// Said here rather than left to config.Validate, which would answer somebody
+		// looking at a text box with a field path. The limit is real: persona text
+		// rides in every prompt and is the one part of it the context budget never
+		// trims, so a long one is paid for out of retrieved memory.
+		if err := checkPersonaLengths(st.Persona); err != nil {
+			s.wizardError(w, sess, idx, err.Error())
+			return
+		}
 		st.SearchLimit = atoi(r.PostFormValue("search_limit"), config.DefaultSearchLimit)
 		st.MaxProposals = atoi(r.PostFormValue("max_proposals"), config.DefaultMaxProposalsPerTurn)
 		st.HistoryReset = strings.TrimSpace(r.PostFormValue("history_reset"))

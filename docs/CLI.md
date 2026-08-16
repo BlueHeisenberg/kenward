@@ -44,7 +44,42 @@ It asks, in order:
 4. **Members.** Names only. Telegram ids are not asked for — they arrive through
    `kenward invite`, because asking someone to find their numeric Telegram id is a
    terrible first experience.
-5. **Endpoints.** For each: name, base URL, model, tiers. The wizard probes each one as
+5. **The identity question, and kenward's persona.** A second question, and it is not the
+   trust question's other half — neither mentions the other, and conflating them is the
+   mistake this pair exists to prevent. That one is about security and is answered by
+   topology; this one is about presentation, costs nothing, needs no container runtime,
+   and all four combinations are coherent.
+
+   ```
+   One assistant for the whole household, or one each?
+
+     [1] One — kenward, for everybody.            (the character below is then
+                                                   everyone's, not just yours)
+     [2] One each, and kenward for the group.     (each person names their own
+                                                   and writes it in Telegram)
+   ```
+
+   `[1]` is the default, because it is what kenward has always done. Under it there is no
+   personal layer, so the persona the admin writes next is **everyone's**, and the wizard
+   says so at the point of asking rather than in a paragraph above it. Under `[2]` each
+   member writes their own in the Telegram tutorial and the admin is only setting the
+   family agent's.
+
+   Then three questions about how kenward writes — language, tone, character — each with
+   an answer that changes nothing. Pressing Enter three times gives the assistant kenward
+   has always been: English, brief, no character.
+
+   The language question says what it does not do, because it is the sort of half-feature
+   somebody otherwise discovers a week later: it changes what the **model** writes.
+   kenward's own strings — the onboarding, the capture announcements, the refusals, the
+   retrieval line, the locked notice — are still English.
+
+   Under `[2]`, the privacy statement printed at the end gains a paragraph saying that a
+   member's own bot is a separate **contact**, not a separate **secret** — it seals
+   nothing unless the household also chose isolated mode. That paragraph is
+   `internal/privacy`'s and is golden-tested with the rest.
+
+6. **Endpoints.** For each: name, base URL, model, tiers. The wizard probes each one as
    it is entered and says whether it answered, so a typo is caught immediately rather
    than at the first message.
 
@@ -55,10 +90,10 @@ It asks, in order:
    their defaults instead — 16384 and 4096 — so the keys are visible in the file for the
    operator who knows the real figures. Raise them there; on a reasoning model, raise the
    cap in particular, or it will think through its whole budget and answer nothing.
-6. **Tier chains.** Per member and for the group, defaulting to local-only for private
+7. **Tier chains.** Per member and for the group, defaulting to local-only for private
    spaces and offering to add a cloud tier explicitly. The default is the private one;
    opting into cloud is a deliberate act.
-7. **How long a conversation stays in mind** — `history.reset_every`. Off, or how often
+8. **How long a conversation stays in mind** — `history.reset_every`. Off, or how often
    the last few turns of each conversation are dropped: `6h`, `24h`, up to a day, counted
    from midnight. Off is the default and pressing Enter takes it.
 
