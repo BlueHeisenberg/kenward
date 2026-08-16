@@ -296,10 +296,12 @@ What remains unproved is narrower than it was, and worth naming precisely:
 - **A household using it.** Phase 3 of the roadmap is zero days old. Every measurement so
   far comes from a laboratory, and the only real product research available is a month of
   people who did not write this software trying to live with it.
-- **The shared space in isolated mode.** It does not work, is known not to work, and is
-  documented as an open limitation in `ARCHITECTURE.md` and in
-  `deploy/compose.isolated.yml`. No test asserts it, because there is nothing yet to
-  assert.
+- **The shared space in isolated mode, beyond one run.** It works now: every pod runs
+  `lore serve --lan` (D-044), and a three-pod household on real Podman read an entry
+  written in one pod from the other two while every private entry stayed invisible to every
+  sibling. `internal/memory/sync_test.go` asserts the daemon is supervised, restarted and
+  stopped, and that its status is read from the daemon's own answer. What no test asserts is
+  the convergence itself, because it needs more than one container.
 - **An SELinux-enforcing host.** The `z` and `Z` labels on every bind mount were verified
   to be a no-op where SELinux is off. The enforcing host they exist for was not available.
 
