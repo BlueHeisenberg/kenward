@@ -28,14 +28,19 @@ func TestDoctorGolden(t *testing.T) {
 		name   string
 		yaml   string
 		golden string
+		args   []string
 	}{
-		{"simple", simpleYAML, "doctor_simple.txt"},
-		{"isolated", isolatedYAML, "doctor_isolated.txt"},
+		{"simple", simpleYAML, "doctor_simple.txt", nil},
+		{"isolated", isolatedYAML, "doctor_isolated.txt", nil},
+		// The pod's own report, which is what the container HEALTHCHECK runs and the
+		// only place the shared-memory section appears: a household-wide process has
+		// no lore store of its own to ask about.
+		{"isolated-pod", isolatedYAML, "doctor_isolated_pod.txt", []string{"--member", "david"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			h := newHarness(t, tc.yaml, fullEnvironment())
-			if code := h.run("doctor"); code != exitOK {
+			if code := h.run(append([]string{"doctor"}, tc.args...)...); code != exitOK {
 				t.Fatalf("exit = %d, want 0\n%s", code, h.stderr())
 			}
 			h.assertNoSecrets(t)
@@ -107,6 +112,78 @@ func TestDoctorLoreUnreachableFails(t *testing.T) {
 	// Everything else still ran: doctor reports all results rather than stopping.
 	if !strings.Contains(h.stdout(), "Endpoints") || !strings.Contains(h.stdout(), "Privacy") {
 		t.Errorf("doctor stopped at the first failure; it must run every check:\n%s", h.stdout())
+	}
+}
+
+// TestDoctorReportsBrokenSharedMemory is the defect this section exists for.
+//
+// A pod can pass every other check with a shared space that reaches nobody: its own
+// lore store holds the space, `lore mcp` answers about it, and nothing carries an
+// entry to or from the household's other pods because no sync daemon is running. That
+// used to render as a cheerful tick and a standing hint to run `lore serve`. It must
+// now say plainly that shared memory is not moving — and must not fail the report,
+// because the pod is serving and private memory, which is what the mode is for, is
+// unaffected.
+func TestDoctorReportsBrokenSharedMemory(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		probes func(probes) probes
+		want   []string
+	}{
+		{"no daemon", syncDaemonDown, []string{
+			"shared memory is not syncing",
+			"private memory is unaffected",
+		}},
+		{"daemon alone", syncFoundNobody, []string{
+			"shared memory is syncing with nobody",
+			"separate copy",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, isolatedYAML, fullEnvironment())
+			h.e.probes = tc.probes(healthyProbes())
+
+			if code := h.run("doctor", "--member", "david"); code != exitOK {
+				t.Fatalf("exit = %d, want 0: a pod that is serving is not unhealthy for a degraded feature\n%s", code, h.both())
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(h.stdout(), want) {
+					t.Errorf("output does not say %q:\n%s", want, h.stdout())
+				}
+			}
+		})
+	}
+}
+
+// TestDoctorSharedSpaceMissingInAPodNamesTheRealCause.
+//
+// The observed symptom of the original defect was `✗ space "…" is not a space this
+// lore store holds`, which sent the operator to check the id column of a value that
+// was perfectly correct. In a pod the cause is that this store was never invited into
+// the household's space, and the report has to say so.
+func TestDoctorSharedSpaceMissingInAPodNamesTheRealCause(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, isolatedYAML, fullEnvironment())
+	base := healthyProbes()
+	inner := base.lore
+	base.lore = func(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
+		res := inner(ctx, cfg, scope)
+		for i, s := range res.Spaces {
+			if string(s.Space) == cfg.Household.SharedSpace {
+				res.Spaces[i].Err = unknownSpaceErr(s.Space)
+			}
+		}
+		return res
+	}
+	h.e.probes = base
+
+	if code := h.run("doctor", "--member", "david"); code != exitUsage {
+		t.Fatalf("exit = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(h.stdout(), "lore join") {
+		t.Errorf("output does not name the invite/join remedy:\n%s", h.stdout())
 	}
 }
 

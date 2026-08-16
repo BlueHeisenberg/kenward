@@ -32,8 +32,16 @@
 #   4. Initialise each service's lore store ONCE, in that service's OWN volume,
 #      before its first `up` — one per service, never a shared one:
 #
-#        docker compose -f compose.isolated.yml run --rm --no-deps \
+#        docker compose -f compose.isolated.yml run --rm --no-deps --user 65532:65532 \
 #          --entrypoint /usr/local/bin/lore kenward-david init --name david
+#
+#      `--user 65532:65532` is not optional and the failure it prevents is not
+#      obvious. `lore init` creates a 0700 lore home owned by whoever ran it, and
+#      a store created as root is a store the container's own process — uid
+#      65532, the distroless base's fixed non-root identity — cannot open. The
+#      service then refuses to start with the SAME message an uninitialised store
+#      gives ("lore did not answer"), which sends you to run `lore init` again.
+#      Found by running this against real podman.
 #
 #      `lore mcp` refuses to start against an uninitialised LORE_HOME — "no
 #      account at /var/lib/kenward/lore/account.json (run `lore init`)" — and
@@ -43,20 +51,61 @@
 #      recording nothing. Keep each recovery code `init` prints; nothing else
 #      can recover that member's store.
 #
-#      SHARED SPACE, AND IT IS NOT SOLVED HERE: every pod resolves
-#      household.shared_space against ITS OWN lore store — a member's pod reads
-#      the shared space as well as their private one — but three separate
-#      LORE_HOMEs are three separate lore accounts, so `lore init` gives each of
-#      them a DIFFERENT set of space ids and only one store can hold the space
-#      the file names. Every other pod's `doctor` then says `space "…" is not a
-#      space this lore store holds` and that conversation reads nothing. Making
-#      one shared space real across the three is lore's own job — `lore space
-#      invite` on the owning store, `lore join` on the others, and a `lore serve`
-#      reachable between them — and this file does not set any of it up: there is
-#      no port, no peer and no daemon in any service below. Until you wire that
-#      yourself, treat isolated mode's household group as having memory only in
-#      the group pod. Each member's PRIVATE space is unaffected: it lives in that
-#      member's own store, which is the property this mode exists for.
+#   4b. THE SHARED SPACE. Every pod resolves household.shared_space against ITS
+#      OWN lore store — a member's pod reads and writes the shared space as well
+#      as their private one — but three separate LORE_HOMEs are three separate
+#      lore accounts with three separate id spaces, so the space one store
+#      creates does not exist in the others until they are invited into it. Skip
+#      this and every member's `doctor` says `space "…" is not a space this lore
+#      store holds`, the household group conversation has memory in one container
+#      only, and nothing else reports it. Each member's PRIVATE space is
+#      unaffected either way: it lives in that member's own store, which is the
+#      property this mode exists for.
+#
+#      Two things make it work, and kenward now supplies one of them. Inside
+#      every service, `kenward run` starts lore's sync daemon (`lore serve
+#      --lan`) for as long as the unit serves, so the pods find each other on the
+#      compose network and converge on whatever spaces they have in common. That
+#      is automatic and there is nothing to configure — no port, no peer list, no
+#      address, and deliberately none: a container's address changes every time
+#      it is recreated, so anything written down here would be stale by the first
+#      `up`. `docker compose exec kenward-david /usr/local/bin/lore peer list`
+#      shows what it has found.
+#
+#      The other is membership, and it stays yours, exactly as `lore init` above
+#      does. kenward never creates a lore space and never grants itself
+#      membership of one; lore's own embeddable API declines to expose either,
+#      because a space is made by a person who chose a name and a sharing
+#      posture. Create the space once, in the household service's store:
+#
+#        docker compose exec --user 65532:65532 kenward-household \
+#          /usr/local/bin/lore space create household
+#        docker compose exec --user 65532:65532 kenward-household \
+#          /usr/local/bin/lore spaces        # copy the id into kenward.yaml
+#
+#      then, ONCE PER MEMBER, run these two in two terminals. The first prints a
+#      code and waits; the second redeems it:
+#
+#        docker compose exec kenward-household \
+#          /usr/local/bin/lore space invite <space-id> --lan --yes
+#        docker compose exec kenward-david \
+#          /usr/local/bin/lore join <code> --yes
+#
+#      The joiner finds the inviter over mDNS on the compose network. If it
+#      answers "no inviting device found via mDNS", the inviter's own output
+#      prints the address to pass instead — `lore join <code> --addr <host>:<port>
+#      --yes` — where <host> is the household container's address (`docker
+#      compose exec kenward-household hostname -i`, or `podman inspect`).
+#
+#      What that grants and what it does not. The invitee's store receives the
+#      household space's key and nothing else. lore begins every sync by
+#      exchanging BLINDED space ids — HMAC(space_key, …) — so two stores exchange
+#      a space only when both already hold its key, and a member's private space,
+#      whose key was generated inside that member's own container and never left
+#      it, cannot be named, requested or received by a sibling. Running a daemon
+#      in every service therefore adds exactly one reachable space: the
+#      household's. `kenward doctor` inside a service reports whether that space
+#      is here and whether the daemon is moving anything.
 #   5. Mint each member's claim code BEFORE bringing their service up:
 #      `kenward invite --name Jordan --data-dir .`, run from this directory.
 #
@@ -369,7 +418,9 @@ services:
   #    rather than quietly serving the wrong member.
   # 3c. Run `kenward invite --name Sam --data-dir .` on the host BEFORE `up` (the
   #    override is required — see step 5 in the header), initialise sam's own lore
-  #    store the same way step 4 does, and mount the file invite writes:
+  #    store the same way step 4 does, join it to the household space the way step
+  #    4b does — a member's pod that never joins reads no household memory and
+  #    writes none — and mount the file invite writes:
   #    `./invites/sam.json:/etc/kenward/invites.json:ro,Z` — `Z`, not `z`, for
   #    the reason in the header: this file has exactly one reader. Sam's
   #    own file — never david's, never the shared `invites.json`. Without it

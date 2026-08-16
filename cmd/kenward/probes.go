@@ -26,9 +26,17 @@ import (
 // real network, and the last one is the case that must not fail.
 type probes struct {
 	lore     func(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult
+	sync     func(ctx context.Context) syncResult
 	telegram func(ctx context.Context, token string) telegramResult
 	endpoint func(ctx context.Context, ep routing.Endpoint) endpointResult
 	sessions func(ctx context.Context, cfg *config.Config) sessionsResult
+}
+
+func (p probes) syncProbe() func(context.Context) syncResult {
+	if p.sync != nil {
+		return p.sync
+	}
+	return probeSync
 }
 
 func (p probes) sessionsProbe() func(context.Context, *config.Config) sessionsResult {
@@ -109,6 +117,32 @@ func probeLore(ctx context.Context, cfg *config.Config, scope config.UnitScope) 
 		out.Spaces = append(out.Spaces, spaceResult{Space: space, Err: err})
 	}
 	return out
+}
+
+// syncResult is what the shared-memory check found.
+//
+// It answers one question and it is the question the old report could not: is this
+// store's copy of the household's memory actually joined to anybody else's. The
+// space check above says the space is here; this says whether anything crosses.
+type syncResult struct {
+	// Home is the lore home asked about, for an operator who needs to know which
+	// store answered — a pod's is not the one on the host.
+	Home string
+	// Status is the daemon's own report. Zero when Err is set.
+	Status memory.SyncStatus
+	// Err is why the daemon could not be asked. memory.ErrNoSyncDaemon means there
+	// is none running, which is the normal state outside an isolated pod.
+	Err error
+}
+
+// probeSync asks the `lore serve` on this process's LORE_HOME about itself.
+//
+// It reports peers and rounds and nothing else. What is in the household's memory is
+// not a health check's to show, and `doctor` runs as a container HEALTHCHECK.
+func probeSync(ctx context.Context) syncResult {
+	home := memory.DefaultLoreHome()
+	st, err := memory.ReadSyncStatus(ctx, home)
+	return syncResult{Home: home, Status: st, Err: err}
 }
 
 // isSpaceError reports whether an error is about one space rather than about lore.

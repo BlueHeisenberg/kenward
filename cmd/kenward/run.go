@@ -13,6 +13,7 @@ import (
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/dashboard"
+	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 	"github.com/BlueHeisenberg/kenward/internal/updater"
@@ -117,6 +118,11 @@ func cmdRun(e *env, args []string) int {
 	for _, line := range startupSummary(cfg, sel) {
 		logger.Info("kenward", line...)
 	}
+
+	// Started before the supervisor and stopped after it, so a pod is syncing for the
+	// whole of the time it is serving.
+	stopSync := startSyncDaemon(e, cfg, sel, logger)
+	defer stopSync()
 
 	factory := e.supervisors
 	if factory == nil {
@@ -238,6 +244,51 @@ func stopDashboard(e *env, srv *dashboard.Server, logger *slog.Logger) {
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Warn("kenward", "event", "dashboard", "detail", "the admin dashboard did not stop cleanly", "err", err.Error())
+	}
+}
+
+// startSyncDaemon runs `lore serve` beside this unit for as long as it serves, and
+// returns the function that stops it.
+//
+// It is what makes the household's shared space real in isolated mode. Each pod has
+// its own LORE_HOME and therefore its own lore account and its own id space, so the
+// one `household.shared_space` in kenward.yaml is one space held by several accounts,
+// and `lore mcp` — which never syncs — carries nothing between them. Until this
+// existed, a member's pod reported the shared space missing and the household group
+// conversation had memory in exactly one container; both deployment paths had it and
+// neither said so. Membership in that space is still provisioned out of band, by the
+// operator, exactly as `lore init` is — see internal/memory's sync.go and
+// docs/IMPLEMENTATION.md §8.
+//
+// Only an isolated unit gets one, and the condition is the one checkLore already
+// draws. A simple-mode node has one lore home holding every space, so there is
+// nothing for a second instance to converge with and a daemon would advertise a
+// household's whole store on its LAN for no gain. The isolated host supervisor gets
+// none either: it holds no lore home at all, and each pod runs its own.
+//
+// Failure to start is never fatal here, deliberately: the daemon is what makes shared
+// memory move, and private memory — the property the mode exists for — works without
+// it. Refusing to serve would turn a partial outage into a total one. What tells an
+// operator is `kenward doctor`, which asks the daemon itself.
+func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog.Logger) func() {
+	if cfg.Mode != config.ModeIsolated || !sel.single() || len(cfg.Memory.LoreCommand) == 0 {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(e.context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		memory.RunSyncDaemon(ctx, memory.Config{
+			Command: cfg.Memory.LoreCommand[0],
+			Logger:  logger,
+		}, e.stderr, logger)
+	}()
+	logger.Info("kenward", "event", "memory",
+		"detail", "running lore's sync daemon so this pod's shared space reaches the household's other pods",
+		"lore_home", memory.DefaultLoreHome())
+	return func() {
+		cancel()
+		<-done
 	}
 }
 

@@ -344,16 +344,29 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 			if rep.Exit == exitOK {
 				rep.Exit = exitUsage
 			}
+			detail := []string{
+				s.Err.Error(),
+				"run `lore spaces` and configure the id column: kenward keys spaces on " +
+					"ids because lore does not enforce unique display names",
+				"a name here fails only on reads — writes keep appearing to work — so " +
+					"this is worth fixing before anything is written",
+			}
+			// In a pod the likelier cause is not a mistyped id at all. Each pod has
+			// its own LORE_HOME and therefore its own lore account, so the household's
+			// shared space exists in whichever store created it and in no other until
+			// that store invites this one into it. Sending an operator to check the id
+			// column for that would be sending them to the wrong place.
+			if isPod(scope) && string(s.Space) == cfg.Household.SharedSpace {
+				detail = append(detail,
+					"this pod holds its own lore store, so the household's shared space is "+
+						"here only once this store has been invited into it: `lore space "+
+						"invite <space> --lan --yes` in the pod that created it, then `lore "+
+						"join <code> --yes` in this one (docs/IMPLEMENTATION.md §8)")
+			}
 			checks = append(checks, check{
 				Status: statusFail,
 				Text:   fmt.Sprintf("space %q is not a space this lore store holds", s.Space),
-				Detail: []string{
-					s.Err.Error(),
-					"run `lore spaces` and configure the id column: kenward keys spaces on " +
-						"ids because lore does not enforce unique display names",
-					"a name here fails only on reads — writes keep appearing to work — so " +
-						"this is worth fixing before anything is written",
-				},
+				Detail: detail,
 			})
 		default:
 			if rep.Exit == exitOK {
@@ -367,15 +380,157 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 		}
 	}
 
-	// `lore mcp` never syncs: it reads and writes the local store and poking a
-	// daemon is best-effort. Saying so is not a failure, but a household running two
-	// instances and wondering why nothing crosses between them deserves the hint.
-	checks = append(checks, check{
-		Status: statusWarn,
-		Text:   "`lore mcp` does not sync on its own",
-		Detail: []string{"run `lore serve` on the same LORE_HOME if this store should reach another machine"},
-	})
-	return checks
+	return append(checks, doctorSharedMemory(ctx, e, cfg, scope, sharedSpaceHeld(cfg, res))...)
+}
+
+// sharedSpaceHeld reports whether this store actually holds the household's shared
+// space, from the probe that just asked.
+func sharedSpaceHeld(cfg *config.Config, res loreResult) bool {
+	for _, s := range res.Spaces {
+		if string(s.Space) == cfg.Household.SharedSpace {
+			return s.Err == nil
+		}
+	}
+	return false
+}
+
+// isPod reports whether this process is one isolated unit rather than the whole
+// household — a member's pod or the group's, as opposed to a simple-mode node or the
+// host supervisor. It is the same distinction `run` draws before it starts a sync
+// daemon, and it is drawn from the scope rather than from the selection because
+// doctorMemory is given the scope.
+func isPod(scope config.UnitScope) bool {
+	return scope.Group || strings.TrimSpace(scope.Member) != ""
+}
+
+// doctorSharedMemory reports whether the household's shared memory is wired and
+// moving, which the check above cannot say on its own.
+//
+// The space check says the space is in this store. That is necessary and it is not
+// sufficient: in isolated mode every pod has its own LORE_HOME and therefore its own
+// lore account, so the household's shared space is one space held by several accounts
+// and something has to carry entries between them. `lore mcp` never does — it reads
+// and writes the local store — and until `run` started one, no `lore serve` existed in
+// any pod, so a household could pass every check above with a shared space that
+// reached nobody. That is the state this section exists to name.
+//
+// It reports peers and rounds and nothing else. What is in the household's memory is
+// not something a health check may show, and this one runs as the image's HEALTHCHECK.
+//
+// Nothing here fails the report. A pod whose sync daemon is down still serves, still
+// answers, and still has that member's private memory, which is the property the mode
+// exists for; failing would restart a working pod over a degraded feature. The
+// warnings are the point.
+func doctorSharedMemory(ctx context.Context, e *env, cfg *config.Config, scope config.UnitScope, sharedHeld bool) []check {
+	if !isPod(scope) {
+		// A simple-mode node has one lore home holding every space, so there is
+		// nothing to converge with and no daemon is run. The host supervisor holds no
+		// lore home at all. Both still deserve the standing hint, because a household
+		// syncing to a laptop needs the same daemon and nothing else would say so.
+		return []check{{
+			Status: statusWarn,
+			Text:   "`lore mcp` does not sync on its own",
+			Detail: []string{"run `lore serve` on the same LORE_HOME if this store should reach another machine"},
+		}}
+	}
+	if cfg.Household.SharedSpace == "" {
+		// No shared space is configured, so there is no shared memory to be wired.
+		return nil
+	}
+	if !sharedHeld {
+		// The check above already reported the space missing, with the remedy. A
+		// second line here saying the daemon is syncing would be true of the daemon
+		// and false of the household: there is nothing in this store for it to carry.
+		return nil
+	}
+
+	res := e.probes.syncProbe()(ctx)
+	switch {
+	case errors.Is(res.Err, memory.ErrNoSyncDaemon):
+		return []check{{
+			Status: statusWarn,
+			Text:   "shared memory is not syncing: no lore sync daemon on this pod's store",
+			Detail: []string{
+				res.Err.Error(),
+				"this pod's own lore store is " + res.Home,
+				"kenward runs `lore serve` for the life of the unit, so this means it " +
+					"stopped or never started; the household group's memory is not " +
+					"reaching this pod and anything written here is not leaving it",
+				"private memory is unaffected: it lives in this store and needs no sync",
+			},
+		}}
+	case res.Err != nil:
+		return []check{{
+			Status: statusWarn,
+			Text:   "could not ask this pod's lore sync daemon how it is doing",
+			Detail: []string{res.Err.Error(), "this pod's own lore store is " + res.Home},
+		}}
+	}
+
+	st := res.Status
+	if st.Peers == 0 {
+		return []check{{
+			Status: statusWarn,
+			Text:   "shared memory is syncing with nobody: the daemon is running and has found no other lore instance",
+			Detail: []string{
+				"a household's pods find each other on the pod network; one pod alone " +
+					"is the expected answer while the rest are still starting",
+				"if it persists, the pods cannot see one another and the shared space " +
+					"is a separate copy in each of them",
+			},
+		}}
+	}
+
+	detail := []string{
+		fmt.Sprintf("last sync round %s", lastSyncText(st.LastSync)),
+		// Said because it is the limit of what can be observed from here. The daemon
+		// reports the instances it has verified, not which of them hold this
+		// household's space, and two lore homes exchange a space only when both
+		// already hold its key — so a reachable instance is not a reader.
+		"the daemon reports instances it can reach, not which of them are in the " +
+			"household's space; what is in that memory is not this command's to report",
+	}
+	// Some peers unreachable is the normal state of a household, not a fault, and
+	// this is the difference between a report an operator reads and one they learn to
+	// ignore. lore's daemon remembers every instance it has ever discovered and never
+	// forgets one, so each rolling update leaves the previous pods' addresses behind
+	// as rows that will never answer again — found by rolling this household on real
+	// podman, where every pod's report carried a column of "no route to host" for
+	// containers that had been correctly replaced. What actually says shared memory
+	// has stopped is every peer failing at once.
+	status := statusOK
+	if len(st.Errors) > 0 && len(st.Errors) >= st.Peers {
+		status = statusWarn
+		detail = append(detail, "no peer answered the last round; shared memory is not moving")
+	}
+	detail = append(detail, firstFew(st.Errors, 3)...)
+	return []check{{
+		Status: status,
+		Text: fmt.Sprintf("shared memory is syncing: this store holds the household's space and reaches %s",
+			plural(st.Peers, "1 other lore instance", fmt.Sprintf("%d other lore instances", st.Peers))),
+		Detail: detail,
+	}}
+}
+
+// firstFew returns at most n of in, with a final line counting what was left out.
+// The list it trims is the per-peer sync errors, which grow by one per replaced pod
+// for as long as the household lives — a report nobody can read is a report nobody
+// reads.
+func firstFew(in []string, n int) []string {
+	if len(in) <= n {
+		return in
+	}
+	return append(append([]string(nil), in[:n]...),
+		fmt.Sprintf("and %d more, most likely pods this household has already replaced", len(in)-n))
+}
+
+// lastSyncText renders when the last sync round finished, for an operator reading a
+// report that may be minutes old.
+func lastSyncText(t time.Time) string {
+	if t.IsZero() {
+		return "has not run yet"
+	}
+	return "finished " + t.UTC().Format(time.RFC3339)
 }
 
 // doctorSessions reports key custody: who has a wrapped key, and who is enrolled
