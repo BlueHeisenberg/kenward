@@ -53,6 +53,17 @@ var notWritten = map[string]string{
 	"endpoints.api_key_file":  "the wizard writes api_key_env; naming both sources is a validation error",
 	"session.passphrase_env":  "the wizard cannot know which of the four node-passphrase deliveries this household uses, and naming the wrong one is a refusal to load",
 	"session.passphrase_file": "as session.passphrase_env; the wizard names no source for the node passphrase",
+	// The whole reminders section. Every key in it has a default that is right for a
+	// household that has never thought about reminders, and the one question a wizard
+	// could usefully ask — how many unprompted messages a day are welcome — is one
+	// nobody can answer before they have lived with the thing for a week. A generated
+	// configuration that stated the defaults would only be four more lines to read at
+	// the kitchen table on the day they are least useful.
+	"reminders":                 "the section as a whole; every key in it is defaulted, and the reasons are below",
+	"reminders.timezone":        "empty means the machine's own clock, which is right for a node sitting in the house it serves",
+	"reminders.max_per_day":     "the default is right until a household has lived with reminders long enough to disagree",
+	"reminders.catch_up_window": "as reminders.max_per_day",
+	"reminders.max_stored":      "as reminders.max_per_day",
 }
 
 // TestDocumentCoversTheWholeSchema is the guard on the one shortcut this package

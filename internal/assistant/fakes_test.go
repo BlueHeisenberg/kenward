@@ -10,6 +10,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
+	"github.com/BlueHeisenberg/kenward/internal/remind"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
 	"github.com/BlueHeisenberg/kenward/internal/session"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
@@ -447,11 +448,12 @@ func errResolver(err error) ResolveFunc {
 
 // testRig is one Unit wired to fakes.
 type testRig struct {
-	unit     *Unit
-	mem      *fakeMemory
-	tr       *fakeTransport
-	router   *fakeRouter
-	sessions *fakeSessions
+	unit      *Unit
+	mem       *fakeMemory
+	tr        *fakeTransport
+	router    *fakeRouter
+	sessions  *fakeSessions
+	reminders *remind.Store
 }
 
 func testOptions() Options {
@@ -468,6 +470,13 @@ func newTestRig(resolve ResolveFunc, opts Options) (*testRig, error) {
 	tr := &fakeTransport{}
 	router := &fakeRouter{}
 	sessions := newFakeSessions("david")
+	// An ephemeral store: no path, so nothing touches a disk and each rig starts
+	// with an empty list. Durability is internal/remind's to test, and testing it
+	// through forty-odd turn tests would only make them slower and flakier.
+	reminders, err := remind.Open("", testRemindOptions())
+	if err != nil {
+		return nil, err
+	}
 	unit, err := New(Deps{
 		Resolve:   resolve,
 		Memory:    mem,
@@ -475,11 +484,28 @@ func newTestRig(resolve ResolveFunc, opts Options) (*testRig, error) {
 		Transport: tr,
 		Sessions:  sessions,
 		Capture:   capture.New(mem, tr, capture.Options{}),
+		Reminders: reminders,
 	}, opts)
 	if err != nil {
 		return nil, err
 	}
-	return &testRig{unit: unit, mem: mem, tr: tr, router: router, sessions: sessions}, nil
+	return &testRig{unit: unit, mem: mem, tr: tr, router: router, sessions: sessions, reminders: reminders}, nil
+}
+
+// testRemindOptions fixes the clock reminders are stated in, so a rendered prompt and
+// a golden notice do not depend on the machine the tests run on.
+func testRemindOptions() remind.Options {
+	return remind.Options{Location: time.UTC}
+}
+
+// toolNames lists a request's tools in order, so a test can assert the offered set
+// without printing four JSON schemas as byte slices when it fails.
+func toolNames(specs []routing.ToolSpec) []string {
+	out := make([]string, len(specs))
+	for i, s := range specs {
+		out[i] = s.Name
+	}
+	return out
 }
 
 func directInbound(text string) transport.Inbound {

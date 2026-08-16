@@ -11,8 +11,10 @@ import (
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/dashboard"
+	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
+	"github.com/BlueHeisenberg/kenward/internal/remind"
 	"github.com/BlueHeisenberg/kenward/internal/version"
 )
 
@@ -64,8 +66,14 @@ type doctorReport struct {
 	// the one fact on this report that is about who can reach this machine rather
 	// than about what this machine can reach — and because "a port is open" belongs
 	// where somebody scanning the output will see it.
-	Access    []check          `json:"access"`
-	Memory    []check          `json:"memory"`
+	Access []check `json:"access"`
+	Memory []check `json:"memory"`
+	// Reminders is what this node will send without being asked, and the limits it
+	// will send it under. It is a section of its own for the same reason Access is:
+	// everything else here answers "does this node work", and this answers "what will
+	// it do when nobody is talking to it", which is the only question on this report
+	// whose wrong answer arrives as a message on somebody's phone.
+	Reminders []check          `json:"reminders"`
 	Sessions  []check          `json:"sessions"`
 	Transport []check          `json:"transport"`
 	Endpoints []endpointReport `json:"endpoints"`
@@ -213,6 +221,7 @@ func runDoctor(e *env, path, dataDir string, sel unitSelection) doctorReport {
 
 	rep.Access = doctorAccess(e, cfg)
 	rep.Memory = doctorMemory(ctx, e, cfg, scope, &rep)
+	rep.Reminders = doctorReminders(e, cfg, scope)
 	rep.Sessions = doctorSessions(ctx, e, cfg, scope)
 	rep.Transport = doctorTransport(ctx, e, cfg, secrets, scope, &rep)
 	rep.Transport = append(rep.Transport, doctorEndpointKeys(cfg, secrets, scope, &rep)...)
@@ -594,6 +603,127 @@ func doctorSessions(ctx context.Context, e *env, cfg *config.Config, scope confi
 	return checks
 }
 
+// doctorReminders reports the household's proactive-message policy and what is
+// actually scheduled, unit by unit.
+//
+// It reads the stores directly rather than through a probe: they are plain files under
+// the data directory, and nothing here starts a clock, sends anything, or needs the
+// node to be running. A store that cannot be read is a warning and never a failure —
+// doctor exits non-zero for three things and this is not one of them, and the container
+// HEALTHCHECK runs this command.
+//
+// Scoped like the sessions section: in a member's pod a sibling's reminders are not
+// merely unreadable, they are none of this pod's business, and listing their absence
+// would invite an operator to go and fix the thing the mode exists to guarantee.
+func doctorReminders(e *env, cfg *config.Config, scope config.UnitScope) []check {
+	loc, err := cfg.Reminders.Location()
+	if err != nil {
+		return []check{{
+			Status: statusWarn,
+			Text:   fmt.Sprintf("reminders.timezone %q cannot be loaded", cfg.Reminders.Timezone),
+			Detail: []string{err.Error()},
+		}}
+	}
+
+	opts := remind.Options{
+		Location:  loc,
+		MaxPerDay: cfg.Reminders.MaxPerDay,
+		MaxStored: cfg.Reminders.MaxStored,
+		CatchUp:   cfg.Reminders.CatchUpWindow.Duration(),
+	}
+
+	var checks []check
+	if cfg.Reminders.MaxPerDay < 0 {
+		checks = append(checks, check{
+			Status: statusOK,
+			Text:   "proactive messages are turned off; nothing is ever delivered",
+			Detail: []string{
+				"reminders.max_per_day is negative, so reminders can still be set and " +
+					"are still listed here, but none is sent",
+			},
+		})
+	} else {
+		checks = append(checks, check{
+			Status: statusOK,
+			Text: fmt.Sprintf("at most %d unprompted %s a day, per conversation",
+				cfg.Reminders.MaxPerDay, plural(cfg.Reminders.MaxPerDay, "message", "messages")),
+			Detail: []string{
+				fmt.Sprintf("times are %s; a repeating reminder missed by more than %s is skipped rather than delivered late, and a one-off is delivered however late it is",
+					clockName(cfg.Reminders.Timezone), cfg.Reminders.CatchUpWindow),
+			},
+		})
+	}
+
+	// One line per unit this report is about, so an operator can see what is
+	// scheduled without going near a member's chat.
+	for _, u := range remindUnits(cfg, scope) {
+		store, err := remind.Open(cfg.RemindersPath(u.id, u.group), opts)
+		if err != nil {
+			checks = append(checks, check{
+				Status: statusWarn,
+				Text:   fmt.Sprintf("%s's reminders could not be read", u.label),
+				Detail: []string{err.Error()},
+			})
+			continue
+		}
+		list := store.List()
+		sent, cap := store.SentToday(e.now())
+		if len(list) == 0 {
+			continue
+		}
+		detail := make([]string, 0, len(list)+1)
+		for _, r := range list {
+			// The text itself is deliberately not printed. These files hold a
+			// member's private business and this report is read over an
+			// operator's shoulder; when and how often is what an operator needs.
+			detail = append(detail, fmt.Sprintf("%s (%s)", r.When(loc), r.ID))
+		}
+		if cap >= 0 && sent >= cap {
+			detail = append(detail, fmt.Sprintf(
+				"today's %d-message allowance is spent; anything else due today waits until tomorrow", cap))
+		}
+		checks = append(checks, check{
+			Status: statusOK,
+			Text: fmt.Sprintf("%s has %s scheduled", u.label,
+				plural(len(list), "1 reminder", fmt.Sprintf("%d reminders", len(list)))),
+			Detail: detail,
+		})
+	}
+	return checks
+}
+
+// remindUnit names one unit whose reminders this report may show.
+type remindUnit struct {
+	id    domain.MemberID
+	group bool
+	label string
+}
+
+// remindUnits lists the units in scope, the household group first.
+func remindUnits(cfg *config.Config, scope config.UnitScope) []remindUnit {
+	var out []remindUnit
+	if cfg.Household.GroupChatID != 0 && scope.ServesGroup() {
+		out = append(out, remindUnit{group: true, label: "the household group"})
+	}
+	for _, m := range cfg.Members {
+		if !scope.Serves(m.ID) || m.TelegramID == 0 {
+			continue
+		}
+		out = append(out, remindUnit{id: domain.MemberID(m.ID), label: m.Name})
+	}
+	return out
+}
+
+// clockName describes which clock reminders are stated in. An empty timezone is the
+// machine's own, and saying so is more useful than printing the name Go gives it —
+// which is the literal string "Local", and tells an operator nothing.
+func clockName(configured string) string {
+	if configured == "" {
+		return "on this machine's own clock"
+	}
+	return "in " + configured
+}
+
 // idleExpiryCheck says which way this household has session.idle_timeout set.
 //
 // The privacy statement names the knob and is true either way, deliberately: it cannot
@@ -816,6 +946,7 @@ func renderDoctor(r doctorReport) string {
 	writeSection(&b, "Configuration", r.Configuration)
 	writeSection(&b, "Access", r.Access)
 	writeSection(&b, "Memory", r.Memory)
+	writeSection(&b, "Reminders", r.Reminders)
 	writeSection(&b, "Sessions", r.Sessions)
 	writeSection(&b, "Transport", r.Transport)
 

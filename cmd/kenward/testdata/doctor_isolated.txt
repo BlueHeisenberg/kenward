@@ -19,6 +19,12 @@ Memory
       run `lore serve` on the same LORE_HOME if this store should reach another
       machine
 
+Reminders
+  ✓ at most 6 unprompted messages a day, per conversation
+      times are on this machine's own clock; a repeating reminder missed by more
+      than 6h0m0s is skipped rather than delivered late, and a one-off is
+      delivered however late it is
+
 Sessions
   ✓ key custody: isolated mode. Each member's key (members: david, jordan) is
     wrapped by that member's own passphrase; no single passphrase unlocks more

@@ -442,3 +442,33 @@ func TestStateKeyIsTheMemberIDNotTheTelegramID(t *testing.T) {
 		t.Errorf("Binding(david) = (%+v, %v)", b, ok)
 	}
 }
+
+// TestRemindersPathIsPerUnitAndSafe.
+//
+// Two properties, both load-bearing. One file per unit, never one keyed by member: a
+// member unit shares no mutable state with any other, which is what lets identical
+// code run as a goroutine beside its siblings and alone in a pod. And a member id is
+// operator-written and otherwise unconstrained, so a raw one in a path would let
+// "../../etc/x" out of the data directory.
+func TestRemindersPathIsPerUnitAndSafe(t *testing.T) {
+	cfg := &config.Config{DataDir: filepath.Join("var", "lib", "kenward")}
+
+	david := cfg.RemindersPath("david", false)
+	jordan := cfg.RemindersPath("jordan", false)
+	group := cfg.RemindersPath("", true)
+
+	for _, pair := range [][2]string{{david, jordan}, {david, group}, {jordan, group}} {
+		if pair[0] == pair[1] {
+			t.Errorf("two units share the reminder file %q; per-unit isolation is the whole point", pair[0])
+		}
+	}
+
+	// A traversing id is confined to the data directory.
+	nasty := cfg.RemindersPath("../../etc/passwd", false)
+	if !strings.HasPrefix(filepath.Clean(nasty), filepath.Clean(cfg.DataDir)) {
+		t.Errorf("RemindersPath(%q) = %q, which escapes the data directory", "../../etc/passwd", nasty)
+	}
+	if strings.ContainsAny(filepath.Base(nasty), `/\`) {
+		t.Errorf("the filename %q still carries a separator", filepath.Base(nasty))
+	}
+}

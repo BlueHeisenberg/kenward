@@ -52,6 +52,9 @@ internal/transport/     Transport interface + Telegram implementation + Mux
 internal/routing/       tier chain, endpoint pool, probe, cooldown, failover
 internal/session/       key unwrap, idle expiry
 internal/capture/       capture proposal + confirmation state machine
+internal/remind/        reminders: the durable per-unit store and the clock that
+                        delivers them. Imports domain and the standard library, and
+                        deliberately no router — see §15.
 internal/enrol/         claim codes, onboarding state machine
 internal/assistant/     the per-member Unit: one turn, end to end
 internal/supervisor/    simple (goroutines) | isolated (pods)
@@ -2245,6 +2248,23 @@ is not a softening: D-038 replaces the confirmation on a **private** write with 
 announcement carrying an Undo, and leaves the approval on a **shared** write untouched and
 non-configurable. §6 is the binding text.
 
+**A general job system is on this list and stays on it.** kenward has reminders (§15) and
+nothing else scheduled. Specifically not built, and each for a reason rather than for
+want of time:
+
+- **A scheduled turn that invokes the model** — the morning briefing, "anything I should
+  know?". It is the obvious next feature and it is the one that turns a timer into an
+  overnight bill against whatever tier the chain reaches. Building it means deciding
+  whether a scheduled job may reach a provider at all, and that is a decision with a
+  cost line, not an implementation detail. Until then the clock is built without a
+  router and cannot do it by accident.
+- **Cron expressions.** Once, daily and weekly cover what a household asks for. A cron
+  parser is ~200 lines to support a syntax nobody at a kitchen table writes.
+- **Arbitrary intervals** ("every 15 minutes"). Nothing in a household wants one, and it
+  is the shape that makes missed-occurrence storms possible in the first place.
+- **Snooze, edit, timezone-per-member, one-off dates beyond a year.** All cheap to add
+  later on top of the store; none of them is what makes reminders useful on day one.
+
 ---
 
 ## 14. The admin dashboard — `internal/dashboard`
@@ -2440,3 +2460,117 @@ address and the exposure as a first-class line. Nothing in it exits non-zero: th
 container's HEALTHCHECK runs `doctor`, and a household that deliberately put its dashboard
 on a tailnet is not unhealthy. A configuration that is actually unsafe is refused by
 `config.validateDashboard` and shows up as the parse failure it is.
+
+---
+
+## 15. Reminders — `internal/remind`
+
+The only thing kenward does without being asked. Everything else in this document
+describes a reply; this describes a message nobody's message caused.
+
+A reminder is **a piece of text and a time to send it.** When the time comes the text is
+sent verbatim. Nothing is generated, nothing is retrieved, no model is consulted. That
+is the design and not a first cut of one, and four of the hard problems dissolve in it:
+
+- **It cannot spend a token.** `remind.Clock` is constructed with a store, a sender, a
+  clock and a logger. There is no `routing.Router` in the struct, so a timer cannot
+  reach a provider — not because configuration forbids it but because there is nothing
+  there to reach one with. The tier-chain guarantee in `internal/privacy` is therefore
+  untouched by this feature, and needs no new sentence.
+- **It cannot leak across members.** Each unit gets its own `*remind.Store` over its own
+  file, built in `runner.buildUnit` beside the capture engine. Nothing is keyed by
+  member. In isolated mode a member's pod holds the only copy of theirs.
+- **It needs no member-to-chat mapping.** A reminder can only be created inside a turn,
+  where `Scope.ChatID` is already the authorization decision — so the chat is captured
+  at creation and stored with the reminder. There is no lookup at fire time and none to
+  build. A member who has never messaged the bot has no turn, so has no way to create
+  one; the refusal is structural rather than a check.
+- **Its text is member-facing and fixed.** The member sees exactly what the model wrote
+  into the tool call, so what arrives is reviewable at the moment it is set.
+
+### Missed occurrences
+
+Household machines are legitimately asleep, so firing against a powered-off node is the
+ordinary case. `Store.Due` gives the two kinds different answers because "remind me at
+8" and "every morning" are not the same promise:
+
+| Kind | Missed while the node was down |
+|---|---|
+| one-off | delivered, however late, and then gone. There is exactly one of it, so it cannot flood anything; dropping it silently is the only outcome that leaves somebody trusting a reminder that never came. |
+| repeating | at most **one** delivery, and it is the **most recent** occurrence — not the oldest missed one. `Next` is walked forward past now rather than fired per occurrence. That one is delivered only if it is younger than `reminders.catch_up_window`. |
+
+"Most recent, not oldest" is load-bearing and was a real bug before it was a rule. A
+node off for a fortnight should deliver this morning's bin reminder and must not skip it
+on the grounds that an occurrence it never sent is a fortnight old.
+
+A delivery more than fifteen minutes late says when it was due, and says nothing about
+why: the clock cannot tell an outage from a sleeping machine from the daily cap, and a
+reminder is a bad place to be caught guessing.
+
+Repeating reminders keep wall-clock time across daylight saving, because hour and minute
+are stored and the next occurrence is recomputed with `AddDate` in the household's own
+location. A 07:30 reminder stays at 07:30.
+
+### The cap
+
+One unit may send `reminders.max_per_day` unprompted messages a day, counted in the
+household's timezone and **persisted in the store's own file** — a crash-looping unit
+that reset its allowance on every boot would spend it forever, which is the run in which
+a household most needs it not to.
+
+The cap inherits the same asymmetry: a capped repeating occurrence is skipped and
+advanced, and a capped one-off is *held* so it goes out tomorrow rather than being lost.
+A negative `max_per_day` turns delivery off entirely without deleting anything.
+
+**Reaching the cap is not announced to the member.** Saying so would itself be an
+unprompted message, sent for the express purpose of reporting that too many unprompted
+messages had been sent. It goes to the log and to `kenward doctor`.
+
+### Claiming, and which way it fails
+
+`Store.Due` advances or deletes the reminder, spends the cap, and persists all of it
+*before* handing the fire back to be sent. A crash in that gap therefore loses the
+message rather than repeating it. The direction is deliberate: the cap has to be spent
+before the send, or a send failing in a loop becomes exactly the flood the cap exists to
+prevent.
+
+### Creating one
+
+Two tools, `remind` and `unremind`, offered in every scope — publish is the only
+scope-gated tool, because a group has nothing to publish from. Schemas in
+[PROMPT.md](PROMPT.md).
+
+**There is no button**, and that is a considered difference from capture rather than an
+omission. Capture asks because the model *volunteered* a write to a memory the household
+will read for years. A reminder is asked for out loud, is reversible with one word, and
+writes nothing to lore. So the member is told rather than asked, in a bracketed line
+that rides on the reply the way the retrieval line does — which is the half of §6's rule
+that was always load-bearing. Every failure produces a line too: a member who asked to be
+reminded and heard nothing will believe they were.
+
+The pending list is rendered into the prompt, which is the only reason `unremind` can
+work — a model can only cancel a code it can see, and one it invented would name
+somebody else's reminder or nothing. Reminder text is flattened to one line behind a
+bullet, exactly as a retrieved entry's title is, so nothing in one can reach column zero
+and forge a heading of the prompt's own.
+
+### Lifecycle
+
+One goroutine per unit, started beside the unit's pump. It is tracked on its own
+WaitGroup and deliberately **not** in the runner's active-worker count: that count exists
+to detect every pump exiting, which means the bot's update stream has died, and a clock
+counted there would hold the tally above zero forever so a dead transport was never
+noticed. The clocks are cancelled at the very start of a drain, before in-flight turns
+are waited for — nobody is waiting on a reminder, and a shutdown is the worst moment to
+start messaging a household.
+
+`kenward revoke` deletes the revoked member's reminder file in simple mode. Leaving it
+would be a real leak rather than untidiness: the file stores the chat to deliver to, so
+re-enrolling that member id would send the household's reminders to the revoked account.
+In isolated mode the file is on the member's own pod volume, where the host cannot reach
+it — the same boundary the binding itself has, and the revocation record is what crosses.
+
+### What this is not
+
+There is no general job system, no cron expression, and no scheduled model turn. See
+§13.

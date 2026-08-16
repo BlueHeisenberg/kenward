@@ -87,6 +87,21 @@ func revokeMember(ctx context.Context, e *env, cfg *config.Config, path string, 
 		return enrol.Revocation{}, "", fmt.Errorf("revoking %s: %w", id, err)
 	}
 
+	// The revoked member's reminders go with the binding.
+	//
+	// Leaving the file would be a real leak rather than untidiness. A reminder stores
+	// the chat it must be delivered to, captured when it was set; if this member id is
+	// ever enrolled again — the ordinary way a household hands a place to somebody
+	// else, or re-claims after losing an account — the new member's unit would open
+	// the old file and start sending the household's reminders to the revoked account.
+	//
+	// It is best-effort on purpose. The binding is already cleared by the time this
+	// runs, so a file that cannot be removed must not turn a completed revocation into
+	// a reported failure; the operator is told and can delete it themselves.
+	if err := removeReminders(cfg, rev.Member.ID); err != nil {
+		e.errorf("could not remove %s's reminders: %v", rev.Member.Name, err)
+	}
+
 	// In isolated mode the binding this was supposed to clear is not here. The claim
 	// was redeemed inside the member's own pod, against the state file on that pod's
 	// own volume, and this process has cleared a record that pod has never read: the
@@ -109,6 +124,25 @@ func revokeMember(ctx context.Context, e *env, cfg *config.Config, path string, 
 	}
 	rev.Deferred = true
 	return rev, recorded, nil
+}
+
+// removeReminders deletes a member's reminder file. A file that was never created is
+// not an error: it is what a member who never asked for a reminder looks like.
+//
+// In isolated mode this reaches nothing, and that is correct rather than a gap. The
+// member's reminders live on their own pod's volume, which is the same place their
+// binding lives and for the same reason — the host cannot read a member's private
+// state in that mode, which is the entire claim the mode makes. The revocation record
+// written below is what reaches that pod, and a pod that is never created again never
+// opens the file.
+func removeReminders(cfg *config.Config, id domain.MemberID) error {
+	if cfg.Mode == config.ModeIsolated {
+		return nil
+	}
+	if err := os.Remove(cfg.RemindersPath(id, false)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // declaredTelegramID reports the telegram_id kenward.yaml itself states for a member,

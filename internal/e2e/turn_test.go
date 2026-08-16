@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -79,11 +80,15 @@ func TestDirectMessageRoundTripsAndPromptCarriesBothMemories(t *testing.T) {
 	if req.UserText() != asked {
 		t.Errorf("user message = %q, want the member's own words", req.UserText())
 	}
-	// A direct conversation is offered both tools: remember, and publish for the
-	// promotion flow. The group is offered only remember — asserted where the group
-	// turn is tested.
-	if len(req.Tools) != 2 || req.Tools[0].Function.Name != "remember" || req.Tools[1].Function.Name != "publish" {
-		t.Errorf("tools on the wire = %+v, want remember and publish", req.Tools)
+	// A direct conversation is offered every tool: remember, publish for the promotion
+	// flow, and the two reminder tools. The group is offered all but publish —
+	// asserted where the group turn is tested.
+	var names []string
+	for _, tool := range req.Tools {
+		names = append(names, tool.Function.Name)
+	}
+	if want := []string{"remember", "publish", "remind", "unremind"}; !slices.Equal(names, want) {
+		t.Errorf("tools on the wire = %v, want %v", names, want)
 	}
 }
 

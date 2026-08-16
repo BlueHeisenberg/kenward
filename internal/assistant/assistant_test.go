@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
+	"github.com/BlueHeisenberg/kenward/internal/remind"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
 	"github.com/BlueHeisenberg/kenward/internal/scope"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
@@ -24,6 +26,10 @@ func TestNewRejectsMissingDeps(t *testing.T) {
 	base := func() Deps {
 		mem := newFakeMemory()
 		tr := &fakeTransport{}
+		reminders, err := remind.Open("", testRemindOptions())
+		if err != nil {
+			t.Fatalf("opening an ephemeral reminder store: %v", err)
+		}
 		return Deps{
 			Resolve:   fixedResolver(testDirectScope()),
 			Memory:    mem,
@@ -31,6 +37,7 @@ func TestNewRejectsMissingDeps(t *testing.T) {
 			Transport: tr,
 			Sessions:  newFakeSessions(),
 			Capture:   capture.New(mem, tr, capture.Options{}),
+			Reminders: reminders,
 		}
 	}
 	tests := []struct {
@@ -43,6 +50,7 @@ func TestNewRejectsMissingDeps(t *testing.T) {
 		{"transport", func(d *Deps) { d.Transport = nil }},
 		{"sessions", func(d *Deps) { d.Sessions = nil }},
 		{"capture", func(d *Deps) { d.Capture = nil }},
+		{"reminders", func(d *Deps) { d.Reminders = nil }},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,8 +123,8 @@ func TestHappyPathDirect(t *testing.T) {
 	if got := rig.router.chains[0]; len(got) != 1 || got[0] != "local" {
 		t.Errorf("router chain %v, want [local]", got)
 	}
-	if len(req.Tools) != 2 || req.Tools[0].Name != "remember" || req.Tools[1].Name != "publish" {
-		t.Errorf("request tools %+v, want remember and publish", req.Tools)
+	if got, want := toolNames(req.Tools), []string{"remember", "publish", "remind", "unremind"}; !slices.Equal(got, want) {
+		t.Errorf("request tools %v, want %v", got, want)
 	}
 
 	// The session was touched, nothing was written, and the turn was recorded.
@@ -1293,6 +1301,10 @@ func TestRepeatedMessageIDStillCaptures(t *testing.T) {
 func TestNewRejectsReservationLargerThanBudget(t *testing.T) {
 	mem := newFakeMemory()
 	tr := &fakeTransport{}
+	reminders, err := remind.Open("", testRemindOptions())
+	if err != nil {
+		t.Fatalf("opening an ephemeral reminder store: %v", err)
+	}
 	deps := Deps{
 		Resolve:   fixedResolver(testDirectScope()),
 		Memory:    mem,
@@ -1300,6 +1312,7 @@ func TestNewRejectsReservationLargerThanBudget(t *testing.T) {
 		Transport: tr,
 		Sessions:  newFakeSessions(),
 		Capture:   capture.New(mem, tr, capture.Options{}),
+		Reminders: reminders,
 	}
 	if _, err := New(deps, Options{ContextBudget: 2048, MaxTokens: 2048}); err == nil {
 		t.Fatal("New accepted MaxTokens == ContextBudget")
@@ -1373,9 +1386,11 @@ func TestReplyCarriesTheRetrievalLine(t *testing.T) {
 // admission.
 func TestRetrievalLineReportsWhatReachedTheModel(t *testing.T) {
 	opts := testOptions()
-	// Room for the prompt and almost nothing else, so the budget loop has to drop
-	// entries from the shared group.
-	opts.ContextBudget = 1400
+	// Room for the prompt and a little else, so the budget loop has to drop some of
+	// the shared group but not all of it. The number tracks the size of the fixed
+	// prompt: it was raised when the reminders section was added, because with the
+	// old budget only one entry survived and the assertion below needs a plural.
+	opts.ContextBudget = 1700
 	opts.MaxTokens = 128
 	rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
 	if err != nil {

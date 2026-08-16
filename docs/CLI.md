@@ -330,6 +330,13 @@ then run this command again.
 who it serves when it started and does not re-read this while it runs, so the output says
 to restart.
 
+**It also deletes that member's reminders** (simple mode; in isolated mode they are on the
+member's own pod volume, out of the host's reach, exactly as the binding is). That is not
+tidying: a reminder stores the chat it is delivered to, so a file left behind would send
+the household's reminders to the revoked account the day that member id is enrolled again.
+A file that cannot be removed is reported and does not fail the revocation, which has
+already happened by then.
+
 **In isolated mode the binding is not here at all**, and the command says so rather than
 reporting a revocation it did not perform:
 
@@ -492,6 +499,29 @@ this report that says who can reach *this machine*; everything else answers whet
 node works. Nothing in it changes the exit code — see below — and a configuration that is
 genuinely unsafe (LAN with no TLS, an exposure that contradicts its own bind) never gets
 this far: it is refused at load and appears as the parse failure it is.
+
+The **Reminders** section, between Memory and Sessions, is what this node will send when
+nobody is talking to it — the only question on the report whose wrong answer arrives as a
+message on somebody's phone:
+
+```
+Reminders
+  ✓ at most 6 unprompted messages a day, per conversation
+      times are on this machine's own clock; a repeating reminder missed by more
+      than 6h0m0s is skipped rather than delivered late, and a one-off is
+      delivered however late it is
+  ✓ David has 2 reminders scheduled
+      every day at 07:30 (a3f0)
+      Monday 4 August at 09:00 (b91c)
+```
+
+One line per unit this report covers, scoped like Sessions: in a member's pod a sibling's
+reminders are not merely unreadable, they are none of that pod's business. **The reminder
+text is deliberately not printed** — these are a member's private business and this report
+is read over an operator's shoulder; when and how often is what an operator needs. When
+the day's allowance is spent the section says so, because the member is never told (an
+unprompted message announcing that too many unprompted messages had been sent is not a
+thing to build). Nothing in it changes the exit code either.
 
 The privacy block gains a second paragraph, from the same `internal/privacy` the first
 one comes from, saying what the listener means. "Whoever runs the machine" stopped being

@@ -78,7 +78,8 @@ func toolSpecs(sc domain.Scope) []routing.ToolSpec {
 			Schema:      json.RawMessage(publishSchema),
 		})
 	}
-	return specs
+	// The reminder tools are offered in every scope; see remindSpecs.
+	return append(specs, remindSpecs()...)
 }
 
 // rememberCall mirrors the tool schema. Unknown fields are tolerated: models
@@ -101,8 +102,11 @@ type rememberCall struct {
 func extractProposal(calls []routing.ToolCall) (p *capture.Proposal, warn string) {
 	var payload json.RawMessage
 	for _, c := range calls {
-		if c.Name == publishToolName {
-			continue // the other tool, read by extractPublishTitle
+		switch c.Name {
+		case publishToolName:
+			continue // read by extractPublishTitle
+		case remindToolName, unremindToolName:
+			continue // read by extractReminders
 		}
 		if c.Name != rememberToolName {
 			warn = joinWarn(warn, fmt.Sprintf("model called unknown tool %q; dropped", c.Name))

@@ -207,6 +207,34 @@ func (c *Config) StatePath() string {
 	return filepath.Join(dir, StateFileName)
 }
 
+// RemindersPath is where one unit keeps its reminders. group selects the household
+// group's unit and ignores member.
+//
+// One file per unit, never one file keyed by member. That is not tidiness: a member's
+// unit is isolated from every other by construction, which is what lets the same code
+// run as a goroutine beside its siblings and as a pod on its own, and a shared file
+// with a member column would be exactly the shared mutable state that property forbids.
+// In isolated mode each pod's data directory is its own volume and holds only this
+// file; in simple mode the units share a directory and hold a file each.
+func (c *Config) RemindersPath(member domain.MemberID, group bool) string {
+	dir := c.DataDir
+	if dir == "" {
+		dir = DefaultDataDir()
+	}
+	name := "reminders-group.json"
+	if !group {
+		// Through sanitizeMemberID, which is the function that already decides what a
+		// member id looks like as a name on a filesystem — it is how pods are named.
+		// A member id is operator-written and otherwise unconstrained, so putting a
+		// raw one in a path would let "../../etc/x" out of the data directory; and
+		// reusing this one rather than writing a second sanitiser means the
+		// uniqueness validateMembers already enforces over pod names holds over these
+		// filenames too, for free.
+		name = "reminders-member-" + sanitizeMemberID(string(member)) + ".json"
+	}
+	return filepath.Join(dir, name)
+}
+
 // DefaultDataDir returns the per-OS location for kenward's mutable state, used when
 // data_dir is not set.
 //

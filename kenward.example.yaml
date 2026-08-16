@@ -344,6 +344,63 @@ update:
   # looks.
   check_interval: 6h
 
+# reminders bounds the one thing kenward does without being asked.
+#
+# Every other message this node sends is a reply to one a member sent. A reminder is
+# not, and that makes this block the household's only control over a capability it
+# cannot otherwise refuse. Two things it does NOT do, deliberately:
+#
+#   - A reminder never reaches a model. When it comes due, the text the member asked
+#     for is sent, exactly as written — nothing is generated, no memory is searched,
+#     and no provider is contacted. The code has no way to do otherwise: the clock is
+#     built without a router. So a schedule cannot run up a bill overnight, and the
+#     privacy claim about tier chains is untouched by anything in this block.
+#   - It does not decide who may set one. Any member can, in their own chat, by asking;
+#     what they set is theirs and is delivered to them. A reminder set in the household
+#     group belongs to the group and arrives there.
+reminders:
+  # timezone is the household's clock, as an IANA name. Members say "half seven" and
+  # mean their own clock, not the node's. Leave it empty for the machine's own zone,
+  # which is right when the node sits in the house it serves; name one when it does
+  # not, or when the machine's zone is not something anyone chose.
+  timezone: Europe/Madrid
+
+  # max_per_day caps how many unprompted messages ONE conversation may receive in a
+  # day, counted in the timezone above. Kenward's default is 6, set explicitly here to
+  # the same value: enough for a morning routine and a few one-offs, few enough that
+  # nobody reaches for the mute button — and a muted assistant is a dead one.
+  #
+  # A negative number turns delivery off entirely. Reminders can still be set and are
+  # still listed by `kenward doctor`; none is ever sent. That exists so a household can
+  # go quiet without every member having to cancel their own.
+  #
+  # Reaching the cap is not announced. Saying so would itself be an unprompted message,
+  # sent to report that too many unprompted messages had been sent. It appears in the
+  # log and in `kenward doctor`, where the person who can change this number is looking.
+  max_per_day: 6
+
+  # catch_up_window is how late a REPEATING reminder may be and still be delivered
+  # after the node has been off. Kenward's default is 6 hours, set explicitly here.
+  #
+  # Household machines are legitimately asleep, so this is the ordinary case rather
+  # than an edge one, and the two kinds of reminder get different answers:
+  #
+  #   repeating: however many occurrences were missed, at most ONE is delivered, and it
+  #              is the most recent one — a node off overnight owes the household one
+  #              bin reminder, not sixteen. If even that one is older than this window
+  #              it is skipped silently, because a stale routine is worthless.
+  #   one-off:   delivered however late it is, and this window does not apply. There is
+  #              exactly one of it ever, so it cannot flood anything, and it is a
+  #              promise to a person: dropping it silently is the only outcome that
+  #              leaves somebody trusting a reminder that never came. A late one says
+  #              when it was due.
+  catch_up_window: 6h
+
+  # max_stored caps how many reminders one conversation may hold at once. Kenward's
+  # default is 20, set explicitly here. It is what stops a model that has discovered
+  # the tool from filling a member's list; the member is told plainly when it is full.
+  max_stored: 20
+
 # dashboard configures the admin dashboard: one HTTP server, one account, and no port
 # opened at all unless this block says otherwise.
 #
