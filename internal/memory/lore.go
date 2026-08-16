@@ -519,14 +519,18 @@ func (c *Client) spaceNameFor(ctx context.Context, space domain.SpaceID) (string
 	if ok {
 		return name, nil
 	}
-	if err := c.refreshSpaces(ctx); err != nil {
+	if _, err := c.refreshSpaces(ctx); err != nil {
 		return "", err
 	}
 	c.spacesMu.Lock()
 	defer c.spacesMu.Unlock()
 	name, ok = c.spaceNames[space]
 	if !ok {
-		return "", fmt.Errorf("memory: lore holds no space %s: %w", space, ErrUnknownSpace)
+		// lore's own tools accept either a space id or a display name, so a
+		// name reaches here having already worked for a write; the resolution
+		// is what says which of the two kenward is configured with.
+		return "", fmt.Errorf("memory: lore holds no space %s (spaces are named by id here, not by display name): %w",
+			space, ErrUnknownSpace)
 	}
 	if c.nameUses[name] > 1 {
 		c.cfg.Logger.Warn("lore: space display name is ambiguous, entry space checks are weakened",
@@ -535,15 +539,53 @@ func (c *Client) spaceNameFor(ctx context.Context, space domain.SpaceID) (string
 	return name, nil
 }
 
-// refreshSpaces reloads the space id to display name mapping from lore_spaces.
-func (c *Client) refreshSpaces(ctx context.Context) error {
+// Space is a lore space as lore reports it, for a caller that has to choose one.
+//
+// It exists because kenward never creates a space: spaces are made out of band,
+// and configuration names them by id. Anything asking an operator which space to
+// use must therefore offer what lore already holds rather than invent a name —
+// and must be able to tell a personal space from a shared one, because lore's
+// personal space never crosses accounts and cannot serve as a household's memory.
+type Space struct {
+	// ID is what kenward is configured with. Names are for humans.
+	ID string
+	// Name is lore's display name. It is neither unique nor stable.
+	Name string
+	// Kind is "personal" or "shared", as lore's own enum.
+	Kind string
+	// Entries is how many entries lore reports in the space.
+	Entries int
+}
+
+// Spaces lists the spaces this lore home holds. It is read-only: nothing in this
+// package creates or modifies a space.
+//
+// Rows are returned in lore's order, including two spaces sharing one display
+// name. lore does not enforce unique names, so the duplicate is the answer — a
+// caller showing both with their ids is strictly better than this package
+// choosing one of them.
+func (c *Client) Spaces(ctx context.Context) ([]Space, error) {
+	rows, err := c.refreshSpaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Space, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, Space{ID: r.ID, Name: r.Name, Kind: r.Kind, Entries: r.Entries})
+	}
+	return out, nil
+}
+
+// refreshSpaces reloads the space id to display name mapping from lore_spaces and
+// returns the rows it was built from.
+func (c *Client) refreshSpaces(ctx context.Context) ([]spaceRow, error) {
 	text, err := c.callTool(ctx, toolSpaces, map[string]any{}, true)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	rows, err := parseSpaces(text)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	names := make(map[domain.SpaceID]string, len(rows))
 	uses := make(map[string]int, len(rows))
@@ -554,7 +596,7 @@ func (c *Client) refreshSpaces(ctx context.Context) error {
 	c.spacesMu.Lock()
 	c.spaceNames, c.nameUses = names, uses
 	c.spacesMu.Unlock()
-	return nil
+	return rows, nil
 }
 
 // deadGrace is how long a failed call waits for the session to confirm it died,

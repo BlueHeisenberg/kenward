@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -439,6 +440,49 @@ func TestSpacesListingIsCachedAndRefreshed(t *testing.T) {
 	}
 	if n := len(callsTo(f.calls(t), toolSpaces)); n != 2 {
 		t.Fatalf("want one refresh on a miss, got %d listings", n)
+	}
+}
+
+// TestSpacesLists covers what a caller choosing a space needs: the id to
+// configure, and the kind, which is what catches a personal space picked as a
+// household's shared memory.
+func TestSpacesLists(t *testing.T) {
+	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
+	}}, nil)
+
+	got, err := f.Spaces(ctxT(t))
+	if err != nil {
+		t.Fatalf("Spaces: %v", err)
+	}
+	want := []Space{
+		{ID: "1c0a0000-0000-4000-8000-000000000000", Name: "personal", Kind: "personal", Entries: 42},
+		{ID: "2d1b0000-0000-4000-8000-000000000000", Name: "hearth-private", Kind: "shared", Entries: 7},
+		{ID: "3e2c0000-0000-4000-8000-000000000000", Name: "household", Kind: "shared", Entries: 19},
+		{ID: "4f3d0000-0000-4000-8000-000000000000", Name: "kenward", Kind: "shared", Entries: 3},
+		{ID: "5a4e0000-0000-4000-8000-000000000000", Name: "kenward-test-household", Kind: "shared", Entries: 0},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("\n got %+v\nwant %+v", got, want)
+	}
+}
+
+// TestSpacesKeepsDuplicateNames: lore does not enforce unique display names, so
+// two spaces called the same thing are two rows. Collapsing them here would make
+// this package pick which space an operator meant, which is exactly the choice it
+// must not make.
+func TestSpacesKeepsDuplicateNames(t *testing.T) {
+	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: "household  kind:shared  members:1  entries:1  id:aaa0\n" +
+			"household  kind:shared  members:1  entries:2  id:bbb0\n"}},
+	}}, nil)
+
+	got, err := f.Spaces(ctxT(t))
+	if err != nil {
+		t.Fatalf("Spaces: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "aaa0" || got[1].ID != "bbb0" {
+		t.Fatalf("both rows must survive, got %+v", got)
 	}
 }
 

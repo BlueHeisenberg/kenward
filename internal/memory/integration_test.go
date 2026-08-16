@@ -30,7 +30,7 @@ func TestIntegrationRoundTrip(t *testing.T) {
 	home := os.Getenv("KENWARD_LORE_HOME")
 	space := domain.SpaceID(os.Getenv("KENWARD_LORE_SPACE"))
 	if bin == "" || home == "" || space == "" {
-		t.Skip("set KENWARD_LORE_BIN, KENWARD_LORE_HOME and KENWARD_LORE_SPACE")
+		t.Skip("set KENWARD_LORE_BIN, KENWARD_LORE_HOME and KENWARD_LORE_SPACE (a space id from `lore spaces`, not a display name)")
 	}
 
 	c, err := NewClient(Config{
@@ -45,6 +45,33 @@ func TestIntegrationRoundTrip(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+
+	// The listing is what a setup wizard picks from, so it has to carry the id
+	// to configure and the kind: a personal space cannot serve as a household's
+	// shared memory, and lore's own enum is the only thing that says which is
+	// which.
+	spaces, err := c.Spaces(ctx)
+	if err != nil {
+		t.Fatalf("Spaces: %v", err)
+	}
+	var listed, personal int
+	for _, s := range spaces {
+		if s.ID == "" || s.Name == "" || (s.Kind != "personal" && s.Kind != "shared") {
+			t.Errorf("incomplete space row: %+v", s)
+		}
+		if domain.SpaceID(s.ID) == space {
+			listed++
+		}
+		if s.Kind == "personal" {
+			personal++
+		}
+	}
+	if listed != 1 {
+		t.Errorf("the space under test appears %d times in the listing", listed)
+	}
+	if personal == 0 {
+		t.Error("a lore home always holds a personal space; none was reported")
+	}
 
 	body := "Written by kenward's integration test at " + time.Now().UTC().Format(time.RFC3339Nano) + "."
 	put, err := c.Put(ctx, space, Draft{

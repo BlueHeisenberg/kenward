@@ -453,6 +453,10 @@ func TestParseSpacesGolden(t *testing.T) {
 		{Name: "hearth-private", Kind: "shared", Entries: 7, ID: "2d1b0000-0000-4000-8000-000000000000"},
 		{Name: "household", Kind: "shared", Entries: 19, Pinned: true, ID: "3e2c0000-0000-4000-8000-000000000000"},
 		{Name: "kenward", Kind: "shared", Entries: 3, Project: true, Pinned: true, ID: "4f3d0000-0000-4000-8000-000000000000"},
+		// Longer than the width `lore spaces` pads its name column to. The MCP
+		// tool does not pad — every field is separated by exactly two spaces
+		// whatever the name's length — and this row is what says so.
+		{Name: "kenward-test-household", Kind: "shared", Entries: 0, ID: "5a4e0000-0000-4000-8000-000000000000"},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("\n got %+v\nwant %+v", got, want)

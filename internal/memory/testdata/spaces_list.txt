@@ -2,3 +2,4 @@ personal  kind:personal  members:1  entries:42  id:1c0a0000-0000-4000-8000-00000
 hearth-private  kind:shared  members:1  entries:7  id:2d1b0000-0000-4000-8000-000000000000
 household  kind:shared  members:1  entries:19  pinned  id:3e2c0000-0000-4000-8000-000000000000
 kenward  kind:shared  members:1  entries:3  project  pinned  id:4f3d0000-0000-4000-8000-000000000000
+kenward-test-household  kind:shared  members:1  entries:0  id:5a4e0000-0000-4000-8000-000000000000
