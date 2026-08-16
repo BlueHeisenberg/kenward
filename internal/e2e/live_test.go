@@ -217,6 +217,11 @@ func (s *spyMemory) Share(ctx context.Context, from, to domain.SpaceID, id strin
 	return s.inner.Share(ctx, from, to, id)
 }
 
+func (s *spyMemory) Delete(ctx context.Context, space domain.SpaceID, id string) error {
+	s.record(memCall{Op: "delete", Spaces: []domain.SpaceID{space}, Title: id})
+	return s.inner.Delete(ctx, space, id)
+}
+
 func (s *spyMemory) Close() error { return s.inner.Close() }
 
 var _ memory.Memory = (*spyMemory)(nil)

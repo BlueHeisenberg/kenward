@@ -50,9 +50,11 @@ Private conversations can read shared memory, because that is useful. Group
 conversations can never read private memory, because that is the entire point. Copying
 something out of a private space into the shared one is an explicit, reviewed act.
 
-Capture is proposed by the assistant and confirmed by you — with buttons, in the chat.
-Nothing is written to memory silently, and a group conversation can never write into
-anyone's private space.
+A note to your own memory is written and then shown to you — the exact words, the space
+it went to, and an Undo button. Anything bound for the household's shared memory is
+shown to you first and written only if you say yes. Nothing is written to memory
+silently, there is no setting that makes it silent, and a group conversation can never
+write into anyone's private space.
 
 ## Two modes, one binary
 

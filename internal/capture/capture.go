@@ -1,14 +1,29 @@
-// Package capture runs the confirmation state machine that sits between the assistant
-// proposing something worth remembering and that thing being written.
+// Package capture runs the state machine that sits between the assistant proposing
+// something worth remembering and that thing reaching memory.
 //
-// The assistant proposes; the member decides, with buttons, in the chat. Nothing
-// reaches memory without an explicit confirmation, and there is deliberately no option
-// to turn the question off — the question is the product, not a safety belt bolted onto
-// it. A timeout is a decline, never an accept and never a retry.
+// # Two different acts, deliberately treated differently
+//
+// A note in a member's own private space is theirs, and it is reversible: it is
+// written, the member is shown exactly what was written and where, and one button
+// takes it back. A publication to the household is not reversible — other people have
+// read it by the time anyone regrets it — so it is asked about first, every time, and
+// there is no setting that turns that question off.
+//
+// The write announcement is likewise not optional. It is the whole of what replaces
+// the old question: if a write can be silent then "kenward never records anything
+// without telling you" stops being true, and there is no honest way left to describe
+// the product. A household that wants the question back for private writes can have it
+// — Options.PrivateWrites — and gets exactly the behaviour that shipped before.
+//
+// A timeout is never an accept: on a question it is a decline, and on a write
+// announcement it is the undo window closing on a write that already happened and
+// stands.
 //
 // The scope is the authorization decision and this package obeys it: a group scope may
 // never offer a private destination, because a household chat that can write into
-// someone's private space is the one thing the memory model exists to prevent.
+// someone's private space is the one thing the memory model exists to prevent. It
+// follows that nothing in the group is ever written without being asked about first:
+// everything there is a shared write.
 //
 // # Errors carry no conversation content
 //
@@ -80,8 +95,17 @@ type OutcomeKind int
 const (
 	// OutcomeUnknown is the zero value and is never returned with a nil error.
 	OutcomeUnknown OutcomeKind = iota
-	// OutcomeSaved means the entry was written. Space and EntryID name it.
+	// OutcomeSaved means the entry was written and is still there. Space and
+	// EntryID name it.
 	OutcomeSaved
+	// OutcomeUndone means the entry was written and the member took it back
+	// before the undo window closed, and the delete is confirmed. Space and
+	// EntryID name what was removed.
+	//
+	// An undo whose delete failed, or whose delete could not be confirmed, is not
+	// this: the entry may still be there, so the outcome stays OutcomeSaved and
+	// the error says what the member was told.
+	OutcomeUndone
 	// OutcomeDeclined means the member chose not to save.
 	OutcomeDeclined
 	// OutcomeTimedOut means the question expired unanswered. Nothing was written; it
@@ -102,6 +126,8 @@ func (k OutcomeKind) String() string {
 	switch k {
 	case OutcomeSaved:
 		return "saved"
+	case OutcomeUndone:
+		return "undone"
 	case OutcomeDeclined:
 		return "declined"
 	case OutcomeTimedOut:
@@ -117,12 +143,15 @@ func (k OutcomeKind) String() string {
 	}
 }
 
-// Outcome is what a capture attempt did. Only OutcomeSaved carries Space and EntryID.
+// Outcome is what a capture attempt did. Only OutcomeSaved and OutcomeUndone carry
+// Space and EntryID.
 type Outcome struct {
 	Kind OutcomeKind
-	// Space is the space written to, set only when Kind is OutcomeSaved.
+	// Space is the space written to, set only when Kind is OutcomeSaved or
+	// OutcomeUndone.
 	Space domain.SpaceID
-	// EntryID is the stored entry, set only when Kind is OutcomeSaved.
+	// EntryID is the stored entry, set only when Kind is OutcomeSaved or
+	// OutcomeUndone. On an undone outcome it names what was removed.
 	EntryID string
 	// Title is the proposal's title, carried on every outcome so a caller can put
 	// it back in front of the member it belongs to.
@@ -135,7 +164,8 @@ type Outcome struct {
 	Title string
 }
 
-// Stored reports whether this outcome wrote to memory. It is true for exactly one kind.
+// Stored reports whether this outcome left something in memory. An undone write did
+// not, which is the point of undoing it.
 func (o Outcome) Stored() bool { return o.Kind == OutcomeSaved }
 
 // Errors returned by this package. All of them mean nothing was written.
@@ -177,7 +207,35 @@ const (
 	ChoicePublish = "capture.publish"
 	// ChoiceCancel abandons a promotion.
 	ChoiceCancel = "capture.cancel"
+	// ChoiceUndo removes an entry that was written and announced without asking.
+	ChoiceUndo = "capture.undo"
 )
+
+// PrivateWritePolicy says what a proposal for the member's own private space does.
+//
+// It has no bearing on the household's shared space, which is always asked about, and
+// none on a proposal whose destination the model left unsure, which is always asked
+// about because there is a genuine choice to put. It is the one part of this that a
+// household configures.
+type PrivateWritePolicy int
+
+const (
+	// PrivateWriteSave writes the entry, then shows the member exactly what was
+	// written and where, with an undo button live for Options.AskTimeout. It is the
+	// zero value and the product's behaviour.
+	PrivateWriteSave PrivateWritePolicy = iota
+	// PrivateWriteAsk puts the proposal as a question first and writes nothing
+	// until the member taps, exactly as a shared write is handled. A household that
+	// wants to be asked about everything sets this; nothing else changes.
+	PrivateWriteAsk
+)
+
+func (p PrivateWritePolicy) String() string {
+	if p == PrivateWriteAsk {
+		return "ask"
+	}
+	return "save"
+}
 
 // Defaults applied by New to a zero-valued Options.
 const (
@@ -208,8 +266,18 @@ type Options struct {
 	// DefaultDeclineWindow.
 	DeclineWindow int
 	// AskTimeout is the timeout put on every question. Defaults to DefaultAskTimeout.
-	// Expiry is a decline.
+	// Expiry is a decline — and, on a write announcement, the undo window closing on
+	// a write that stands.
 	AskTimeout time.Duration
+	// PrivateWrites says whether a proposal for the member's own space is written
+	// and announced, or asked about first. The zero value writes and announces.
+	//
+	// There is no equivalent for the shared space and there will not be one:
+	// publishing to the household is the one act in this product that cannot be
+	// taken back, so it is always asked about. Nor is there one for the
+	// announcement: a write nobody is told about would make the product's central
+	// claim false.
+	PrivateWrites PrivateWritePolicy
 	// Shared names the household's shared space, for the case where a direct scope's
 	// Read set does not carry it. It is a fallback: the scope wins when it knows.
 	Shared domain.SpaceID
@@ -308,24 +376,33 @@ func (e *Engine) BeginTurn(sc domain.Scope, turn string) {
 	st.pruneDeclines(e.opts.DeclineWindow)
 }
 
-// Offer puts one proposal to the member named by askUserID and, if they accept, writes
-// it to the space they chose.
+// Offer acts on one proposal for the member named by askUserID.
 //
-// The buttons depend on the scope, and only on the scope:
+// A proposal for that member's own private space, under the default policy, is
+// written immediately and then announced: the member sees exactly what was written
+// and where, with an [Undo] button live for Options.AskTimeout. Everything else is a
+// question first and a write only on a tap.
+//
+// Where a question is put, the buttons depend on the scope, and only on the scope:
 //
 //	direct, target unsure  [Personal] [Household] [Don't save]
-//	direct, target known   [Save to …] [Don't save]
+//	direct, target shared  [Save to household] [Don't save]
+//	direct, target personal, PrivateWriteAsk  [Save to personal] [Don't save]
 //	group, any target      [Household] [Don't save]
 //
-// A group scope never offers a personal destination, whatever the model proposed.
-// Destinations are resolved before they are offered: an unsure proposal in a scope
-// with no reachable shared space offers only the personal button, never one whose
-// tap can only fail.
+// A group scope never offers a personal destination, whatever the model proposed, and
+// therefore never writes without asking. Destinations are resolved before they are
+// offered: an unsure proposal in a scope with no reachable shared space offers only
+// the personal button, never one whose tap can only fail.
 //
 // Proposals repeating a recently declined title are suppressed silently, as are
-// proposals beyond the turn's budget; both return an Outcome saying so and ask nothing.
-// A timeout is recorded as a decline. A proposal that never became a question — the
-// question could not be built or could not be sent — does not spend the turn's budget.
+// proposals beyond the turn's budget; both return an Outcome saying so, and neither
+// writes nor asks anything. An undo counts as a decline, so the model does not
+// re-propose next turn what the member has just taken back. A timeout is recorded as a
+// decline on a question and changes nothing on an announcement. A proposal that never
+// became a question — the question could not be built or could not be sent — does not
+// spend the turn's budget; a proposal that was written does, whatever became of it
+// afterwards.
 func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUserID int64) (Outcome, error) {
 	if sc.Kind == domain.ScopeUnknown {
 		return Outcome{}, ErrUnresolvedScope
@@ -353,6 +430,13 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	st.offered[askUserID]++
 	turn := st.turn
 	e.mu.Unlock()
+
+	// The member's own space, under the default policy: write it, then say so. The
+	// budget it just spent stays spent whatever happens next — unlike a question
+	// that never reached them, this one is a write that did.
+	if e.writesPrivateDirectly(sc, p) {
+		return e.writeAndAnnounce(ctx, sc, p, title, askUserID, turn)
+	}
 
 	q, err := e.question(sc, p, title, askUserID)
 	if err != nil {
@@ -408,49 +492,180 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		return Outcome{Kind: OutcomeDeclined, Title: title}, nil
 	}
 
-	draft := p.Draft
-	draft.Title = title
-	entry, err := e.mem.Put(ctx, space, draft)
+	out, err := e.store(ctx, sc, p, title, space, askUserID, turn)
 	if err != nil {
-		// The write may have landed even though the store reported failure, and
-		// lore has no delete, so a retry that duplicates is permanent. Report the
-		// uncertainty to the member (IMPLEMENTATION.md section 12) instead of
-		// retrying silently, and suppress the title so the model does not
-		// immediately re-propose the thing they were just told to verify first.
-		e.recordDecline(sc, askUserID, title, turn)
-		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I can't confirm whether %q was saved — the memory store didn't answer. Check before saving it again; a duplicate can't be deleted.", title),
-			fmt.Errorf("capture: storing a confirmed entry in %s: %w", space, err))
+		return Outcome{}, err
 	}
 
-	// The confirmation reports the outcome, never echoes the intention: it is
-	// derived from the entry the store returned, so the destination the member is
-	// told and the destination that was written come from different values and can
-	// disagree. A store reporting a different space than the one confirmed is
-	// treated as a failure — telling a member their private note is private while
-	// it sits in the shared space is the exact failure this product exists to
-	// prevent, and a confirmation built from the intended space could never notice.
-	if entry.Space != space {
-		e.recordDecline(sc, askUserID, title, turn)
-		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("Something went wrong: %q was not stored where you chose. Tell whoever runs this node before saving it again.", title),
-			fmt.Errorf("capture: store reported space %s for a write confirmed to %s", entry.Space, space))
-	}
-
-	out := Outcome{Kind: OutcomeSaved, Space: entry.Space, EntryID: entry.ID, Title: title}
 	// The write has happened; a failure to confirm it is reported but does not unsay
 	// it, so the outcome is returned alongside the error.
 	if err := e.tr.Send(ctx, transport.Outbound{
 		ChatID: sc.ChatID,
-		Text:   fmt.Sprintf("Saved %q to %s (%s).", title, destinationPhrase(sc, entry.Space), entry.Space),
+		Text:   fmt.Sprintf("Saved %q to %s (%s).", title, destinationPhrase(sc, out.Space), out.Space),
 	}); err != nil {
 		// The notice the member needed was this confirmation, and it has already been
 		// attempted; there is nothing useful left to say to a transport that just
 		// failed. Marking it stops the caller's generic "try asking again" from
-		// inviting a second write of an entry that landed, which lore cannot delete.
-		return out, marked(fmt.Errorf("capture: confirming entry %s stored in %s: %w", out.EntryID, entry.Space, err))
+		// inviting a second write of an entry that landed.
+		return out, marked(fmt.Errorf("capture: confirming entry %s stored in %s: %w", out.EntryID, out.Space, err))
 	}
 	return out, nil
+}
+
+// writesPrivateDirectly reports whether this proposal is the one shape that is written
+// without being asked about: the member's own private space, in a scope that has one,
+// with the model having actually said so, under a policy that allows it.
+//
+// Every clause is load-bearing. A group scope has no private destination at all. An
+// unsure target is a real choice and is put as one. And a household that set
+// PrivateWriteAsk gets the question back for all of it.
+func (e *Engine) writesPrivateDirectly(sc domain.Scope, p Proposal) bool {
+	return e.opts.PrivateWrites == PrivateWriteSave &&
+		sc.AllowsPrivateCapture() &&
+		p.Target == TargetPersonal
+}
+
+// writeAndAnnounce writes the proposal to the member's private space and shows them
+// what it did, with an undo button.
+//
+// The order is the whole point: the write is real before the member is told about it,
+// so the announcement is a report and not a promise. Nothing here is conditional on
+// the member's attention — an ignored announcement leaves the entry exactly where the
+// message says it is.
+func (e *Engine) writeAndAnnounce(ctx context.Context, sc domain.Scope, p Proposal, title string, askUserID int64, turn int) (Outcome, error) {
+	space := personalSpace(sc)
+	out, err := e.store(ctx, sc, p, title, space, askUserID, turn)
+	if err != nil {
+		return Outcome{}, err
+	}
+
+	ans, err := e.tr.Ask(ctx, transport.Question{
+		ChatID:        sc.ChatID,
+		Text:          writtenText(p, title, destinationPhrase(sc, out.Space), out.Space),
+		Choices:       []transport.Choice{{ID: ChoiceUndo, Label: "Undo"}},
+		AllowedUserID: askUserID,
+		Timeout:       e.opts.AskTimeout,
+		RetiredNote:   undoExpiredNote,
+	})
+	if err != nil {
+		// The entry is written and the message carrying that news did not go out.
+		// This is the one failure in this package where saying nothing would break
+		// the product's central claim rather than merely inconvenience someone, so
+		// it falls back to a plain confirmation with no undo affordance — and says
+		// that the affordance is missing, because a member who has been told they
+		// can undo something and cannot is worse off than one who was never told.
+		return out, e.told(ctx, sc,
+			fmt.Sprintf("Saved %q to %s (%s). The undo button didn't go through, so I can't take it back from here.",
+				title, destinationPhrase(sc, out.Space), out.Space),
+			fmt.Errorf("capture: announcing entry %s written to %s: %w", out.EntryID, out.Space, err))
+	}
+
+	// Anything that is not this member tapping Undo leaves the write standing, and
+	// the transport has already edited the announcement to say so. Nothing to add: a
+	// second message repeating what the first one still says on screen is noise, and
+	// the member did not ask a question to be answered twice.
+	if ans.TimedOut || ans.UserID != askUserID || ans.ChoiceID != ChoiceUndo {
+		return out, nil
+	}
+	return e.undo(ctx, sc, out, askUserID, turn)
+}
+
+// undo removes an entry the member has just taken back, and tells them what actually
+// happened to it.
+//
+// There are three endings and they are three different sentences, because the entry is
+// gone in one of them, still there in the second, and unknown in the third. Reporting
+// the second or the third as "undone" would be the plainest lie this product could
+// tell: the member asked for something to not exist, and would be told it does not
+// while it does.
+//
+// A second tap cannot reach here. The transport retires the announcement on the first
+// one — keyboard stripped, pending question forgotten — and every later tap on a
+// keyboard still on somebody's screen is dropped silently, exactly as a stale tap on a
+// capture question is. The delete is therefore attempted once per announcement, and
+// lore's own idempotence is a second line rather than the first.
+func (e *Engine) undo(ctx context.Context, sc domain.Scope, out Outcome, speaker int64, turn int) (Outcome, error) {
+	// Recorded before the delete is attempted, and recorded whether or not it
+	// succeeds: what the member has told us is that they did not want this written,
+	// and that is true even if it turns out to still be there. Without it the model
+	// re-proposes next turn and the default policy writes it straight back.
+	e.recordDecline(sc, speaker, out.Title, turn)
+
+	where := destinationPhrase(sc, out.Space)
+	err := e.mem.Delete(ctx, out.Space, out.EntryID)
+	switch {
+	case err == nil:
+		out.Kind = OutcomeUndone
+		// The promise is bounded to what lore actually does. A delete is a signed
+		// tombstone, not a shred: the entry stops coming back from search and from
+		// get, here and on every synced device, and the row is still on the disk.
+		// ARCHITECTURE.md's capture section required this sentence to say which of
+		// the two it is, because "erased" and "will not be recalled" are different
+		// promises and only the second one is kept.
+		if serr := e.tr.Send(ctx, transport.Outbound{
+			ChatID: sc.ChatID,
+			Text: fmt.Sprintf("Removed %q from %s (%s). It won't come back in an answer, here or on any other device in the household.",
+				out.Title, where, out.Space),
+		}); serr != nil {
+			// As with the confirmation in Offer: the news has been attempted and
+			// there is nothing useful left to say to a transport that just failed.
+			return out, marked(fmt.Errorf("capture: confirming the removal of entry %s from %s: %w", out.EntryID, out.Space, serr))
+		}
+		return out, nil
+
+	case errors.Is(err, memory.ErrWriteUncertain):
+		// The tombstone may or may not have landed. Both "removed" and "still
+		// there" are guesses, and the member can settle it by asking.
+		return out, e.told(ctx, sc,
+			fmt.Sprintf("I can't tell whether %q was removed — the memory store didn't answer. Ask me about it before assuming either way.", out.Title),
+			fmt.Errorf("capture: undoing entry %s in %s: %w", out.EntryID, out.Space, err))
+
+	default:
+		return out, e.told(ctx, sc,
+			fmt.Sprintf("I couldn't take that back: %q is still in %s (%s).", out.Title, where, out.Space),
+			fmt.Errorf("capture: undoing entry %s in %s: %w", out.EntryID, out.Space, err))
+	}
+}
+
+// store performs the write itself, shared by the path that asked first and the path
+// that did not. Every error it returns has already been put to the member.
+//
+// The two failures below are the reason it is one function rather than two copies. A
+// write that may have landed and a write that landed in the wrong space are the two
+// ways storage can go wrong that a member must hear about in words, and they must read
+// the same however the write was authorised.
+func (e *Engine) store(ctx context.Context, sc domain.Scope, p Proposal, title string, space domain.SpaceID, speaker int64, turn int) (Outcome, error) {
+	draft := p.Draft
+	draft.Title = title
+	entry, err := e.mem.Put(ctx, space, draft)
+	if err != nil {
+		// The write may have landed even though the store reported failure. lore can
+		// delete, but only by id, and the id was in the receipt that never arrived —
+		// so there is nothing to clean up with and a retry that duplicates is
+		// permanent. Report the uncertainty to the member (IMPLEMENTATION.md section
+		// 12) instead of retrying silently, and suppress the title so the model does
+		// not immediately re-propose the thing they were just told to verify first.
+		e.recordDecline(sc, speaker, title, turn)
+		return Outcome{}, e.told(ctx, sc,
+			fmt.Sprintf("I can't confirm whether %q was saved — the memory store didn't answer. Check before saving it again; I have no way to remove a duplicate I can't name.", title),
+			fmt.Errorf("capture: storing an entry in %s: %w", space, err))
+	}
+
+	// What the member is told is derived from the entry the store returned, never
+	// echoed back from the intention, so the destination they are told and the
+	// destination that was written come from different values and can disagree. A
+	// store reporting a different space is treated as a failure — telling a member
+	// their private note is private while it sits in the shared space is the exact
+	// failure this product exists to prevent, and a message built from the intended
+	// space could never notice.
+	if entry.Space != space {
+		e.recordDecline(sc, speaker, title, turn)
+		return Outcome{}, e.told(ctx, sc,
+			fmt.Sprintf("Something went wrong: %q was not stored where it should have been. Tell whoever runs this node before saving it again.", title),
+			fmt.Errorf("capture: store reported space %s for a write to %s", entry.Space, space))
+	}
+
+	return Outcome{Kind: OutcomeSaved, Space: entry.Space, EntryID: entry.ID, Title: title}, nil
 }
 
 // OfferPromotion asks a member whether to publish one of their private entries to the
@@ -657,6 +872,38 @@ func proposalText(p Proposal, title, destination string) string {
 		b.WriteString(destination)
 		b.WriteString("?")
 	}
+	return b.String()
+}
+
+// undoExpiredNote is appended to a write announcement once its undo window has closed,
+// in place of the transport's default "no answer, treated as declined".
+//
+// The default would be a lie in the worst available direction: it would leave a
+// message that says an entry was written ending in a line that reads as though the
+// write had been called off. This says the two things that are true — the button is
+// finished and the entry is not.
+const undoExpiredNote = "the undo window has closed; this is still in memory"
+
+// writtenText is the announcement of a write that already happened.
+//
+// It shows the whole draft, title and body, because the member did not see it before
+// it was stored and "kenward tells you what it wrote" means the words, not a
+// reassurance that some words exist. It names the space twice over — in plain language
+// and as the id — for the same reason the confirmation on the asked path does: the
+// plain phrase is what a member reads and the id is what they can check.
+func writtenText(p Proposal, title, destination string, space domain.SpaceID) string {
+	var b strings.Builder
+	b.WriteString("I've written this to ")
+	b.WriteString(destination)
+	b.WriteString(" (")
+	b.WriteString(string(space))
+	b.WriteString("):\n\n")
+	b.WriteString(title)
+	if body := strings.TrimSpace(p.Draft.Body); body != "" {
+		b.WriteString("\n")
+		b.WriteString(body)
+	}
+	b.WriteString("\n\nUndo removes it.")
 	return b.String()
 }
 

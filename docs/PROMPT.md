@@ -203,20 +203,43 @@ propose remembering: the content of this conversation as a summary, anything alr
 the memory shown above, anything that will be false next week, or anything the member
 has already declined.
 
-You propose. {{.MemberName}} decides, with a button. If you are unsure whether something
-belongs in private or shared memory, say unsure rather than guessing — they will be
-asked.
 ```
 
-**Group scope adds:**
+**Group scope adds**, and its last sentence is the whole of the write policy there —
+one destination, and it is never written without being asked about:
 
 ```
 This is a group conversation, so anything remembered here goes to the household's shared
-memory. You cannot propose storing anything in a private memory from here.
+memory. You cannot propose storing anything in a private memory from here. Nothing is
+written there unless the member who asked says yes to it first.
 ```
 
-**Direct scope adds**, because promotion is the one memory act a member asks for rather
-than being offered:
+**Direct scope adds**, because it is the one scope with two destinations and therefore
+the only one where what happens next depends on which the model names:
+
+```
+Proposing something for {{.MemberName}}'s private memory may store it immediately.
+They are shown exactly what was written and can undo it, but they were not asked
+first, so propose only what you would be comfortable having written. Nothing reaches
+the household's shared memory until they say yes to it. If you are unsure which of the
+two something belongs in, say unsure rather than guessing — they will be asked.
+```
+
+This paragraph carries the asymmetry the product is built on, and it is stated to the
+model in the same words it is stated to the member: **a private note is written and
+then shown; a shared one is shown and then written.** The model is told the consequence
+rather than the mechanism — *propose only what you would be comfortable having written*
+— because "the member confirms" was doing real work in the old prompt and something has
+to replace it. A model that believes a button stands between its proposal and the store
+proposes more loosely than one that knows it does not.
+
+It says *may* store it immediately, and the hedge is deliberate: `capture.private_writes`
+can be set back to `ask`, and a prompt asserting either behaviour flatly would be false
+in half the households. What is true in all of them is that the model does not get to
+find out which, and does not need to.
+
+**Direct scope also adds**, because promotion is the one memory act a member asks for
+rather than being offered:
 
 ```
 If {{.MemberName}} asks you to publish something they recorded privately, call the
@@ -230,7 +253,7 @@ The tool schema:
 ```json
 {
   "name": "remember",
-  "description": "Propose storing something in memory. The member confirms before anything is written.",
+  "description": "Propose storing something in memory. A proposal for the member's private memory may be written straight away and shown to them, with an undo button; anything for the household's shared memory is written only if they confirm.",
   "input_schema": {
     "type": "object",
     "required": ["title", "body", "domain", "target"],

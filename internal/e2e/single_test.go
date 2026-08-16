@@ -307,7 +307,7 @@ func TestPodForOneMemberServesThatMemberNormally(t *testing.T) {
 	h.tr.InjectText(davidChatID, davidTelegramID, "when do the bins go out?", false)
 	sent := h.waitForReply(davidChatID, 1)
 
-	if sent[0].Text != "Tuesday night." {
+	if replyBody(sent[0].Text) != "Tuesday night." {
 		t.Errorf("reply = %q, want the model's text", sent[0].Text)
 	}
 	health, err := h.sup.Health(context.Background())
@@ -378,7 +378,7 @@ func TestGroupPodServesTheGroupChatAndSearchesOnlyTheSharedSpace(t *testing.T) {
 	h.tr.InjectText(groupChatID, davidTelegramID, "what's the gate code?", true)
 	sent := h.waitForReply(groupChatID, 1)
 
-	if sent[0].Text != "The side gate code is 4417." {
+	if replyBody(sent[0].Text) != "The side gate code is 4417." {
 		t.Errorf("reply = %q, want the model's text", sent[0].Text)
 	}
 	health, err := h.sup.Health(context.Background())
@@ -481,7 +481,7 @@ func TestPodForAnUnenrolledMemberStartsClaimOnlyAndServesNothingUntilClaimed(t *
 	})
 	h.tr.InjectText(samChatID, samTelegramID, "what's the bike lock code?", false)
 	sent := h.waitForReply(samChatID, 4)
-	if sent[3].Text != "8812." {
+	if replyBody(sent[3].Text) != "8812." {
 		t.Errorf("reply after the claim = %q, want the model's text", sent[3].Text)
 	}
 	searched := h.mem.searchedSpaces()

@@ -52,8 +52,16 @@ or Docker.
 Two things hold whichever mode you are in. A conversation whose tier chain
 names only machines in the house never reaches a provider: when none of them
 answers, kenward refuses rather than reaching further, and there is no setting
-that changes that. And nothing is written to memory without the member seeing
-the exact words first and saying yes.
+that changes that.
+
+And nothing is written to memory without you being told. A note to your own
+private memory is written first and then shown to you in full — the exact words
+and the space they went to — with an Undo button that removes it. Anything
+going to the household's shared memory is shown to you first and written only
+if you say yes, because other people will have read it by the time you regret
+it. Your household can turn the private half back into a question, and some do.
+It cannot turn off being told, and it cannot turn off the question for the
+shared memory.
 
 Where each conversation may go
 

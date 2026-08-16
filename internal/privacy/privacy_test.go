@@ -91,8 +91,24 @@ func TestStatementsAreGolden(t *testing.T) {
 			// making the promise, either routing has changed or the statement has.
 			mustContain(t, s, "never reaches a provider",
 				"the local-only routing guarantee must be stated in "+m.String()+" mode")
-			mustContain(t, s, "nothing is written to memory without the member",
-				"capture consent must be stated in "+m.String()+" mode")
+			// The claim that survived the move to writing private notes without
+			// asking. It is deliberately not "without saying yes" any more,
+			// because that stopped being true; what must not be softened away is
+			// that the member finds out, every time, in their own words.
+			mustContain(t, s, "nothing is written to memory without you being told",
+				"the write announcement must be stated in "+m.String()+" mode")
+			mustContain(t, s, "with an Undo button that removes it",
+				"a private write is announced with a way back, and the way back must be named")
+			mustContain(t, s, "written only if you say yes",
+				"the shared space still asks first and "+m.String()+" mode must say so")
+			mustContain(t, s, "It cannot turn off being told",
+				"the announcement is not configurable, and a member cannot read the configuration to find that out")
+
+			// The promise as it read before private writes stopped being asked
+			// about. If it comes back, the statement is claiming a consent step
+			// that no longer happens for a member's own space.
+			mustNotContain(t, s, "seeing the exact words first and saying yes",
+				"this claim was withdrawn when private writes stopped asking, and must not reappear")
 		}
 	})
 

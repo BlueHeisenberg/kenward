@@ -323,10 +323,7 @@ func (r *runner) buildGroupUnit() error {
 }
 
 func (r *runner) buildUnit(view transport.Transport, name string, tiers []string) (*assistant.Unit, error) {
-	engine := capture.New(r.memory, view, capture.Options{
-		MaxProposalsPerTurn: r.cfg.Capture.MaxProposalsPerTurn,
-		Shared:              domain.SpaceID(r.cfg.Household.SharedSpace),
-	})
+	engine := r.captureEngine(view)
 	unitOpts := r.unitOptions(tiers)
 	u, err := assistant.New(assistant.Deps{
 		Resolve:   r.resolve,
@@ -341,6 +338,26 @@ func (r *runner) buildUnit(view transport.Transport, name string, tiers []string
 		return nil, fmt.Errorf("supervisor: building unit %s: %w", name, err)
 	}
 	return u, nil
+}
+
+// captureEngine builds one unit's capture engine over its own transport view.
+//
+// It is separate from buildUnit so that the write policy has somewhere to be asserted:
+// the engine keeps its options private, so the only way to check that a household's
+// capture.private_writes reached it is to build one the way production does and watch
+// what it does with a proposal.
+func (r *runner) captureEngine(view transport.Transport) *capture.Engine {
+	opts := capture.Options{
+		MaxProposalsPerTurn: r.cfg.Capture.MaxProposalsPerTurn,
+		Shared:              domain.SpaceID(r.cfg.Household.SharedSpace),
+	}
+	// Mapped rather than shared: the configuration's spelling is an operator's
+	// vocabulary and the engine's is a Go enum, and the two packages are entitled to
+	// disagree about either without one silently redefining the other.
+	if r.cfg.Capture.PrivateWrites == config.PrivateWriteAsk {
+		opts.PrivateWrites = capture.PrivateWriteAsk
+	}
+	return capture.New(r.memory, view, opts)
 }
 
 // unitOptions resolves one unit's options from the shared seed and the unit's own
@@ -367,6 +384,12 @@ func (r *runner) unitOptions(tiers []string) assistant.Options {
 	}
 	if o.MaxTokens == 0 {
 		o.MaxTokens = maxTokens
+	}
+	// Not guarded by a zero check, unlike the numbers above: the off value is the
+	// zero value, so a seed that turned it off would be indistinguishable from a
+	// seed that said nothing, and the configuration is the authority either way.
+	if !r.cfg.Memory.AnnouncesReads() {
+		o.ReadNotices = assistant.ReadNoticesOff
 	}
 	return o
 }

@@ -64,9 +64,13 @@ const (
 	// and is not rewritten: see ApplyDefaults.
 	DefaultIdleTimeout         = time.Duration(0)
 	DefaultMaxProposalsPerTurn = 1
-	DefaultUpdateChannel       = UpdateStable
-	DefaultCheckInterval       = 6 * time.Hour
-	DefaultEndpointTimeout     = 120 * time.Second
+	// DefaultPrivateWrites is the decided behaviour: a note to a member's own space
+	// is written, then shown to them with an undo button. A household wanting the
+	// old question back sets capture.private_writes: ask.
+	DefaultPrivateWrites   = PrivateWriteSave
+	DefaultUpdateChannel   = UpdateStable
+	DefaultCheckInterval   = 6 * time.Hour
+	DefaultEndpointTimeout = 120 * time.Second
 	// DefaultContextWindow is the context window assumed for an endpoint that does
 	// not state one, in tokens as the assistant estimates them.
 	//
@@ -279,7 +283,21 @@ type MemoryConfig struct {
 	LoreCommand []string `yaml:"lore_command"`
 	// SearchLimit is the per-space retrieval budget for one turn.
 	SearchLimit int `yaml:"search_limit"`
+	// AnnounceReads says whether each reply is prefixed with a line naming the
+	// memories that were searched and how many entries reached the answer.
+	//
+	// It is a pointer because the default is true and a bare bool cannot tell "not
+	// stated" from "stated false". Unset means on.
+	//
+	// This one is a setting where the write announcement is not, and the asymmetry
+	// is deliberate: a read changes nothing, so a household that finds the line
+	// noisy loses nothing but the line by turning it off. Use AnnouncesReads to
+	// read it.
+	AnnounceReads *bool `yaml:"announce_reads"`
 }
+
+// AnnouncesReads reports whether replies carry the retrieval line. Unset is on.
+func (m MemoryConfig) AnnouncesReads() bool { return m.AnnounceReads == nil || *m.AnnounceReads }
 
 // SessionConfig configures key lifetime.
 type SessionConfig struct {
@@ -302,12 +320,33 @@ type SessionConfig struct {
 	PassphraseFile string `yaml:"passphrase_file"`
 }
 
-// CaptureConfig bounds how often the assistant may ask to remember something.
+// CaptureConfig governs how memory writes reach the member.
 type CaptureConfig struct {
-	// MaxProposalsPerTurn caps capture questions per turn. The default of one exists
-	// because an assistant that asks repeatedly trains members to dismiss it.
+	// MaxProposalsPerTurn caps capture proposals per turn. The default of one exists
+	// because an assistant that interrupts repeatedly trains members to ignore it.
 	MaxProposalsPerTurn int `yaml:"max_proposals_per_turn"`
+	// PrivateWrites says what a proposal for a member's own private memory does:
+	// "save" writes it and shows the member what was written, with an undo button;
+	// "ask" puts it as a question first and writes nothing until they tap. Empty
+	// means "save".
+	//
+	// It is the only part of this that a household configures. There is no setting
+	// for the household's shared memory, which is always asked about first —
+	// publishing to everyone is the one act here that cannot be taken back — and
+	// none for the announcement, because a write nobody is told about would make the
+	// product's central claim false.
+	PrivateWrites PrivateWrites `yaml:"private_writes"`
 }
+
+// PrivateWrites is capture.private_writes.
+type PrivateWrites string
+
+const (
+	// PrivateWriteSave writes the entry and announces it, with an undo button.
+	PrivateWriteSave PrivateWrites = "save"
+	// PrivateWriteAsk asks first and writes nothing until the member taps.
+	PrivateWriteAsk PrivateWrites = "ask"
+)
 
 // UpdateConfig configures self-update.
 type UpdateConfig struct {
@@ -449,6 +488,13 @@ func (c *Config) ApplyDefaults() {
 	if c.Capture.MaxProposalsPerTurn == 0 {
 		c.Capture.MaxProposalsPerTurn = DefaultMaxProposalsPerTurn
 	}
+	if c.Capture.PrivateWrites == "" {
+		c.Capture.PrivateWrites = DefaultPrivateWrites
+	}
+	// memory.announce_reads is deliberately not defaulted here, for the same reason
+	// session.idle_timeout is not: its default is true and its zero value is false,
+	// so the absence has to survive as an absence. MemoryConfig.AnnouncesReads reads
+	// it; rewriting nil to a pointer-to-true here would only move the branch.
 	if c.Update.Channel == "" {
 		c.Update.Channel = DefaultUpdateChannel
 	}

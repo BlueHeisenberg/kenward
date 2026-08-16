@@ -6,9 +6,10 @@
 // routing.ToolCall.Arguments is raw JSON precisely because a malformed call is a
 // parsing decision for the caller that understands the tool, and the rules here are
 // fixed: a malformed call is dropped with a log line, never a crashed turn and never
-// a write. An unknown target degrades to unsure, which is safe because unsure only
-// means the member is asked where the entry goes — and no write happens without the
-// member's button press regardless.
+// a write. An unknown target degrades to unsure, and unsure is the safe degradation
+// rather than merely a tidy one: it is the one target that is always put to the member
+// as a question, so a call this file could not read never becomes a write nobody
+// chose.
 
 package assistant
 
@@ -67,7 +68,7 @@ const publishSchema = `{
 func toolSpecs(sc domain.Scope) []routing.ToolSpec {
 	specs := []routing.ToolSpec{{
 		Name:        rememberToolName,
-		Description: "Propose storing something in memory. The member confirms before anything is written.",
+		Description: "Propose storing something in memory. A proposal for the member's private memory may be written straight away and shown to them, with an undo button; anything for the household's shared memory is written only if they confirm.",
 		Schema:      json.RawMessage(rememberSchema),
 	}}
 	if sc.AllowsPrivateCapture() {
@@ -130,8 +131,9 @@ func extractProposal(calls []routing.ToolCall) (p *capture.Proposal, warn string
 		target = capture.TargetShared
 	case "unsure":
 	default:
-		// An unknown target is not a reason to lose the proposal: unsure means the
-		// member is asked where it goes, and the member decides everything anyway.
+		// An unknown target is not a reason to lose the proposal, and unsure is
+		// where it has to land: it is the target that is always asked about, so a
+		// field this parser could not understand never decides a write on its own.
 		warn = joinWarn(warn, fmt.Sprintf("unknown target %q treated as unsure", call.Target))
 	}
 

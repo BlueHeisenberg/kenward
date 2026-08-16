@@ -253,6 +253,16 @@ memory:
   # is 8; set explicitly here to the same value. Too high and prompts bloat with
   # marginal context; too low and relevant entries silently never surface.
   search_limit: 8
+  # announce_reads prefixes each reply with a line naming the memories that were
+  # searched and how many entries reached the answer — [searched your private memory
+  # (2 entries), the household memory (nothing)]. Kenward's default is true; set
+  # explicitly here to the same value.
+  #
+  # This one is a setting because a read changes nothing: a household that finds the
+  # line noisy turns it off and loses nothing but the line. The announcement kenward
+  # makes when it *writes* something is not a setting, and there is deliberately no
+  # key here for it — see capture.private_writes below.
+  announce_reads: true
 
 # session configures how long an unlocked key stays usable without activity.
 session:
@@ -285,14 +295,30 @@ session:
   # by the `lore` subprocess kenward spawns. One source only: naming both is an error.
   passphrase_env: KENWARD_PASSPHRASE
 
-# capture bounds how often the assistant proactively asks to remember something it
-# noticed in the conversation.
+# capture governs how memory writes reach the member.
 capture:
-  # max_proposals_per_turn caps capture questions per turn. Kenward's default is 1, set
-  # explicitly here to the same value: an assistant that asks to remember more than
-  # once per turn trains members to dismiss it on reflex, which defeats capture
+  # max_proposals_per_turn caps capture proposals per turn. Kenward's default is 1, set
+  # explicitly here to the same value: an assistant that interrupts about memory more
+  # than once per turn trains members to ignore it on reflex, which defeats capture
   # entirely rather than merely annoying someone.
   max_proposals_per_turn: 1
+  # private_writes says what happens when the assistant has something to record in a
+  # member's own private memory.
+  #
+  #   save: write it, then show the member exactly what was written and where, with an
+  #         Undo button live for a few minutes. Kenward's default, set explicitly here.
+  #   ask:  put it as a question first and write nothing until they tap. This is what
+  #         kenward did before, and a household that preferred it has it back.
+  #
+  # Two things this key does NOT control, deliberately, because neither has a setting:
+  #
+  #   - Anything going to the household's shared memory is always asked about first,
+  #     under either policy. Publishing to everyone is the one act here that cannot be
+  #     taken back, so it is never done on the assistant's own initiative.
+  #   - The member is always told when something was written. If a write could be
+  #     silent, "kenward never records anything without telling you" would stop being
+  #     true, and there would be no honest way left to describe the product.
+  private_writes: save
 
 # update configures kenward's self-update behaviour.
 update:

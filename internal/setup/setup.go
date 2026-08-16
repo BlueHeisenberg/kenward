@@ -335,8 +335,11 @@ func (w *Wizard) build() *config.Config {
 	// loader. The generated file is the only documentation of these values most
 	// households will ever read, and a value you can see is a value you can change.
 	cfg.Memory.SearchLimit = config.DefaultSearchLimit
+	announceReads := true
+	cfg.Memory.AnnounceReads = &announceReads
 	cfg.Session.IdleTimeout = config.Duration(config.DefaultIdleTimeout)
 	cfg.Capture.MaxProposalsPerTurn = config.DefaultMaxProposalsPerTurn
+	cfg.Capture.PrivateWrites = config.DefaultPrivateWrites
 	cfg.Update.Channel = config.DefaultUpdateChannel
 	cfg.Update.CheckInterval = config.Duration(config.DefaultCheckInterval)
 	cfg.ApplyDefaults()

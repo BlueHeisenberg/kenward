@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,7 @@ func TestDirectMessageRoundTripsAndPromptCarriesBothMemories(t *testing.T) {
 	h.tr.InjectText(davidChatID, davidTelegramID, asked, false)
 	sent := h.waitForReply(davidChatID, 1)
 
-	if got := sent[0].Text; got != "Recycling goes out Tuesday night." {
+	if got := replyBody(sent[0].Text); got != "Recycling goes out Tuesday night." {
 		t.Errorf("reply = %q, want the model's text", got)
 	}
 	if sent[0].ReplyTo != 0 {
@@ -179,17 +180,22 @@ func TestLocalOnlyChainRefusesInsteadOfReachingCloud(t *testing.T) {
 	}
 }
 
-// TestCaptureWritesNothingWithoutConfirmation covers the rule that has no
-// configuration flag: a proposed memory is written only when the member who
-// spoke presses the button that says so.
-func TestCaptureWritesNothingWithoutConfirmation(t *testing.T) {
+// TestSharedCaptureWritesNothingWithoutConfirmation covers the rule that has no
+// configuration flag: nothing reaches the household's shared memory until the
+// member who spoke presses the button that says so.
+//
+// It used to name a personal target, which is now written and announced instead.
+// The rule did not weaken — it narrowed to the act it was always really about.
+// Publishing to everyone cannot be taken back, so it is the one thing kenward
+// never does on its own initiative, and this is the end-to-end proof of that.
+func TestSharedCaptureWritesNothingWithoutConfirmation(t *testing.T) {
 	proposing := func(wireRequest) providerReply {
 		return providerReply{
 			Text:         "Noted.",
 			FinishReason: "tool_calls",
 			ToolCalls: []providerToolCall{{
 				Name:      "remember",
-				Arguments: rememberArgs("Boiler serviced", "The boiler was serviced in March.", "personal"),
+				Arguments: rememberArgs("Boiler serviced", "The boiler was serviced in March.", "shared"),
 			}},
 		}
 	}
@@ -233,7 +239,7 @@ func TestCaptureWritesNothingWithoutConfirmation(t *testing.T) {
 	t.Run("accepted", func(t *testing.T) {
 		h := newHarness(t, harnessOptions{})
 		h.local.setReply(proposing)
-		h.tr.AnswerWithChoice(capture.ChoicePersonal)
+		h.tr.AnswerWithChoice(capture.ChoiceShared)
 		h.start()
 
 		h.tr.InjectText(davidChatID, davidTelegramID, "the boiler was serviced", false)
@@ -244,8 +250,8 @@ func TestCaptureWritesNothingWithoutConfirmation(t *testing.T) {
 		if len(puts) != 1 {
 			t.Fatalf("accepted proposal produced %d writes, want 1: %+v", len(puts), puts)
 		}
-		if got := puts[0].Spaces; len(got) != 1 || got[0] != davidSpace {
-			t.Errorf("wrote to %v, want the member's private space %s", got, davidSpace)
+		if got := puts[0].Spaces; len(got) != 1 || got[0] != sharedSpace {
+			t.Errorf("wrote to %v, want the household's shared space %s", got, sharedSpace)
 		}
 		if puts[0].Title != "Boiler serviced" {
 			t.Errorf("wrote title %q, want the proposal's", puts[0].Title)
@@ -337,7 +343,7 @@ func TestStopDrainsTheTurnInFlight(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("after draining, chat %d had %d messages, want 1: %+v", davidChatID, len(sent), sent)
 	}
-	if sent[0].Text != "Answered after the drain began." {
+	if replyBody(sent[0].Text) != "Answered after the drain began." {
 		t.Errorf("reply = %q, want the turn's own answer", sent[0].Text)
 	}
 }
@@ -363,5 +369,154 @@ func TestSupervisorServesOneUnitPerMemberPlusTheGroup(t *testing.T) {
 		if m.Private == sharedSpace {
 			t.Errorf("member %s's private space is the shared one", m.ID)
 		}
+	}
+}
+
+// TestPrivateProposalIsWrittenAndAnnouncedEndToEnd is the decided behaviour driven
+// through the whole household: a model proposal for the member's own space reaches
+// lore before it reaches the member, and the message they get carries what was
+// written, where it went, and a way back.
+//
+// The ordering assertion is the one with teeth. If the announcement went out first
+// and the write followed, every visible symptom would be identical right up to the
+// moment the write failed — at which point the member would be holding a message
+// saying kenward had stored something it had not.
+func TestPrivateProposalIsWrittenAndAnnouncedEndToEnd(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{
+			Text:         "Noted.",
+			FinishReason: "tool_calls",
+			ToolCalls: []providerToolCall{{
+				Name:      "remember",
+				Arguments: rememberArgs("Boiler serviced", "The boiler was serviced in March.", "personal"),
+			}},
+		}
+	})
+	// Nobody taps: the undo window simply expires, and the entry stays.
+	h.tr.AnswerWithTimeout()
+	h.start()
+
+	h.tr.InjectText(davidChatID, davidTelegramID, "the boiler was serviced", false)
+	waitFor(t, "the announcement", func() bool { return len(h.tr.Asked()) >= 1 })
+
+	// Written before announced.
+	puts := h.mem.putCalls()
+	if len(puts) != 1 {
+		t.Fatalf("%d writes by the time the member was told, want exactly 1: %+v", len(puts), puts)
+	}
+	if got := puts[0].Spaces; len(got) != 1 || got[0] != davidSpace {
+		t.Errorf("wrote to %v, want the member's own space %s", got, davidSpace)
+	}
+
+	q, _ := h.tr.LastAsked()
+	for _, want := range []string{"Boiler serviced", "The boiler was serviced in March.", string(davidSpace)} {
+		if !strings.Contains(q.Text, want) {
+			t.Errorf("announcement %q does not carry %q", q.Text, want)
+		}
+	}
+	if len(q.Choices) != 1 || q.Choices[0].ID != capture.ChoiceUndo {
+		t.Errorf("announcement offers %+v, want a single undo button", q.Choices)
+	}
+	if q.AllowedUserID != davidTelegramID {
+		t.Errorf("the undo is tappable by %d, want only %d", q.AllowedUserID, davidTelegramID)
+	}
+	// The message volume of a write did not grow. It shrank: the old flow spent a
+	// question and a confirmation, and this spends one announcement.
+	if n := len(h.tr.Sent()); n != 1 {
+		t.Errorf("a write cost %d plain messages beyond the reply, want 0 (the reply itself is the one)", n-1)
+	}
+}
+
+// TestUndoRemovesTheEntryEndToEnd: the tap reaches lore's delete, space-scoped, and
+// the member is told the entry is gone.
+func TestUndoRemovesTheEntryEndToEnd(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{
+			Text:         "Noted.",
+			FinishReason: "tool_calls",
+			ToolCalls: []providerToolCall{{
+				Name:      "remember",
+				Arguments: rememberArgs("Boiler serviced", "The boiler was serviced in March.", "personal"),
+			}},
+		}
+	})
+	h.tr.AnswerWithChoice(capture.ChoiceUndo)
+	h.start()
+
+	h.tr.InjectText(davidChatID, davidTelegramID, "the boiler was serviced", false)
+	waitFor(t, "the delete", func() bool { return len(h.mem.deleteCalls()) > 0 })
+
+	dels := h.mem.deleteCalls()
+	if len(dels) != 1 {
+		t.Fatalf("%d deletes, want exactly 1: %+v", len(dels), dels)
+	}
+	if got := dels[0].Spaces; len(got) != 1 || got[0] != davidSpace {
+		t.Errorf("deleted from %v, want the member's own space %s", got, davidSpace)
+	}
+	waitFor(t, "the removal notice", func() bool {
+		for _, o := range h.tr.Sent() {
+			if strings.Contains(o.Text, "Removed") && strings.Contains(o.Text, "Boiler serviced") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// TestFailedUndoTellsTheMemberTheEntryIsStillThere. The delete is the one step of
+// this flow that can fail after the member has already been promised a way back,
+// and "undone" would be the plainest lie the product could tell — the member asked
+// for something to stop existing and would be told it had.
+func TestFailedUndoTellsTheMemberTheEntryIsStillThere(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	h.mem.deleteErr = errors.New("lore refused the delete")
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{
+			Text:         "Noted.",
+			FinishReason: "tool_calls",
+			ToolCalls: []providerToolCall{{
+				Name:      "remember",
+				Arguments: rememberArgs("Boiler serviced", "The boiler was serviced in March.", "personal"),
+			}},
+		}
+	})
+	h.tr.AnswerWithChoice(capture.ChoiceUndo)
+	h.start()
+
+	h.tr.InjectText(davidChatID, davidTelegramID, "the boiler was serviced", false)
+	waitFor(t, "the failed-undo notice", func() bool {
+		for _, o := range h.tr.Sent() {
+			if strings.Contains(o.Text, "couldn't take that back") {
+				return true
+			}
+		}
+		return false
+	})
+	for _, o := range h.tr.Sent() {
+		if strings.Contains(o.Text, "Removed") {
+			t.Fatalf("member told %q after a delete that failed; the entry is still in their memory", o.Text)
+		}
+	}
+}
+
+// TestRetrievalLineReachesTheMemberEndToEnd: the member is told what was read, on
+// the reply, in one message.
+func TestRetrievalLineReachesTheMemberEndToEnd(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	h.mem.seed(davidSpace, entry("p1", "Bin day", "Recycling goes out on Tuesday night.", "seasonal"))
+	h.mem.seed(sharedSpace, entry("s1", "Side gate", "The side gate code is 4417."))
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{Text: "Tuesday night.", FinishReason: "stop"}
+	})
+	h.start()
+
+	h.tr.InjectText(davidChatID, davidTelegramID, "when do the bins go out?", false)
+	sent := h.waitForReply(davidChatID, 1)
+
+	want := "[searched your private memory (1 entry), the household memory (nothing)]\n\nTuesday night."
+	if sent[0].Text != want {
+		t.Errorf("sent\n  %q\nwant\n  %q", sent[0].Text, want)
 	}
 }

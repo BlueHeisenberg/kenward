@@ -4,6 +4,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -145,6 +146,50 @@ func TestIntegrationRoundTrip(t *testing.T) {
 		}
 		if !IsExcerpt(x.Entry) {
 			t.Errorf("a real lore search hit must still report as partial: %+v", x.Entry)
+		}
+	}
+
+	// Delete, against the real thing. The write-then-announce flow hands a member
+	// an undo button and then tells them the entry is gone, so the parser here is
+	// load-bearing in a way it is not elsewhere: if lore's receipt stops matching,
+	// what a member is told about their own memory stops being true.
+	//
+	// A second lore home is not created for this. The entry written above is the
+	// one deleted, which also makes this the only test in the tree that leaves the
+	// store as it found it.
+	other := domain.SpaceID("00000000-0000-4000-8000-00000000dead")
+	if err := c.Delete(ctx, other, put.ID); !errors.Is(err, ErrUnknownSpace) {
+		t.Errorf("deleting against a space this home does not hold = %v, want ErrUnknownSpace", err)
+	}
+	if err := c.Delete(ctx, space, "definitely-not-an-entry-id"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("deleting an unknown id = %v, want ErrNotFound", err)
+	}
+	if err := c.Delete(ctx, space, put.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	// Idempotent: the second delete is a no-op lore reports rather than an error,
+	// and the client passes that through as success. An undo that arrived twice —
+	// or a delete replayed by a retry — must not turn into a failure notice about
+	// an entry that is correctly gone.
+	if err := c.Delete(ctx, space, put.ID); err != nil {
+		t.Errorf("second Delete: %v, want nil; deleting an already-deleted entry is a no-op", err)
+	}
+	// And it is really gone from both read paths, which is what the member was
+	// told.
+	if _, err := c.Get(ctx, space, put.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get after Delete = %v, want ErrNotFound", err)
+	}
+	after, err := c.SearchExcerpts(ctx, SearchQuery{
+		Text:   "kenward integration probe",
+		Spaces: []domain.SpaceID{space},
+		Limit:  5,
+	})
+	if err != nil {
+		t.Fatalf("SearchExcerpts after Delete: %v", err)
+	}
+	for _, x := range after {
+		if x.Entry.ID == put.ID {
+			t.Errorf("the deleted entry still comes back from search: %+v", x.Entry)
 		}
 	}
 }

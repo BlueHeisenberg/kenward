@@ -892,3 +892,81 @@ func assertNoGoroutineLeak(t *testing.T, base int) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestRetiredNoteReplacesTheDeclineWording is for the shape of question that is not
+// a question: a message reporting something already done, offering one button to
+// take it back.
+//
+// The default retirement line says the question was declined. Appended to "I've
+// written this to your private memory", that reads as the write having been called
+// off — the one thing such a message must never say, because a member who believes
+// it will not go looking for an entry that is really there.
+func TestRetiredNoteReplacesTheDeclineWording(t *testing.T) {
+	api := telegramtest.New(t, testToken)
+	tg := newTestTelegram(t, api)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := tg.Updates(ctx); err != nil {
+		t.Fatalf("Updates: %v", err)
+	}
+
+	q := Question{
+		ChatID:        -200,
+		Text:          "I've written this to your private memory.",
+		Choices:       []Choice{{ID: "undo", Label: "Undo"}},
+		AllowedUserID: 7,
+		Timeout:       200 * time.Millisecond,
+		RetiredNote:   "the undo window has closed; this is still in memory",
+	}
+	_, result := askInFlight(t, api, tg, q)
+
+	select {
+	case r := <-result:
+		if r.err != nil {
+			t.Fatalf("Ask: %v", r.err)
+		}
+		if !r.answer.TimedOut {
+			t.Fatalf("answer = %+v, want a timeout", r.answer)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Ask never timed out")
+	}
+
+	edit := api.WaitCall(t, "editMessageText", 1)
+	got := edit.Form.Get("text")
+	if !strings.Contains(got, q.Text) {
+		t.Errorf("retired message %q dropped the original text; the established pattern keeps it and appends the outcome", got)
+	}
+	if !strings.Contains(got, q.RetiredNote) {
+		t.Errorf("retired message %q does not carry the caller's note", got)
+	}
+	if strings.Contains(got, "declined") {
+		t.Errorf("retired message %q says the announcement was declined; the write it reports still stands", got)
+	}
+}
+
+// TestRetireReserveCountsTheRetiredNote. Ask refuses a text too long to survive its
+// own retirement edit, and the reservation is computed from the outcome functions so
+// it cannot drift from what retire actually writes. A note longer than every choice
+// label and every default line has to be in that computation, or a message is
+// accepted that cannot be edited afterwards — leaving a live keyboard on a decision
+// that has already expired.
+func TestRetireReserveCountsTheRetiredNote(t *testing.T) {
+	note := strings.Repeat("x", 120)
+	q := Question{
+		Text:        "written",
+		Choices:     []Choice{{ID: "undo", Label: "Undo"}},
+		RetiredNote: note,
+	}
+	withNote := retireReserve(q)
+	q.RetiredNote = ""
+	without := retireReserve(q)
+	if withNote <= without {
+		t.Fatalf("retireReserve with a %d-character note = %d, without = %d; the note is not reserved for",
+			len(note), withNote, without)
+	}
+	if withNote < utf16Len(note) {
+		t.Errorf("reserve %d is smaller than the note itself (%d)", withNote, utf16Len(note))
+	}
+}

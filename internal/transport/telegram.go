@@ -344,7 +344,7 @@ func (t *Telegram) Ask(ctx context.Context, q Question) (Answer, error) {
 	if len(q.Choices) == 0 {
 		return Answer{}, ErrNoChoices
 	}
-	if utf16Len(q.Text)+retireReserve(q.Choices) > t.maxLen {
+	if utf16Len(q.Text)+retireReserve(q) > t.maxLen {
 		return Answer{}, ErrTextTooLong
 	}
 
@@ -386,7 +386,7 @@ func (t *Telegram) Ask(ctx context.Context, q Question) (Answer, error) {
 		if !p.deliver(tap{}) {
 			return t.settle(ctx, q, msg.ID, p, <-p.done), nil
 		}
-		t.retire(ctx, q.ChatID, msg.ID, declinedText(q.Text))
+		t.retire(ctx, q.ChatID, msg.ID, retiredText(q, declinedText))
 		return Answer{TimedOut: true}, nil
 
 	case <-t.closedCh:
@@ -395,13 +395,13 @@ func (t *Telegram) Ask(ctx context.Context, q Question) (Answer, error) {
 		// bound the edit rather than letting it run on the caller's live context
 		// for up to the HTTP client timeout after Close has returned.
 		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-		t.retire(rctx, q.ChatID, msg.ID, withdrawnText(q.Text))
+		t.retire(rctx, q.ChatID, msg.ID, retiredText(q, withdrawnText))
 		rcancel()
 		return Answer{}, ErrClosed
 
 	case <-ctx.Done():
 		p.deliver(tap{})
-		t.retire(ctx, q.ChatID, msg.ID, withdrawnText(q.Text))
+		t.retire(ctx, q.ChatID, msg.ID, retiredText(q, withdrawnText))
 		return Answer{}, ctx.Err()
 	}
 }
@@ -558,7 +558,7 @@ func (t *Telegram) forget(token string) {
 func (t *Telegram) settle(ctx context.Context, q Question, msgID int, p *pendingQuestion, r tap) Answer {
 	if r.callbackID == "" {
 		// Closed without a real tap; treated as a decline.
-		t.retire(ctx, q.ChatID, msgID, declinedText(q.Text))
+		t.retire(ctx, q.ChatID, msgID, retiredText(q, declinedText))
 		return Answer{TimedOut: true}
 	}
 	t.ack(ctx, r.callbackID)
@@ -661,16 +661,33 @@ func declinedText(question string) string {
 }
 func withdrawnText(question string) string { return question + "\n\n— question withdrawn" }
 
+// retiredText is the outcome line for a question that ended without a tap. def
+// supplies the default wording for this particular ending, and Question.
+// RetiredNote overrides every ending with one line — see its documentation for
+// why the two are not distinguished when a caller sets it.
+func retiredText(q Question, def func(string) string) string {
+	if q.RetiredNote != "" {
+		return answeredText(q.Text, q.RetiredNote)
+	}
+	return def(q.Text)
+}
+
 // retireReserve is the room a question's text must leave for the outcome line
 // appended when the message is retired — whichever outcome that turns out to
-// be, including the longest choice label. Computed from the outcome functions
-// themselves so the reservation cannot drift from what retire actually writes.
-func retireReserve(choices []Choice) int {
+// be, including the longest choice label and the caller's own retired note.
+// Computed from the outcome functions themselves so the reservation cannot drift
+// from what retire actually writes.
+func retireReserve(q Question) int {
 	n := utf16Len(declinedText(""))
 	if w := utf16Len(withdrawnText("")); w > n {
 		n = w
 	}
-	for _, c := range choices {
+	if q.RetiredNote != "" {
+		if w := utf16Len(answeredText("", q.RetiredNote)); w > n {
+			n = w
+		}
+	}
+	for _, c := range q.Choices {
 		if w := utf16Len(answeredText("", c.Label)); w > n {
 			n = w
 		}

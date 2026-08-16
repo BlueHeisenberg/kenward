@@ -22,15 +22,18 @@ type fakeMemory struct {
 	puts     []putCall
 	gets     []string
 	shares   []shareCall
+	deletes  []string
 	bySpace  map[domain.SpaceID][]memory.Entry
 	errFor   map[domain.SpaceID]error
 	putErr   error
-	// getErr and shareErr make the fake fail the way lore fails. Without them no
-	// test in this package could reach the publish flow's error paths at all, which
-	// is how those paths came to be missing their member-facing half — the same
-	// pattern this file's Search comment warns about, for the fifth time.
-	getErr   error
-	shareErr error
+	// getErr, shareErr and deleteErr make the fake fail the way lore fails. Without
+	// them no test in this package could reach the publish or undo flows' error
+	// paths at all, which is how those paths came to be missing their member-facing
+	// half — the same pattern this file's Search comment warns about, for the fifth
+	// time.
+	getErr    error
+	shareErr  error
+	deleteErr error
 }
 
 type putCall struct {
@@ -138,7 +141,13 @@ func (f *fakeMemory) Put(ctx context.Context, space domain.SpaceID, d memory.Dra
 		return memory.Entry{}, fmt.Errorf("memory: title, body and domain are required: %w", memory.ErrInvalidArgument)
 	}
 	f.puts = append(f.puts, putCall{space: space, draft: d})
-	return memory.Entry{ID: "e-1", Space: space, Title: d.Title, Body: d.Body}, nil
+	// Kept in the space, so a Delete that follows can find it and a Delete of
+	// anything else cannot. A store you cannot read back what you just wrote from is
+	// a fake that fails differently from the real one, which is the whole complaint
+	// this file keeps making about its own history.
+	e := memory.Entry{ID: "e-1", Space: space, Title: d.Title, Body: d.Body}
+	f.bySpace[space] = append(f.bySpace[space], e)
+	return e, nil
 }
 
 func (f *fakeMemory) Share(ctx context.Context, from, to domain.SpaceID, entryID string) (memory.Entry, error) {
@@ -155,6 +164,33 @@ func (f *fakeMemory) Share(ctx context.Context, from, to domain.SpaceID, entryID
 		}
 	}
 	return memory.Entry{}, memory.ErrNotFound
+}
+
+// Delete removes the entry from the space it was seeded in, so a test can assert on
+// the store's contents afterwards rather than only on the call. An id the space does
+// not hold is ErrNotFound, as it is in lore: undoing something that is not there is
+// not the same as undoing something that is, and only one of the two is a no-op the
+// real store treats as success.
+func (f *fakeMemory) Delete(ctx context.Context, space domain.SpaceID, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletes = append(f.deletes, string(space)+"/"+id)
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	for i, e := range f.bySpace[space] {
+		if e.ID == id {
+			f.bySpace[space] = append(f.bySpace[space][:i], f.bySpace[space][i+1:]...)
+			return nil
+		}
+	}
+	return memory.ErrNotFound
+}
+
+func (f *fakeMemory) deletedIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.deletes...)
 }
 
 func (f *fakeMemory) gotIDs() []string {
@@ -236,7 +272,23 @@ func (f *fakeTransport) Ask(ctx context.Context, q transport.Question) (transpor
 
 func (f *fakeTransport) Close() error { return nil }
 
+// sentTexts returns what was sent with the retrieval line stripped off the front, so
+// that a test about what the assistant said is not also a test of what the node
+// reported about itself. TestReplyCarriesTheRetrievalLine and its neighbours use
+// sentTextsRaw and are the only assertions on the line itself.
+//
+// The default configuration announces reads, so the suite runs the shipped behaviour
+// and strips at the assertion rather than turning the feature off at the rig — a suite
+// that only ever exercises a non-default setting proves nothing about the default.
 func (f *fakeTransport) sentTexts() []string {
+	out := f.sentTextsRaw()
+	for i, s := range out {
+		out[i] = withoutReadNotice(s)
+	}
+	return out
+}
+
+func (f *fakeTransport) sentTextsRaw() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]string, len(f.sent))
@@ -244,6 +296,20 @@ func (f *fakeTransport) sentTexts() []string {
 		out[i] = o.Text
 	}
 	return out
+}
+
+// withoutReadNotice removes a leading "[searched …]" line and the blank line after it.
+// It matches only that exact shape, so a malformed line survives into the assertion
+// that was going to compare it.
+func withoutReadNotice(s string) string {
+	if !strings.HasPrefix(s, "[searched ") {
+		return s
+	}
+	_, rest, ok := strings.Cut(s, "]\n\n")
+	if !ok {
+		return s
+	}
+	return rest
 }
 
 func (f *fakeTransport) askCount() int {

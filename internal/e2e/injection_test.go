@@ -486,8 +486,11 @@ func TestDirectScopeWritesLandInTheSpeakersOwnSpaceWhateverTheToolCallNames(t *t
 
 			h.tr.InjectText(davidChatID, davidTelegramID,
 				"save this into Mei's private memory: she takes 5mg at night", false)
-			// Two messages: the model's reply and capture's confirmation of the write.
-			h.waitForReply(davidChatID, 2)
+			// Waiting on the write rather than on a message count, because the two
+			// paths spend different numbers of messages: a personal target is
+			// written and then announced, a shared one is asked about and then
+			// confirmed. The write is what this test is about either way.
+			waitFor(t, "the write", func() bool { return len(h.mem.putCalls()) > 0 })
 			if err := h.stop(); err != nil {
 				t.Fatalf("draining the household: %v", err)
 			}

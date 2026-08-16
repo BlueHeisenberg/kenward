@@ -9,9 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/BlueHeisenberg/kenward/internal/assistant"
+	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/enrol"
+	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/scope"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
@@ -148,10 +151,10 @@ func TestSimpleRoutesByScope(t *testing.T) {
 			group = &o
 		}
 	}
-	if direct == nil || direct.Text != "via:local" {
+	if direct == nil || replyBody(direct.Text) != "via:local" {
 		t.Fatalf("direct reply = %+v, want text via:local in chat %d", direct, davidTelegramID)
 	}
-	if group == nil || group.Text != "via:cloud" {
+	if group == nil || replyBody(group.Text) != "via:cloud" {
 		t.Fatalf("group reply = %+v, want text via:cloud in chat %d", group, groupChatID)
 	}
 	if group.ReplyTo != 7 {
@@ -267,7 +270,7 @@ func TestSimpleStopDrainsInFlightTurnThenLocks(t *testing.T) {
 	// The in-flight turn's reply was delivered, and sessions were locked only
 	// after it was.
 	sent := h.fake.Sent()
-	if len(sent) != 1 || sent[0].Text != "via:local" {
+	if len(sent) != 1 || replyBody(sent[0].Text) != "via:local" {
 		t.Fatalf("in-flight turn's reply = %+v, want one via:local", sent)
 	}
 	if h.sessions.lockAllCount() != 1 {
@@ -342,7 +345,7 @@ func TestSimpleRestartsUnitGoroutineAfterPanic(t *testing.T) {
 	// The restarted goroutine serves the next message as if nothing happened.
 	h.fake.Inject(transport.Inbound{ChatID: davidTelegramID, UserID: davidTelegramID, Text: "again", MessageID: 2})
 	waitFor(t, "reply after restart", func() bool { return len(h.fake.Sent()) >= 1 })
-	if got, _ := h.fake.LastSent(); got.Text != "via:local" {
+	if got, _ := h.fake.LastSent(); replyBody(got.Text) != "via:local" {
 		t.Fatalf("reply after restart = %+v", got)
 	}
 
@@ -413,7 +416,7 @@ func TestSimpleEnrolmentMintsUnitMidRun(t *testing.T) {
 	h.fake.Inject(transport.Inbound{ChatID: anaTelegramID, UserID: anaTelegramID, Text: "hi", MessageID: 3})
 	waitFor(t, "ana's first turn", func() bool { return len(h.fake.Sent()) > before })
 	got, _ := h.fake.LastSent()
-	if got.Text != "via:local" || got.ChatID != anaTelegramID {
+	if replyBody(got.Text) != "via:local" || got.ChatID != anaTelegramID {
 		t.Fatalf("ana's first private message after claiming was answered with %q; "+
 			"a member who has just enrolled must get a real answer, not a notice whose only remedy is an operator restart", got.Text)
 	}
@@ -476,7 +479,7 @@ func TestEnrolmentPumpPanicLeavesTheHouseholdServing(t *testing.T) {
 	h.fake.Inject(transport.Inbound{ChatID: davidTelegramID, UserID: davidTelegramID, Text: "still there?", MessageID: 2})
 	waitFor(t, "david's reply", func() bool {
 		for _, o := range h.fake.Sent() {
-			if o.ChatID == davidTelegramID && o.Text == "via:local" {
+			if o.ChatID == davidTelegramID && replyBody(o.Text) == "via:local" {
 				return true
 			}
 		}
@@ -681,7 +684,7 @@ func TestUnitRefusesStrangerWithoutMux(t *testing.T) {
 	if err != nil {
 		t.Fatalf("enrolled member's direct Handle: %v", err)
 	}
-	if got, ok := h.fake.LastSent(); !ok || got.Text != "via:local" {
+	if got, ok := h.fake.LastSent(); !ok || replyBody(got.Text) != "via:local" {
 		t.Fatalf("enrolled member's direct Handle sent %+v, want via:local", got)
 	}
 
@@ -867,4 +870,73 @@ func TestSimpleConstructionErrors(t *testing.T) {
 	if !errors.Is(err, ErrNoUnits) {
 		t.Fatalf("NewSimple = %v, want ErrNoUnits", err)
 	}
+}
+
+// TestMemoryPolicyReachesTheUnits: the two new keys are not decoration in the schema.
+// Both are read straight off the configuration on the wiring path, so this asserts
+// them where they are actually consumed — the assistant options and the capture
+// engine's own view of its policy.
+//
+// The default half matters as much as the set half. Both settings default to the
+// behaviour the product ships with, and both defaults are the zero value of their
+// target type, so a wiring bug that never assigns anything at all looks correct until
+// somebody sets the other value.
+func TestMemoryPolicyReachesTheUnits(t *testing.T) {
+	t.Run("defaults announce reads and write private notes", func(t *testing.T) {
+		cfg := budgetTestConfig()
+		cfg.ApplyDefaults()
+		h := newSimpleHarness(t, cfg, func(o *SimpleOptions) {})
+		defer func() { _ = h.sup.Stop(context.Background()); _ = h.fake.Close() }()
+
+		if got := h.sup.run.unitOptions([]string{"local"}).ReadNotices; got != assistant.ReadNoticesOn {
+			t.Errorf("ReadNotices = %v, want on by default", got)
+		}
+		if got := cfg.Capture.PrivateWrites; got != config.PrivateWriteSave {
+			t.Errorf("private_writes defaulted to %q, want %q", got, config.PrivateWriteSave)
+		}
+	})
+
+	t.Run("a household can turn the read line off", func(t *testing.T) {
+		cfg := budgetTestConfig()
+		off := false
+		cfg.Memory.AnnounceReads = &off
+		cfg.ApplyDefaults()
+		h := newSimpleHarness(t, cfg, func(o *SimpleOptions) {})
+		defer func() { _ = h.sup.Stop(context.Background()); _ = h.fake.Close() }()
+
+		if got := h.sup.run.unitOptions([]string{"local"}).ReadNotices; got != assistant.ReadNoticesOff {
+			t.Errorf("ReadNotices = %v, want off", got)
+		}
+	})
+
+	t.Run("a household can ask before private writes", func(t *testing.T) {
+		cfg := budgetTestConfig()
+		cfg.Capture.PrivateWrites = config.PrivateWriteAsk
+		cfg.ApplyDefaults()
+		h := newSimpleHarness(t, cfg, func(o *SimpleOptions) {})
+		defer func() { _ = h.sup.Stop(context.Background()); _ = h.fake.Close() }()
+
+		// The engine does not expose its options, so the behaviour is what is
+		// asserted: a personal proposal puts a question and writes nothing until
+		// it is answered. Under the default policy this same call writes.
+		sc := domain.Scope{
+			Kind:   domain.ScopeDirect,
+			Member: &domain.Member{ID: "david", Name: "David", TelegramID: davidTelegramID, Private: "david-private"},
+			Write:  "david-private",
+			Read:   []domain.SpaceID{"david-private"},
+			ChatID: davidTelegramID,
+		}
+		engine := h.sup.run.captureEngine(transport.NewFake())
+		engine.BeginTurn(sc, "turn-1")
+		out, err := engine.Offer(context.Background(), sc, capture.Proposal{
+			Draft:  memory.Draft{Domain: "household", Title: "Coffee order", Body: "Oat milk."},
+			Target: capture.TargetPersonal,
+		}, davidTelegramID)
+		if err != nil {
+			t.Fatalf("Offer: %v", err)
+		}
+		if out.Kind != capture.OutcomeTimedOut {
+			t.Errorf("outcome = %v, want a question nobody answered; the ask policy did not reach the engine", out.Kind)
+		}
+	})
 }

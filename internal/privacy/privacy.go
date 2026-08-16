@@ -119,11 +119,28 @@ own household, rather than opening a file.
 // everything else in this file: checkable, and worth nothing if the two places that make
 // it disagree. The routing sentence in particular is the one an operator can verify
 // against their own configuration in ten seconds, which is what makes the rest credible.
+//
+// The memory paragraph used to say that nothing was written without the member seeing
+// the exact words first and saying yes. That stopped being true when a private write
+// became something kenward does and then reports, and a statement in this file that has
+// stopped being true is worse than no statement: it is the one page a privacy-minded
+// reader tests, and the first claim they catch out is the last one they believe. What
+// survived the change is the part that was load-bearing — the member finds out, in
+// their own words, every time — so that is what it now says, together with the two
+// halves that are settings and the two that are not.
 const bothModes = `Two things hold whichever mode you are in. A conversation whose tier chain
 names only machines in the house never reaches a provider: when none of them
 answers, kenward refuses rather than reaching further, and there is no setting
-that changes that. And nothing is written to memory without the member seeing
-the exact words first and saying yes.`
+that changes that.
+
+And nothing is written to memory without you being told. A note to your own
+private memory is written first and then shown to you in full — the exact words
+and the space they went to — with an Undo button that removes it. Anything
+going to the household's shared memory is shown to you first and written only
+if you say yes, because other people will have read it by the time you regret
+it. Your household can turn the private half back into a question, and some do.
+It cannot turn off being told, and it cannot turn off the question for the
+shared memory.`
 
 // Statement returns the privacy claim for a mode, as prose, with no leading or trailing
 // blank lines.

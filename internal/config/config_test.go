@@ -1614,3 +1614,80 @@ func TestValidateWithNilLookupUsesTheProcessEnvironment(t *testing.T) {
 		t.Error("Validate(nil) = nil for an unset variable")
 	}
 }
+
+// TestPrivateWritesPolicy covers capture.private_writes: what it defaults to, what
+// it accepts, and what it says about anything else.
+//
+// The default is the load-bearing half. It decides whether a note to a member's own
+// memory is written before they see it, so an unset key falling through to the wrong
+// side is not a cosmetic default — and it is the value most households will run,
+// because most will never write the key at all.
+func TestPrivateWritesPolicy(t *testing.T) {
+	t.Run("unset means save", func(t *testing.T) {
+		var c config.Config
+		c.ApplyDefaults()
+		if c.Capture.PrivateWrites != config.PrivateWriteSave {
+			t.Errorf("private_writes defaulted to %q, want %q", c.Capture.PrivateWrites, config.PrivateWriteSave)
+		}
+	})
+
+	t.Run("ask survives defaulting", func(t *testing.T) {
+		var c config.Config
+		c.Capture.PrivateWrites = config.PrivateWriteAsk
+		c.ApplyDefaults()
+		if c.Capture.PrivateWrites != config.PrivateWriteAsk {
+			t.Errorf("private_writes = %q after defaulting, want %q; a household's opt-out was overwritten",
+				c.Capture.PrivateWrites, config.PrivateWriteAsk)
+		}
+	})
+
+	t.Run("anything else is a validation error naming both policies", func(t *testing.T) {
+		doc := strings.Replace(fullYAML,
+			"  max_proposals_per_turn: 1",
+			"  max_proposals_per_turn: 1\n  private_writes: never", 1)
+		_, err := config.ParseWithEnv(strings.NewReader(doc), fullEnv())
+		if err == nil {
+			t.Fatal("an unrecognised policy loaded cleanly; it would fall through to writing without asking")
+		}
+		for _, want := range []string{"capture.private_writes", "save", "ask"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the error does not mention %q: %v", want, err)
+			}
+		}
+	})
+}
+
+// TestAnnounceReadsDefaultsToOn. A bare bool cannot tell "not stated" from "stated
+// false", and the default here is true, so the field is a pointer and the accessor is
+// the only correct way to read it. This is the test that keeps someone from
+// simplifying it back into a bool and silently turning the line off for every
+// household that never mentioned it.
+func TestAnnounceReadsDefaultsToOn(t *testing.T) {
+	cases := []struct {
+		name string
+		set  *bool
+		want bool
+	}{
+		{"unset", nil, true},
+		{"true", ptrTo(true), true},
+		{"false", ptrTo(false), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var c config.Config
+			c.Memory.AnnounceReads = tc.set
+			c.ApplyDefaults()
+			if got := c.Memory.AnnouncesReads(); got != tc.want {
+				t.Errorf("AnnouncesReads() = %v, want %v", got, tc.want)
+			}
+			// Defaulting must not rewrite the absence into a pointer: the
+			// accessor is where the default lives, and two places holding it is
+			// how the two disagree.
+			if tc.set == nil && c.Memory.AnnounceReads != nil {
+				t.Error("ApplyDefaults materialised announce_reads; the absence has to stay an absence")
+			}
+		})
+	}
+}
+
+func ptrTo[T any](v T) *T { return &v }

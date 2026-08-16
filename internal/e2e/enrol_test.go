@@ -272,7 +272,7 @@ func TestValidClaimBindsTheMemberAndTheNextMessageIsServed(t *testing.T) {
 	h.tr.InjectText(meiChatID, meiTelegramID, "when is my appointment?", false)
 	sent := h.waitForReply(meiChatID, 4)
 
-	if got := sent[3].Text; got != "The 3rd." {
+	if got := replyBody(sent[3].Text); got != "The 3rd." {
 		t.Errorf("reply after enrolment = %q, want the model's text", got)
 	}
 	searched := h.mem.searchedSpaces()
@@ -394,7 +394,7 @@ func TestACodeInTheGroupChatIsNotBurnedAndStillWorksInPrivate(t *testing.T) {
 	h.waitForUnit("mei")
 	h.tr.InjectText(meiChatID, meiTelegramID, "hello", false)
 	sent := h.waitForReply(meiChatID, 4)
-	if got := sent[3].Text; got != "Noted." {
+	if got := replyBody(sent[3].Text); got != "Noted." {
 		t.Errorf("reply after the private claim = %q, want the model's text", got)
 	}
 }
@@ -499,7 +499,7 @@ func TestEnrolmentSurvivesAFreshSupervisorOverTheSameDataDirectory(t *testing.T)
 	second.tr.InjectText(meiChatID, meiTelegramID, "when is my appointment?", false)
 	sent := second.waitForReply(meiChatID, 1)
 
-	if sent[0].Text != "The 3rd." {
+	if replyBody(sent[0].Text) != "The 3rd." {
 		t.Errorf("reply after the restart = %q, want the model's text", sent[0].Text)
 	}
 	searched := second.mem.searchedSpaces()

@@ -95,7 +95,7 @@ func Terms(text string) []string {
 // set. It is a programming error, not a user-facing condition.
 var ErrEmptySpaceSet = errors.New("memory: search requires an explicit space set")
 
-// ErrNotFound is returned by Get and Share for an unknown entry id.
+// ErrNotFound is returned by Get, Share and Delete for an unknown entry id.
 var ErrNotFound = errors.New("memory: entry not found")
 
 // Memory is the knowledge store kenward talks to.
@@ -111,5 +111,21 @@ type Memory interface {
 	// used for the deliberate act of publishing something private to the household,
 	// and must never be emulated with a read followed by a Put.
 	Share(ctx context.Context, from, to domain.SpaceID, entryID string) (Entry, error)
+	// Delete removes one entry from one space.
+	//
+	// It is space-scoped for the same reason Get is: an entry id is global, so an id
+	// alone would let a caller delete out of a space it was never authorized for.
+	// An entry that is not in space is ErrNotFound and nothing is deleted.
+	//
+	// A nil error means the entry is gone from that space — whether this call
+	// removed it or found it already removed. Deleting twice is not an error,
+	// because the caller that needs this is undoing a write it just made and
+	// "already gone" is the outcome it wanted.
+	//
+	// A non-nil error splits two ways and the caller must not conflate them. An
+	// error matching ErrWriteUncertain means the request reached the store and no
+	// answer came back: the entry may or may not still be there, and saying either
+	// is a guess. Anything else means the entry is still there.
+	Delete(ctx context.Context, space domain.SpaceID, entryID string) error
 	Close() error
 }

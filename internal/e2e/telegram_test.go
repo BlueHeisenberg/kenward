@@ -126,7 +126,7 @@ func TestTelegramDirectMessageRoundTripsOverRealHTTP(t *testing.T) {
 	api.Push(telegramtest.TextUpdate(davidChatID, davidTelegramID, "private", asked))
 
 	sent := waitSends(t, api, davidChatID, 1)
-	if got := sent[0].Form.Get("text"); got != "Recycling goes out Tuesday night." {
+	if got := replyBody(sent[0].Form.Get("text")); got != "Recycling goes out Tuesday night." {
 		t.Errorf("sendMessage carried text %q, want the model's reply", got)
 	}
 	// A direct chat is not quoted. The Fake could only ever show that Outbound
@@ -144,17 +144,18 @@ func TestTelegramDirectMessageRoundTripsOverRealHTTP(t *testing.T) {
 	}
 }
 
-// TestTelegramCaptureIsConfirmedByARealButtonTap is the case with the most
-// riding on it. Nothing is written to a member's memory without their explicit
-// confirmation, and the confirmation is an inline keyboard button — which until
-// now had never been rendered onto a wire or pressed from one.
+// TestTelegramPrivateWriteIsAnnouncedAndUndoneByARealButtonTap is the case with
+// the most riding on it. A note to a member's own memory is written and then
+// announced with an Undo button, and that button is the whole of what replaced
+// the confirmation — so it has to be rendered onto a real wire and pressed from
+// one, exactly as the confirmation was.
 //
 // Everything here is real except the model's decision and the store: the
 // keyboard is encoded into reply_markup by the production transport, the
 // callback_data is whatever that transport minted, the tap arrives as a
-// callback_query on a real long poll, and the acknowledgement and the retirement
-// edit go back out as real API calls.
-func TestTelegramCaptureIsConfirmedByARealButtonTap(t *testing.T) {
+// callback_query on a real long poll, and the acknowledgement, the delete and the
+// retirement edit go back out as real calls.
+func TestTelegramPrivateWriteIsAnnouncedAndUndoneByARealButtonTap(t *testing.T) {
 	h, api := telegramHousehold(t, harnessOptions{})
 	h.local.setReply(func(wireRequest) providerReply {
 		return providerReply{
@@ -170,14 +171,26 @@ func TestTelegramCaptureIsConfirmedByARealButtonTap(t *testing.T) {
 
 	api.Push(telegramtest.TextUpdate(davidChatID, davidTelegramID, "private", "the boiler was serviced"))
 
-	question := waitKeyboard(t, api, davidChatID)
-	rows := telegramtest.Keyboard(t, question)
-	// The proposal named a personal target, so the choice is that destination or
-	// nothing. One button per row, in the order the member reads them.
-	if len(rows) != 2 {
-		t.Fatalf("keyboard has %d rows, want two: save to personal, and decline", len(rows))
+	// The write comes first and the announcement follows it, so waiting on the
+	// keyboard also proves the ordering: if the entry were not already stored,
+	// there would be nothing here to offer to undo.
+	announcement := waitKeyboard(t, api, davidChatID)
+	if puts := h.mem.putCalls(); len(puts) != 1 {
+		t.Fatalf("%d writes by the time the member was told, want exactly 1: %+v", len(puts), puts)
 	}
-	personal := buttonFor(t, rows, "Save to personal")
+	rows := telegramtest.Keyboard(t, announcement)
+	// One button. There is nothing left to choose between — the entry is written
+	// — so the keyboard offers the one thing still open.
+	if len(rows) != 1 {
+		t.Fatalf("keyboard has %d rows, want one: undo", len(rows))
+	}
+	undo := buttonFor(t, rows, "Undo")
+	// The announcement carries the words that were stored rather than a summary
+	// of them. The member never saw this text before it was written, so this
+	// message is the only place it is ever shown.
+	if got := announcement.Form.Get("text"); !strings.Contains(got, "The boiler was serviced in March.") {
+		t.Errorf("announcement %q does not show what was written", got)
+	}
 
 	// Two taps, in order. The first is from another member of this very
 	// household: in a group everyone can see a keyboard, and a callback_query is
@@ -189,8 +202,8 @@ func TestTelegramCaptureIsConfirmedByARealButtonTap(t *testing.T) {
 	// Updates are delivered in order, so once David's tap has been acted on,
 	// Mei's has certainly been seen and dismissed — there is no window left in
 	// which it might still be in flight.
-	api.Push(telegramtest.CallbackUpdate("cb-mei", meiTelegramID, davidChatID, question.MessageID, personal))
-	api.Push(telegramtest.CallbackUpdate("cb-david", davidTelegramID, davidChatID, question.MessageID, personal))
+	api.Push(telegramtest.CallbackUpdate("cb-mei", meiTelegramID, davidChatID, announcement.MessageID, undo))
+	api.Push(telegramtest.CallbackUpdate("cb-david", davidTelegramID, davidChatID, announcement.MessageID, undo))
 
 	// One tap settles the question, and settling it acknowledges the tap and
 	// retires the message in that order. Waiting on the edit is therefore the
@@ -198,36 +211,45 @@ func TestTelegramCaptureIsConfirmedByARealButtonTap(t *testing.T) {
 	edit := api.WaitCall(t, "editMessageText", 1)
 	ack := api.WaitCall(t, "answerCallbackQuery", 1)
 	if got := ack.Form.Get("callback_query_id"); got != "cb-david" {
-		t.Fatalf("the question was settled by callback %q, want David's own tap; another member must not be able to answer for him", got)
+		t.Fatalf("the undo was taken from callback %q, want David's own tap; another member must not be able to delete out of his memory", got)
 	}
 
-	waitFor(t, "the confirmed write", func() bool { return len(h.mem.putCalls()) > 0 })
-	puts := h.mem.putCalls()
-	if len(puts) != 1 {
-		t.Fatalf("%d writes, want exactly 1: %+v", len(puts), puts)
+	// The delete reaches the store, space-scoped, naming the space the entry was
+	// written to and no other.
+	waitFor(t, "the delete", func() bool { return len(h.mem.deleteCalls()) > 0 })
+	dels := h.mem.deleteCalls()
+	if len(dels) != 1 {
+		t.Fatalf("%d deletes, want exactly 1: %+v", len(dels), dels)
 	}
-	if got := puts[0].Spaces; len(got) != 1 || got[0] != davidSpace {
-		t.Errorf("wrote to %v, want the member's private space %s", got, davidSpace)
+	if got := dels[0].Spaces; len(got) != 1 || got[0] != davidSpace {
+		t.Errorf("deleted from %v, want the member's own space %s", got, davidSpace)
 	}
-	if puts[0].Title != "Boiler serviced" {
-		t.Errorf("wrote title %q, want the proposal's", puts[0].Title)
-	}
+
+	// The member is told the entry is gone, and told so only because it is.
+	waitFor(t, "the removal notice", func() bool {
+		for _, c := range sendsTo(api, davidChatID) {
+			if strings.Contains(c.Form.Get("text"), "Removed") {
+				return true
+			}
+		}
+		return false
+	})
 
 	// The spinner on the member's client is stopped, once and only for them.
 	if n := api.CountFor("answerCallbackQuery"); n != 1 {
 		t.Errorf("answerCallbackQuery called %d times, want 1; another member's tap must not be acknowledged, because an acknowledgement is itself a signal", n)
 	}
 
-	// And the question is retired in place: same message, keyboard emptied, so a
-	// decision that has been made cannot be tapped a second time.
-	if edit.MessageID != question.MessageID {
-		t.Errorf("edited message %d, want the question's own message %d", edit.MessageID, question.MessageID)
+	// And the announcement is retired in place: same message, keyboard emptied,
+	// so an undo that has happened cannot be tapped a second time.
+	if edit.MessageID != announcement.MessageID {
+		t.Errorf("edited message %d, want the announcement's own message %d", edit.MessageID, announcement.MessageID)
 	}
 	if got := edit.Form.Get("reply_markup"); !strings.Contains(got, `"inline_keyboard":[]`) {
 		t.Errorf("keyboard not removed on the retirement edit: reply_markup = %q", got)
 	}
-	if got := edit.Form.Get("text"); !strings.Contains(got, "Save to personal") {
-		t.Errorf("retired question reads %q; it must show which button was pressed", got)
+	if got := edit.Form.Get("text"); !strings.Contains(got, "The boiler was serviced in March.") || !strings.Contains(got, "Undo") {
+		t.Errorf("retired announcement reads %q; it must keep what was written and show that undo was pressed", got)
 	}
 	if n := api.CountFor("editMessageText"); n != 1 {
 		t.Errorf("editMessageText called %d times, want 1", n)
@@ -392,10 +414,15 @@ func TestTelegramFailedPollNeitherLosesNorRepeatsAMessage(t *testing.T) {
 	}
 }
 
-// TestTelegramCaptureDeclinedByARealButtonTapWritesNothing is the other half of
-// the confirmation rule, over the same wire: the member is offered the keyboard
-// and presses the button that says no.
-func TestTelegramCaptureDeclinedByARealButtonTapWritesNothing(t *testing.T) {
+// TestTelegramSharedCaptureDeclinedByARealButtonTapWritesNothing is the rule that
+// has no configuration flag, over the same wire: anything bound for the household
+// is asked about first, every time, and a member who presses no leaves the shared
+// memory untouched.
+//
+// A shared target rather than a personal one, deliberately. The personal path is
+// the one that changed; this is the one that must not, and keeping a real-wire
+// test on it is what stops the two being conflated again.
+func TestTelegramSharedCaptureDeclinedByARealButtonTapWritesNothing(t *testing.T) {
 	h, api := telegramHousehold(t, harnessOptions{})
 	h.local.setReply(func(req wireRequest) providerReply {
 		if strings.Contains(req.UserText(), "anything else") {
@@ -406,7 +433,7 @@ func TestTelegramCaptureDeclinedByARealButtonTapWritesNothing(t *testing.T) {
 			FinishReason: "tool_calls",
 			ToolCalls: []providerToolCall{{
 				Name:      "remember",
-				Arguments: rememberArgs("Boiler serviced", "The boiler was serviced in March.", "personal"),
+				Arguments: rememberArgs("Boiler serviced", "The boiler was serviced in March.", "shared"),
 			}},
 		}
 	})
@@ -422,7 +449,7 @@ func TestTelegramCaptureDeclinedByARealButtonTapWritesNothing(t *testing.T) {
 	api.Push(telegramtest.TextUpdate(davidChatID, davidTelegramID, "private", "anything else?"))
 	waitFor(t, "the second turn to be answered", func() bool {
 		for _, c := range sendsTo(api, davidChatID) {
-			if c.Form.Get("text") == "Nothing else." {
+			if replyBody(c.Form.Get("text")) == "Nothing else." {
 				return true
 			}
 		}

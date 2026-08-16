@@ -127,7 +127,11 @@ of these constrain the design:
   silently, with no conflict record, and a machine with a fast clock wins every conflict.
   Household clocks should be synced, and nothing in kenward may assume a write it made is
   still there.
-- **There is no delete.** Anything kenward stores is permanent from lore's side.
+- **Delete is a signed tombstone, by id, and space-scoped.** `lore_delete(id, space)`
+  stops an entry coming back from search and get, here and on every synced device;
+  deleting an already-deleted entry is a no-op. It is not a shred, and nothing kenward
+  says to a member may promise one. It is also no help after a write whose answer was
+  lost — the id was in the receipt that never arrived.
 - `lore mcp` alone never syncs; that needs a separate `lore serve`. Any deployment running
   more than one lore instance must run both.
 - Invites are not exposed over MCP, so enrolment drives lore's CLI.
@@ -335,9 +339,16 @@ that stops letting it remember anything.
 - **Announcing a read is configurable, default on.** It is information rather than a
   control.
 
-Undo needs a delete lore does not have, so it is either a lore change or a tombstone the
-retrieval path honours — and a tombstone is not the same promise as a removal. Whichever it
-turns out to be, the announcement has to say which.
+Undo needed a delete lore did not have. It became a lore change: `lore_delete(id, space)`
+writes a signed tombstone that propagates, and `internal/memory.Delete` reaches it. A
+tombstone is not the same promise as a removal, so the announcement says which — *"it
+won't come back in an answer, here or on any other device"* rather than *"erased"*.
+
+Three endings, three sentences, because the entry is in a different state in each: gone,
+still there because lore refused, or unknown because lore never answered. Reporting either
+of the last two as "undone" would be the plainest lie the product could tell — the member
+asked for something to stop existing and would be told it had. An undo also counts as a
+decline, or the next turn's proposal is written straight back.
 
 This document previously claimed that *nothing is written to memory without the member
 seeing the exact words first and saying yes.* That claim is retired rather than quietly
@@ -351,8 +362,10 @@ Two invariants, not preferences:
    becomes a write path into a private space, which is the one thing the memory model
    exists to prevent.
 2. **Private → shared is a separate, louder act**, showing the full text before publishing,
-   because publication is irreversible from the household's point of view — and, given that
-   lore has no delete, irreversible in a stricter sense than most people expect.
+   because publication is irreversible from the household's point of view: other people
+   have read it by the time anyone regrets it, and deleting the copy afterwards does not
+   unread it. That is why the shared path has no policy switch while the private one
+   does.
 
 Plus a throttle on whatever is still asked: one proposal per turn, and none for anything
 already retrievable. Otherwise everyone learns to reflexively decline, and the feature is

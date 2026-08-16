@@ -956,12 +956,17 @@ func TestSuppressedProposalOnBareToolCallGetsNotice(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoiceDecline, UserID: testUserID}
+	// An unsure target, because this test needs a question to decline and unsure is
+	// the target that is always put as one. A personal target is written and
+	// announced instead, which is a different path with its own tests in
+	// internal/capture; what is under test here is the notice on a turn that ends up
+	// saying nothing at all.
 	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
 		return routing.Completion{
 			ToolCalls: []routing.ToolCall{{
 				ID:        "tc-1",
 				Name:      "remember",
-				Arguments: json.RawMessage(`{"title": "Coffee order", "body": "Oat milk.", "target": "personal"}`),
+				Arguments: json.RawMessage(`{"title": "Coffee order", "body": "Oat milk.", "target": "unsure"}`),
 			}},
 			FinishReason: routing.FinishToolCalls,
 		}, nil
@@ -1316,4 +1321,232 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("condition never became true")
+}
+
+// --- the retrieval line ------------------------------------------------------
+
+// TestReplyCarriesTheRetrievalLine: the member is told what was read, and told it on
+// the reply rather than in a message of its own.
+//
+// The second half is the part worth pinning. A turn already costs a reply and may cost
+// a write announcement; a third message on every turn — most of them reporting that
+// nothing was found — is how a household learns to stop reading any of them. One
+// message out is the whole design decision, and it is invisible in the text.
+func TestReplyCarriesTheRetrievalLine(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.bySpace["david-private"] = []memory.Entry{
+		entry("david-private", "Boiler service", "Serviced in March.", "validated"),
+	}
+	rig.mem.bySpace["household"] = []memory.Entry{
+		entry("household", "Boiler code", "The code is 4417.", "validated"),
+		entry("household", "Boiler engineer", "Boiler engineer is Ravi.", "validated"),
+	}
+	rig.router.fn = func(context.Context, []string, routing.Request) (routing.Completion, error) {
+		return routing.Completion{Text: "It was serviced in March."}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("boiler")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	texts := rig.tr.sentTextsRaw()
+	if len(texts) != 1 {
+		t.Fatalf("sent %v, want one message carrying both the line and the reply", texts)
+	}
+	want := "[searched your private memory (1 entry), the household memory (2 entries)]\n\nIt was serviced in March."
+	if texts[0] != want {
+		t.Errorf("sent\n  %q\nwant\n  %q", texts[0], want)
+	}
+}
+
+// TestRetrievalLineReportsWhatReachedTheModel: the numbers are counted after the
+// budget loop, not off the search results.
+//
+// Retrieval finding eight entries and the prompt carrying two is an ordinary
+// occurrence on a small endpoint, and a line claiming eight informed the answer would
+// be a statement about the answer's basis rather than about retrieval. The prompt
+// itself already admits the drop to the model; this is the member's half of the same
+// admission.
+func TestRetrievalLineReportsWhatReachedTheModel(t *testing.T) {
+	opts := testOptions()
+	// Room for the prompt and almost nothing else, so the budget loop has to drop
+	// entries from the shared group.
+	opts.ContextBudget = 1400
+	opts.MaxTokens = 128
+	rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 8 {
+		rig.mem.bySpace["household"] = append(rig.mem.bySpace["household"],
+			entry("household", fmt.Sprintf("Boiler note %d", i),
+				strings.Repeat("Boiler detail that takes room. ", 12), "validated"))
+	}
+	rig.router.fn = func(context.Context, []string, routing.Request) (routing.Completion, error) {
+		return routing.Completion{Text: "Answered."}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("boiler")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	line, _, _ := strings.Cut(rig.tr.sentTextsRaw()[0], "\n")
+	req, ok := rig.router.lastRequest()
+	if !ok {
+		t.Fatal("no request reached the router")
+	}
+	// entryOpen also appears in the prompt's own note about what an entry is,
+	// so the count is anchored on the bullet line that only a rendered entry has.
+	shown := strings.Count(req.Messages[0].Content, entryOpen+"\n- ")
+	if shown == 0 || shown == 8 {
+		t.Fatalf("the budget dropped %d of 8 entries; this test needs some dropped and some kept", 8-shown)
+	}
+	if want := fmt.Sprintf("the household memory (%d entries)", shown); !strings.Contains(line, want) {
+		t.Errorf("retrieval line %q does not say %q — it is counting search hits rather than what the model saw", line, want)
+	}
+}
+
+// TestRetrievalLineIsSilentWhenNothingWasSearched. A greeting has no content words, so
+// no search runs at all, and the groups come back empty for that reason rather than
+// because the spaces are. "(nothing)" about a search that never happened is a claim
+// the node cannot support.
+func TestRetrievalLineIsSilentWhenNothingWasSearched(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.router.fn = func(context.Context, []string, routing.Request) (routing.Completion, error) {
+		return routing.Completion{Text: "Hello."}, nil
+	}
+
+	// An emoji has no letters or digits, so memory.Terms yields nothing and no
+	// search is issued. "hi" would not do: it is two letters and lore would be
+	// asked for entries containing it.
+	if err := rig.unit.Handle(context.Background(), directInbound("🙂")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := rig.tr.sentTextsRaw(); len(got) != 1 || got[0] != "Hello." {
+		t.Errorf("sent %q, want the bare reply: nothing was searched, so there is nothing to report", got)
+	}
+}
+
+// TestRetrievalLineSaysASpaceCouldNotBeRead rather than counting it to nothing, for
+// the same reason the prompt says so to the model: an error rendered as "found
+// nothing" is a lie the member might act on, and this one they can act on immediately
+// by asking again.
+func TestRetrievalLineSaysASpaceCouldNotBeRead(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.errFor["household"] = errors.New("lore is down")
+	rig.router.fn = func(context.Context, []string, routing.Request) (routing.Completion, error) {
+		return routing.Completion{Text: "Answered."}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("boiler")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	line, _, _ := strings.Cut(rig.tr.sentTextsRaw()[0], "\n")
+	if !strings.Contains(line, "the household memory (couldn't be read)") {
+		t.Errorf("retrieval line %q renders a failed search as an empty one", line)
+	}
+	if strings.Contains(line, "the household memory (nothing)") {
+		t.Error("a space that could not be read was reported as holding nothing")
+	}
+}
+
+// TestRetrievalLineNamesOnlyTheSpacesInScope: the group conversation cannot read a
+// private memory, so its line must not mention one. The prompt's disclosure and this
+// line are the two places a member is told what was visible, and they have to agree.
+func TestRetrievalLineNamesOnlyTheSpacesInScope(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testGroupScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.bySpace["household"] = []memory.Entry{
+		entry("household", "Boiler code", "The code is 4417.", "validated"),
+	}
+	rig.router.fn = func(context.Context, []string, routing.Request) (routing.Completion, error) {
+		return routing.Completion{Text: "4417."}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), groupInbound("boiler")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	line, _, _ := strings.Cut(rig.tr.sentTextsRaw()[0], "\n")
+	if want := "[searched the household memory (1 entry)]"; line != want {
+		t.Errorf("group retrieval line = %q, want %q", line, want)
+	}
+	if strings.Contains(line, "private") {
+		t.Error("the group's retrieval line names a private memory it cannot read")
+	}
+}
+
+// TestReadNoticesOffSendsTheReplyAlone is the household's opt-out, and the guard that
+// it removes the line rather than emptying it.
+func TestReadNoticesOffSendsTheReplyAlone(t *testing.T) {
+	opts := testOptions()
+	opts.ReadNotices = ReadNoticesOff
+	rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.bySpace["david-private"] = []memory.Entry{
+		entry("david-private", "Boiler service", "Serviced in March.", "validated"),
+	}
+	rig.router.fn = func(context.Context, []string, routing.Request) (routing.Completion, error) {
+		return routing.Completion{Text: "It was serviced in March."}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("boiler")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := rig.tr.sentTextsRaw(); len(got) != 1 || got[0] != "It was serviced in March." {
+		t.Errorf("sent %q, want the reply on its own", got)
+	}
+	// The search still happened: this is a setting about what is said, not about
+	// what is read.
+	if len(rig.mem.searchedSpaces()) == 0 {
+		t.Error("turning the notice off stopped the retrieval as well")
+	}
+}
+
+// TestRetrievalLineStaysOutOfHistory. It is the node reporting on itself, not the
+// assistant's words, and a line fed back as an assistant turn teaches the model to
+// write those lines itself — at which point the member cannot tell a real accounting
+// of what was read from a fabricated one.
+func TestRetrievalLineStaysOutOfHistory(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.bySpace["david-private"] = []memory.Entry{
+		entry("david-private", "Boiler service", "Serviced in March.", "validated"),
+	}
+	rig.router.fn = func(context.Context, []string, routing.Request) (routing.Completion, error) {
+		return routing.Completion{Text: "It was serviced in March."}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("boiler")); err != nil {
+		t.Fatalf("first Handle: %v", err)
+	}
+	second := directInbound("boiler again")
+	second.MessageID = 2
+	if err := rig.unit.Handle(context.Background(), second); err != nil {
+		t.Fatalf("second Handle: %v", err)
+	}
+
+	req, ok := rig.router.lastRequest()
+	if !ok {
+		t.Fatal("no request reached the router")
+	}
+	for _, m := range req.Messages {
+		if strings.Contains(m.Content, "[searched ") {
+			t.Fatalf("the retrieval line reached the model as a %s message: %q", m.Role, m.Content)
+		}
+	}
 }

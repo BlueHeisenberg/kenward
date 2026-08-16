@@ -1019,3 +1019,218 @@ func TestLoreHomeIsPerClient(t *testing.T) {
 		t.Fatalf("LORE_HOME=%s not exported to the subprocess", home)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
+
+// deleteFake builds a client whose lore answers a delete with text.
+func deleteFake(t *testing.T, text string, isErr bool) *fake {
+	t.Helper()
+	return newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
+		toolDelete: {{Text: text, IsError: isErr}},
+	}}, nil)
+}
+
+const deletedEntryID = "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f"
+
+// TestDeletePassesTheSpaceToLore. The space is not decoration on the call: entry
+// ids are global and lore_get is not space-scoped, so an id alone is a capability
+// to name an entry anywhere. lore compares space ids rather than the display names
+// this client has to fall back on elsewhere, so passing it through is a stronger
+// check than Get's — but only if it is actually passed.
+func TestDeletePassesTheSpaceToLore(t *testing.T) {
+	f := deleteFake(t, golden(t, "delete_done.txt"), false)
+	if err := f.Delete(ctxT(t), spacePrivate, deletedEntryID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	calls := callsTo(f.calls(t), toolDelete)
+	if len(calls) != 1 {
+		t.Fatalf("%d lore_delete calls, want 1", len(calls))
+	}
+	args := argsOf(t, calls[0])
+	if got := args["space"]; got != string(spacePrivate) {
+		t.Errorf("space argument = %v, want %s", got, spacePrivate)
+	}
+	if got := args["id"]; got != deletedEntryID {
+		t.Errorf("id argument = %v, want %s", got, deletedEntryID)
+	}
+}
+
+// TestDeleteOfAnAlreadyDeletedEntryIsSuccess. lore reports the no-op rather than
+// failing, and the caller wants the entry gone rather than the credit for removing
+// it. Undo is the only caller, and telling a member "I couldn't take that back"
+// about an entry that is correctly absent would be a failure notice about a
+// success.
+func TestDeleteOfAnAlreadyDeletedEntryIsSuccess(t *testing.T) {
+	f := deleteFake(t, golden(t, "delete_already.txt"), false)
+	if err := f.Delete(ctxT(t), spacePrivate, deletedEntryID); err != nil {
+		t.Errorf("Delete of an already-deleted entry = %v, want nil", err)
+	}
+}
+
+// TestDeleteRejectionsAreClassified. Every one of these means the entry is still
+// there, and none of them may come back as ErrWriteUncertain: undo says one thing
+// when the store answered and a different thing when it did not, and the two
+// sentences are only different if this classification holds.
+func TestDeleteRejectionsAreClassified(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want error
+	}{
+		{
+			"an unknown id",
+			`no entry with id "3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f" — nothing was deleted`,
+			ErrNotFound,
+		},
+		{
+			"an entry in a different space",
+			`entry 3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f is not in space "hearth-private" — nothing was deleted (delete is space-scoped; pass the space the entry actually lives in)`,
+			nil, // a ToolError with no sentinel: lore refused, and nothing was deleted
+		},
+		{
+			"the store is locked",
+			"delete: database is locked",
+			ErrBusy,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := deleteFake(t, tc.text, true)
+			err := f.Delete(ctxT(t), spacePrivate, deletedEntryID)
+			if err == nil {
+				t.Fatal("Delete = nil, want the rejection reported")
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Errorf("Delete = %v, want %v", err, tc.want)
+			}
+			// The whole point of the classification: a refusal is not an
+			// uncertainty, and the member is told the entry is still there
+			// rather than that nobody knows.
+			if errors.Is(err, ErrWriteUncertain) {
+				t.Errorf("a rejection lore itself sent came back as uncertain: %v", err)
+			}
+		})
+	}
+}
+
+// TestDeleteWithNoAnswerIsUncertain: the subprocess died mid-call, so the tombstone
+// may or may not have been committed. Reporting this as a flat failure would have
+// undo tell a member their entry is still there when it may well be gone — the
+// mirror of the uncertain-write rule, and wrong in the same way.
+func TestDeleteWithNoAnswerIsUncertain(t *testing.T) {
+	f := newFake(t, fakeScript{
+		Replies:   map[string][]fakeReply{toolSpaces: {{Text: golden(t, "spaces_list.txt")}}},
+		DieOnCall: 2, // 1 is lore_spaces, 2 is the delete
+	}, nil)
+	err := f.Delete(ctxT(t), spacePrivate, deletedEntryID)
+	if !errors.Is(err, ErrWriteUncertain) {
+		t.Errorf("Delete after a lost subprocess = %v, want ErrWriteUncertain", err)
+	}
+}
+
+// TestDeleteWithAnUnreadableReceiptIsUncertain. lore answered without an error, so
+// the tombstone is written — but this client cannot read the receipt, and saying
+// "removed" on the strength of a line it did not understand is a guess about the
+// one thing it is about to tell a member.
+func TestDeleteWithAnUnreadableReceiptIsUncertain(t *testing.T) {
+	f := deleteFake(t, "gone, probably", false)
+	err := f.Delete(ctxT(t), spacePrivate, deletedEntryID)
+	if !errors.Is(err, ErrWriteUncertain) {
+		t.Errorf("Delete with an unparseable receipt = %v, want ErrWriteUncertain", err)
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) || pe.Tool != toolDelete {
+		t.Errorf("the cause should be a %s ParseError, got %v", toolDelete, err)
+	}
+}
+
+// TestDeleteAnsweredForAnotherEntryIsUncertain. lore reporting a different id than
+// the one asked about means something was deleted and it may not have been this;
+// the client can say neither "removed" nor "still there" about the entry it named.
+func TestDeleteAnsweredForAnotherEntryIsUncertain(t *testing.T) {
+	f := deleteFake(t, golden(t, "delete_done.txt"), false)
+	err := f.Delete(ctxT(t), spacePrivate, "some-other-entry")
+	if !errors.Is(err, ErrWriteUncertain) {
+		t.Errorf("Delete answered for another id = %v, want ErrWriteUncertain", err)
+	}
+}
+
+// TestDeleteRefusesAnArgumentItCannotSend, before any subprocess is started. An
+// empty space would let lore work the destination out from its working directory,
+// which is the one thing this client never permits.
+func TestDeleteRefusesAnArgumentItCannotSend(t *testing.T) {
+	cases := []struct {
+		name  string
+		space domain.SpaceID
+		id    string
+	}{
+		{"no id", spacePrivate, "  "},
+		{"no space", "", deletedEntryID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFake(t, fakeScript{}, nil)
+			if err := f.Delete(ctxT(t), tc.space, tc.id); !errors.Is(err, ErrInvalidArgument) {
+				t.Errorf("Delete = %v, want ErrInvalidArgument", err)
+			}
+			if n := len(f.calls(t)); n != 0 {
+				t.Errorf("%d calls reached lore; a refused argument must never leave this process", n)
+			}
+		})
+	}
+}
+
+// TestDeleteInAnUnknownSpaceNeverReachesLore: the space is resolved first, so a
+// configuration naming a space this lore home does not hold is a configuration
+// fault reported as one, rather than an id sent off with a space name lore will
+// interpret however it likes.
+func TestDeleteInAnUnknownSpaceNeverReachesLore(t *testing.T) {
+	f := deleteFake(t, golden(t, "delete_done.txt"), false)
+	if err := f.Delete(ctxT(t), spaceMissing, deletedEntryID); !errors.Is(err, ErrUnknownSpace) {
+		t.Errorf("Delete = %v, want ErrUnknownSpace", err)
+	}
+	if n := len(callsTo(f.calls(t), toolDelete)); n != 0 {
+		t.Errorf("%d deletes reached lore for a space it does not hold", n)
+	}
+}
+
+// TestParseDeleted covers the receipt parser on its own, including the shapes that
+// must not be mistaken for a success.
+func TestParseDeleted(t *testing.T) {
+	cases := []struct {
+		name        string
+		text        string
+		wantID      string
+		wantAlready bool
+		wantErr     bool
+	}{
+		{"a fresh delete", golden(t, "delete_done.txt"), deletedEntryID, false, false},
+		{"an already-deleted entry", golden(t, "delete_already.txt"), deletedEntryID, true, false},
+		{"empty output", "", "", false, true},
+		{"a rejection that reached the parser", `no entry with id "x" — nothing was deleted`, "", false, true},
+		// "deleted" with nothing after the id is not lore's format, and treating
+		// it as one would accept a truncated answer as a completed delete.
+		{"a truncated receipt", "deleted " + deletedEntryID, "", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id, already, err := parseDeleted(tc.text)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseDeleted(%q) = (%q, %v, nil), want an error", tc.text, id, already)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseDeleted: %v", err)
+			}
+			if id != tc.wantID || already != tc.wantAlready {
+				t.Errorf("parseDeleted = (%q, %v), want (%q, %v)", id, already, tc.wantID, tc.wantAlready)
+			}
+		})
+	}
+}

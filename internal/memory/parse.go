@@ -25,6 +25,7 @@ const (
 	toolPut    = "lore_put"
 	toolSpaces = "lore_spaces"
 	toolShare  = "lore_share"
+	toolDelete = "lore_delete"
 )
 
 // confidences is lore's confidence enum, enforced by a SQL CHECK constraint and a
@@ -69,6 +70,19 @@ var (
 	storedRe = regexp.MustCompile(`^stored (\S+) \(v(\d+)\) in space (".*") — domain (.*), confidence (experimental|provisional|validated|hardened), origin (evidence|directive|convention|constraint)$`)
 	// copiedRe matches lore_share's execute line.
 	copiedRe = regexp.MustCompile(`^copied: new entry (\S+) in space (".*") \(source (\S+) kept in (".*")\)$`)
+	// deletedRe matches both of lore_delete's success lines and captures which one
+	// it was together with the id:
+	//
+	//	deleted {id} ("{title}", domain {d}) from space "{name}" — signed tombstone v{n}; …
+	//	already deleted: {id} ("{title}") in space "{name}", tombstone v{n} — nothing to do
+	//
+	// It is anchored on the head and the id and stops there, unlike the other
+	// parsers here, because the id is the only field the caller needs and
+	// everything after it is lore's prose about a member's entry — the title is in
+	// there, and this package's rule is that nothing it might log carries one. What
+	// must be checked is that lore is reporting on the entry that was asked about,
+	// and that is exactly what the id says.
+	deletedRe = regexp.MustCompile(`^(already deleted:|deleted) (\S+) `)
 	// spaceRowRe matches one line of lore_spaces output.
 	spaceRowRe = regexp.MustCompile(`^(.*?)  kind:(personal|shared)  members:(\d+)  entries:(\d+)((?:  project)?(?:  pinned)?)  id:(\S+)$`)
 )
@@ -423,6 +437,22 @@ func parseCopied(text string) (copied, error) {
 		return copied{}, parseErrf(toolShare, 0, m[4], "unparseable quoted space name")
 	}
 	return copied{NewID: m[1], ToSpace: to, SourceID: m[3], FromSpace: from}, nil
+}
+
+// parseDeleted reads lore_delete's result line and reports the entry id it names
+// and whether the entry was already a tombstone when the call arrived.
+//
+// The two cases are the same outcome for a caller — the entry is gone — and are
+// distinguished only so that "it was already gone" can be logged as what it is
+// rather than as a delete this node performed.
+func parseDeleted(text string) (id string, already bool, err error) {
+	text = strings.TrimRight(text, "\n")
+	m := deletedRe.FindStringSubmatch(text)
+	if m == nil {
+		return "", false, parseErrf(toolDelete, 0, text,
+			"expected %q or %q", "deleted {id} …", "already deleted: {id} …")
+	}
+	return m[2], m[1] == "already deleted:", nil
 }
 
 // parseMarkerRun splits lore_search's marker run, which is the marker list joined

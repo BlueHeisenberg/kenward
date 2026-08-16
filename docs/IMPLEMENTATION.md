@@ -513,6 +513,7 @@ endpoints:
 memory:
   lore_command: ["lore", "mcp"]
   search_limit: 8
+  announce_reads: true        # prefix each reply with what was searched; default true
 
 session:
   idle_timeout: 0s            # off, and the default; see §"Idle expiry is off by default"
@@ -524,6 +525,7 @@ session:
 
 capture:
   max_proposals_per_turn: 1
+  private_writes: save        # save | ask; see §6 "Writing then telling"
 
 update:
   channel: stable             # stable | edge | off
@@ -577,7 +579,8 @@ The failure mode is what makes it worth a heading rather than a footnote. lore's
 tools accept either form, and its `lore_put` argument is lenient, so a display name here
 **writes successfully and fails on the first read**. A household would configure it,
 capture memories for a week, and discover on the first retrieval that nothing comes back
-— with the writes already permanent, since lore has no delete. `kenward doctor` therefore
+— with the writes already permanent: they were made under a name, and a delete needs the
+id from a receipt nobody read. `kenward doctor` therefore
 treats a name it cannot resolve to a space as a configuration fault and exits 2, telling
 the operator to run `lore spaces` and take the id column, and saying explicitly that a
 name fails only on reads.
@@ -909,9 +912,51 @@ another member's plaintext, and that one member's compromise reaches no one else
 5. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
    explicit refusal naming the tiers tried — never a silent fallback. Any other router
    failure becomes one of the notices in §10; a turn never ends in silence.
-6. **Reply.**
+6. **Reply**, prefixed with the retrieval line.
 7. **Capture.** If the model proposed a memory write, run the capture state machine.
-8. **Record** the turn in the unit-local history ring.
+8. **Record** the turn in the unit-local history ring — the reply alone, without the
+   retrieval line.
+
+### The member is told what was read
+
+The reply carries a line naming the memories that were searched and how many entries
+reached the answer:
+
+```
+[searched your private memory (2 entries), the household memory (nothing)]
+
+The boiler was serviced in March.
+```
+
+Three decisions are in that line, and each was the other way at some point.
+
+**It rides on the reply rather than arriving as its own message.** A turn already costs
+a reply and may cost a write announcement; a third message on every single turn — most
+of them reporting that nothing was found — is how a household learns to stop reading any
+of them, at which point the announcements that matter are lost with the noise. It is
+prefixed exactly as the degraded-retrieval line would be, and the net message count of a
+turn did not rise: a private write now costs one message where it used to cost two.
+
+**It counts what reached the model, not what retrieval found.** The budget loop drops
+entries from the end of a group to make the prompt fit, and a line claiming five entries
+informed an answer the model saw two of would be a statement about the answer's basis
+rather than about retrieval. `assemble` therefore returns the prompt input as the loop
+left it, and the line is counted off that.
+
+**It is silent when nothing was searched.** A message with no content words — a greeting,
+an emoji — produces no search terms and therefore no searches, and the groups come back
+empty for that reason rather than because the spaces are. Reporting "(nothing)" about a
+search that never ran is exactly the class of small untruth §10 refuses elsewhere. A
+space whose search *failed* says `(couldn't be read)` for the same reason the prompt says
+so to the model.
+
+It is not recorded in history. It is the node accounting for itself, not the assistant's
+words, and a line fed back as an assistant turn teaches the model to write those lines
+itself — at which point a member cannot tell a real accounting from a fabricated one.
+
+`memory.announce_reads` turns it off; it defaults to on. That is a setting where the
+write announcement in §6 is not, and the asymmetry is the point: a read changes nothing,
+so a household that finds the line noisy loses nothing but the line.
 
 History is unit-local, in memory, bounded (default 20 turns), and is **not** written to
 lore. lore holds distilled knowledge, not transcripts.
@@ -974,10 +1019,76 @@ conversation only. It takes `{title}` and no id — see *Promotion* below.
 
 | Situation | Behaviour |
 | --- | --- |
+| Direct chat, target `personal` | **Write it, then announce it**: the full draft, the space it went to, and `[Undo]` — see *Writing then telling* below |
+| Direct chat, target `personal`, `capture.private_writes: ask` | Ask to confirm: `[Save to personal] [Don't save]` |
+| Direct chat, target `shared` | Ask to confirm: `[Save to household] [Don't save]` |
 | Direct chat, target `unsure` | Ask: `[Personal] [Household] [Don't save]` |
-| Direct chat, target known | Ask to confirm: `[Save to X] [Don't save]` |
-| Group chat, any target | Ask: `[Household] [Don't save]` — **"Personal" is never offered** |
+| Group chat, any target | Ask: `[Household] [Don't save]` — **"Personal" is never offered**, so nothing in the group is ever written unasked |
 | Promotion of an existing private entry to shared | Separate flow, triggered by the `publish` tool: show the full text that will be published, then `[Publish to household] [Cancel]` |
+
+### Writing then telling
+
+A note in a member's own private space is theirs and it is reversible, so it is written
+and then reported. A publication to the household is not reversible — other people have
+read it by the time anyone regrets it — so it is asked about first, every time.
+
+What is configurable, and what deliberately is not:
+
+| | Configurable | Why |
+| --- | --- | --- |
+| Private write: save or ask | **Yes**, `capture.private_writes` | A household that preferred the question gets it back, unchanged. Defaults to `save`. |
+| Shared write: always asks | **No** | Publishing to the household is the one irreversible act in the product. |
+| The write is announced | **No** | If a write can be silent, *"kenward never records anything without telling you"* stops being true and there is no honest way left to describe the product. |
+| The read is announced | **Yes**, `memory.announce_reads`, default on | A read changes nothing. |
+
+The announcement carries the **whole draft**, title and body, not a summary of it. Under
+the old flow the member read the exact words before the write and could refuse them; this
+message is now the only place those words are ever shown, so an announcement carrying a
+title alone would quietly turn *"kenward tells you what it wrote"* into *"kenward tells
+you that it wrote"*.
+
+The order is load-bearing. The write is real before the member is told about it, so the
+announcement is a report rather than a promise, and an ignored announcement leaves the
+entry exactly where the message says it is.
+
+### Undo
+
+`[Undo]` is live for `Options.AskTimeout` — the same window a capture question waits, and
+deliberately not a second knob. Every ending is a different sentence, because the entry is
+in a different state in each:
+
+| Ending | What the member gets |
+| --- | --- |
+| Delete confirmed, or the entry was already a tombstone | *"Removed … It won't come back in an answer, here or on any other device in the household."* Outcome is `OutcomeUndone`, and `Stored()` is false. |
+| lore refused the delete | *"I couldn't take that back: … is still in your private memory."* The outcome stays `OutcomeSaved`, because it is. |
+| lore never answered (`ErrWriteUncertain`) | *"I can't tell whether … was removed — the memory store didn't answer."* Both "removed" and "still there" would be guesses about the member's own memory. |
+| Nobody taps; the window closes | The announcement is edited in place, keeping its text and appending *"— the undo window has closed; this is still in memory"*. |
+| The announcement itself could not be sent | A plain confirmation, saying the undo button did not go through. Silence here would be a silent write. |
+
+Reporting a failed or unconfirmed delete as "undone" would be the plainest lie the product
+could tell: the member asked for something to stop existing and would be told it had.
+
+The success sentence is bounded to what lore actually does. A delete is a signed tombstone
+that propagates, not a shred — the entry stops coming back from search and get, and the row
+is still on the disk — so the message promises that it will not be recalled rather than
+that it was erased. ARCHITECTURE.md required the announcement to say which of the two it
+is, and this is that sentence.
+
+**An undo is recorded as a decline.** Without that it achieves nothing that lasts — the
+same conversation produces the same proposal next turn and the default policy writes it
+straight back. The old flow got this for free, because a decline *was* a tap.
+
+**A second tap cannot reach the delete.** The transport retires the announcement on the
+first one — keyboard stripped, pending question forgotten — and later taps on a keyboard
+still on somebody's screen are dropped silently like any stale tap. lore's own idempotence
+(a second delete reports already-deleted rather than erroring) is the second line, not the
+first.
+
+The retirement wording is the caller's, through `transport.Question.RetiredNote`. The
+default line says the question was declined, which is right for a question and wrong for a
+message reporting a write: *"I've written this to your private memory … — no answer,
+treated as declined"* reads as the write having been called off, and a member who believes
+it will not go looking for an entry that is really there.
 
 Rules:
 
@@ -995,8 +1106,11 @@ Rules:
   be sent — **refunds** the budget it took, on the same reasoning as duplicate
   suppression: only a question the member actually saw should cost them the one they were
   allowed.
-- Timeout on the question is treated as **declined**, never as accepted.
-- The answer is only accepted from `AllowedUserID`.
+- Timeout on a question is treated as **declined**, never as accepted. Timeout on a write
+  announcement is the undo window closing on a write that stands.
+- The answer is only accepted from `AllowedUserID` — on the undo button as much as on a
+  question, and with more at stake there: a stranger's tap would delete out of somebody
+  else's private memory.
 - Promotion uses `memory.Share`, never a read-then-put, so lore's own provenance is
   preserved.
 
@@ -1020,12 +1134,14 @@ the decline history: they are a deliberate act the member asked for, not a sugge
 When one turn carries both a `publish` call and a `remember` proposal, the publish wins
 — the request outranks the suggestion, and exactly one question reaches the member
 either way.
-- **A write that fails after the member said yes is reported to them, not just logged.**
-  lore may have stored the entry and lost the answer, and lore has no delete, so a retry
-  that duplicates it is permanent (§12). The member is told that it cannot be confirmed
-  either way and to check before saving it again, and the title is suppressed for the
-  next ten turns so the model does not immediately re-propose the thing they were just
-  asked to verify.
+- **A write whose outcome is unknown is reported to the member, not just logged.** lore
+  may have stored the entry and lost the answer. lore *can* delete, but only by id, and
+  the id was in the receipt that never arrived — so there is nothing to clean up with and
+  a retry that duplicates it is permanent (§12). The member is told that it cannot be
+  confirmed either way and to check before saving it again, and the title is suppressed
+  for the next ten turns so the model does not immediately re-propose the thing they were
+  just asked to verify. This holds on both paths: the write is the same write whether a
+  tap authorised it or the policy did.
 
 ---
 
@@ -1690,8 +1806,18 @@ resolve the shared space, to read the entry back, or to put the question is repo
 nothing having been published. A failure of `Share` **after** the member has tapped
 *Publish to household* is reported as uncertainty — "I can't confirm whether … was
 published … a publication can't be taken back" — on the same reasoning as an uncertain
-write in section 12: the copy may have landed, lore has no delete, and a member who is
-told a flat failure will simply publish again.
+write in section 12: the copy may have landed, its id is in the answer that never came,
+and a member who is told a flat failure will simply publish again.
+
+It matters as much now in the private-write flow, where the member is not waiting on a
+question at all. Three failures there are members' business rather than the operator's,
+and each has its own sentence in §6: the write may not have landed, the announcement may
+not have gone out, and the undo may not have removed anything. The one that cannot be
+allowed to fall back to a generic notice is the middle one. An entry is in the store and
+the message saying so did not reach the chat; "I didn't get a usable answer to that"
+would be a silent write with a polite apology attached, so the engine sends a plain
+confirmation instead and says the undo button is missing rather than implying one
+exists.
 
 The router notices, the content-filter decline, the locked notice and the "no usable
 answer" notice are golden-tested alongside the refusals, under
@@ -1721,8 +1847,11 @@ unproved. This section is only the part that binds: the tests a change may not r
   tier fallthrough, the three-way split of an empty response (§3) with the healthy
   sibling counting the requests that reach it, and the assertion that an exhausted chain
   **never** reaches an endpoint outside it.
-- `capture` is tested as a state machine including timeout-as-decline and the
-  taps-from-the-wrong-user case.
+- `capture` is tested as a state machine including timeout-as-decline, the
+  taps-from-the-wrong-user case, and every ending of the undo window: the delete that
+  worked, the one lore refused, the one lore never answered, and the one nobody tapped.
+  The memory double carries `deleteErr` for that, because the two endings that are not
+  "gone" do not exist unless the double can produce them.
 - `memory`'s parser is tested against a scripted fake MCP server over a corpus of 31
   captured fixtures in `internal/memory/testdata`. A format change must fail there, in
   one place, rather than in whatever calls it.
@@ -1744,9 +1873,11 @@ and `internal/supervisor/isolated_integration_test.go` (also `&& linux`). Each s
 its equipment is absent, so a green integration run on a bare machine proves nothing.
 
 Any integration test that touches lore must create its own `LORE_HOME` under `t.TempDir`
-and its own spaces inside it. lore has no delete, so a test pointed at a persistent store
-accumulates its own writes until they crowd out the entry the run just made — a test that
-corrupts what it measures gets less trustworthy every time it runs.
+and its own spaces inside it. A test pointed at a persistent store accumulates its own
+writes until they crowd out the entry the run just made — a test that corrupts what it
+measures gets less trustworthy every time it runs. `lore_delete` does not change that
+rule: it is not tidy-up machinery for a suite, and a test that cleaned up after itself by
+deleting would still be one crash away from leaving the store dirtier than it found it.
 
 ---
 
@@ -1755,8 +1886,9 @@ corrupts what it measures gets less trustworthy every time it runs.
 Established by reading lore's source, not by assumption. These facts constrain the
 design and several of them contradict what the architecture originally supposed.
 
-- **`lore mcp` is stdio only**, exposes five tools (`lore_search`, `lore_get`,
-  `lore_put`, `lore_spaces`, `lore_share`), and returns **unstructured text**, not JSON.
+- **`lore mcp` is stdio only**, exposes six tools (`lore_search`, `lore_get`,
+  `lore_put`, `lore_spaces`, `lore_share`, `lore_delete`), and returns **unstructured
+  text**, not JSON.
   Failures arrive as `isError: true` rather than as protocol errors. The client is
   therefore a parser, and is tested against a golden corpus so that a format change
   fails loudly in one place.
@@ -1788,7 +1920,16 @@ design and several of them contradict what the architecture originally supposed.
   deployment running more than one lore instance must run both.
 - **Invites are not exposed over MCP.** Enrolment drives the lore CLI, which has
   non-interactive flags but emits no JSON.
-- **There is no delete.** Anything kenward stores is permanent from lore's side.
+- **Delete exists, by tombstone, and only by id.** `lore_delete(id, space)` writes a
+  signed tombstone that propagates to every synced device; the entry then stops coming
+  back from `lore_search` and `lore_get`. It is space-scoped — unlike `lore_get`, and by
+  comparing space *ids* rather than the display names kenward's own check falls back on,
+  so it is the stronger of the two guards. Deleting an already-deleted entry is a no-op
+  lore reports rather than an error.
+
+  What it does not give kenward is a way to clean up after a write whose answer was
+  lost. The id comes back in the receipt, so a write with no receipt leaves nothing to
+  name, and the uncertain-write rule below is unchanged by it.
 - **`lore_get` and `lore_share` are not space-scoped.** Entry ids are global, so an id is
   effectively a capability to read an entry in any space. The client verifies the fetched
   entry's space and returns `ErrNotFound` on a mismatch, but that verification resolves
@@ -1800,9 +1941,15 @@ design and several of them contradict what the architecture originally supposed.
   `CreatedAt` can never be populated because lore's MCP surface exposes it on no tool.
   Prompt rendering must not imply it holds a full entry when it holds a snippet.
 - **A write whose answer is lost is never replayed.** A `lore_put` may have landed even
-  though the client reported failure, and since lore has no delete, a retry that
-  duplicates it is permanent. Report uncertainty to the member rather than silently
-  retrying.
+  though the client reported failure, and the id that would let kenward delete it was in
+  the answer that never arrived, so a retry that duplicates it is permanent. Report
+  uncertainty to the member rather than silently retrying.
+
+  `Delete` is issued as a write for the same reason, even though repeating a tombstone
+  is harmless: the flag also decides whether a lost answer comes back wrapped in
+  `ErrWriteUncertain`, and after an undo the difference between *"it is still there"* and
+  *"I cannot tell"* is the entire message the member gets. Buying one free retry by
+  giving that distinction up is the wrong trade.
 - `confidence` ∈ {experimental, provisional, validated, hardened} and `origin` ∈
   {evidence, directive, convention, constraint}, both enforced by lore. **Markers are
   free-form strings** — the familiar vocabulary is convention only, so kenward must not

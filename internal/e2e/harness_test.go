@@ -83,6 +83,9 @@ type fakeMemory struct {
 	calls  []memCall
 	seeded map[domain.SpaceID][]memory.Entry
 	puts   int
+	// deleteErr makes an undo fail the way a real one can. Set it and the entry
+	// stays written, which is the case the member must be told about honestly.
+	deleteErr error
 }
 
 func newFakeMemory() *fakeMemory {
@@ -189,9 +192,37 @@ func (m *fakeMemory) Share(ctx context.Context, from, to domain.SpaceID, entryID
 	return memory.Entry{ID: entryID, Space: to}, nil
 }
 
+func (m *fakeMemory) Delete(ctx context.Context, space domain.SpaceID, entryID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, memCall{Op: "delete", Spaces: []domain.SpaceID{space}, Title: entryID})
+	return m.deleteErr
+}
+
 func (m *fakeMemory) Close() error { return nil }
 
 var _ memory.Memory = (*fakeMemory)(nil)
+
+// replyBody strips the retrieval line the assistant prefixes to a reply, so that a
+// test about the turn reaching the model and coming back is not also a test of what
+// the node reported about its own reading. TestRetrievalLineReachesTheMemberEndToEnd
+// is the assertion about the line.
+//
+// Nothing here turns the line off to make its assertions simpler. These tests exist to
+// exercise the product as it ships, and a suite that quietly configured the shipped
+// behaviour away would stop proving the thing it is for.
+func replyBody(text string) string {
+	if !strings.HasPrefix(text, "[searched ") {
+		return text
+	}
+	if _, rest, ok := strings.Cut(text, "]\n\n"); ok {
+		return rest
+	}
+	return text
+}
 
 // recorded returns a copy of every call made so far.
 func (m *fakeMemory) recorded() []memCall {
@@ -243,6 +274,19 @@ func (m *fakeMemory) putCalls() []memCall {
 	var out []memCall
 	for _, c := range m.recorded() {
 		if c.Op == "put" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// deleteCalls returns only the deletes. An undo is the one place this household
+// removes anything, so a test asserting on these is asserting on undo and nothing
+// else.
+func (m *fakeMemory) deleteCalls() []memCall {
+	var out []memCall
+	for _, c := range m.recorded() {
+		if c.Op == "delete" {
 			out = append(out, c)
 		}
 	}

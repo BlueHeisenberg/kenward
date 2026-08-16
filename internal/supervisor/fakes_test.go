@@ -28,6 +28,24 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
+// replyBody strips the retrieval line the assistant prefixes to a reply, so that a
+// test about which unit answered is not also a test of what that unit read.
+//
+// It is a strip rather than a switch on memory.announce_reads because these tests
+// exercise the wiring as it ships: a suite that turned the line off to keep its own
+// assertions simple would stop proving that the shipped configuration produces a
+// working reply at all. TestReadNoticesReachTheUnitOptions is the assertion about the
+// line itself.
+func replyBody(text string) string {
+	if !strings.HasPrefix(text, "[searched ") {
+		return text
+	}
+	if _, rest, ok := strings.Cut(text, "]\n\n"); ok {
+		return rest
+	}
+	return text
+}
+
 // --- memory ------------------------------------------------------------------
 
 type fakeMemory struct {
@@ -53,6 +71,8 @@ func (m *fakeMemory) Put(_ context.Context, space domain.SpaceID, d memory.Draft
 func (m *fakeMemory) Share(_ context.Context, _, to domain.SpaceID, id string) (memory.Entry, error) {
 	return memory.Entry{ID: id, Space: to}, nil
 }
+
+func (m *fakeMemory) Delete(context.Context, domain.SpaceID, string) error { return nil }
 
 func (m *fakeMemory) Close() error { return nil }
 

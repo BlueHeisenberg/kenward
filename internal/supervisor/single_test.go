@@ -112,7 +112,7 @@ func TestSingleServesExactlyOneMember(t *testing.T) {
 	// David's message is served over his own tier chain.
 	h.fake.Inject(transport.Inbound{ChatID: 1, UserID: 1, Text: "hello", MessageID: 1})
 	waitFor(t, "david's reply", func() bool { return len(h.fake.Sent()) >= 1 })
-	if got, _ := h.fake.LastSent(); got.Text != "via:local" || got.ChatID != 1 {
+	if got, _ := h.fake.LastSent(); replyBody(got.Text) != "via:local" || got.ChatID != 1 {
 		t.Fatalf("reply = %+v, want via:local in chat 1", got)
 	}
 
@@ -139,7 +139,7 @@ func TestSingleServesTheGroup(t *testing.T) {
 	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: 1, Text: "hi all", MessageID: 9, IsGroup: true})
 	waitFor(t, "group reply", func() bool { return len(h.fake.Sent()) >= 1 })
 	got, _ := h.fake.LastSent()
-	if got.ChatID != groupChatID || got.ReplyTo != 9 || got.Text != "via:local" {
+	if got.ChatID != groupChatID || got.ReplyTo != 9 || replyBody(got.Text) != "via:local" {
 		t.Fatalf("group reply = %+v", got)
 	}
 
@@ -262,7 +262,7 @@ func TestSingleClaimOnlyPodServesAfterClaim(t *testing.T) {
 	before := len(h.fake.Sent())
 	h.fake.Inject(transport.Inbound{ChatID: anaTelegramID, UserID: anaTelegramID, Text: "hi", MessageID: 3})
 	waitFor(t, "ana's first turn", func() bool { return len(h.fake.Sent()) > before })
-	if got, _ := h.fake.LastSent(); got.Text != "via:local" || got.ChatID != anaTelegramID {
+	if got, _ := h.fake.LastSent(); replyBody(got.Text) != "via:local" || got.ChatID != anaTelegramID {
 		t.Fatalf("ana's first private message after claiming was answered with %q; "+
 			"the pod reported itself serving, so it must serve", got.Text)
 	}
@@ -339,7 +339,7 @@ func TestSingleStopDrainsInFlightTurnThenLocks(t *testing.T) {
 	}
 
 	sent := h.fake.Sent()
-	if len(sent) != 1 || sent[0].Text != "via:local" {
+	if len(sent) != 1 || replyBody(sent[0].Text) != "via:local" {
 		t.Fatalf("in-flight turn's reply = %+v, want one via:local", sent)
 	}
 	if h.sessions.lockAllCount() != 1 || sentAtLockAll != 1 {

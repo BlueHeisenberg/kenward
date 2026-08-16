@@ -578,6 +578,16 @@ func (c *Config) validateLimits(p *problems) {
 	if c.Capture.MaxProposalsPerTurn < 0 {
 		p.addf("capture.max_proposals_per_turn: %d is negative", c.Capture.MaxProposalsPerTurn)
 	}
+	switch c.Capture.PrivateWrites {
+	case "", PrivateWriteSave, PrivateWriteAsk:
+	default:
+		// Named rather than ignored. An unrecognised value here would silently fall
+		// back to writing without asking, which is the more surprising of the two
+		// behaviours to get by accident and the one a household typing this field at
+		// all is most likely trying to turn off.
+		p.addf("capture.private_writes: %q is not a policy; use %q or %q",
+			c.Capture.PrivateWrites, PrivateWriteSave, PrivateWriteAsk)
+	}
 	if c.Session.IdleTimeout < 0 {
 		p.addf("session.idle_timeout: %s is negative", c.Session.IdleTimeout)
 	}

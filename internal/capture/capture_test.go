@@ -3,6 +3,7 @@ package capture
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,13 +79,15 @@ func choiceIDs(q transport.Question) []string {
 }
 
 type stubMemory struct {
-	entry    memory.Entry
-	getErr   error
-	putErr   error
-	shareErr error
-	puts     []putCall
-	shares   []shareCall
-	gets     []string
+	entry     memory.Entry
+	getErr    error
+	putErr    error
+	shareErr  error
+	deleteErr error
+	puts      []putCall
+	shares    []shareCall
+	gets      []string
+	deletes   []string
 	// putSpace and shareSpace, when set, make the stub report the write landed in
 	// a different space than the one requested — a store that misroutes.
 	putSpace   domain.SpaceID
@@ -125,6 +128,16 @@ func (m *stubMemory) Share(_ context.Context, from, to domain.SpaceID, id string
 		to = m.shareSpace
 	}
 	return memory.Entry{ID: id, Space: to, Title: m.entry.Title}, nil
+}
+
+// Delete records the call and fails the way lore fails. deleteErr is not decoration:
+// undo has three endings — gone, still there, and unknown — and the two that are not
+// "gone" only exist if the double can produce them. A fake that always succeeds would
+// let the code claim an entry was removed on a path where it never was, which is the
+// exact class of defect this file's other error hooks were added for.
+func (m *stubMemory) Delete(_ context.Context, space domain.SpaceID, id string) error {
+	m.deletes = append(m.deletes, string(space)+"/"+id)
+	return m.deleteErr
 }
 
 func (m *stubMemory) Close() error { return nil }
@@ -170,21 +183,34 @@ func proposal(target Target) Proposal {
 
 func newEngine(t *testing.T, answers ...transport.Answer) (*Engine, *stubMemory, *stubTransport) {
 	t.Helper()
+	return newEngineWith(t, Options{}, answers...)
+}
+
+// newEngineWith is newEngine for a test that cares about the policy. The default
+// engine writes a personal proposal without asking, so a test about the question is a
+// test that has to say which policy it is exercising.
+func newEngineWith(t *testing.T, opts Options, answers ...transport.Answer) (*Engine, *stubMemory, *stubTransport) {
+	t.Helper()
 	m := &stubMemory{}
 	tr := &stubTransport{answers: answers}
-	return New(m, tr, Options{}), m, tr
+	return New(m, tr, opts), m, tr
 }
 
 func accept(choice string) transport.Answer {
 	return transport.Answer{ChoiceID: choice, UserID: davidID}
 }
 
-// TestOfferButtons walks every row of the capture table.
+// TestOfferButtons walks every row of the capture table — every case that puts a
+// question, which is every case except a personal target under the default policy.
+// That one is TestPrivateTargetIsWrittenThenAnnounced; the row here is the same
+// proposal under PrivateWriteAsk, which is what a household turning the policy back
+// buys and is the only thing keeping the old path from rotting.
 func TestOfferButtons(t *testing.T) {
 	tests := []struct {
 		name    string
 		scope   domain.Scope
 		target  Target
+		opts    Options
 		want    []string
 		answer  transport.Answer
 		wantOut OutcomeKind
@@ -203,8 +229,9 @@ func TestOfferButtons(t *testing.T) {
 			answer: accept(ChoiceShared), wantOut: OutcomeSaved, wantIn: shared,
 		},
 		{
-			name:  "direct personal confirms one destination",
+			name:  "direct personal under ask confirms one destination",
 			scope: directScope(), target: TargetPersonal,
+			opts:   Options{PrivateWrites: PrivateWriteAsk},
 			want:   []string{ChoicePersonal, ChoiceDecline},
 			answer: accept(ChoicePersonal), wantOut: OutcomeSaved, wantIn: personal,
 		},
@@ -236,7 +263,7 @@ func TestOfferButtons(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			e, mem, tr := newEngine(t, tc.answer)
+			e, mem, tr := newEngineWith(t, tc.opts, tc.answer)
 			e.BeginTurn(tc.scope, "turn-1")
 
 			out, err := e.Offer(context.Background(), tc.scope, proposal(tc.target), davidID)
@@ -961,7 +988,10 @@ func TestConfirmationFailureDoesNotInviteARetry(t *testing.T) {
 	}
 
 	t.Run("offer", func(t *testing.T) {
-		e, _, tr := newEngine(t, accept(ChoicePersonal))
+		// Under ask, because this is about the confirmation that follows a tap.
+		// The write-first path has no such message — its announcement is the Ask
+		// itself — and its own failure is TestAnnouncementFailureStillSaysItWasWritten.
+		e, _, tr := newEngineWith(t, Options{PrivateWrites: PrivateWriteAsk}, accept(ChoicePersonal))
 		tr.sendErr = boom
 		sc := directScope()
 		e.BeginTurn(sc, "turn-1")
@@ -1011,9 +1041,9 @@ func TestUnsureWithoutSharedSpaceOffersPersonalOnly(t *testing.T) {
 // memory" — that message being derivable only from the actual outcome is the
 // cross-check this test pins.
 func TestWrongSpaceWriteIsNotConfirmed(t *testing.T) {
-	mem := &stubMemory{putSpace: shared} // the member chose personal; the store misroutes
+	mem := &stubMemory{putSpace: shared} // personal was intended; the store misroutes
 	tr := &stubTransport{answers: []transport.Answer{accept(ChoicePersonal)}}
-	e := New(mem, tr, Options{})
+	e := New(mem, tr, Options{PrivateWrites: PrivateWriteAsk})
 	sc := directScope()
 	e.BeginTurn(sc, "turn-1")
 
@@ -1031,7 +1061,7 @@ func TestWrongSpaceWriteIsNotConfirmed(t *testing.T) {
 	if strings.Contains(got, "Saved") || strings.Contains(got, "your private memory") {
 		t.Errorf("member told a misrouted write went where they chose: %q", got)
 	}
-	if !strings.Contains(got, "was not stored where you chose") {
+	if !strings.Contains(got, "was not stored where it should have been") {
 		t.Errorf("notice %q does not say the destination was wrong", got)
 	}
 }
@@ -1266,7 +1296,7 @@ func TestOfferErrorsCarryNoContent(t *testing.T) {
 	})
 
 	t.Run("confirmation fails after the write landed", func(t *testing.T) {
-		e, _, tr := newEngine(t, accept(ChoicePersonal))
+		e, _, tr := newEngineWith(t, Options{PrivateWrites: PrivateWriteAsk}, accept(ChoicePersonal))
 		tr.sendErr = boom
 		out, err := e.Offer(context.Background(), sc, secretProposal(), davidID)
 		assertNoContent(t, err)
@@ -1275,6 +1305,35 @@ func TestOfferErrorsCarryNoContent(t *testing.T) {
 		}
 		// An id identifies the entry that could not be confirmed without saying
 		// anything about what is in it.
+		if !strings.Contains(err.Error(), out.EntryID) {
+			t.Errorf("the error should name the entry id %q, got %s", out.EntryID, err)
+		}
+	})
+
+	// The write-first path's two new errors. Both are reported after an entry
+	// carrying the member's secret is already in the store, which is precisely when
+	// an operator most wants a log line and least may have one with the words in it.
+	t.Run("announcement fails after the write landed", func(t *testing.T) {
+		e, _, tr := newEngine(t)
+		tr.askErr = boom
+		out, err := e.Offer(context.Background(), sc, secretProposal(), davidID)
+		assertNoContent(t, err)
+		if !out.Stored() {
+			t.Fatal("the write happened; the outcome must still say so")
+		}
+		if !strings.Contains(err.Error(), out.EntryID) {
+			t.Errorf("the error should name the entry id %q, got %s", out.EntryID, err)
+		}
+	})
+
+	t.Run("undo fails", func(t *testing.T) {
+		e, m, _ := newEngine(t, accept(ChoiceUndo))
+		m.deleteErr = boom
+		out, err := e.Offer(context.Background(), sc, secretProposal(), davidID)
+		assertNoContent(t, err)
+		if !out.Stored() {
+			t.Fatal("the delete failed, so the entry is still there and the outcome must say so")
+		}
 		if !strings.Contains(err.Error(), out.EntryID) {
 			t.Errorf("the error should name the entry id %q, got %s", out.EntryID, err)
 		}
@@ -1335,5 +1394,341 @@ func TestOutcomeCarriesTheTitleForTheMember(t *testing.T) {
 	}
 	if out.Title != secretTitle {
 		t.Errorf("Outcome.Title = %q, want the proposal's title", out.Title)
+	}
+}
+
+// --- the write-first path ----------------------------------------------------
+
+// TestPrivateTargetIsWrittenThenAnnounced is the decided behaviour in one test: a
+// proposal for the member's own space reaches the store before it reaches the member,
+// and the message they get says what was written, where, and offers to take it back.
+//
+// It asserts the body is in the announcement as well as the title. That is not
+// cosmetic. Under the old flow the member read the exact words before the write and
+// could refuse them; the announcement is the only place those words are now shown at
+// all, so an announcement carrying a title alone would quietly turn "kenward tells you
+// what it wrote" into "kenward tells you that it wrote".
+func TestPrivateTargetIsWrittenThenAnnounced(t *testing.T) {
+	e, m, tr := newEngine(t, transport.Answer{TimedOut: true})
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+	if err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if out.Kind != OutcomeSaved || out.Space != personal {
+		t.Fatalf("outcome = %v in %q, want saved in %q", out.Kind, out.Space, personal)
+	}
+	if len(m.puts) != 1 || m.puts[0].space != personal {
+		t.Fatalf("puts = %+v, want exactly one to %q", m.puts, personal)
+	}
+	if len(tr.asks) != 1 {
+		t.Fatalf("asks = %d, want the one announcement", len(tr.asks))
+	}
+	q := tr.asks[0].q
+	if got := choiceIDs(q); !equal(got, []string{ChoiceUndo}) {
+		t.Errorf("choices = %v, want just [%s]", got, ChoiceUndo)
+	}
+	for _, want := range []string{"Bins go out Tuesday", "Green bin on alternate weeks.", string(personal), "your private memory"} {
+		if !strings.Contains(q.Text, want) {
+			t.Errorf("announcement %q does not carry %q", q.Text, want)
+		}
+	}
+	// The default retirement line says the question was declined. On a message
+	// reporting a write that already happened, that reads as the write having been
+	// called off, which is the one thing it must never say.
+	if q.RetiredNote == "" {
+		t.Fatal("the announcement must carry its own retirement note; the default says the question was declined")
+	}
+	if strings.Contains(q.RetiredNote, "declined") {
+		t.Errorf("retirement note %q says declined about a write that stands", q.RetiredNote)
+	}
+	if !strings.Contains(q.RetiredNote, "still in memory") {
+		t.Errorf("retirement note %q does not say the entry is still there", q.RetiredNote)
+	}
+	// Nothing else is sent: the announcement is the whole of the member's traffic
+	// for a write, where the old flow cost a question and a confirmation.
+	if len(tr.sends) != 0 {
+		t.Errorf("sends = %v, want none — the announcement is the message", tr.sends)
+	}
+}
+
+// TestUndoDeletesTheEntryAndSaysSo: the tap, the delete, and the sentence that is only
+// true because the delete succeeded.
+func TestUndoDeletesTheEntryAndSaysSo(t *testing.T) {
+	e, m, tr := newEngine(t, accept(ChoiceUndo))
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+	if err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if out.Kind != OutcomeUndone {
+		t.Errorf("outcome = %v, want %v", out.Kind, OutcomeUndone)
+	}
+	if out.Stored() {
+		t.Error("Stored() is true after a confirmed undo; nothing is in memory")
+	}
+	if want := []string{string(personal) + "/entry-1"}; !equal(m.deletes, want) {
+		t.Fatalf("deletes = %v, want %v — the undo must be space-scoped and name the entry it wrote", m.deletes, want)
+	}
+	if len(tr.sends) != 1 {
+		t.Fatalf("sends = %v, want the one removal notice", tr.sends)
+	}
+	got := tr.sends[0].Text
+	if !strings.Contains(got, "Removed") || !strings.Contains(got, "Bins go out Tuesday") {
+		t.Errorf("removal notice %q does not say what was removed", got)
+	}
+	// lore deletes by tombstone, not by shredding, and the message may promise only
+	// what that delivers. ARCHITECTURE.md required the announcement to say which.
+	if !strings.Contains(got, "won't come back in an answer") {
+		t.Errorf("removal notice %q does not bound the promise to what a tombstone does", got)
+	}
+	for _, never := range []string{"erased", "destroyed", "wiped"} {
+		if strings.Contains(got, never) {
+			t.Errorf("removal notice %q promises %q; a tombstone is not a shred", got, never)
+		}
+	}
+}
+
+// TestUndoIsADeclineSoTheModelDoesNotWriteItBackNextTurn.
+//
+// Without this the undo achieves nothing that lasts: the same conversation produces
+// the same proposal on the next turn, and the default policy writes it straight back
+// without asking. The old flow got this for free — a decline was a tap on "Don't
+// save" — and the new one has to record it deliberately.
+func TestUndoIsADeclineSoTheModelDoesNotWriteItBackNextTurn(t *testing.T) {
+	e, m, _ := newEngine(t, accept(ChoiceUndo), accept(ChoiceUndo))
+	sc := directScope()
+
+	e.BeginTurn(sc, "turn-1")
+	if _, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID); err != nil {
+		t.Fatalf("first Offer: %v", err)
+	}
+
+	e.BeginTurn(sc, "turn-2")
+	out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+	if err != nil {
+		t.Fatalf("second Offer: %v", err)
+	}
+	if out.Kind != OutcomeDuplicate {
+		t.Errorf("outcome = %v, want %v — an undone title must be suppressed", out.Kind, OutcomeDuplicate)
+	}
+	if len(m.puts) != 1 {
+		t.Errorf("puts = %d, want 1; the second turn rewrote what the member had just taken back", len(m.puts))
+	}
+}
+
+// TestUndoFailureNeverSaysItWasUndone covers the two endings that are not "gone".
+//
+// A delete lore refused means the entry is still there and the member must be told
+// so. A delete lore never answered means nobody knows, and both "removed" and "still
+// there" would be guesses about the member's own memory. The outcome stays saved in
+// each case, because in each case something may well be stored.
+func TestUndoFailureNeverSaysItWasUndone(t *testing.T) {
+	cases := []struct {
+		name      string
+		deleteErr error
+		wantIn    []string
+		wantNotIn []string
+	}{
+		{
+			name:      "lore refused, so it is still there",
+			deleteErr: errors.New("lore said no"),
+			wantIn:    []string{"couldn't take that back", "still in", "Bins go out Tuesday"},
+			wantNotIn: []string{"Removed", "can't tell"},
+		},
+		{
+			name:      "lore did not answer, so nobody knows",
+			deleteErr: fmt.Errorf("%w: no answer", memory.ErrWriteUncertain),
+			wantIn:    []string{"can't tell whether", "Bins go out Tuesday"},
+			wantNotIn: []string{"Removed", "still in your private memory"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, m, tr := newEngine(t, accept(ChoiceUndo))
+			m.deleteErr = tc.deleteErr
+			sc := directScope()
+			e.BeginTurn(sc, "turn-1")
+
+			out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+			if err == nil {
+				t.Fatal("err = nil, want the failed undo reported")
+			}
+			if !errors.Is(err, ErrMemberNotified) {
+				t.Errorf("err = %v, not marked; the caller will speak over a notice the engine already sent", err)
+			}
+			// Saved, not undone: something may well still be in the store, and an
+			// outcome saying otherwise would be the same lie as the message.
+			if out.Kind != OutcomeSaved {
+				t.Errorf("outcome = %v, want %v", out.Kind, OutcomeSaved)
+			}
+			if len(tr.sends) != 1 {
+				t.Fatalf("sends = %v, want exactly one notice", tr.sends)
+			}
+			got := tr.sends[0].Text
+			for _, want := range tc.wantIn {
+				if !strings.Contains(got, want) {
+					t.Errorf("notice %q is missing %q", got, want)
+				}
+			}
+			for _, never := range tc.wantNotIn {
+				if strings.Contains(got, never) {
+					t.Errorf("notice %q claims %q about an undo that did not complete", got, never)
+				}
+			}
+		})
+	}
+}
+
+// TestAnnouncementFailureStillSaysItWasWritten: the entry is in the store and the
+// message carrying that news did not go out. Silence here would be a silent write,
+// which is the one outcome this design forbids outright — so the engine falls back to
+// a plain confirmation and says the undo button is missing rather than implying one
+// exists.
+func TestAnnouncementFailureStillSaysItWasWritten(t *testing.T) {
+	e, m, tr := newEngine(t)
+	tr.askErr = errors.New("telegram is unreachable")
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+	if err == nil {
+		t.Fatal("err = nil, want the failed announcement reported to the caller")
+	}
+	if !errors.Is(err, ErrMemberNotified) {
+		t.Errorf("err = %v, not marked", err)
+	}
+	if !out.Stored() {
+		t.Error("the write landed; the outcome must say so")
+	}
+	if len(m.puts) != 1 {
+		t.Fatalf("puts = %+v, want the one write", m.puts)
+	}
+	if len(tr.sends) != 1 {
+		t.Fatalf("sends = %v, want the fallback confirmation", tr.sends)
+	}
+	got := tr.sends[0].Text
+	for _, want := range []string{"Saved", "Bins go out Tuesday", string(personal), "undo button didn't go through"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("fallback %q is missing %q", got, want)
+		}
+	}
+}
+
+// TestWriteFirstPathIsPrivateOnly: the group has no private destination and the shared
+// space is never written on the assistant's own initiative. Both halves are checked
+// here rather than inferred from writesPrivateDirectly, because this is the invariant
+// the whole change had to preserve.
+func TestWriteFirstPathIsPrivateOnly(t *testing.T) {
+	cases := []struct {
+		name   string
+		scope  domain.Scope
+		target Target
+	}{
+		{"a shared target in a direct chat is still asked", directScope(), TargetShared},
+		{"an unsure target is still asked", directScope(), TargetUnsure},
+		{"the group asks whatever the model proposed", groupScope(), TargetPersonal},
+		{"the group asks for a shared target too", groupScope(), TargetShared},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Timed out: a question nobody answers writes nothing, which is what
+			// makes "was it asked or was it written" observable.
+			e, m, tr := newEngine(t, transport.Answer{TimedOut: true})
+			e.BeginTurn(tc.scope, "turn-1")
+
+			out, err := e.Offer(context.Background(), tc.scope, proposal(tc.target), davidID)
+			if err != nil {
+				t.Fatalf("Offer: %v", err)
+			}
+			if out.Kind != OutcomeTimedOut {
+				t.Errorf("outcome = %v, want %v", out.Kind, OutcomeTimedOut)
+			}
+			if len(m.puts) != 0 {
+				t.Errorf("puts = %+v, want none: this proposal must be asked about, not written", m.puts)
+			}
+			if len(tr.asks) != 1 {
+				t.Fatalf("asks = %d, want one question", len(tr.asks))
+			}
+			for _, id := range choiceIDs(tr.asks[0].q) {
+				if id == ChoiceUndo {
+					t.Errorf("choices include %s; this is a question, not an undo announcement", ChoiceUndo)
+				}
+			}
+		})
+	}
+}
+
+// TestPrivateWriteAskRestoresTheQuestionEntirely is the promise made to a household
+// that turns the policy back: not an approximation of the old flow, the old flow. One
+// question, no write until the tap, and no undo button anywhere.
+func TestPrivateWriteAskRestoresTheQuestionEntirely(t *testing.T) {
+	e, m, tr := newEngineWith(t, Options{PrivateWrites: PrivateWriteAsk}, transport.Answer{TimedOut: true})
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+	if err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if out.Kind != OutcomeTimedOut {
+		t.Errorf("outcome = %v, want %v: an unanswered question writes nothing", out.Kind, OutcomeTimedOut)
+	}
+	if len(m.puts) != 0 {
+		t.Errorf("puts = %+v, want none under the ask policy", m.puts)
+	}
+	if got := tr.lastChoiceIDs(); !equal(got, []string{ChoicePersonal, ChoiceDecline}) {
+		t.Errorf("choices = %v, want the old two-button question", got)
+	}
+	if tr.asks[0].q.RetiredNote != "" {
+		t.Errorf("RetiredNote = %q, want empty: a question really is declined when it expires", tr.asks[0].q.RetiredNote)
+	}
+}
+
+// TestUndoWindowIsTheAskTimeout: the button is live for exactly as long as a capture
+// question waits, and a household that shortens one shortens the other. There is no
+// second knob, deliberately — two timeouts for two flavours of the same wait is a
+// setting nobody can hold in their head.
+func TestUndoWindowIsTheAskTimeout(t *testing.T) {
+	m, tr := &stubMemory{}, &stubTransport{answers: []transport.Answer{{TimedOut: true}}}
+	e := New(m, tr, Options{AskTimeout: 90 * time.Second})
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	if _, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if got := tr.asks[0].q.Timeout; got != 90*time.Second {
+		t.Errorf("undo window = %v, want the configured ask timeout of 90s", got)
+	}
+}
+
+// TestUndoTapFromAnotherMemberIsIgnored. The transport filters these already, and this
+// is the defence for a transport that does not — the same reasoning as the equivalent
+// check on a capture question, and with more at stake: a stranger's tap here deletes
+// something out of somebody else's private memory.
+func TestUndoTapFromAnotherMemberIsIgnored(t *testing.T) {
+	e, m, tr := newEngine(t, transport.Answer{ChoiceID: ChoiceUndo, UserID: otherID})
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+	if err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if out.Kind != OutcomeSaved {
+		t.Errorf("outcome = %v, want the write to stand", out.Kind)
+	}
+	if len(m.deletes) != 0 {
+		t.Errorf("deletes = %v, want none: another member tapped Undo on this entry", m.deletes)
+	}
+	if len(tr.sends) != 0 {
+		t.Errorf("sends = %v, want none", tr.sends)
 	}
 }

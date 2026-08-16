@@ -60,10 +60,13 @@ func TestBudgetOverflowDropsFromEndOfSharedFirstAndSaysSo(t *testing.T) {
 	sc := testDirectScope()
 
 	// Measure the full prompt, then set a budget that forces roughly two entries out.
-	full := estimateRequestTokens(budgetUnit(t, 1_000_000).assemble(sc, budgetGroups(), "question").Messages)
+	full := func() int {
+		r, _ := budgetUnit(t, 1_000_000).assemble(sc, budgetGroups(), "question")
+		return estimateRequestTokens(r.Messages)
+	}()
 	u := budgetUnit(t, full+16-150)
 
-	req := u.assemble(sc, budgetGroups(), "question")
+	req, _ := u.assemble(sc, budgetGroups(), "question")
 	sys := req.Messages[0].Content
 
 	// Shared entries go first, from the end, never from the middle.
@@ -97,12 +100,13 @@ func TestBudgetTrimsHistoryBeforeRetrievedMemory(t *testing.T) {
 	full := func() int {
 		u := budgetUnit(t, 1_000_000)
 		u.history.add(pleasantry, "you're welcome")
-		return estimateRequestTokens(u.assemble(sc, budgetGroups(), "question").Messages)
+		r, _ := u.assemble(sc, budgetGroups(), "question")
+		return estimateRequestTokens(r.Messages)
 	}()
 
 	u := budgetUnit(t, full+16-100)
 	u.history.add(pleasantry, "you're welcome")
-	req := u.assemble(sc, budgetGroups(), "question")
+	req, _ := u.assemble(sc, budgetGroups(), "question")
 	sys := req.Messages[0].Content
 
 	// Dropping the history turn was enough; every entry survives, nothing is
@@ -125,7 +129,7 @@ func TestBudgetTrimsHistoryBeforeRetrievedMemory(t *testing.T) {
 func TestBudgetExhaustedKeepsNonNegotiableParts(t *testing.T) {
 	sc := testDirectScope()
 	u := budgetUnit(t, 32) // absurdly small: everything elastic must go
-	req := u.assemble(sc, budgetGroups(), "question")
+	req, _ := u.assemble(sc, budgetGroups(), "question")
 	sys := req.Messages[0].Content
 
 	if !strings.Contains(sys, "You are kenward, a household assistant.") {

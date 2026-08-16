@@ -147,8 +147,9 @@ type endpointDoc struct {
 }
 
 type memoryDoc struct {
-	LoreCommand []string `yaml:"lore_command,flow"`
-	SearchLimit int      `yaml:"search_limit"`
+	LoreCommand   []string `yaml:"lore_command,flow"`
+	SearchLimit   int      `yaml:"search_limit"`
+	AnnounceReads *bool    `yaml:"announce_reads,omitempty"`
 }
 
 type sessionDoc struct {
@@ -156,7 +157,8 @@ type sessionDoc struct {
 }
 
 type captureDoc struct {
-	MaxProposalsPerTurn int `yaml:"max_proposals_per_turn"`
+	MaxProposalsPerTurn int                  `yaml:"max_proposals_per_turn"`
+	PrivateWrites       config.PrivateWrites `yaml:"private_writes"`
 }
 
 type updateDoc struct {
@@ -177,11 +179,15 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 		},
 		Telegram: telegramDoc{BotTokenEnv: cfg.Telegram.BotTokenEnv},
 		Memory: memoryDoc{
-			LoreCommand: cfg.Memory.LoreCommand,
-			SearchLimit: cfg.Memory.SearchLimit,
+			LoreCommand:   cfg.Memory.LoreCommand,
+			SearchLimit:   cfg.Memory.SearchLimit,
+			AnnounceReads: cfg.Memory.AnnounceReads,
 		},
 		Session: sessionDoc{IdleTimeout: cfg.Session.IdleTimeout},
-		Capture: captureDoc{MaxProposalsPerTurn: cfg.Capture.MaxProposalsPerTurn},
+		Capture: captureDoc{
+			MaxProposalsPerTurn: cfg.Capture.MaxProposalsPerTurn,
+			PrivateWrites:       cfg.Capture.PrivateWrites,
+		},
 		Update: updateDoc{
 			Channel:       cfg.Update.Channel,
 			CheckInterval: cfg.Update.CheckInterval,

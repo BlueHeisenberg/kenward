@@ -99,7 +99,7 @@ func TestPodForAnUnclaimedMemberServesTheClaimAndThenTheMember(t *testing.T) {
 	fake.InjectText(jordanTelegramID, jordanTelegramID, "hi", false)
 	podWaitFor(t, "jordan's first turn", func() bool { return len(fake.Sent()) > before })
 	got, _ := fake.LastSent()
-	if got.Text != "via:local,cloud" || got.ChatID != jordanTelegramID {
+	if replyBody(got.Text) != "via:local,cloud" || got.ChatID != jordanTelegramID {
 		t.Fatalf("jordan's first message after claiming was answered with %+v; "+
 			"the pod reported itself serving, so it must serve — over jordan's own chain, "+
 			"and with a key the claim unlocked", got)
@@ -143,6 +143,16 @@ func podHealth(t *testing.T, sup supervisor.Supervisor) map[string]supervisor.St
 	return out
 }
 
+// replyBody strips the retrieval line the assistant prefixes to a reply. These tests
+// are about which pod answered over which chain; what that pod read is
+// internal/assistant's business and has its own assertions there.
+func replyBody(text string) string {
+	if _, rest, ok := strings.Cut(text, "]\n\n"); ok && strings.HasPrefix(text, "[searched ") {
+		return rest
+	}
+	return text
+}
+
 // --- the three faked edges ---------------------------------------------------
 
 // stubMemory stands in for lore: it answers, and remembers nothing.
@@ -163,6 +173,8 @@ func (*stubMemory) Put(_ context.Context, space domain.SpaceID, d memory.Draft) 
 func (*stubMemory) Share(_ context.Context, _, to domain.SpaceID, id string) (memory.Entry, error) {
 	return memory.Entry{ID: id, Space: to}, nil
 }
+
+func (*stubMemory) Delete(context.Context, domain.SpaceID, string) error { return nil }
 
 func (*stubMemory) Close() error { return nil }
 

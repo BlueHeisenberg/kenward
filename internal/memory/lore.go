@@ -110,9 +110,12 @@ func (c Config) childEnv() []string {
 //   - `lore mcp` exits before the MCP handshake if LORE_HOME has no account.json
 //     and device.json. Run `lore init` first; the subprocess stderr is included
 //     in the start-up error to make that diagnosable.
-//   - lore has no delete. There is no MCP tool and no CLI command that tombstones
-//     an entry, so kenward cannot remove knowledge, only supersede it with a new
-//     version. Memory has no Delete method for that reason.
+//   - lore deletes by tombstone, and only by id. `lore_delete` writes a signed
+//     tombstone that propagates to every synced device; the entry then stops
+//     coming back from lore_search and lore_get. What that does not give kenward
+//     is a way to clean up after a write whose answer was lost: the id comes back
+//     in the receipt, so a write with no receipt leaves nothing to delete. An
+//     uncertain write is still uncertain and still must not be retried.
 //   - Space display names are not unique and not stable across lore instances.
 //     Everything here is keyed on space ids, which are what kenward configures.
 //   - The member count printed by lore_spaces is hard-coded to 1 and is neither
@@ -366,8 +369,8 @@ func (c *Client) getRendered(ctx context.Context, id string) (rendered, error) {
 // On failure the caller must distinguish two cases before saying anything to a
 // member. An error matching ErrWriteUncertain means the request reached lore and
 // the answer did not come back: the entry may exist. Anything else means nothing
-// was written. lore has no delete, so a retry after an uncertain write can leave
-// a permanent duplicate.
+// was written. Delete takes an id and an uncertain write returned none, so a
+// retry after one can leave a duplicate that nothing here can remove.
 func (c *Client) Put(ctx context.Context, space domain.SpaceID, d Draft) (Entry, error) {
 	if strings.TrimSpace(d.Title) == "" || strings.TrimSpace(d.Body) == "" || strings.TrimSpace(d.Domain) == "" {
 		return Entry{}, fmt.Errorf("memory: title, body and domain are required: %w", ErrInvalidArgument)
@@ -504,6 +507,59 @@ func (c *Client) Share(ctx context.Context, from, to domain.SpaceID, entryID str
 	}
 	r.Entry.Space = to
 	return r.Entry, nil
+}
+
+// Delete tombstones one entry in one space.
+//
+// The space is passed through to lore, which refuses an entry that is not in it.
+// That is the same defence Get makes and a stronger one: lore compares space ids
+// rather than the display names this client has to fall back on, so a delete
+// cannot reach out of the space the caller named even where two spaces share a
+// name. The client still resolves the space first, so a space this lore home does
+// not hold is ErrUnknownSpace rather than a delete attempt.
+//
+// Deleting an entry that is already a tombstone returns nil. lore reports it as a
+// no-op and it is one; the caller that needs this is undoing a write and wants
+// the entry gone, not the honour of being the one who removed it.
+//
+// The call is issued as a write, not as an idempotent read, even though repeating
+// a tombstone is harmless. The flag decides whether a lost answer comes back
+// wrapped in ErrWriteUncertain, and after an undo the difference between "it is
+// still there" and "I cannot tell" is the entire message the member gets. Buying
+// one free retry by giving that distinction up is the wrong trade.
+func (c *Client) Delete(ctx context.Context, space domain.SpaceID, entryID string) error {
+	if strings.TrimSpace(entryID) == "" {
+		return fmt.Errorf("memory: entry id is empty: %w", ErrInvalidArgument)
+	}
+	if space == "" {
+		return fmt.Errorf("memory: delete requires an explicit space: %w", ErrInvalidArgument)
+	}
+	if _, err := c.spaceNameFor(ctx, space); err != nil {
+		return err
+	}
+
+	text, err := c.callTool(ctx, toolDelete, map[string]any{
+		"id":    entryID,
+		"space": string(space),
+	}, false)
+	if err != nil {
+		return err
+	}
+	got, already, err := parseDeleted(text)
+	if err != nil {
+		// lore answered without an error, so the tombstone is written; this client
+		// just cannot read the receipt. Saying "deleted" on the strength of an
+		// unrecognised line would be guessing at the one thing the caller is about
+		// to tell a member, so it is reported as uncertain instead.
+		return fmt.Errorf("%w: %w", ErrWriteUncertain, err)
+	}
+	if got != entryID {
+		return fmt.Errorf("%w: memory: delete of %s was answered for entry %s", ErrWriteUncertain, entryID, got)
+	}
+	if already {
+		c.cfg.Logger.Info("lore: entry was already deleted", "entry", entryID, "space", string(space))
+	}
+	return nil
 }
 
 // spaceNameFor resolves a space id to lore's display name for it, refreshing the

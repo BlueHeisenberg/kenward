@@ -29,8 +29,14 @@ Anything that breaks one of these:
 - **A member's private memory is not readable by another member.**
 - **A space configured for local tiers only never reaches a provider.** No fallback, no
   default, no widening under any error condition.
-- **Nothing is written to memory without an explicit confirmation from the member being
-  asked**, and a confirmation is only accepted from that member.
+- **Nothing is written to memory without the member being told**, in their own words,
+  every time — there is no setting that makes a write silent.
+- **Nothing reaches the household's shared memory without an explicit confirmation from
+  the member being asked**, and there is no setting that changes that either. Publishing
+  to the household is the one irreversible act in the product.
+- **A write to a member's own private memory is performed and then announced**, with an
+  Undo button, unless the household has set `capture.private_writes: ask`. A tap — an
+  approval or an Undo — is only accepted from the member it was addressed to.
 - **A stranger who finds the bot gets nothing** — no reply, no acknowledgement, no
   confirmation that the bot exists.
 - **In isolated mode**, one member's process cannot read another member's key, token or

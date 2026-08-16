@@ -100,7 +100,7 @@ func runFakeLore() {
 	)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "lore", Version: "0.2.0"}, nil)
-	for _, name := range []string{toolSearch, toolGet, toolPut, toolSpaces, toolShare} {
+	for _, name := range []string{toolSearch, toolGet, toolPut, toolSpaces, toolShare, toolDelete} {
 		srv.AddTool(
 			&mcp.Tool{Name: name, InputSchema: json.RawMessage(`{"type":"object"}`)},
 			func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {

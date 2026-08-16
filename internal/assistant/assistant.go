@@ -159,9 +159,35 @@ type Options struct {
 	// QueueNoticeAfter is how long a queued message waits in silence before the
 	// member is told it is queued. Defaults to DefaultQueueNoticeAfter.
 	QueueNoticeAfter time.Duration
+	// ReadNotices says whether a reply is prefixed with a line naming the memories
+	// that were searched and how much of what they returned reached the model. The
+	// zero value announces; ReadNoticesOff is the household's opt-out.
+	ReadNotices ReadNotices
 	// Now supplies the prompt's date. Defaults to time.Now; tests fix it so the
 	// rendered prompt is stable.
 	Now func() time.Time
+}
+
+// ReadNotices says whether the member is told what was read.
+//
+// It is configurable where the write announcement is not, and the asymmetry is the
+// point: a read changes nothing, so a household that finds the line noisy can turn it
+// off and lose nothing but the line. A write changes what the household knows about
+// itself, and a member who is not told about one has no way to find out.
+type ReadNotices int
+
+const (
+	// ReadNoticesOn prefixes each reply with the retrieval line. Zero value.
+	ReadNoticesOn ReadNotices = iota
+	// ReadNoticesOff sends the reply alone.
+	ReadNoticesOff
+)
+
+func (r ReadNotices) String() string {
+	if r == ReadNoticesOff {
+		return "off"
+	}
+	return "on"
 }
 
 func (o Options) normalized() Options {
@@ -398,7 +424,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// Retrieve, one search per space in scope order, concurrently. The groups stay
 	// grouped: ranking a private space against the shared one is a policy decision
 	// this package makes only by keeping scope order, never by re-ranking.
-	groups := u.retrieve(ctx, sc, in.Text)
+	groups, searched := u.retrieve(ctx, sc, in.Text)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -413,7 +439,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// scope's: a *routing.NoBackendError comes back when it is exhausted, and it
 	// becomes an explicit refusal — the node speaks it directly, because a model
 	// that cannot be reached cannot explain why.
-	req := u.assemble(sc, groups, in.Text)
+	req, shown := u.assemble(sc, groups, in.Text)
 	comp, err := u.deps.Router.Complete(ctx, sc.Tiers, req)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -443,8 +469,9 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	proposal, warn := extractProposal(comp.ToolCalls)
 	if warn != "" {
 		// A malformed tool call is dropped with a log line, never a crashed turn
-		// and never a write. Nothing is written without the member's button press
-		// regardless; this just spares them a broken question.
+		// and never a write. That matters more than it did when every write waited
+		// on a button: a proposal this parser half-understood could otherwise be
+		// stored before the member sees any of it.
 		u.deps.Logger.Warn("assistant: remember call dropped", "reason", warn)
 	}
 	reply, warn := sanitizeReply(comp.Text)
@@ -472,7 +499,18 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		return nil, err
 	}
 	if reply != "" {
-		if err := u.send(ctx, sc, in, reply); err != nil {
+		// The retrieval line rides on the reply rather than arriving as a message of
+		// its own. A turn already costs a reply and may cost a write announcement,
+		// and a third message on every single turn — most of them saying nothing was
+		// found — is how a household learns to stop reading any of them. It goes out
+		// with the reply and is not recorded in history: it is the node reporting on
+		// itself, not the assistant's words, and feeding it back into the next prompt
+		// would teach the model to write those lines itself.
+		outbound := reply
+		if notice := u.readNotice(shown, searched); notice != "" {
+			outbound = notice + "\n\n" + reply
+		}
+		if err := u.send(ctx, sc, in, outbound); err != nil {
 			return nil, fmt.Errorf("assistant: sending reply: %w", err)
 		}
 		// Record only a turn with both sides delivered. A turn whose reply was
@@ -610,7 +648,13 @@ type spaceGroup struct {
 // one relevant word among six filler ones still finds the entry, and the entry every
 // word found still sorts above it. Nothing is re-ranked across spaces — the groups stay
 // grouped, in scope order — because that remains a policy decision, and this is not it.
-func (u *Unit) retrieve(ctx context.Context, sc domain.Scope, text string) []spaceGroup {
+// The second return says whether any search actually ran. A message with no content
+// words — a greeting, an emoji — yields no terms and therefore no searches, and the
+// groups that come back are empty for that reason rather than because the spaces held
+// nothing. Anything reporting retrieval to the member has to be able to tell those two
+// apart: "searched your private memory (nothing)" about a search that never happened
+// is exactly the class of small untruth this package refuses elsewhere.
+func (u *Unit) retrieve(ctx context.Context, sc domain.Scope, text string) ([]spaceGroup, bool) {
 	terms := searchTerms(text)
 	groups := make([]spaceGroup, len(sc.Read))
 	var wg sync.WaitGroup
@@ -622,7 +666,53 @@ func (u *Unit) retrieve(ctx context.Context, sc domain.Scope, text string) []spa
 		}(i, sp)
 	}
 	wg.Wait()
-	return groups
+	return groups, len(terms) > 0
+}
+
+// readNotice is the line prefixed to a reply saying what was read.
+//
+// It counts what reached the model, not what came back from lore, and the two differ:
+// the budget loop drops entries from the end of a group to make the prompt fit, and a
+// line claiming five entries informed an answer that saw two would be a claim about
+// the answer's basis rather than about retrieval. inp is the prompt input the budget
+// loop finished with, so the numbers here are the numbers the model was given.
+//
+// It renders nothing when nothing was searched, and nothing when the household has
+// turned it off.
+func (u *Unit) readNotice(inp promptInput, searched bool) string {
+	if u.opts.ReadNotices == ReadNoticesOff || !searched {
+		return ""
+	}
+	var parts []string
+	if inp.hasPrivate {
+		parts = append(parts, "your private memory "+readCount(inp.privateErr, len(inp.private)))
+	}
+	if inp.hasShared {
+		parts = append(parts, "the household memory "+readCount(inp.sharedErr, len(inp.shared)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	// Bracketed, so it reads as the node accounting for itself rather than as the
+	// assistant opening its reply with a status report.
+	return "[searched " + strings.Join(parts, ", ") + "]"
+}
+
+// readCount renders one space's contribution. A space that could not be read says so
+// rather than counting to zero, on the same reasoning as the prompt's own
+// unreadableGroupText: an error rendered as "nothing found" is a lie the member might
+// act on.
+func readCount(unreadable bool, n int) string {
+	switch {
+	case unreadable:
+		return "(couldn't be read)"
+	case n == 0:
+		return "(nothing)"
+	case n == 1:
+		return "(1 entry)"
+	default:
+		return fmt.Sprintf("(%d entries)", n)
+	}
 }
 
 // searchSpace runs one search per term against one space and unions the hits.

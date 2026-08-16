@@ -101,11 +101,25 @@ propose storing it by calling the remember tool.
 Propose at most one thing per reply, and only when it is genuinely durable. Do not
 propose remembering: the content of this conversation as a summary, anything already in
 the memory shown above, anything that will be false next week, or anything the member
-has already declined.
+has already declined.`
 
-You propose. {{.MemberName}} decides, with a button. If you are unsure whether something
-belongs in private or shared memory, say unsure rather than guessing — they will be
-asked.`
+// captureDirectText is what a direct scope adds, verbatim: the one scope with two
+// destinations, and therefore the only one where what happens next depends on which
+// the model names.
+//
+// It tells the model the consequence rather than the mechanism. "The member confirms
+// before anything is written" was doing real work in the old prompt, and something had
+// to replace it: a model that believes a button stands between its proposal and the
+// store proposes more loosely than one that knows it does not.
+//
+// "May store it immediately" is hedged on purpose. capture.private_writes can be set
+// back to ask, and a prompt asserting either behaviour flatly would be false in half
+// the households; the model does not get to find out which, and does not need to.
+const captureDirectText = `Proposing something for {{.MemberName}}'s private memory may store it immediately.
+They are shown exactly what was written and can undo it, but they were not asked
+first, so propose only what you would be comfortable having written. Nothing reaches
+the household's shared memory until they say yes to it. If you are unsure which of the
+two something belongs in, say unsure rather than guessing — they will be asked.`
 
 // publishText is what a direct scope adds, verbatim. It is the member-facing half of
 // the id-provenance rule: the model may only name a title it can see, because the id
@@ -115,9 +129,12 @@ publish tool with that entry's title exactly as it appears in the private memory
 section above. Only an entry shown there can be published. They see its full text and
 confirm with a button first, and publishing cannot be undone.`
 
-// captureGroupText is what a group scope adds, verbatim.
+// captureGroupText is what a group scope adds, verbatim. The last sentence is the
+// group's whole of the write policy: there is one destination here, it is the shared
+// one, and the shared one is never written without being asked about.
 const captureGroupText = `This is a group conversation, so anything remembered here goes to the household's shared
-memory. You cannot propose storing anything in a private memory from here.`
+memory. You cannot propose storing anything in a private memory from here. Nothing is
+written there unless the member who asked says yes to it first.`
 
 // emptyGroupText is rendered for a group whose search returned nothing. An absent
 // section reads to the model as "there is no such memory"; an explicit empty one
@@ -174,7 +191,12 @@ type promptInput struct {
 // dropped rather than hiding it. If everything elastic is gone and the estimate is
 // still over budget, the request goes as it is: the identity, disclosure and the
 // member's message are not negotiable.
-func (u *Unit) assemble(sc domain.Scope, groups []spaceGroup, text string) routing.Request {
+//
+// The prompt input is returned alongside the request, as the loop left it. It is what
+// the model was actually given — entries the budget dropped are gone from it — and the
+// retrieval line the member sees is counted off it rather than off the search results,
+// so the line cannot claim an entry informed an answer that never saw it.
+func (u *Unit) assemble(sc domain.Scope, groups []spaceGroup, text string) (routing.Request, promptInput) {
 	inp := u.promptInput(sc, groups)
 	hist := u.history.snapshot()
 	// Positive by construction: New refuses a MaxTokens that meets or exceeds
@@ -184,7 +206,7 @@ func (u *Unit) assemble(sc domain.Scope, groups []spaceGroup, text string) routi
 	for {
 		msgs := buildMessages(renderSystem(inp), hist, text)
 		if estimateRequestTokens(msgs) <= budget {
-			return u.request(sc, msgs)
+			return u.request(sc, msgs), inp
 		}
 		switch {
 		case len(hist) > 0:
@@ -196,7 +218,7 @@ func (u *Unit) assemble(sc domain.Scope, groups []spaceGroup, text string) routi
 			inp.private = inp.private[:len(inp.private)-1]
 			inp.privateDropped++
 		default:
-			return u.request(sc, msgs)
+			return u.request(sc, msgs), inp
 		}
 	}
 }
@@ -332,6 +354,7 @@ func renderSystem(inp promptInput) string {
 	if group {
 		captureSection += "\n\n" + captureGroupText
 	} else {
+		captureSection += "\n\n" + fill.Replace(captureDirectText)
 		captureSection += "\n\n" + fill.Replace(publishText)
 	}
 	sections = append(sections, captureSection)
