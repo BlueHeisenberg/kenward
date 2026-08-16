@@ -320,6 +320,91 @@ func TestMuxAfterCloseRefuses(t *testing.T) {
 	}
 }
 
+// gatedTransport blocks inside Updates until released, so a test can hold Start
+// at the exact point a concurrent Close used to win the race.
+type gatedTransport struct {
+	entered chan struct{}
+	release chan struct{}
+	ch      chan Inbound
+}
+
+func (g *gatedTransport) Updates(context.Context) (<-chan Inbound, error) {
+	close(g.entered)
+	<-g.release
+	return g.ch, nil
+}
+func (g *gatedTransport) Send(context.Context, Outbound) error          { return nil }
+func (g *gatedTransport) Ask(context.Context, Question) (Answer, error) { return Answer{}, nil }
+func (g *gatedTransport) Close() error                                  { return nil }
+
+// A Close racing Start must not strand the stream: once Start has consumed the
+// underlying Updates, its dispatcher must run. The gate parks Start inside
+// Updates; under the old code Close ran to completion in that window and Start
+// then returned ErrClosed with a started, unconsumed stream behind it.
+func TestMuxStartWinsOverConcurrentClose(t *testing.T) {
+	g := &gatedTransport{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		ch:      make(chan Inbound),
+	}
+	m := NewMux(g)
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- m.Start(context.Background()) }()
+	<-g.entered
+
+	closeDone := make(chan struct{})
+	go func() { _ = m.Close(); close(closeDone) }()
+
+	// Give Close every chance to finish while Start is inside Updates. With the
+	// fix it is parked on the lock and cannot; under the old code it completed
+	// here, deterministically.
+	select {
+	case <-closeDone:
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(g.release)
+	if err := <-startErr; err != nil {
+		t.Fatalf("Start = %v; a Start that consumed the update stream must run its dispatcher", err)
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close never finished")
+	}
+}
+
+// A view whose backlog overflows loses its oldest message; that loss must be
+// visible in Dropped(), not silent.
+func TestMuxCountsViewBacklogOverflow(t *testing.T) {
+	f := NewFake()
+	m := NewMux(f)
+	m.queueCap = 2
+	t.Cleanup(func() { _ = m.Close(); _ = f.Close() })
+
+	// The view exists but never reads its stream, like a unit stuck in Ask.
+	m.View(byUser(7))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		f.InjectText(100, 7, "backlog", false)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for m.Dropped() < 3 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := m.Dropped(); got != 3 {
+		t.Fatalf("Dropped() = %d, want 3 overflow drops to be counted", got)
+	}
+}
+
 func TestMuxViewUpdatesIsSingleReader(t *testing.T) {
 	f := NewFake()
 	m := NewMux(f)

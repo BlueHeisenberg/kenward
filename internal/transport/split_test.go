@@ -119,6 +119,23 @@ func TestSplitMessageNeverLosesContent(t *testing.T) {
 	}
 }
 
+// A limit too narrow for a single rune is raised to the smallest honourable one,
+// so no piece is ever wider than the effective limit.
+func TestSplitMessageTinyLimit(t *testing.T) {
+	for _, in := range []string{"🔥", "a🔥b", "abc"} {
+		var rebuilt strings.Builder
+		for _, part := range splitMessage(in, 1) {
+			if utf16Len(part) > 2 {
+				t.Fatalf("input %q: part %q is %d units, over the effective limit of 2", in, part, utf16Len(part))
+			}
+			rebuilt.WriteString(part)
+		}
+		if strip(rebuilt.String()) != strip(in) {
+			t.Fatalf("input %q: content changed in splitting", in)
+		}
+	}
+}
+
 // strip removes the whitespace that a break is allowed to consume.
 func strip(s string) string {
 	return strings.Map(func(r rune) rune {

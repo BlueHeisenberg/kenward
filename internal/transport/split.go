@@ -48,9 +48,16 @@ func prefixEnd(s string, limit int) int {
 // Nothing is ever dropped except the whitespace at the break itself. A reply too
 // long for one message arrives as several, in order — it is never truncated,
 // because a silently shortened answer is worse than a long one.
+//
+// A limit below 2 is raised to 2: a single rune can be two UTF-16 units wide and
+// content is never dropped, so no smaller limit can be honoured. Every emitted
+// piece fits within the effective limit.
 func splitMessage(s string, limit int) []string {
 	if limit <= 0 {
 		limit = defaultMaxMessageLen
+	}
+	if limit < 2 {
+		limit = 2
 	}
 
 	var out []string

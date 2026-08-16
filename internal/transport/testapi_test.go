@@ -26,6 +26,7 @@ type fakeAPI struct {
 	calls    []recordedCall
 	pending  []json.RawMessage
 	scripted map[string][]string
+	holds    map[string]chan struct{}
 	nextMsg  int
 
 	signal chan struct{}
@@ -41,6 +42,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 	t.Helper()
 	f := &fakeAPI{
 		scripted: map[string][]string{},
+		holds:    map[string]chan struct{}{},
 		nextMsg:  1000,
 		signal:   make(chan struct{}, 1),
 	}
@@ -60,6 +62,17 @@ func (f *fakeAPI) push(raw string) {
 	case f.signal <- struct{}{}:
 	default:
 	}
+}
+
+// holdMethod makes every call to method hang until release is called (or the
+// request's own context ends), which is how a slow or wedged API is injected.
+func (f *fakeAPI) holdMethod(method string) (release func()) {
+	gate := make(chan struct{})
+	f.mu.Lock()
+	f.holds[method] = gate
+	f.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(gate) }) }
 }
 
 // script queues a canned response body for the next call to method, which is how
@@ -114,6 +127,17 @@ func (f *fakeAPI) handle(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.calls = append(f.calls, recordedCall{Method: method, Form: form})
 		f.mu.Unlock()
+	}
+
+	f.mu.Lock()
+	gate := f.holds[method]
+	f.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-r.Context().Done():
+			return // the client gave up; answer nothing
+		}
 	}
 
 	if body, ok := f.popScripted(method); ok {
@@ -230,6 +254,14 @@ func callbackUpdate(cbID string, userID, chatID int64, msgID int, data string) s
 	return fmt.Sprintf(
 		`{"update_id":%d,"callback_query":{"id":%q,"chat_instance":"ci","from":{"id":%d,"is_bot":false,"first_name":"M"},"data":%q,"message":{"message_id":%d,"date":1700000000,"chat":{"id":%d,"type":"private"}}}}`,
 		nextUpdateID(), cbID, userID, data, msgID, chatID)
+}
+
+// callbackUpdateNoFrom is a malformed button tap with no sender, which real
+// Telegram never produces but a buggy or hostile API server could.
+func callbackUpdateNoFrom(cbID string, chatID int64, msgID int, data string) string {
+	return fmt.Sprintf(
+		`{"update_id":%d,"callback_query":{"id":%q,"chat_instance":"ci","data":%q,"message":{"message_id":%d,"date":1700000000,"chat":{"id":%d,"type":"private"}}}}`,
+		nextUpdateID(), cbID, data, msgID, chatID)
 }
 
 // --- assertions ------------------------------------------------------------

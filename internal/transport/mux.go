@@ -74,34 +74,26 @@ func (m *Mux) View(match func(Inbound) bool) Transport {
 // Start begins reading the underlying transport and dispatching to views. It
 // returns whatever the underlying Updates returns; it may be called once.
 func (m *Mux) Start(ctx context.Context) error {
+	// The lock is held across the underlying Updates call and the dispatcher's
+	// registration so that Close can never land in between: it either turns
+	// Start away before the stream exists, or waits for the dispatcher it saw
+	// registered. Released in the middle, a winning Close would strand a started
+	// stream that nobody consumes and a started flag that nobody can retry.
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.closed {
-		m.mu.Unlock()
 		return ErrClosed
 	}
 	if m.started {
-		m.mu.Unlock()
 		return ErrUpdatesActive
 	}
-	m.started = true
-	m.mu.Unlock()
 
 	up, err := m.t.Updates(ctx)
 	if err != nil {
-		m.mu.Lock()
-		m.started = false
-		m.mu.Unlock()
 		return err
 	}
-
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		return ErrClosed
-	}
+	m.started = true
 	m.wg.Add(1)
-	m.mu.Unlock()
-
 	go m.dispatch(ctx, up)
 	return nil
 }
@@ -124,8 +116,10 @@ func (m *Mux) Close() error {
 	return nil
 }
 
-// Dropped reports how many inbound messages matched no view. A number climbing
-// here means a chat nobody is scoped to — worth surfacing in doctor output, not
+// Dropped reports how many inbound messages were lost: either no view matched
+// them, or the matching view's backlog overflowed and its oldest message was
+// discarded. A number climbing here means a chat nobody is scoped to or a
+// consumer that has stopped reading — worth surfacing in doctor output, not
 // worth an error.
 func (m *Mux) Dropped() int {
 	m.mu.Lock()
@@ -160,7 +154,13 @@ func (m *Mux) route(in Inbound) {
 
 	for _, v := range views {
 		if v.accepts(in) {
-			v.queue.push(in)
+			if v.queue.push(in) {
+				// The view's backlog overflowed and its oldest message is gone.
+				// Counted, because a silent drop is invisible to doctor output.
+				m.mu.Lock()
+				m.dropped++
+				m.mu.Unlock()
+			}
 			return
 		}
 	}

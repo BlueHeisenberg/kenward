@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,10 +25,6 @@ const (
 	defaultUpdateBuffer     = 32
 	defaultRateLimitRetries = 3
 	defaultQuestionTimeout  = 5 * time.Minute
-
-	// questionOverhead is the room reserved for the outcome line appended to a
-	// question when it is retired.
-	questionOverhead = 64
 )
 
 // Telegram is a Transport over the Telegram Bot API.
@@ -60,6 +57,12 @@ type Telegram struct {
 
 	queue *queue
 	wg    sync.WaitGroup
+
+	// updatesGate is a test seam: when set, Updates calls it after the pumps are
+	// registered and the lock is released, so a test can interleave Close at the
+	// exact point the historical Updates/Close WaitGroup race lived. Nil in
+	// production.
+	updatesGate func()
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingQuestion
@@ -234,10 +237,16 @@ func (t *Telegram) Updates(ctx context.Context) (<-chan Inbound, error) {
 	t.started = true
 	pollCtx, cancel := context.WithCancel(ctx)
 	t.cancelPoll = cancel
-	t.mu.Unlock()
 
 	out := make(chan Inbound, t.updateBuf)
 
+	// The pumps are registered and launched while the lock is still held, for
+	// the same reason muxView.Updates holds the Mux lock across its wg.Add:
+	// Close marks the transport closed under this lock and only then calls
+	// wg.Wait, so it either turns this call away at the top or waits for both
+	// pumps. With the lock released first, a Close landing in the gap would see
+	// a zero counter and return while the pumps start behind its back, waited
+	// on by nobody.
 	t.wg.Add(2)
 	go func() {
 		defer t.wg.Done()
@@ -259,7 +268,11 @@ func (t *Telegram) Updates(ctx context.Context) (<-chan Inbound, error) {
 			}
 		}
 	}()
+	t.mu.Unlock()
 
+	if t.updatesGate != nil {
+		t.updatesGate()
+	}
 	return out, nil
 }
 
@@ -319,7 +332,7 @@ func (t *Telegram) Ask(ctx context.Context, q Question) (Answer, error) {
 	if len(q.Choices) == 0 {
 		return Answer{}, ErrNoChoices
 	}
-	if utf16Len(q.Text)+questionOverhead > t.maxLen {
+	if utf16Len(q.Text)+retireReserve(q.Choices) > t.maxLen {
 		return Answer{}, ErrTextTooLong
 	}
 
@@ -366,7 +379,12 @@ func (t *Telegram) Ask(ctx context.Context, q Question) (Answer, error) {
 
 	case <-t.closedCh:
 		p.deliver(tap{})
-		t.retire(ctx, q.ChatID, msg.ID, withdrawnText(q.Text))
+		// The transport is closing and Close does not wait for this cleanup, so
+		// bound the edit rather than letting it run on the caller's live context
+		// for up to the HTTP client timeout after Close has returned.
+		rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		t.retire(rctx, q.ChatID, msg.ID, withdrawnText(q.Text))
+		rcancel()
 		return Answer{}, ErrClosed
 
 	case <-ctx.Done():
@@ -454,6 +472,12 @@ func (t *Telegram) onMessage(m *models.Message) {
 func (t *Telegram) onCallback(cq *models.CallbackQuery) {
 	token, idx, ok := parseCallbackData(cq.Data)
 	if !ok {
+		return
+	}
+	if cq.From.ID == 0 {
+		// A callback with no sender (never sent by real Telegram, reachable via
+		// a buggy or hostile API server) is not a member's tap and must never
+		// match a question, whatever its AllowedUserID.
 		return
 	}
 
@@ -625,6 +649,23 @@ func declinedText(question string) string {
 }
 func withdrawnText(question string) string { return question + "\n\n— question withdrawn" }
 
+// retireReserve is the room a question's text must leave for the outcome line
+// appended when the message is retired — whichever outcome that turns out to
+// be, including the longest choice label. Computed from the outcome functions
+// themselves so the reservation cannot drift from what retire actually writes.
+func retireReserve(choices []Choice) int {
+	n := utf16Len(declinedText(""))
+	if w := utf16Len(withdrawnText("")); w > n {
+		n = w
+	}
+	for _, c := range choices {
+		if w := utf16Len(answeredText("", c.Label)); w > n {
+			n = w
+		}
+	}
+	return n
+}
+
 // --- api plumbing ----------------------------------------------------------
 
 func (t *Telegram) sendText(ctx context.Context, chatID int64, text string, replyTo int, kb *models.InlineKeyboardMarkup) (*models.Message, error) {
@@ -726,17 +767,23 @@ type redactedError struct {
 func (e *redactedError) Error() string { return e.msg }
 func (e *redactedError) Unwrap() error { return e.err }
 
-// redactToken scrubs the bot token out of an error. The token is a credential:
-// it must never reach a log line, a refusal or a bug report.
+// redactToken scrubs the bot token out of an error, in its plain form and in
+// the URL-encoded forms an HTTP error could plausibly carry. The token is a
+// credential that must never reach a log line, a refusal or a bug report, and
+// this scrub is the only thing standing between the two.
 func redactToken(err error, token string) error {
 	if err == nil || token == "" {
 		return err
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, token) {
+	redacted := msg
+	for _, form := range []string{token, url.QueryEscape(token), url.PathEscape(token)} {
+		redacted = strings.ReplaceAll(redacted, form, "«bot token»")
+	}
+	if redacted == msg {
 		return err
 	}
-	return &redactedError{msg: strings.ReplaceAll(msg, token, "«bot token»"), err: err}
+	return &redactedError{msg: redacted, err: err}
 }
 
 // Telegram implements Transport.

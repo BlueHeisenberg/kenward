@@ -630,6 +630,180 @@ func TestCloseIsIdempotentAndFinal(t *testing.T) {
 	}
 }
 
+// The Updates/Close WaitGroup race: Close must never return while pumps it did
+// not wait for are about to start. The gate runs at the exact point the old code
+// had released the lock, so this interleaving is forced, not hoped for.
+func TestUpdatesRegistersPumpsBeforeCloseCanWait(t *testing.T) {
+	api := newFakeAPI(t)
+	tg := newTestTelegram(t, api)
+
+	gateRan := false
+	tg.updatesGate = func() {
+		gateRan = true
+		if err := tg.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		// Close returned; if it waited for the pumps as it must, the poll pump
+		// has already run to completion and closed the queue. Under the old
+		// ordering the pumps were not yet registered here, Close saw a zero
+		// counter, and the queue was still open.
+		tg.queue.mu.Lock()
+		closed := tg.queue.closed
+		tg.queue.mu.Unlock()
+		if !closed {
+			t.Fatal("Close returned while the pumps had not been waited for")
+		}
+	}
+
+	updates, err := tg.Updates(context.Background())
+	if err != nil {
+		t.Fatalf("Updates: %v", err)
+	}
+	if !gateRan {
+		t.Fatal("the gate never ran")
+	}
+	select {
+	case _, ok := <-updates:
+		if ok {
+			for range updates {
+			}
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("updates channel was not closed after Close")
+	}
+}
+
+// A callback with no sender must never match a question — not even one whose
+// AllowedUserID was left zero by a buggy caller — and must never crash the poll
+// goroutine, which runs handlers synchronously.
+func TestCallbackWithoutSenderIsIgnored(t *testing.T) {
+	api := newFakeAPI(t)
+	tg := newTestTelegram(t, api)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := tg.Updates(ctx); err != nil {
+		t.Fatalf("Updates: %v", err)
+	}
+
+	q := Question{
+		ChatID:        100,
+		Text:          "Save this?",
+		Choices:       []Choice{{ID: "yes", Label: "Save"}},
+		AllowedUserID: 0, // unset by a buggy caller: still must not match a zero sender
+		Timeout:       400 * time.Millisecond,
+	}
+	data, result := askInFlight(t, api, tg, q)
+
+	api.push(callbackUpdateNoFrom("cb-nofrom", 100, 1001, data[0]))
+
+	select {
+	case r := <-result:
+		if r.err != nil {
+			t.Fatalf("Ask: %v", r.err)
+		}
+		if !r.answer.TimedOut {
+			t.Fatalf("a sender-less callback was accepted: %+v", r.answer)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Ask never returned")
+	}
+	if n := api.countFor("answerCallbackQuery"); n != 0 {
+		t.Fatalf("a sender-less callback was acknowledged %d times, want 0", n)
+	}
+}
+
+// The length check must reserve room for the outcome line actually appended on
+// retirement, including the longest choice label.
+func TestAskReservesRoomForTheOutcomeLine(t *testing.T) {
+	api := newFakeAPI(t)
+	tg := newTestTelegram(t, api, WithMaxMessageLength(100))
+
+	// 30 units of text passes a flat reserve, but the 80-unit label pushes the
+	// retired text to 114 units: it must be refused up front.
+	long := Question{
+		ChatID:        100,
+		Text:          strings.Repeat("y", 30),
+		Choices:       []Choice{{ID: "a", Label: strings.Repeat("L", 80)}},
+		AllowedUserID: 7,
+		Timeout:       150 * time.Millisecond,
+	}
+	if _, err := tg.Ask(context.Background(), long); !errors.Is(err, ErrTextTooLong) {
+		t.Fatalf("Ask with an oversized label = %v, want ErrTextTooLong", err)
+	}
+	if n := api.countFor("sendMessage"); n != 0 {
+		t.Fatalf("an oversized question still reached Telegram %d times", n)
+	}
+
+	// 50 units of text with a short label retires at 84 units and must be
+	// allowed; a flat 64-unit reserve wrongly refused it.
+	fits := Question{
+		ChatID:        100,
+		Text:          strings.Repeat("y", 50),
+		Choices:       []Choice{{ID: "a", Label: "A"}},
+		AllowedUserID: 7,
+		Timeout:       150 * time.Millisecond,
+	}
+	answer, err := tg.Ask(context.Background(), fits)
+	if err != nil {
+		t.Fatalf("Ask that fits with its outcome line = %v, want nil", err)
+	}
+	if !answer.TimedOut {
+		t.Fatalf("answer = %+v, want a timeout", answer)
+	}
+}
+
+// After Close, an in-flight Ask's cleanup edit must be bounded rather than
+// hanging on the caller's live context for the full HTTP client timeout.
+func TestCloseBoundsAskCleanup(t *testing.T) {
+	api := newFakeAPI(t)
+	tg := newTestTelegram(t, api)
+	release := api.holdMethod("editMessageText")
+	defer release()
+
+	result := make(chan askResult, 1)
+	go func() {
+		a, err := tg.Ask(context.Background(), Question{
+			ChatID:        100,
+			Text:          "Save this?",
+			Choices:       []Choice{{ID: "yes", Label: "Save"}},
+			AllowedUserID: 7,
+			Timeout:       30 * time.Second,
+		})
+		result <- askResult{a, err}
+	}()
+
+	api.waitCall(t, "sendMessage", 1)
+	start := time.Now()
+	if err := tg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	select {
+	case r := <-result:
+		if !errors.Is(r.err, ErrClosed) {
+			t.Fatalf("Ask error = %v, want ErrClosed", r.err)
+		}
+		if elapsed := time.Since(start); elapsed > 8*time.Second {
+			t.Fatalf("Ask blocked %v after Close; the cleanup edit must be bounded", elapsed)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("Ask still blocked on its cleanup edit long after Close returned")
+	}
+}
+
+func TestRedactTokenScrubsEncodedForms(t *testing.T) {
+	// A URL-encoded token (":" becomes "%3A") must not slip through the scrub.
+	inner := errors.New("proxy error for /bot" + strings.ReplaceAll(testToken, ":", "%3A") + "/sendMessage")
+	err := redactToken(inner, testToken)
+	if strings.Contains(err.Error(), "AAH-not-a-real-token") {
+		t.Fatalf("encoded token survived redaction: %q", err.Error())
+	}
+	if !errors.Is(err, inner) {
+		t.Fatal("redaction broke the error chain")
+	}
+}
+
 func TestRedactTokenKeepsTheChain(t *testing.T) {
 	inner := errors.New("bad request from https://api.telegram.org/bot" + testToken + "/sendMessage")
 	err := redactToken(inner, testToken)
