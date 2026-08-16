@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=kenward
+GenericName=Household assistant
+Comment=Supervise the kenward daemon and reach its dashboard
+Exec=/usr/bin/kenward-desktop
+Icon=kenward
+Terminal=false
+Categories=Utility;Network;
+Keywords=kenward;assistant;household;
+# GNOME has had no notification area since 3.26 and still has none. Declaring the app
+# as a background application is the only extension-free presence GNOME offers: it
+# lists kenward under Quick Settings → Background Apps, so a user whose shell has no
+# tray extension can at least see that it is running and quit it.
+X-GNOME-UsesNotifications=true

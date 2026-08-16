@@ -37,6 +37,10 @@ Companion documents: `ARCHITECTURE.md` (why), this file (what and how).
 cmd/kenward/            entrypoint: run, setup, invite, revoke, doctor, update, version
 cmd/kenward-release/    release tooling: signing keys, manifests, sign, verify.
                         Never shipped in the image or the release artifacts.
+cmd/kenward-desktop/    optional status-bar wrapper: supervises one `kenward run`,
+                        shows its state, opens the dashboard in the real browser.
+                        Imports no internal package but `setup`, for one constant.
+                        The only artifact that may need cgo (macOS). See DESKTOP.md.
 internal/domain/        core types. Depends on nothing.
 internal/config/        YAML load, defaults, validation
 internal/scope/         message -> Scope resolution. THE authorization boundary.
@@ -75,8 +79,15 @@ Third-party dependencies, fixed:
 | `gopkg.in/yaml.v3` | v3.0.1 | `config` |
 | `golang.org/x/sys` | v0.47.0 | `setup` (terminal echo suppression) |
 | `github.com/BlueHeisenberg/keel` | v0.5.4 | `routing` and `assistant` (llm), `session` (vault), `supervisor` (sandbox), `updater`, `cmd/kenward` and `cmd/kenward-release` (update) |
+| `fyne.io/systray` | v1.12.2 | `cmd/kenward-desktop` only |
+| `github.com/godbus/dbus/v5` | v5.1.0 | `cmd/kenward-desktop` only, via systray; imported directly on Linux to detect a missing tray host |
 
 Note: the MCP SDK requires Go 1.25, which is why the module targets it.
+
+The last two are reachable only from `cmd/kenward-desktop`. Nothing under `internal/`
+and nothing in `cmd/kenward` imports either, which is what keeps the daemon's
+`CGO_ENABLED=0` build — the one the distroless image depends on — true. The rule is
+enforceable by inspection and is worth checking when either binary changes.
 
 Adding a dependency outside this table requires a decision recorded in
 `ARCHITECTURE.md`, not a `go get`.
