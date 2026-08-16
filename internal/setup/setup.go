@@ -30,6 +30,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 )
 
@@ -41,7 +42,12 @@ const (
 	DefaultConfigFileName = "kenward.yaml"
 	// DefaultHouseholdName is a placeholder nobody outside the house ever sees.
 	DefaultHouseholdName = "Home"
-	// DefaultSharedSpace is the lore space the group chat reads and writes.
+	// DefaultSharedSpace was the name the wizard used to suggest for the shared
+	// space. It is no longer a usable answer and nothing here defaults to it: a
+	// space is identified by its lore id, and there is no id anybody can guess.
+	// It survives only so that a caller's flag definition still compiles.
+	//
+	// Deprecated: ask for a space id. See Answers.SharedSpace.
 	DefaultSharedSpace = "household"
 	// DefaultBotTokenEnv holds the household bot's token: the whole household's
 	// bot in simple mode, the group chat's bot in isolated mode.
@@ -120,6 +126,10 @@ type Options struct {
 	GOOS string
 	// Probe checks that an endpoint answers. Nil means DefaultProbe.
 	Probe Probe
+	// Spaces lists the lore spaces this household can be configured with. Nil
+	// means asking the real lore, with the same argv the wizard writes into the
+	// configuration.
+	Spaces SpaceLister
 	// LookupEnv reads the environment the configuration is validated against. Nil
 	// means the process environment.
 	LookupEnv config.LookupEnvFunc
@@ -148,9 +158,13 @@ type Options struct {
 type Answers struct {
 	// Mode is simple or isolated. Empty means simple.
 	Mode config.Mode
-	// HouseholdName and SharedSpace name the group.
+	// HouseholdName is the group's display name.
 	HouseholdName string
-	SharedSpace   string
+	// SharedSpace is the id of the shared lore space the group chat reads and
+	// writes. Required, and an id rather than a display name: lore does not make
+	// names unique, so a name here fails on the first retrieval rather than at
+	// startup. `lore spaces` prints the ids.
+	SharedSpace string
 	// BotToken is the household bot's token. It is written to the .env file when
 	// WriteEnvFile is set and is never written to the configuration. Empty means
 	// the operator will export the variable themselves.
@@ -159,8 +173,12 @@ type Answers struct {
 	// DefaultBotTokenEnv.
 	BotTokenEnv string
 	// MemberNames are the people in the household, in the order they will appear
-	// in the file. Ids are derived from them.
+	// in the file. Member ids are derived from them.
 	MemberNames []string
+	// MemberSpaces is the id of each member's private lore space, keyed by the id
+	// derived from their name. One is required per member: a private space holds
+	// that person and this machine, so it cannot be derived or created here.
+	MemberSpaces map[string]string
 	// Endpoints are the machines that run the model.
 	Endpoints []EndpointAnswer
 	// MemberTiers overrides a member's tier chain, keyed by the id derived from
@@ -194,10 +212,19 @@ type EndpointAnswer struct {
 
 // Wizard runs the first-run flow.
 type Wizard struct {
-	io    IO
-	opts  Options
-	goos  string
-	probe Probe
+	io     IO
+	opts   Options
+	goos   string
+	probe  Probe
+	lister SpaceLister
+
+	// The lore listing, fetched once. Spaces are chosen by id, so every question
+	// about one is answered from the same snapshot.
+	spaceList    []memory.Space
+	spaceErr     error
+	spacesLoaded bool
+	loreWarned   bool
+	takenSpaces  map[string]bool
 
 	mode      config.Mode
 	household config.HouseholdConfig
@@ -222,6 +249,11 @@ func New(io IO, opts Options) *Wizard {
 	if w.probe == nil {
 		w.probe = DefaultProbe
 	}
+	w.lister = opts.Spaces
+	if w.lister == nil {
+		w.lister = loreSpaces
+	}
+	w.takenSpaces = map[string]bool{}
 	w.configPath = opts.ConfigPath
 	if w.configPath == "" {
 		w.configPath = DefaultConfigFileName

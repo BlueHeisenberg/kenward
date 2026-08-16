@@ -180,8 +180,22 @@ func runDoctor(e *env, path, dataDir string) doctorReport {
 // doctorMemory checks that lore answers and that every configured space is there.
 //
 // lore not answering is a failure: without it there is no retrieval, no capture and
-// no enrolment history, and the node cannot do its job. A space that does not exist
-// yet is not — that is what a member who has not claimed their invite looks like.
+// no enrolment history, and the node cannot do its job.
+//
+// A space lore does not hold is a failure too, and this check exists to make it one.
+// The probe asks through internal/memory, so it resolves the configured value exactly
+// the way every turn will — a space id against lore's own listing — and a value that
+// does not resolve is a value no read will ever succeed with. kenward never creates a
+// lore space, so there is nothing for such a household to wait for; this once said the
+// space would appear when the member claimed their invite, which was a green light for
+// a node that could not read its own memory.
+//
+// The common cause is a display name configured where a space id belongs, and it hides
+// well: lore's own arguments are lenient enough that writes keep working, so a
+// household can put memory away for weeks and find on the first retrieval that nothing
+// comes back. That is why this is worth catching at doctor time rather than at the
+// first Get. The explanation comes from internal/memory's own error rather than a
+// second copy of it written here.
 func doctorMemory(ctx context.Context, e *env, cfg *config.Config, rep *doctorReport) []check {
 	res := e.probes.loreProbe()(ctx, cfg)
 	if res.Err != nil {
@@ -208,10 +222,21 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, rep *doctorRe
 				Text:   fmt.Sprintf("space %q reachable", s.Space),
 			})
 		case errors.Is(s.Err, memory.ErrUnknownSpace):
+			// A configuration fault rather than a runtime one: the file names a
+			// space this lore store does not hold, and only an edit fixes it.
+			if rep.Exit == exitOK {
+				rep.Exit = exitUsage
+			}
 			checks = append(checks, check{
-				Status: statusWarn,
-				Text:   fmt.Sprintf("space %q does not exist yet", s.Space),
-				Detail: []string{"it is created when the member claims their invite"},
+				Status: statusFail,
+				Text:   fmt.Sprintf("space %q is not a space this lore store holds", s.Space),
+				Detail: []string{
+					s.Err.Error(),
+					"run `lore spaces` and configure the id column: kenward keys spaces on " +
+						"ids because lore does not enforce unique display names",
+					"a name here fails only on reads — writes keep appearing to work — so " +
+						"this is worth fixing before anything is written",
+				},
 			})
 		default:
 			if rep.Exit == exitOK {

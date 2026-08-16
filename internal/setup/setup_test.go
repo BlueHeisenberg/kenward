@@ -40,6 +40,9 @@ func runWizard(t *testing.T, goos string, opts Options, answers ...string) (*Wiz
 	if opts.Probe == nil {
 		opts.Probe = fixedProbe(Answered)
 	}
+	if opts.Spaces == nil {
+		opts.Spaces = fixedSpaces(testSpaces)
+	}
 	if opts.LookupEnv == nil {
 		opts.LookupEnv = noEnv
 	}
@@ -52,15 +55,17 @@ func runWizard(t *testing.T, goos string, opts Options, answers ...string) (*Wiz
 // provider, two members, and no to every widening.
 func simpleAnswers() []string {
 	return []string{
-		"1",         // trust question: our own family machine
-		"Casa",      // household name
-		"household", // shared space
-		realToken,   // bot token
-		"y",         // write .env
-		"David",     // member
-		"María",     // member
-		"",          // no more members
-		"monster",   // endpoint name
+		"1",       // trust question: our own family machine
+		"Casa",    // household name
+		"1",       // shared space: kenward-test-household
+		realToken, // bot token
+		"y",       // write .env
+		"David",   // member
+		"María",   // member
+		"",        // no more members
+		"1",       // David's private memory: kenward-test-david
+		"1",       // María's private memory: kenward-test-maria
+		"monster", // endpoint name
 		"http://monster.tail:8000/v1",
 		"qwen3.6-27b-awq",
 		"n",     // no api key
@@ -94,7 +99,7 @@ func TestSimpleModeEndToEnd(t *testing.T) {
 	if cfg.Mode != config.ModeSimple {
 		t.Errorf("mode = %q, want simple", cfg.Mode)
 	}
-	if cfg.Household.Name != "Casa" || cfg.Household.SharedSpace != "household" {
+	if cfg.Household.Name != "Casa" || cfg.Household.SharedSpace != householdSpaceID {
 		t.Errorf("household = %+v", cfg.Household)
 	}
 	if cfg.Telegram.BotTokenEnv != DefaultBotTokenEnv {
@@ -144,12 +149,12 @@ func TestIsolatedModeEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, DefaultConfigFileName)
 	answers := []string{
-		"2",         // trust question: no, seal it
-		"Casa",      // household name
-		"household", // shared space
-		realToken,   // the group chat's bot
-		"y",         // write .env
-		"David", "María", "",
+		"2",       // trust question: no, seal it
+		"Casa",    // household name
+		"1",       // shared space: kenward-test-household
+		realToken, // the group chat's bot
+		"y",       // write .env
+		"David", "María", "", "1", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3.6-27b-awq", "n", "local",
 		"n", // no more endpoints
 	}
@@ -272,8 +277,8 @@ func TestTheDefaultOnNonLinuxIsToStop(t *testing.T) {
 func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 	paths := map[string][]string{
 		"simple, everything local": {
-			"1", "Home", "household", realToken, "n",
-			"David", "",
+			"1", "Home", "1", realToken, "n",
+			"David", "", "1",
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
@@ -281,45 +286,45 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, one member takes cloud and the other does not": append(
 			simpleAnswers()[:len(simpleAnswers())-3], "y", "n", "n"),
 		"simple, several tiers on one endpoint": {
-			"1", "Home", "household", realToken, "n",
-			"David", "",
+			"1", "Home", "1", realToken, "n",
+			"David", "", "1",
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local, local-slow",
 			"n",
 		},
 		"simple, no token given at all": {
-			"1", "Home", "household", "", "y",
-			"David", "",
+			"1", "Home", "1", "", "y",
+			"David", "", "1",
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
 		"simple, names that collide": {
-			"1", "Home", "household", realToken, "n",
-			"David", "David", "",
+			"1", "Home", "1", realToken, "n",
+			"David", "David", "", "1", "1", "1",
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
 		"simple, a name that is not Latin at all": {
-			"1", "Home", "household", realToken, "n",
-			"あかり", "",
+			"1", "Home", "1", realToken, "n",
+			"あかり", "", "1",
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
 		"simple, only a provider, opted into deliberately": {
-			"1", "Home", "household", realToken, "n",
-			"David", "",
+			"1", "Home", "1", realToken, "n",
+			"David", "", "1",
 			"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud",
 			"n",
 			"y", // yes, use the provider for private conversations
 		},
 		"simple, endpoint that did not answer": {
-			"1", "Home", "household", realToken, "n",
-			"David", "",
+			"1", "Home", "1", realToken, "n",
+			"David", "", "1",
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
 		"simple, a shared space that had to be slugified": {
-			"1", "Home", "Our House!", realToken, "n",
-			"David", "",
+			"1", "Home", "1", realToken, "n",
+			"David", "", "1",
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
@@ -349,8 +354,8 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 func TestIsolatedPathsAlsoLoad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
 	answers := []string{
-		"2", "Home", "household", realToken, "n",
-		"David", "María", "Ana", "",
+		"2", "Home", "1", realToken, "n",
+		"David", "María", "Ana", "", "1", "1", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
 	}
@@ -543,12 +548,12 @@ func TestNoSecretIsEverPrinted(t *testing.T) {
 func TestTokenShapeIsQueriedNotEnforced(t *testing.T) {
 	// A pasted username instead of a token: the wizard says so and asks again.
 	answers := []string{
-		"1", "Home", "household",
+		"1", "Home", "1",
 		"@our_household_bot", // not a token
 		"n",                  // no, do not use it anyway
 		realToken,            // the real one
 		"n",                  // do not write .env
-		"David", "",
+		"David", "", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
 	}
@@ -565,10 +570,10 @@ func TestTokenShapeIsQueriedNotEnforced(t *testing.T) {
 
 	// And insisting is allowed, because Telegram's format is theirs to change.
 	insist := []string{
-		"1", "Home", "household",
+		"1", "Home", "1",
 		"some-new-shape", "y", // use it anyway
 		"n",
-		"David", "",
+		"David", "", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
 	}
@@ -582,8 +587,8 @@ func TestTokenShapeIsQueriedNotEnforced(t *testing.T) {
 func TestCloudIsNeverTheDefault(t *testing.T) {
 	// Every tier question answered by pressing Enter.
 	answers := []string{
-		"1", "Home", "household", realToken, "n",
-		"David", "María", "",
+		"1", "Home", "1", realToken, "n",
+		"David", "María", "", "1", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local", "y",
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud", "n",
 		"", "", "", // Enter at all three tier questions
@@ -628,8 +633,8 @@ func TestCloudOptInWidensOnlyWhoAskedForIt(t *testing.T) {
 // makes them answer rather than quietly defaulting to the wide chain.
 func TestNoLocalEndpointsIsAnExplicitDecision(t *testing.T) {
 	base := []string{
-		"1", "Home", "household", realToken, "n",
-		"David", "",
+		"1", "Home", "1", realToken, "n",
+		"David", "", "1",
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud",
 		"n",
 	}
@@ -675,8 +680,8 @@ func TestInputEndingMidwayStopsWithoutWriting(t *testing.T) {
 func TestAtLeastOneMemberAndOneEndpoint(t *testing.T) {
 	// An empty first name is refused and the question comes round again.
 	answers := []string{
-		"1", "Home", "household", realToken, "n",
-		"", "David", "",
+		"1", "Home", "1", realToken, "n",
+		"", "David", "", "1", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
 	}
@@ -696,8 +701,8 @@ func TestAtLeastOneMemberAndOneEndpoint(t *testing.T) {
 // answer is given.
 func TestMistypedURLIsCaughtDuringTheQuestion(t *testing.T) {
 	answers := []string{
-		"1", "Home", "household", realToken, "n",
-		"David", "",
+		"1", "Home", "1", realToken, "n",
+		"David", "", "1",
 		"monster",
 		"monster.tail:8000", // no scheme: cannot be dialled at all
 		"http://monster.tail:8000/v1",
@@ -727,8 +732,8 @@ func TestAMachineThatIsOffIsRecordedAnyway(t *testing.T) {
 		{Unresolved, "could not be looked up"},
 	} {
 		answers := []string{
-			"1", "Home", "household", realToken, "n",
-			"David", "",
+			"1", "Home", "1", realToken, "n",
+			"David", "", "1",
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		}
@@ -756,11 +761,14 @@ func TestNonInteractiveSimple(t *testing.T) {
 		ConfigPath: path,
 		GOOS:       "windows",
 		Probe:      fixedProbe(Answered),
+		Spaces:     fixedSpaces(testSpaces),
 		LookupEnv:  noEnv,
 		Answers: &Answers{
 			HouseholdName: "Casa",
+			SharedSpace:   householdSpaceID,
 			BotToken:      realToken,
 			MemberNames:   []string{"David", "María"},
+			MemberSpaces:  map[string]string{"david": davidSpaceID, "maria": testSpaces[2].ID},
 			Endpoints: []EndpointAnswer{
 				{Name: "monster", BaseURL: "http://monster.tail:8000/v1", Model: "qwen3"},
 				{Name: "openrouter", BaseURL: "https://openrouter.ai/api/v1", Model: "sonnet",
@@ -776,8 +784,9 @@ func TestNonInteractiveSimple(t *testing.T) {
 	if cfg.Mode != config.ModeSimple {
 		t.Errorf("mode = %q", cfg.Mode)
 	}
-	if cfg.Household.SharedSpace != DefaultSharedSpace {
-		t.Errorf("shared_space = %q, want the default", cfg.Household.SharedSpace)
+	// No default is possible: a space is the id of something that already exists.
+	if cfg.Household.SharedSpace != householdSpaceID {
+		t.Errorf("shared_space = %q, want the id it was given", cfg.Household.SharedSpace)
 	}
 	// Tiers were derived, and derived privately: a script that says nothing about a
 	// member's chain does not widen it.
@@ -804,11 +813,14 @@ func TestNonInteractiveIsolatedRefusesOnNonLinux(t *testing.T) {
 		ConfigPath: filepath.Join(t.TempDir(), DefaultConfigFileName),
 		GOOS:       "darwin",
 		Probe:      fixedProbe(Answered),
+		Spaces:     fixedSpaces(testSpaces),
 		LookupEnv:  noEnv,
 		Answers: &Answers{
-			Mode:        config.ModeIsolated,
-			MemberNames: []string{"David"},
-			Endpoints:   []EndpointAnswer{{Name: "m", BaseURL: "http://m.local:8000/v1", Model: "q"}},
+			Mode:         config.ModeIsolated,
+			SharedSpace:  householdSpaceID,
+			MemberNames:  []string{"David"},
+			MemberSpaces: map[string]string{"david": davidSpaceID},
+			Endpoints:    []EndpointAnswer{{Name: "m", BaseURL: "http://m.local:8000/v1", Model: "q"}},
 		},
 	})
 	_, err := w.Run(context.Background())
@@ -824,12 +836,15 @@ func TestNonInteractiveIsolatedOnLinux(t *testing.T) {
 		ConfigPath: path,
 		GOOS:       "linux",
 		Probe:      fixedProbe(NoAnswer),
+		Spaces:     fixedSpaces(testSpaces),
 		LookupEnv:  noEnv,
 		Answers: &Answers{
-			Mode:        config.ModeIsolated,
-			MemberNames: []string{"David", "Ana"},
-			Endpoints:   []EndpointAnswer{{Name: "monster", BaseURL: "http://monster.tail:8000/v1", Model: "q"}},
-			MemberTiers: map[string][]string{"ana": {"local"}},
+			Mode:         config.ModeIsolated,
+			SharedSpace:  householdSpaceID,
+			MemberNames:  []string{"David", "Ana"},
+			MemberSpaces: map[string]string{"david": davidSpaceID, "ana": testSpaces[3].ID},
+			Endpoints:    []EndpointAnswer{{Name: "monster", BaseURL: "http://monster.tail:8000/v1", Model: "q"}},
+			MemberTiers:  map[string][]string{"ana": {"local"}},
 		},
 	})
 	cfg, err := w.Run(context.Background())
@@ -845,12 +860,14 @@ func TestNonInteractiveIsolatedOnLinux(t *testing.T) {
 func TestNonInteractiveNeedsAMemberAndAnEndpoint(t *testing.T) {
 	for name, answers := range map[string]*Answers{
 		"no members":   {Endpoints: []EndpointAnswer{{Name: "m", BaseURL: "http://m.local/v1", Model: "q"}}},
-		"no endpoints": {MemberNames: []string{"David"}},
+		"no endpoints": {SharedSpace: householdSpaceID, MemberNames: []string{"David"}, MemberSpaces: map[string]string{"david": davidSpaceID}},
+		"no space":     {SharedSpace: householdSpaceID, MemberNames: []string{"David"}, Endpoints: []EndpointAnswer{{Name: "m", BaseURL: "http://m.local/v1", Model: "q"}}},
 	} {
 		w := New(NewScriptIO(), Options{
 			ConfigPath: filepath.Join(t.TempDir(), DefaultConfigFileName),
 			GOOS:       "linux",
 			Probe:      fixedProbe(Answered),
+			Spaces:     fixedSpaces(testSpaces),
 			LookupEnv:  noEnv,
 			Answers:    answers,
 		})

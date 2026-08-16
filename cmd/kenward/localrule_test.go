@@ -107,7 +107,12 @@ func runWizard(t *testing.T, baseURL string) (local bool, configPath string) {
 		LookupEnv: lookup(map[string]string{"KENWARD_BOT_TOKEN": fakeBotToken}),
 		Answers: &setup.Answers{
 			HouseholdName: "Casa",
-			MemberNames:   []string{"David"},
+			// Space ids, because that is what the wizard now requires and what
+			// internal/memory resolves against — a display name here would be a
+			// configuration nothing could read from.
+			SharedSpace:  "dac31e70-72e4-4b10-9cef-a6276c4a87b8",
+			MemberNames:  []string{"David"},
+			MemberSpaces: map[string]string{"david": "7d5047bb-d939-4539-b3db-8b6221a2e245"},
 			Endpoints: []setup.EndpointAnswer{{
 				Name:    "machine",
 				BaseURL: baseURL,

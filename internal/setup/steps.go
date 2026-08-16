@@ -61,23 +61,13 @@ func (w *Wizard) askHousehold(ctx context.Context) error {
 
 	w.blank()
 	w.io.Print(sharedSpaceNote)
-	w.blank()
-	for {
-		answer, err := w.io.Ask(questionSharedSpace, DefaultSharedSpace)
-		if err != nil {
-			return err
-		}
-		space := Slugify(answer)
-		if space == "" {
-			w.io.Print("  A name made of letters, digits and hyphens, please — it is an identifier.")
-			continue
-		}
-		if space != strings.TrimSpace(answer) {
-			w.io.Print(fmt.Sprintf("  Recorded as %q.", space))
-		}
-		w.household.SharedSpace = space
-		return nil
+
+	id, err := w.askSpace(ctx, questionSharedSpace, "its shared memory")
+	if err != nil {
+		return err
 	}
+	w.household.SharedSpace = id
+	return nil
 }
 
 // askTelegram takes the household's bot token, explains that it is not stored, and
@@ -207,6 +197,19 @@ func (w *Wizard) askMembers(ctx context.Context) error {
 		w.addMember(name, taken)
 	}
 
+	// Which space is whose is asked after every name is in, so the list of people
+	// is settled before anybody is asked to match one of them to a space.
+	for i := range w.members {
+		m := &w.members[i]
+		id, err := w.askSpace(ctx,
+			fmt.Sprintf("Which space is %s's private memory?", m.Name),
+			m.Name+"'s private memory")
+		if err != nil {
+			return err
+		}
+		m.PrivateSpace = id
+	}
+
 	w.blank()
 	w.io.Print(memberSummary(w.members))
 	if w.mode == config.ModeIsolated {
@@ -216,22 +219,12 @@ func (w *Wizard) askMembers(ctx context.Context) error {
 	return nil
 }
 
-// addMember derives a member's id, private space and — in isolated mode — their own
-// bot token variable, from their name.
+// addMember derives a member's id and — in isolated mode — their own bot token
+// variable, from their name. The private space is not derived: it is a lore space
+// that has to already exist, and it is asked for separately.
 func (w *Wizard) addMember(name string, taken map[string]bool) {
 	id := uniqueSlug(name, taken, fmt.Sprintf("member-%d", len(w.members)+1))
-	m := config.MemberConfig{
-		ID:           id,
-		Name:         name,
-		PrivateSpace: privateSpaceFor(id),
-	}
-	// A private space that collides with the shared one publishes everything the
-	// member says. config.Validate refuses it, and rightly, but the operator should
-	// never see that error: they answered a question about a name, not about a
-	// space, so the space moves out of the way instead.
-	for m.PrivateSpace == w.household.SharedSpace {
-		m.PrivateSpace = m.PrivateSpace + "-own"
-	}
+	m := config.MemberConfig{ID: id, Name: name}
 	if w.mode == config.ModeIsolated {
 		m.BotTokenEnv = envVarFor(MemberBotTokenPrefix, id)
 		w.recordEnv(m.BotTokenEnv, fmt.Sprintf("members[%d].bot_token_env", len(w.members)),
@@ -533,7 +526,18 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 	}
 
 	w.household.Name = orDefault(a.HouseholdName, DefaultHouseholdName)
-	w.household.SharedSpace = orDefault(Slugify(a.SharedSpace), DefaultSharedSpace)
+
+	// No default is possible for a space: it is the id of something that has to
+	// already exist in lore, and inventing one produces the configuration this
+	// step exists to stop — one that starts, saves, and finds nothing on the
+	// first retrieval.
+	w.household.SharedSpace = strings.TrimSpace(a.SharedSpace)
+	if w.household.SharedSpace == "" {
+		return fmt.Errorf("setup: the household's shared space is required, as the id of a shared lore space; `lore spaces` lists them")
+	}
+	if err := w.checkSpaceID(ctx, w.household.SharedSpace, "a household's shared memory"); err != nil {
+		return err
+	}
 
 	tokenEnv := orDefault(a.BotTokenEnv, DefaultBotTokenEnv)
 	w.telegram.BotTokenEnv = tokenEnv
@@ -554,6 +558,17 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 			return fmt.Errorf("setup: a member with no name")
 		}
 		w.addMember(name, taken)
+	}
+	for i := range w.members {
+		m := &w.members[i]
+		space := strings.TrimSpace(a.MemberSpaces[m.ID])
+		if space == "" {
+			return fmt.Errorf("setup: no space for member %q; give the id of the shared lore space holding their private memory, which is the one with them and this machine in it", m.ID)
+		}
+		if err := w.checkSpaceID(ctx, space, "a member's private memory"); err != nil {
+			return err
+		}
+		m.PrivateSpace = space
 	}
 
 	if len(a.Endpoints) == 0 {

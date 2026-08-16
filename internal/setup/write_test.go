@@ -95,8 +95,8 @@ func TestNotWrittenNamesRealFields(t *testing.T) {
 func TestTheWizardWritesTheEnvFormOfEverySecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
 	answers := []string{
-		"2", "Home", "household", realToken, "n",
-		"David", "",
+		"2", "Home", "1", realToken, "n",
+		"David", "", "1",
 		"monster", "http://monster.tail:8000/v1", "q", "n", "local", "y",
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud", "n",
 		"n", "n",

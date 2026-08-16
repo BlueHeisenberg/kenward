@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,18 +111,37 @@ func TestDoctorLoreUnreachableFails(t *testing.T) {
 }
 
 // TestDoctorTelegramRefusalFails: a Telegram authorisation failure is the third.
+//
+// The second case is the one a health check meets. A refused token and sleeping
+// endpoints in the same run must still exit 1: the sleeping machines stay facts, and a
+// node that can neither receive nor send is not healthy just because the reason it is
+// broken shares a screen with something that is fine. In isolated mode too, where the
+// refused token belongs to one member's own bot.
 func TestDoctorTelegramRefusalFails(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, simpleYAML, fullEnvironment())
-	h.e.probes = telegramRefuses(healthyProbes())
+	for _, tc := range []struct {
+		name   string
+		yaml   string
+		probes probes
+	}{
+		{"simple", simpleYAML, telegramRefuses(healthyProbes())},
+		{"simple, endpoints asleep too", simpleYAML, telegramRefuses(everythingAsleep(healthyProbes()))},
+		{"isolated", isolatedYAML, telegramRefuses(healthyProbes())},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, tc.yaml, fullEnvironment())
+			h.e.probes = tc.probes
 
-	if code := h.run("doctor"); code != exitFailure {
-		t.Fatalf("exit = %d, want %d", code, exitFailure)
+			if code := h.run("doctor"); code != exitFailure {
+				t.Fatalf("exit = %d, want %d: a token Telegram refuses is a node that cannot work\n%s", code, exitFailure, h.both())
+			}
+			if !strings.Contains(h.stdout(), "Telegram did not authorise") {
+				t.Errorf("output does not report the refusal:\n%s", h.stdout())
+			}
+			h.assertNoSecrets(t)
+		})
 	}
-	if !strings.Contains(h.stdout(), "Telegram did not authorise") {
-		t.Errorf("output does not report the refusal:\n%s", h.stdout())
-	}
-	h.assertNoSecrets(t)
 }
 
 // TestDoctorConfigFaultExitsTwo: a configuration fault is a usage error, and it
@@ -238,9 +258,19 @@ func TestDoctorJSON(t *testing.T) {
 	h.assertNoSecrets(t)
 }
 
-// TestDoctorReportsUnknownSpaceAsFactNotFailure. A member who has not claimed their
-// invite has no space yet, and a household half-way through enrolment is healthy.
-func TestDoctorReportsUnknownSpaceAsFactNotFailure(t *testing.T) {
+// TestDoctorUnknownSpaceIsAConfigurationFault.
+//
+// This check exists because doctor was vouching for something the runtime cannot do.
+// internal/memory keys spaces on lore space ids, so a display name configured where an
+// id belongs fails every read — and lore's own arguments are lenient enough that writes
+// keep working, so nothing surfaces until the first retrieval comes back empty.
+//
+// It reported such a space as a fact ("does not exist yet — it is created when the
+// member claims their invite") and exited 0. Nothing in kenward creates a lore space,
+// so there was nothing to wait for: that was a green light for a household that could
+// not read its own memory. It is a fault in kenward.yaml, only an edit fixes it, and
+// the exit code says so.
+func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, simpleYAML, fullEnvironment())
 	h.e.probes.lore = func(_ context.Context, cfg *config.Config) loreResult {
@@ -248,17 +278,31 @@ func TestDoctorReportsUnknownSpaceAsFactNotFailure(t *testing.T) {
 		for _, s := range configuredSpaces(cfg) {
 			r := spaceResult{Space: s}
 			if s == "jordan-private" {
-				r.Err = memory.ErrUnknownSpace
+				// The error internal/memory returns for exactly this, wrapped the
+				// way the client wraps it — doctor surfaces its text rather than
+				// writing a second explanation.
+				r.Err = fmt.Errorf("memory: lore holds no space %s (spaces are named by id here, not by display name): %w",
+					s, memory.ErrUnknownSpace)
 			}
 			res.Spaces = append(res.Spaces, r)
 		}
 		return res
 	}
-	if code := h.run("doctor"); code != exitOK {
-		t.Fatalf("exit = %d, want 0: a space that does not exist yet is not a failure\n%s", code, h.both())
+	if code := h.run("doctor"); code != exitUsage {
+		t.Fatalf("exit = %d, want %d: a space lore does not hold is a fault only an edit fixes\n%s", code, exitUsage, h.both())
 	}
-	if !strings.Contains(h.stdout(), "does not exist yet") {
-		t.Errorf("output does not report the missing space as a fact:\n%s", h.stdout())
+	out := h.stdout()
+	for _, want := range []string{
+		"is not a space this lore store holds",
+		"spaces are named by id here",
+		"lore spaces",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output does not say %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "does not exist yet") {
+		t.Errorf("output still tells the operator to wait for a space kenward never creates:\n%s", out)
 	}
 }
 

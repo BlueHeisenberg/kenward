@@ -70,9 +70,9 @@ type loreResult struct {
 
 type spaceResult struct {
 	Space domain.SpaceID
-	// Err is nil when the space answered a search. ErrUnknownSpace means the space
-	// does not exist yet, which is the ordinary state of a member who has not
-	// claimed their invite.
+	// Err is nil when the space answered a search. ErrUnknownSpace means lore does
+	// not hold a space with this id — usually a display name configured where an id
+	// belongs — and no read will ever succeed against it.
 	Err error
 }
 
