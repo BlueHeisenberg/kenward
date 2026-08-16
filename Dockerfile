@@ -25,6 +25,15 @@
 # Either way the binary must match this image's platform (linux/amd64 or
 # linux/arm64) — a host-built lore binary will not run unmodified inside the
 # container.
+#
+# Remedy 1 is not available to a pod started by `kenward run` in isolated mode:
+# keel's sandbox.Spec has no host bind-mount, so the host supervisor has nothing
+# to mount with, and remedy 2 with `--image` is the only route there. Since the
+# default for --image is this image, which has no lore, a supervisor-started
+# household needs a derived image or it has no memory. `kenward run` refuses to
+# start a unit whose memory.lore_command is not on PATH rather than serving one
+# that quietly records nothing — see docs/IMPLEMENTATION.md §8, "How a
+# supervisor-started pod gets lore".
 # ---------------------------------------------------------------------------
 
 # ---- builder ----

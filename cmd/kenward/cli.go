@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"time"
@@ -64,6 +65,10 @@ type env struct {
 	// goos is runtime.GOOS, overridable so the isolated-mode-on-Windows refusal
 	// can be exercised on any machine.
 	goos string
+	// lookPath finds a program on PATH. It is exec.LookPath, seamed for the same
+	// reason goos is: whether `lore` is installed is a property of the machine, and
+	// a test that had to install or uninstall one could not assert either answer.
+	lookPath func(string) (string, error)
 	// ctx is cancelled by SIGINT or SIGTERM.
 	ctx context.Context
 
@@ -134,6 +139,13 @@ func (e *env) os() string {
 		return runtime.GOOS
 	}
 	return e.goos
+}
+
+func (e *env) look() func(string) (string, error) {
+	if e.lookPath == nil {
+		return exec.LookPath
+	}
+	return e.lookPath
 }
 
 // dispatch routes one command line. It is the whole of main's logic.

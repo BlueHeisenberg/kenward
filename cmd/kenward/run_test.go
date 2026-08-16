@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -210,6 +211,69 @@ func TestRunSelectsSupervisorByMode(t *testing.T) {
 					gotSel.member, gotSel.group, tc.wantUnit, tc.wantGroup)
 			}
 			h.assertNoSecrets(t)
+		})
+	}
+}
+
+// TestRunRefusesToServeWithoutLore.
+//
+// Nothing else in the process fails when the program memory.lore_command names is not
+// installed. memory.NewClient checks only that the command is non-empty and spawns
+// nothing until the first call; a turn that cannot read a space degrades that space
+// rather than failing. So a node with no lore starts cleanly, reports itself ready,
+// authorises its bot, and then remembers nothing anyone tells it — the failure mode
+// the Dockerfile warns about in its first paragraph, arriving in silence.
+//
+// It is a container's default outcome, not an exotic one: the image deliberately
+// carries no lore, and a pod started by `kenward run` in isolated mode cannot be
+// bind-mounted one, because keel's sandbox.Spec has no bind-mount. Until this refusal
+// existed the supervisor path's own default image produced a household of pods with
+// no memory at all.
+// The isolated HOST supervisor is exempt, and its case is in the table below: it
+// starts pods and holds no memory client of its own, so refusing it would refuse
+// every correct isolated household whose lore lives in the pods that use it. That
+// was not theoretical — it is what the first real-podman run of this check did.
+func TestRunRefusesToServeWithoutLore(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		yaml    string
+		args    []string
+		refused bool
+	}{
+		{"simple: every unit runs here", simpleYAML, []string{"run"}, true},
+		{"isolated: a member's pod", isolatedYAML, []string{"run", "--member", "david"}, true},
+		{"isolated: the group's pod", isolatedYAML, []string{"run", "--group"}, true},
+		{"isolated: the host supervisor, which never touches lore", isolatedYAML, []string{"run"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, tc.yaml, fullEnvironment())
+			h.e.lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
+			built := false
+			h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+				built = true
+				return stubSupervisor{}, nil
+			}
+			code := h.run(tc.args...)
+			if !tc.refused {
+				if code != exitOK || !built {
+					t.Fatalf("exit = %d, supervisor built = %v; the host supervisor holds no lore client and must start\n%s",
+						code, built, h.both())
+				}
+				return
+			}
+			if code != exitFailure {
+				t.Fatalf("exit = %d, want %d — a node with no memory must not start\n%s", code, exitFailure, h.both())
+			}
+			if built {
+				t.Error("the supervisor was built anyway; nothing may be served without memory")
+			}
+			for _, want := range []string{"lore", "PATH", "/usr/local/bin/lore", "--image"} {
+				if !strings.Contains(h.stderr(), want) {
+					t.Errorf("stderr does not mention %q, so an operator is not told how to fix it:\n%s", want, h.stderr())
+				}
+			}
 		})
 	}
 }

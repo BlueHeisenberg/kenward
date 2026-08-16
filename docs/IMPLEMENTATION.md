@@ -1006,6 +1006,75 @@ key is provisioned and unlocked under **that member's own passphrase**, named by
 delivered to that pod alone, and the unit starts serving in place, with no restart — see
 §7 and "How a supervisor-started pod gets a passphrase" below.
 
+**Every member in the configuration gets a pod, claimed or not**, and that is D-023
+rather than a convenience: the operator adds the member, starts their pod, and hands
+over a code the member redeems against their own bot. `Isolated` therefore builds the
+same pod for an unenrolled member as for an enrolled one — same argv, same configuration,
+that member's own token and their own passphrase, both of which §4 already requires of
+them for this reason. It used to skip them (*"supervisor: member not enrolled, no pod"*),
+which left D-023's sequence reachable through the compose path — a service per member
+regardless — and through a hand-run process, and unreachable through `kenward run`: the
+one deployment path that manages itself was the one that could not onboard anybody.
+
+The two facts an operator needs are kept apart in `Health`. A **running** pod whose
+member has not claimed reports `StateNotEnrolled`, "awaiting enrolment" — the same answer
+the pod's own process gives about itself — because calling it ready would say a member is
+being served when nobody has arrived. A claim-only pod that will not start is
+`StateFailed`, with its error and its restart count, exactly like any other. Before this
+the two were indistinguishable: a pod that was never created and a pod that could not
+start both reported `StateNotEnrolled` with a nil error, because the not-enrolled record
+was virtual and `fail` skipped it. What the host still cannot see is a claim that lands
+*after* it started — the code is redeemed inside the pod against the pod's own invite
+store on its own volume, so the host goes on reporting "awaiting enrolment" for a member
+who is by then being served, until the next `kenward run` re-reads the configuration.
+
+### How a supervisor-started pod gets lore
+
+The image deliberately carries no `lore` (the Dockerfile says so in its first paragraph:
+lore is a sibling project with its own release cadence, and baking a copy in would pin
+kenward to whatever version was current at image build time). It names two remedies —
+bind-mount a `lore` binary at `/usr/local/bin/lore`, or build a derived image that
+`COPY`s one there — and the two deployment paths do **not** have the same choice between
+them:
+
+- **The compose path** takes the bind-mount. `deploy/compose.isolated.yml` carries
+  `./bin/lore:/usr/local/bin/lore:ro` on every service.
+- **The supervisor path can only use the derived image.** `sandbox.Spec` has `Image`,
+  `Env`, `Command` and `Files` and no host bind-mount, so there is nothing for
+  `Isolated` to mount with. The operator builds `FROM ghcr.io/blueheisenberg/kenward:<tag>`
+  with a `COPY` of a `lore` binary for the image's own OS and architecture, and passes it
+  as `kenward run --image`. That is the whole answer, and it needs saying because the
+  *default* is the published image: `--image` omitted starts pods from
+  `ghcr.io/blueheisenberg/kenward:<this host's version>`, which by design has no lore in
+  it.
+
+`Spec.Files` could physically carry the binary — its `Mode` is permission bits, so 0755
+is expressible, and keel provisions through a tar stream that preserves it — and it is
+still the wrong tool: it would copy tens of megabytes into every pod on every create and
+every rolling update, to reproduce what a three-line Containerfile does once. Adding a
+bind-mount to keel would be a domain-free mechanism keel could reasonably own, but it is
+a cross-repo API change to buy an operator convenience the derived image already
+provides. Neither is proposed.
+
+**Without lore, `run` refuses to start, and that is the load-bearing part.** Nothing
+downstream fails on a missing lore: `memory.NewClient` checks only that the command is
+non-empty and spawns nothing until the first call, and a turn that cannot read a space
+degrades that space rather than failing (§5). So a pod with no lore came up, reported
+itself ready — the supervisor observes the container, not the unit — authorised its bot,
+and then remembered nothing anyone told it, with the only trace a "could not be read"
+line inside a prompt. `run` now asks `exec.LookPath` for `memory.lore_command[0]` before
+it builds anything and exits 1 naming both remedies. The check belongs there rather than
+in validation because whether lore is installed is a property of the machine, not of the
+file — a validation that failed on one host would make `doctor` useless for checking a
+configuration before shipping it (§4).
+
+The one process exempt is the **isolated host supervisor**, and not as a concession: it
+starts pods and holds no memory client, no transport and no key. Each pod spawns its own
+`lore mcp` over its own `LORE_HOME` and asks the question of its own image on its own way
+up. Demanding lore of the host too refuses every correctly-configured isolated household
+on a machine whose lore lives only where it is used — which is exactly what the first
+real-podman run of this check did, refusing before a single pod was started.
+
 The `Unit` implementation is identical in all three. If a change to `Unit` needs to know
 which one it is running under, that change is wrong.
 

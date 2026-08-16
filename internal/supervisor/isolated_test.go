@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,12 @@ func (f fakeSecretFS) ReadSecretFile(path string) ([]byte, fs.FileMode, error) {
 
 // isolatedTestConfig is a household of two enrolled members, one unenrolled, and
 // a group chat, each with their own bot token variable.
+//
+// The unenrolled member has a token and a passphrase like everybody else, because
+// internal/config requires both of her: in this mode her bot exists before she
+// claims (D-023), and the claim provisions her key under her own passphrase inside
+// her own pod. A fixture that omitted them described a household kenward would have
+// refused to load.
 func isolatedTestConfig() *config.Config {
 	return &config.Config{
 		Mode: config.ModeIsolated,
@@ -46,7 +53,7 @@ func isolatedTestConfig() *config.Config {
 		Members: []config.MemberConfig{
 			{ID: "david", Name: "David", TelegramID: 1, PrivateSpace: "d", Tiers: []string{"local"}, BotTokenEnv: "TOK_DAVID", PassphraseEnv: "PASS_DAVID"},
 			{ID: "eve", Name: "Eve", TelegramID: 2, PrivateSpace: "e", Tiers: []string{"local"}, BotTokenEnv: "TOK_EVE", PassphraseEnv: "PASS_EVE"},
-			{ID: "ana", Name: "Ana", PrivateSpace: "a", Tiers: []string{"local"}},
+			{ID: "ana", Name: "Ana", PrivateSpace: "a", Tiers: []string{"local"}, BotTokenEnv: "TOK_ANA", PassphraseEnv: "PASS_ANA"},
 		},
 	}
 }
@@ -187,9 +194,9 @@ func TestIsolatedRunsOnePodPerUnit(t *testing.T) {
 			hs["group"].State == StateReady
 	})
 
-	// One pod per enrolled member plus the group's; the unenrolled member has
-	// none and is reported as such.
-	for _, name := range []string{"kenward-member-david", "kenward-member-eve", "kenward-group"} {
+	// One pod per member — enrolled or not, see TestIsolatedStartsAPodForAMember
+	// WhoHasNotClaimed — plus the group's.
+	for _, name := range []string{"kenward-member-david", "kenward-member-eve", "kenward-member-ana", "kenward-group"} {
 		spec, ok := h.backend.spec(name)
 		if !ok {
 			t.Fatalf("pod %s was not created", name)
@@ -197,13 +204,6 @@ func TestIsolatedRunsOnePodPerUnit(t *testing.T) {
 		if spec.Env[EnvLoreHome] != DefaultLoreHome {
 			t.Fatalf("pod %s LORE_HOME = %q", name, spec.Env[EnvLoreHome])
 		}
-	}
-	if _, ok := h.backend.spec("kenward-member-ana"); ok {
-		t.Fatal("a pod was created for an unenrolled member")
-	}
-	hs := mustHealth(t, h.sup)
-	if hs["ana"].State != StateNotEnrolled || hs["ana"].Err != nil {
-		t.Fatalf("unenrolled member = %+v, want awaiting enrolment with nil Err", hs["ana"])
 	}
 
 	// Each pod carries its own bot token under the variable the configuration
@@ -224,7 +224,7 @@ func TestIsolatedRunsOnePodPerUnit(t *testing.T) {
 
 	// Graceful stop for every pod; Purge never — the work volume is where the
 	// member's lore lives.
-	for _, name := range []string{"kenward-member-david", "kenward-member-eve", "kenward-group"} {
+	for _, name := range []string{"kenward-member-david", "kenward-member-eve", "kenward-member-ana", "kenward-group"} {
 		if _, _, stops := h.backend.counts(name); stops != 1 {
 			t.Fatalf("pod %s stopped %d times, want 1", name, stops)
 		}
@@ -232,7 +232,7 @@ func TestIsolatedRunsOnePodPerUnit(t *testing.T) {
 	if h.backend.destroyed() != 0 {
 		t.Fatalf("Purge called %d times, want never", h.backend.destroyed())
 	}
-	hs = mustHealth(t, h.sup)
+	hs := mustHealth(t, h.sup)
 	if hs["david"].State != StateStopped || hs["group"].State != StateStopped {
 		t.Fatalf("after Stop: david=%v group=%v, want stopped", hs["david"].State, hs["group"].State)
 	}
@@ -328,13 +328,11 @@ func TestIsolatedHealthBeforeStartAndAfterStop(t *testing.T) {
 	if len(hs) != 4 {
 		t.Fatalf("Health before Start reported %d units, want 4", len(hs))
 	}
+	// Every unit, the unenrolled member included: she has a pod now, and before
+	// Start nothing has been observed about any of them.
 	for name, u := range hs {
-		want := StateUnknown
-		if name == "ana" {
-			want = StateNotEnrolled
-		}
-		if u.State != want {
-			t.Fatalf("unit %s before Start = %v, want %v", name, u.State, want)
+		if u.State != StateUnknown {
+			t.Fatalf("unit %s before Start = %v, want %v", name, u.State, StateUnknown)
 		}
 	}
 
@@ -378,7 +376,7 @@ func TestIsolatedRollRecreatesInOrderAndWaitsForHealth(t *testing.T) {
 	// only returned nil because every pod held healthy across two polls before
 	// the next was touched, so a completed roll is itself the health-wait proof;
 	// the stop-on-failure test covers the sequencing when a wait fails.
-	want := []string{"kenward-member-david", "kenward-member-eve", "kenward-group"}
+	want := []string{"kenward-member-david", "kenward-member-eve", "kenward-member-ana", "kenward-group"}
 	got := h.backend.recreations()
 	if len(got) != len(want) {
 		t.Fatalf("recreations = %v, want %v", got, want)
@@ -415,7 +413,7 @@ func TestIsolatedRollPreservesVolumeIdentity(t *testing.T) {
 	h.start(t)
 	h.waitAllReady(t)
 
-	names := []string{"kenward-member-david", "kenward-member-eve", "kenward-group"}
+	names := []string{"kenward-member-david", "kenward-member-eve", "kenward-member-ana", "kenward-group"}
 	before := map[string]int{}
 	for _, name := range names {
 		id, ok := h.backend.volumeID(name)
@@ -708,7 +706,7 @@ func TestIsolatedRollRequiresStart(t *testing.T) {
 func TestIsolatedRollsOnStartWhenTheImageChanged(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "pod-image")
 	backend := newFakeBackend()
-	names := []string{"kenward-member-david", "kenward-member-eve", "kenward-group"}
+	names := []string{"kenward-member-david", "kenward-member-eve", "kenward-member-ana", "kenward-group"}
 	onBackend := func(image string) func(*IsolatedOptions) {
 		return func(o *IsolatedOptions) {
 			o.Backend = backend
@@ -980,9 +978,83 @@ func TestIsolatedGivesEachPodItsOwnPassphraseAndTheGroupNone(t *testing.T) {
 			}
 		}
 	}
-	if seen != 3 {
-		t.Fatalf("inspected %d pods, want two members and the group", seen)
+	if seen != 4 {
+		t.Fatalf("inspected %d pods, want three members and the group", seen)
 	}
+}
+
+// TestIsolatedStartsAPodForAMemberWhoHasNotClaimed.
+//
+// D-023: in isolated mode a member's bot exists BEFORE they claim. The operator adds
+// them to the configuration, starts their pod, and hands over a claim code, which the
+// member redeems in a conversation with their own bot — never the household's, because
+// the onboarding messages are where the privacy model is explained and explaining it
+// over the one channel it does not apply to would be a poor start.
+//
+// The pod's inside already did its half: `kenward run --member=jordan` for an
+// unenrolled member comes up claim-only. The host would not create that pod. It said
+//
+//	level=INFO msg="supervisor: member not enrolled, no pod" member=jordan
+//
+// and made none, so the sequence D-023 settles was reachable through the compose path
+// — which starts a service per member regardless — and through a hand-run process, and
+// never through `kenward run`. The one deployment path that manages itself was the one
+// that could not onboard anybody.
+//
+// The pod is identical to an enrolled member's, deliberately: same argv, same
+// configuration, its own token and its own passphrase. Which of the two states it is in
+// is the pod's own process's business, decided from the configuration it reads.
+func TestIsolatedStartsAPodForAMemberWhoHasNotClaimed(t *testing.T) {
+	cfgPath := t.TempDir() + "/kenward.yaml"
+	if err := os.WriteFile(cfgPath, []byte("mode: isolated\n"), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	h := newIsolatedHarness(t, func(o *IsolatedOptions) { o.ConfigFile = cfgPath })
+	h.start(t)
+
+	waitFor(t, "the unenrolled member's pod is up", func() bool {
+		return mustHealth(t, h.sup)["ana"].State == StateNotEnrolled
+	})
+
+	spec, ok := h.backend.spec("kenward-member-ana")
+	if !ok {
+		t.Fatal("no pod for a member who has not claimed; D-023's onboarding cannot happen")
+	}
+	if spec.Env[EnvMember] != "ana" {
+		t.Errorf("pod env %v does not name the member it serves", spec.Env)
+	}
+	if got, want := spec.Command, PodCommand("--member=ana"); !slices.Equal(got, want) {
+		t.Errorf("argv = %v, want %v — a claim-only pod is started exactly like any other", got, want)
+	}
+	if spec.Env["TOK_ANA"] != testLookupEnvValue("TOK_ANA") {
+		t.Error("the pod has no bot token, so there is no bot for the member to claim against")
+	}
+	if spec.Env["PASS_ANA"] != testLookupEnvValue("PASS_ANA") {
+		t.Error("the pod has no passphrase, so the claim could not provision the member's key")
+	}
+	for k := range spec.Env {
+		if (strings.HasPrefix(k, "TOK_") || strings.HasPrefix(k, "PASS_")) &&
+			k != "TOK_ANA" && k != "PASS_ANA" {
+			t.Errorf("the pod carries %s, which belongs to another unit", k)
+		}
+	}
+
+	// "awaiting enrolment" is what a RUNNING claim-only pod reports. A claim-only
+	// pod that will not start is a failure like any other, and the two must be
+	// distinguishable: before this, both a pod that could not start and a pod that
+	// was never created reported StateNotEnrolled with a nil error, so an operator
+	// waiting on somebody to accept an invitation and an operator with a broken
+	// container saw the same line.
+	if u := mustHealth(t, h.sup)["ana"]; u.Err != nil || u.Restarts != 0 {
+		t.Fatalf("a healthy claim-only pod = %+v, want no error and no restarts", u)
+	}
+	h.backend.kill("kenward-member-ana")
+	waitFor(t, "the claim-only pod's failure is counted", func() bool {
+		u := mustHealth(t, h.sup)["ana"]
+		return u.Restarts == 1 && u.Err != nil && u.State == StateNotEnrolled
+	})
+
+	h.stop(t)
 }
 
 // testLookupEnvValue is what testLookupEnv answers for a name.
@@ -1079,7 +1151,7 @@ func TestIsolatedReadyMeansTheContainerIsRunning(t *testing.T) {
 
 	for name, u := range mustHealth(t, h.sup) {
 		if name == "ana" {
-			continue // never enrolled, no pod
+			continue // has a pod, but is awaiting enrolment rather than ready
 		}
 		if !u.Healthy() {
 			t.Fatalf("%s = %v, want ready", name, u.State)

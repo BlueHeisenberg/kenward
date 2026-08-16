@@ -223,6 +223,12 @@ type pod struct {
 	// for a member's pod the passphrase that unwraps that member's key. Nobody
 	// else's, ever — that is the mode.
 	secrets []podSecret
+	// enrolled records whether this pod's member had claimed their invite when the
+	// supervisor read the configuration. It changes nothing about the pod — a
+	// claim-only pod is started from the same spec, because the process inside
+	// decides for itself which of the two it is — and only what a running one is
+	// reported as. See upState.
+	enrolled bool
 
 	// opMu serialises lifecycle operations on this pod, which the sandbox
 	// backend requires per id. The monitor takes it with TryLock and stands
@@ -231,7 +237,36 @@ type pod struct {
 	opMu sync.Mutex
 }
 
-// Isolated runs one pod per enrolled member plus one for the household group, via
+// upState is what a running pod means for the unit inside it.
+//
+// For an enrolled member, and for the group, it is StateReady with the meaning that
+// constant carries here: the container is up, and nothing finer was observed. For a
+// member who has not claimed their invite it is StateNotEnrolled, which is the same
+// answer the pod's own process gives about itself while it sits claim-only (see
+// Single) — the pod is running and waiting for a code, and calling that "ready" would
+// tell an operator the member is being served when nobody has arrived yet.
+//
+// It applies only to a pod observed running. A claim-only pod that will not start is
+// StateFailed with its error and its restart count, exactly like any other: "waiting
+// for someone to accept an invitation" and "this container is crash-looping" are
+// different facts and an operator has to be able to tell them apart. That is the
+// whole reason enrolment is no longer a reason to have no pod at all — before this,
+// the two were indistinguishable, because a pod that was never created and a pod that
+// could not start both reported StateNotEnrolled and neither existed.
+//
+// What it cannot see is a claim that lands after the supervisor started. The code is
+// redeemed inside the pod, against the pod's own invite store on its own volume, so
+// the host never learns of it and goes on reporting StateNotEnrolled for a member who
+// is by then being served, until the next `kenward run` re-reads the configuration.
+func (p *pod) upState() State {
+	if p.enrolled {
+		return StateReady
+	}
+	return StateNotEnrolled
+}
+
+// Isolated runs one pod per configured member — claimed or not, see upState and
+// D-023 — plus one for the household group, via
 // keel/sandbox. Each pod holds its own bot token, its own lore instance behind its
 // own LORE_HOME, and its own key, wrapped under its own passphrase. Inside every pod
 // runs the same assistant.Unit that simple mode runs as a goroutine — the pod
@@ -367,10 +402,21 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 	var missing []string
 	for _, mc := range i.cfg.Members {
 		m := mc.Domain()
-		if !m.Enrolled() {
-			i.tracker.addNotEnrolled(m.ID)
-			continue
-		}
+		// A member who has not claimed their invite gets a pod like everybody else,
+		// and that is D-023 rather than a convenience: in this mode a member's bot
+		// exists *before* they claim, the operator hands over a code, and the member
+		// redeems it in a conversation with their own bot. Skipping them here left
+		// that sequence reachable through the compose path — which starts a service
+		// per member regardless — and unreachable through `kenward run`, so the one
+		// deployment path that is supposed to manage itself was the one that could
+		// not onboard anybody.
+		//
+		// Nothing about the pod differs. The process inside decides for itself
+		// whether it has a member to serve or a code to wait for (see Single), from
+		// the same configuration, with the same two secrets — both of which
+		// internal/config already requires of an unenrolled member for exactly this
+		// reason, since the claim provisions their key under their own passphrase in
+		// their own pod, with nobody at a terminal to be asked for one.
 		mc := mc
 		// A member's pod needs two secrets and no others: the bot nobody else
 		// speaks on, and the passphrase that unwraps that member's key and no
@@ -395,9 +441,10 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			return nil, err
 		}
 		p := &pod{
-			key:     k,
-			name:    name,
-			secrets: []podSecret{token, pass},
+			key:      k,
+			name:     name,
+			enrolled: m.Enrolled(),
+			secrets:  []podSecret{token, pass},
 			base: i.podSpec(name, map[string]string{
 				EnvMember:   string(m.ID),
 				EnvLoreHome: opts.LoreHome,
@@ -425,9 +472,11 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 				return nil, err
 			}
 			i.pods = append(i.pods, &pod{
-				key:     k,
-				name:    name,
-				secrets: []podSecret{token},
+				key:  k,
+				name: name,
+				// The group has nobody to enrol; its pod is ready when it runs.
+				enrolled: true,
+				secrets:  []podSecret{token},
 				base: i.podSpec(name, map[string]string{
 					EnvGroup:    "1",
 					EnvLoreHome: opts.LoreHome,
@@ -654,7 +703,8 @@ func (i *Isolated) logStartup() {
 		if m.Enrolled() {
 			i.logger.Info("supervisor: pod for member", "member", string(m.ID), "tiers", m.Tiers)
 		} else {
-			i.logger.Info("supervisor: member not enrolled, no pod", "member", string(m.ID))
+			i.logger.Info("supervisor: pod for member, claim-only until they redeem their code",
+				"member", string(m.ID), "tiers", m.Tiers)
 		}
 	}
 	if i.cfg.Household.GroupChatID != 0 {
@@ -817,7 +867,7 @@ func (i *Isolated) runPod(ctx context.Context, p *pod) {
 				i.tracker.set(p.key, StateStarting)
 				continue
 			}
-			i.tracker.set(p.key, StateReady)
+			i.tracker.set(p.key, p.upState())
 			up = true
 			readyAt = i.opts.Now()
 			didReset = false
@@ -1091,7 +1141,7 @@ func (i *Isolated) rollOne(ctx context.Context, p *pod) error {
 		i.tracker.fail(p.key, err)
 		return err
 	}
-	i.tracker.set(p.key, StateReady)
+	i.tracker.set(p.key, p.upState())
 	return nil
 }
 
@@ -1138,9 +1188,12 @@ func (i *Isolated) awaitRunning(ctx context.Context, p *pod) error {
 //
 // In this mode StateReady is an observation of the container, not of the member's
 // conversation: it says the pod is running, and a pod that runs while the unit
-// inside it is wedged reports it. See runPod. Members who have not
-// enrolled appear with StateNotEnrolled: they have no pod, which is a known
-// situation, not a failure.
+// inside it is wedged reports it. See runPod. A member who has not claimed their
+// invite has a pod like everybody else (D-023) and, while it runs, appears with
+// StateNotEnrolled rather than StateReady — waiting on someone to accept an
+// invitation, which is a known situation and not a failure. If that pod stops
+// running it is StateFailed like any other; see upState for why the two must not
+// collapse into one another.
 func (i *Isolated) Health(_ context.Context) ([]UnitHealth, error) {
 	return i.tracker.snapshot(), nil
 }

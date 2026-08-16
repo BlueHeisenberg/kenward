@@ -81,10 +81,14 @@ func cmdRun(e *env, args []string) int {
 	// has to know about it anyway: the scope decides which secrets are demanded, so a
 	// selector pointing at nobody would otherwise be a pod that demands none.
 
-	// memory.lore_command is internal/config's now: it defaults an omitted command to
-	// DefaultLoreCommand and rejects one that could not be executed, so the check that
-	// used to stand here is unreachable. A command that is present but useless is
-	// reported by renderConfigError above, naming the file and the key.
+	// Whether memory.lore_command is *shaped* like a command is internal/config's, and
+	// it deliberately stops there: whether the program exists is a property of this
+	// machine, not of the file, and a validation that failed on one host would make
+	// `doctor` useless for checking a configuration before shipping it. So the machine
+	// asks here, on the machine, at the one moment a process commits to serving.
+	if code := checkLoreInstalled(e, cfg, sel); code != exitOK {
+		return code
+	}
 
 	logger := slog.New(slog.NewTextHandler(e.stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	for _, line := range startupSummary(cfg, sel) {
@@ -148,6 +152,66 @@ func cmdRun(e *env, args []string) int {
 	}
 
 	return serve(e, sup, sched, restart, logger)
+}
+
+// checkLoreInstalled refuses to serve when the program memory.lore_command names is
+// not on this machine's PATH. It returns exitOK when it is.
+//
+// It is a refusal rather than a warning, and that is the whole point of it. Nothing
+// downstream fails on a missing lore: memory.NewClient only checks the command is
+// non-empty and does not spawn anything until the first call, and a turn that cannot
+// read a space degrades that space rather than failing the turn. So a node without
+// lore starts cleanly, reports itself ready, authorises its bot, greets a member and
+// then remembers nothing anyone says to it — no retrieval, no capture, no enrolment
+// history — with the only trace a "space could not be read" line inside a prompt. A
+// household assistant that has quietly stopped being one is worse than one that will
+// not start, so it does not start.
+//
+// It matters most in isolated mode, where it is easiest to arrive here by accident.
+// The image deliberately carries no lore (see the Dockerfile), and a pod the host
+// supervisor starts cannot be given one by the compose file's route: keel's
+// sandbox.Spec has no bind-mount, so the operator's only option there is an image
+// that already carries it. Until this check existed, the default `kenward run` in
+// isolated mode — which starts pods from the published image — produced a household
+// of pods with no memory at all and said nothing about it.
+//
+// The one process it does NOT apply to is the isolated host supervisor, and that is
+// not an exemption but the plain fact of what it runs: it starts pods and holds no
+// memory client, no transport and no key (see supervisor.Isolated). Each pod spawns
+// its own `lore mcp` inside itself, over its own LORE_HOME, and asks this question of
+// its own image on its own way up. Demanding lore of the host as well would refuse
+// every correctly-configured isolated household on a machine whose lore lives only
+// where it is actually used — which is exactly what happened the first time this was
+// run against real podman:
+//
+//	$ kenward run --config kenward.yaml --image localhost/kenward:nolore
+//	kenward: memory.lore_command starts "lore", and there is no such program on this
+//	machine's PATH. …
+//
+// with no pod started, on a host that was never going to touch lore.
+func checkLoreInstalled(e *env, cfg *config.Config, sel unitSelection) int {
+	if cfg.Mode == config.ModeIsolated && !sel.single() {
+		return exitOK
+	}
+	cmd := cfg.Memory.LoreCommand
+	if len(cmd) == 0 {
+		return exitOK // internal/config has already reported this.
+	}
+	if _, err := e.look()(cmd[0]); err == nil {
+		return exitOK
+	}
+	e.errorf("memory.lore_command starts %q, and there is no such program on this machine's\n"+
+		"PATH. kenward will not start without it: spawning `lore mcp` is its only route to\n"+
+		"memory, so this node would run, answer, and record nothing — and nothing else\n"+
+		"would report it.\n\n"+
+		"In a container the image deliberately does not carry lore (see the Dockerfile).\n"+
+		"Supply it one of two ways, built for the image's own OS and architecture:\n"+
+		"  - bind-mount it at /usr/local/bin/lore, which is what\n"+
+		"    deploy/compose.isolated.yml does for every service;\n"+
+		"  - or build a derived image that COPYs it there. That is the only route open to\n"+
+		"    a pod started by `kenward run` in isolated mode, which has no bind-mount to\n"+
+		"    offer; pass the derived image with --image.", cmd[0])
+	return exitFailure
 }
 
 // resumeUpdate finishes a pending update. The bool reports whether the process

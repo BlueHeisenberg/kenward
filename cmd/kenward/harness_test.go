@@ -209,6 +209,10 @@ func newHarness(t *testing.T, yaml string, vars map[string]string) *harness {
 		goos:      "linux",
 		ctx:       context.Background(),
 		probes:    healthyProbes(),
+		// A world where lore is installed. It has to be stated: exec.LookPath reads
+		// the real PATH, so leaving this nil would make `run`'s refusal depend on
+		// whether the machine running the tests happens to have lore on it.
+		lookPath: func(name string) (string, error) { return "/usr/local/bin/" + name, nil },
 	}
 	return h
 }
