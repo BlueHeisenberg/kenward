@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kenward — a household AI assistant where each person's memory is actually their own</title>
+<meta name="description" content="kenward is a self-hosted, Telegram-native household assistant. Per-person memory separated by separate stores, separate keys and separate processes. In development.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%23a8391a'/%3E%3Cpath%20d='M10%208v16M10%2016l8-8M10%2016l8%208'%20stroke='%23faf8f5'%20stroke-width='2.6'%20fill='none'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg:        #faf8f5;
+  --bg-sunk:   #f2ece3;
+  --surface:   #ffffff;
+  --ink:       #1c1a17;
+  --ink-muted: #5c554c;
+  --accent:    #a8391a;
+  --line:      #ddd5c9;
+  --line-firm: #b9ae9e;
+  --warn-bg:   #fdf3e3;
+  --warn-line: #d8a548;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg:        #14120f;
+    --bg-sunk:   #1d1a16;
+    --surface:   #1c1916;
+    --ink:       #ece6dd;
+    --ink-muted: #a8a096;
+    --accent:    #e8895c;
+    --line:      #332e28;
+    --line-firm: #574f45;
+    --warn-bg:   #241c11;
+    --warn-line: #8a6a2a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg:        #14120f;
+  --bg-sunk:   #1d1a16;
+  --surface:   #1c1916;
+  --ink:       #ece6dd;
+  --ink-muted: #a8a096;
+  --accent:    #e8895c;
+  --line:      #332e28;
+  --line-firm: #574f45;
+  --warn-bg:   #241c11;
+  --warn-line: #8a6a2a;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 1.0625rem/1.65 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-synthesis-weight: none;
+}
+
+h1, h2, h3 {
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.5em;
+  text-wrap: balance;
+}
+h1 { font-size: clamp(2.4rem, 9vw, 3.6rem); letter-spacing: -0.03em; }
+h2 { font-size: clamp(1.5rem, 4.5vw, 1.9rem); }
+h3 { font-size: 1.0625rem; font-family: inherit; font-weight: 650; letter-spacing: 0; }
+p  { margin: 0 0 1rem; }
+p:last-child { margin-bottom: 0; }
+
+a { color: var(--accent); text-underline-offset: 0.18em; text-decoration-thickness: from-font; }
+a:hover { text-decoration-thickness: 2px; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+code, pre, .mono {
+  font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+  font-size: 0.875em;
+}
+code { background: var(--bg-sunk); padding: 0.12em 0.35em; border-radius: 4px; }
+pre {
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  margin: 0 0 1rem;
+  line-height: 1.55;
+}
+pre code { background: none; padding: 0; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px;
+  margin: -1px; padding: 0; overflow: hidden;
+  clip-path: inset(50%); white-space: nowrap;
+}
+
+.skip {
+  position: absolute; left: -9999px; top: 0;
+  background: var(--accent); color: #fff;
+  padding: 0.6rem 1rem; border-radius: 0 0 6px 0; z-index: 10;
+}
+.skip:focus { left: 0; }
+/* Skip-link target: a ring around the whole page reads as breakage, and <main>
+   is a scroll destination rather than an operable control. */
+main:focus { outline: none; }
+
+.wrap { width: min(100% - 2.5rem, 46rem); margin-inline: auto; }
+
+/* ---------- header ---------- */
+header.site {
+  border-bottom: 1px solid var(--line);
+  padding: 1rem 0;
+}
+header.site .wrap {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 0.5rem 1.25rem;
+}
+.brand {
+  font: 650 1.15rem/1 ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+  color: var(--ink); text-decoration: none; letter-spacing: -0.02em;
+}
+header.site nav { margin-left: auto; }
+header.site nav ul {
+  list-style: none; display: flex; flex-wrap: wrap;
+  gap: 0.4rem 1.1rem; margin: 0; padding: 0;
+  font-size: 0.9375rem;
+}
+header.site nav a { color: var(--ink-muted); text-decoration: none; }
+header.site nav a:hover, header.site nav a:focus-visible { color: var(--accent); text-decoration: underline; }
+
+/* ---------- hero ---------- */
+.hero { padding: 3.5rem 0 2.5rem; }
+.hero .lede {
+  font-size: clamp(1.15rem, 3.6vw, 1.4rem);
+  line-height: 1.45;
+  color: var(--ink);
+  margin-bottom: 1.25rem;
+  text-wrap: pretty;
+}
+.hero p.body { color: var(--ink-muted); }
+
+.status {
+  display: block;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-line);
+  border-left-width: 4px;
+  border-radius: 0 8px 8px 0;
+  padding: 0.8rem 1rem;
+  margin: 1.75rem 0;
+  font-size: 0.9375rem;
+  color: var(--ink);
+}
+.status strong { font-weight: 650; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.75rem; }
+.btn {
+  display: inline-block;
+  padding: 0.6rem 1.1rem;
+  border-radius: 8px;
+  border: 1px solid var(--line-firm);
+  text-decoration: none;
+  font-size: 0.9375rem;
+  font-weight: 550;
+  color: var(--ink);
+  background: var(--surface);
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fffaf7;
+}
+.btn-primary:hover { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+
+/* ---------- sections ---------- */
+section { padding: 2.75rem 0; border-top: 1px solid var(--line); }
+section > .wrap > p, section > .wrap > ul, section > .wrap > ol { max-width: 40rem; }
+
+.eyebrow {
+  font: 600 0.75rem/1 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-muted);
+  margin: 0 0 0.75rem;
+}
+
+ul.plain { list-style: none; padding: 0; margin: 0 0 1rem; }
+ul.plain > li {
+  padding-left: 1.15rem; position: relative; margin-bottom: 0.6rem;
+}
+ul.plain > li::before {
+  content: ""; position: absolute; left: 0; top: 0.62em;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--line-firm);
+}
+
+/* ---------- tables ---------- */
+.scroller { overflow-x: auto; margin: 1.5rem 0; }
+.scroller:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+table { border-collapse: collapse; width: 100%; min-width: 30rem; font-size: 0.9375rem; }
+caption { text-align: left; color: var(--ink-muted); font-size: 0.875rem; padding-bottom: 0.6rem; }
+th, td { text-align: left; padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+thead th { border-bottom: 2px solid var(--line-firm); font-weight: 650; }
+tbody th { font-weight: 550; color: var(--ink); }
+tbody tr:last-child th, tbody tr:last-child td { border-bottom: none; }
+
+/* ---------- diagram ---------- */
+figure.diagram { margin: 2rem 0; }
+figure.diagram > svg { display: block; width: 100%; max-width: 27rem; height: auto; margin-inline: auto; }
+figure.diagram figcaption {
+  font-size: 0.9375rem; color: var(--ink-muted);
+  max-width: 34rem; margin: 1rem auto 0; text-align: left;
+}
+.legend { list-style: none; display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem; padding: 0; margin: 1rem auto 0; max-width: 27rem; font-size: 0.875rem; color: var(--ink-muted); }
+.legend li { display: flex; align-items: center; gap: 0.5rem; }
+.legend svg { width: 2.25rem; height: 0.6rem; flex: none; }
+
+.svg-box   { fill: var(--surface); stroke: var(--line-firm); stroke-width: 1.25; }
+.svg-box-a { fill: var(--bg-sunk); stroke: var(--line-firm); stroke-width: 1.25; }
+.svg-name  { fill: var(--ink); font: 600 15px/1 system-ui, sans-serif; }
+.svg-sub   { fill: var(--ink-muted); font: 400 12px/1 system-ui, sans-serif; }
+.svg-rw    { stroke: var(--accent); stroke-width: 2; fill: none; }
+.svg-ro    { stroke: var(--line-firm); stroke-width: 2; fill: none; stroke-dasharray: 5 4; }
+
+/* ---------- callout ---------- */
+.callout {
+  background: var(--bg-sunk);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.1rem 1.25rem;
+  margin: 1.5rem 0;
+}
+.callout > :first-child { margin-top: 0; }
+
+/* ---------- cards ---------- */
+.cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin: 1.5rem 0; padding: 0; list-style: none; }
+.cards > li {
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 1rem 1.15rem; background: var(--surface);
+}
+.cards h3 { margin-bottom: 0.35rem; }
+.cards p { font-size: 0.9375rem; color: var(--ink-muted); }
+
+/* ---------- footer ---------- */
+footer.site {
+  border-top: 1px solid var(--line);
+  padding: 2.5rem 0 3.5rem;
+  font-size: 0.9375rem;
+  color: var(--ink-muted);
+}
+footer.site ul { list-style: none; padding: 0; margin: 0 0 1.5rem; display: grid; gap: 0.6rem; }
+footer.site .note { max-width: 38rem; }
+
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+</style>
+</head>
+<body>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site">
+  <div class="wrap">
+    <a class="brand" href="./">kenward</a>
+    <nav aria-label="Sections">
+      <ul>
+        <li><a href="#memory">Memory</a></li>
+        <li><a href="#trust">Trust</a></li>
+        <li><a href="#hardware">Hardware</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#limits">Limits</a></li>
+        <li><a href="#licence">Licence</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main" tabindex="-1">
+
+  <div class="hero">
+    <div class="wrap">
+      <h1>kenward</h1>
+      <p class="lede">A household AI assistant where each person&rsquo;s memory is actually their own.</p>
+      <p class="body">
+        kenward is a self-hosted assistant for a family or a group of friends. Everyone talks to it
+        through Telegram &mdash; privately, or in a shared group. What it remembers about you privately
+        stays private; what the group teaches it is shared with the group. That boundary is separate
+        stores, separate keys and separate processes &mdash; not a <code>WHERE user_id =</code> clause you
+        have to take on faith.
+      </p>
+      <p class="body">
+        It runs on hardware you already own, routing each request to whichever of your machines is
+        awake, and falling back to a cloud provider only where you allow it.
+      </p>
+
+      <p class="status">
+        <strong>Status: in development.</strong> Nothing here is installable yet &mdash; there is no
+        published binary and no published image. The source is public and the
+        <a href="https://github.com/BlueHeisenberg/kenward/blob/main/docs/INSTALL.md">install guide</a>
+        is written down so the build has something to be measured against.
+      </p>
+
+      <div class="actions">
+        <a class="btn btn-primary" href="https://github.com/BlueHeisenberg/kenward">Read the source</a>
+        <a class="btn" href="https://github.com/BlueHeisenberg/kenward/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+        <a class="btn" href="#install">How it installs</a>
+      </div>
+    </div>
+  </div>
+
+  <section id="gap" aria-labelledby="gap-h">
+    <div class="wrap">
+      <p class="eyebrow">The gap it fills</p>
+      <h2 id="gap-h">Personal assistants are built for one person on one box</h2>
+      <p>
+        Add a second human and you get one of two bad outcomes: a single shared brain that leaks
+        everyone&rsquo;s private context into everyone else&rsquo;s conversations, or separate installs
+        with no shared knowledge at all. Neither is what a household wants. A family wants the
+        assistant to know that Tuesday is bin day and that the boiler code is 4471, while
+        <em>not</em> telling your brother what you asked about last night.
+      </p>
+      <p>
+        Doing that properly means per-person identity, cryptographic separation, invites and
+        multi-device sync &mdash; the boring, expensive half of the problem. That half already exists in
+        lore, so kenward is the assistant loop on top of it rather than a memory system built from
+        scratch.
+      </p>
+    </div>
+  </section>
+
+  <section id="memory" aria-labelledby="memory-h">
+    <div class="wrap">
+      <p class="eyebrow">The memory model</p>
+      <h2 id="memory-h">Two kinds of memory, and one asymmetry</h2>
+      <p>
+        <strong>Private memory</strong> is what the assistant knows about you: preferences, ongoing
+        concerns, the shape of your week. It is a lore space with exactly two members &mdash; you and
+        the node.
+      </p>
+      <p>
+        <strong>Shared memory</strong> is what the household knows collectively: house logistics,
+        recurring plans, decisions everyone should be able to recall. A lore space with every member
+        in it.
+      </p>
+
+      <figure class="diagram">
+        <svg viewBox="0 0 440 380" role="img" aria-labelledby="dg-title dg-desc">
+          <title id="dg-title">Which conversations reach which memory spaces</title>
+          <desc id="dg-desc">Ana&#39;s direct messages read and write Ana&#39;s private space, and read the shared space. Ben&#39;s direct messages read and write Ben&#39;s private space, and read the shared space. The household group chat reads and writes the shared space only, and has no connection of any kind to either private space.</desc>
+
+          <defs>
+            <marker id="ah-rw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,1 L10,5 L0,9 z" fill="var(--accent)"/>
+            </marker>
+            <marker id="ah-ro" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,1 L10,5 L0,9 z" fill="var(--line-firm)"/>
+            </marker>
+          </defs>
+
+          <!-- arrows drawn first so boxes sit on top -->
+          <path class="svg-rw" d="M148,39 H282"   marker-end="url(#ah-rw)"/>
+          <path class="svg-rw" d="M148,121 H282"  marker-end="url(#ah-rw)"/>
+          <path class="svg-rw" d="M77,226 V292"   marker-end="url(#ah-rw)"/>
+          <path class="svg-ro" d="M148,52 H230 V292"  marker-end="url(#ah-ro)"/>
+          <path class="svg-ro" d="M148,134 H190 V292" marker-end="url(#ah-ro)"/>
+
+          <g>
+            <rect class="svg-box" x="6" y="16" width="142" height="46" rx="8"/>
+            <text class="svg-name" x="77" y="37" text-anchor="middle">Ana</text>
+            <text class="svg-sub"  x="77" y="53" text-anchor="middle">direct message</text>
+          </g>
+          <g>
+            <rect class="svg-box" x="6" y="98" width="142" height="46" rx="8"/>
+            <text class="svg-name" x="77" y="119" text-anchor="middle">Ben</text>
+            <text class="svg-sub"  x="77" y="135" text-anchor="middle">direct message</text>
+          </g>
+          <g>
+            <rect class="svg-box" x="6" y="180" width="142" height="46" rx="8"/>
+            <text class="svg-name" x="77" y="201" text-anchor="middle">Household</text>
+            <text class="svg-sub"  x="77" y="217" text-anchor="middle">group chat</text>
+          </g>
+
+          <g>
+            <rect class="svg-box-a" x="292" y="16" width="142" height="46" rx="8"/>
+            <text class="svg-name" x="363" y="37" text-anchor="middle">Ana</text>
+            <text class="svg-sub"  x="363" y="53" text-anchor="middle">private space</text>
+          </g>
+          <g>
+            <rect class="svg-box-a" x="292" y="98" width="142" height="46" rx="8"/>
+            <text class="svg-name" x="363" y="119" text-anchor="middle">Ben</text>
+            <text class="svg-sub"  x="363" y="135" text-anchor="middle">private space</text>
+          </g>
+          <g>
+            <rect class="svg-box-a" x="6" y="300" width="428" height="52" rx="8"/>
+            <text class="svg-name" x="220" y="324" text-anchor="middle">Household</text>
+            <text class="svg-sub"  x="220" y="340" text-anchor="middle">shared space</text>
+          </g>
+        </svg>
+
+        <ul class="legend">
+          <li>
+            <svg viewBox="0 0 36 10" aria-hidden="true" focusable="false"><path class="svg-rw" d="M1,5 H35"/></svg>
+            reads and writes
+          </li>
+          <li>
+            <svg viewBox="0 0 36 10" aria-hidden="true" focusable="false"><path class="svg-ro" d="M1,5 H35"/></svg>
+            reads only
+          </li>
+        </ul>
+
+        <figcaption>
+          There is no line from the household group chat to anybody&rsquo;s private space. That absence
+          is the design, not an omission from the drawing.
+        </figcaption>
+      </figure>
+
+      <div class="scroller" tabindex="0" role="region" aria-label="Reads and writes by conversation, scrollable table">
+        <table>
+          <caption>The same thing in words.</caption>
+          <thead>
+            <tr><th scope="col">Conversation</th><th scope="col">Reads</th><th scope="col">Writes</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Direct message from a member</th>
+              <td>their private space, then shared</td>
+              <td>their private space</td>
+            </tr>
+            <tr>
+              <th scope="row">Household group chat</th>
+              <td>shared space only</td>
+              <td>shared space</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        Private conversations can read shared memory, because that is useful &mdash; you should be able
+        to ask when the bins go out. Group conversations can never read private memory, because that is
+        the entire point. Copying something out of a private space into the shared one is an explicit,
+        reviewed act that shows you the full text before it is published.
+      </p>
+
+      <div class="callout">
+        <h3>Nothing is written to memory silently</h3>
+        <p>
+          The assistant may <em>propose</em> remembering something; you decide, with buttons, in the
+          chat. There is no configuration option to turn that confirmation off. A group conversation is
+          never offered a private destination, and only the member who was asked can answer &mdash; in a
+          group chat everyone can see the buttons, and without that filter somebody else could route
+          your memory for you. A proposal that times out counts as declined.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section id="trust" aria-labelledby="trust-h">
+    <div class="wrap">
+      <p class="eyebrow">Two modes, one binary</p>
+      <h2 id="trust-h">The setup question is about trust, not topology</h2>
+      <p>
+        Which mode you run is chosen once, during setup, by answering one question:
+        <em>does everyone here trust whoever runs this machine to be able to read their private
+        conversations?</em> A non-technical installer can answer that. They cannot answer
+        &ldquo;do you want per-user pods?&rdquo;, and the pods are a consequence rather than the
+        decision.
+      </p>
+
+      <div class="scroller" tabindex="0" role="region" aria-label="Comparison of Simple and Isolated modes, scrollable table">
+        <table>
+          <thead>
+            <tr><th scope="col"><span class="visually-hidden">Property</span></th><th scope="col">Simple</th><th scope="col">Isolated</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Process model</th><td>one process</td><td>one pod per member</td></tr>
+            <tr><th scope="row">Keys</th><td>one address space</td><td>per-pod, argon2-wrapped</td></tr>
+            <tr><th scope="row">Telegram</th><td>one household bot</td><td>one bot per member</td></tr>
+            <tr><th scope="row">Runs on</th><td>Windows, macOS, Linux, container</td><td>Linux with Podman or Docker</td></tr>
+            <tr><th scope="row">The operator can read your private memory</th><td><strong>yes</strong></td><td>no &mdash; not from disk, not from a backup, not outside your session</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        The assistant loop, the memory policy, the routing and the capture flow are identical in both.
+        Only the supervisor differs.
+      </p>
+      <p>
+        <strong>Simple mode is honest about being simple.</strong> Separation between members is real,
+        but sealing against the machine&rsquo;s owner is not. Most households are fine with that &mdash;
+        it is their own family &mdash; and it is by far the easiest thing to run. The ones that are not
+        fine with it have Isolated mode, which is not a paid tier: it is the mode that makes the
+        privacy claim true, and charging for that would be gating the wrong feature.
+      </p>
+      <p>
+        Isolated mode gives each member their own bot token, because encryption at rest does nothing
+        for the channel: whoever holds a bot&rsquo;s token can read every message sent to it. That costs
+        about five minutes of setup per person.
+      </p>
+    </div>
+  </section>
+
+  <section id="routing" aria-labelledby="routing-h">
+    <div class="wrap">
+      <p class="eyebrow">Inference</p>
+      <h2 id="routing-h">Runs on whatever is awake</h2>
+      <p>
+        Most people with a local-inference habit have a scatter of machines: a GPU workstation, a
+        laptop, a mini PC, none of them on all the time. kenward treats them as a pool. Endpoints
+        carry tier tags, each space declares the tiers it may use in order, and requests load-balance
+        within a tier and fall through to the next when a tier has nothing reachable. A machine that
+        is powered off is skipped in about two seconds rather than hanging the conversation.
+      </p>
+      <p>
+        Cloud providers are just another tier &mdash; one you opt into per space. When the chain is
+        exhausted, kenward <strong>refuses</strong>. There is deliberately no code path that widens a
+        chain: no default, no fallback, no &ldquo;if nothing matched, try everything&rdquo;.
+      </p>
+      <div class="callout">
+        <p>
+          A private space configured local-only will tell you no local machine is available, naming the
+          tiers it was allowed and the endpoints that could not answer, rather than quietly shipping
+          your private context to a provider. That is the difference between claiming privacy and
+          having it, and it is a configuration line rather than a subsystem.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section id="hardware" aria-labelledby="hardware-h">
+    <div class="wrap">
+      <p class="eyebrow">What it needs</p>
+      <h2 id="hardware-h">Four things, three of them not kenward</h2>
+      <ul class="cards">
+        <li>
+          <h3>A machine that is always on</h3>
+          <p>
+            A mini PC, a NAS, an LXC container on a Proxmox host, a desktop that never sleeps. It holds
+            no GPU and costs effectively nothing to keep running. It needs no inbound network surface,
+            no port forwarding and no VPN.
+          </p>
+        </li>
+        <li>
+          <h3>A Telegram bot</h3>
+          <p>
+            Message <a href="https://t.me/BotFather">@BotFather</a>, send <code>/newbot</code>, follow
+            two prompts, keep the token. Members need no client software beyond Telegram, which they
+            already have.
+          </p>
+        </li>
+        <li>
+          <h3>lore, running</h3>
+          <p>
+            kenward owns no memory of its own; it talks to lore over MCP, and creates a space nowhere.
+            You create the shared space and one private space per member in lore first.
+          </p>
+        </li>
+        <li>
+          <h3>At least one inference endpoint</h3>
+          <p>
+            Anything OpenAI-compatible: vLLM, llama.cpp, Ollama, LM Studio, or a cloud provider. It does
+            not need to be awake during setup &mdash; kenward is built for machines that are usually
+            asleep.
+          </p>
+        </li>
+      </ul>
+      <p>
+        One household runs one deployment. There is no multi-tenant runtime, no web dashboard, no
+        control plane, no SSO, no organisations and no usage quotas &mdash; none of it is designed
+        around, and most of it is never going to exist.
+      </p>
+    </div>
+  </section>
+
+  <section id="install" aria-labelledby="install-h">
+    <div class="wrap">
+      <p class="eyebrow">Installing</p>
+      <h2 id="install-h">One binary, one setup question</h2>
+
+      <p class="status">
+        <strong>There is nothing to download yet.</strong> No release has been published, so the
+        commands below do not work today. They are the intended install, written down now rather than
+        after the fact. When binaries exist they will appear on the
+        <a href="https://github.com/BlueHeisenberg/kenward/releases">releases page</a>.
+      </p>
+
+      <h3>Simple mode, Linux</h3>
+      <pre><code>curl -L https://github.com/BlueHeisenberg/kenward/releases/latest/download/kenward_linux_amd64 -o kenward
+chmod +x kenward
+sudo mv kenward /usr/local/bin/
+kenward setup</code></pre>
+      <p>
+        macOS and Windows download the matching artifact and run <code>kenward setup</code> the same
+        way. There is a systemd unit and a Compose file in the repository for running it as a service.
+      </p>
+
+      <h3>Isolated mode</h3>
+      <p>
+        Linux only, and it needs Podman or Docker &mdash; the isolation <em>is</em> the container
+        runtime, so there is no meaningful equivalent elsewhere. Setup says so if you pick it on the
+        wrong platform, rather than failing later.
+      </p>
+
+      <h3>Adding people</h3>
+      <pre><code>kenward invite --name "David"</code></pre>
+      <p>
+        prints a single-use code that expires in 24 hours. They message the bot and send it. Until they
+        do, the bot will not reply to them at all &mdash; not an error, not a prompt, silence. A bot
+        username is publicly discoverable, and any reply would confirm to a stranger that there is
+        something here.
+      </p>
+
+      <h3>Checking it works</h3>
+      <pre><code>kenward doctor</code></pre>
+      <p>
+        reports configuration, memory, transport and every endpoint, and then prints what your chosen
+        mode actually promises about privacy &mdash; including, in Simple mode, that the operator can
+        read every member&rsquo;s private memory. A powered-off endpoint is reported as a fact, not a
+        failure.
+      </p>
+      <p>
+        The full procedure, including secret handling and the caveats that apply while this is being
+        finished, is in
+        <a href="https://github.com/BlueHeisenberg/kenward/blob/main/docs/INSTALL.md">INSTALL.md</a>.
+      </p>
+    </div>
+  </section>
+
+  <section id="limits" aria-labelledby="limits-h">
+    <div class="wrap">
+      <p class="eyebrow">Where the claim stops</p>
+      <h2 id="limits-h">What kenward does not promise</h2>
+      <p>
+        A model must see plaintext to answer. A server-side assistant therefore cannot be end-to-end
+        encrypted with respect to its own server, and no arrangement of keys changes that. So the claim
+        is not &ldquo;the operator cannot read your memory&rdquo;. It is: <em>the operator cannot read
+        it from disk, from a backup, or while you are not in session, and doing so requires
+        deliberately attacking their own family.</em> That is strong, checkable and true. The stronger
+        version is neither.
+      </p>
+      <ul class="plain">
+        <li>
+          <strong>The node can read private spaces at all.</strong> That is what being the second member
+          of a two-member space means, and it is the price of an assistant that answers when your laptop
+          is closed.
+        </li>
+        <li>
+          <strong>Root always wins.</strong> An attacker with root on the host during an active session
+          reads the unwrapped key out of memory. Isolated mode raises the cost; it does not create an
+          impossibility.
+        </li>
+        <li>
+          <strong>In Simple mode the operator can read everything</strong> &mdash; every member&rsquo;s
+          private memory, at rest and in flight. That is the mode&rsquo;s known limitation, not a bug,
+          and <code>kenward doctor</code> says so out loud.
+        </li>
+        <li>
+          <strong>Memory has no delete.</strong> lore does not support one, so anything kenward stores is
+          permanent from lore&rsquo;s side. This is why publishing something from a private space into
+          the shared one shows you the full text first.
+        </li>
+        <li>
+          <strong>The privacy differentiator is a property of self-hosting.</strong> Isolated mode on
+          somebody else&rsquo;s infrastructure seals nothing against that somebody else.
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="licence" aria-labelledby="licence-h">
+    <div class="wrap">
+      <p class="eyebrow">Licence</p>
+      <h2 id="licence-h">Business Source License 1.1</h2>
+      <p>
+        You may run kenward in production for yourself, your household, or within a single organization.
+        What the licence gates is offering kenward, or a derivative of it, to third parties as a hosted
+        or managed service &mdash; that needs a separate licence, so get in touch. Each version converts
+        to Apache License 2.0 on <strong>14 August 2030</strong>.
+      </p>
+      <p>
+        <strong>BSL is source-available rather than OSI open source.</strong> That is understood and
+        deliberate. If you need an OSI-approved licence today, this is not it.
+      </p>
+      <p>
+        The <a href="https://github.com/BlueHeisenberg/kenward/blob/main/LICENSE">LICENSE file</a> is the
+        licence; where this summary and the file differ in wording, the file governs.
+      </p>
+      <p>
+        Issues are welcome. Pull requests are closed unmerged until a CLA exists, because sole copyright
+        is what keeps relicensing and moving code between these repositories possible &mdash; see
+        <a href="https://github.com/BlueHeisenberg/kenward/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <p class="eyebrow">Built on</p>
+    <ul>
+      <li>
+        <a href="https://github.com/BlueHeisenberg/lore"><strong>lore</strong></a> &mdash; the memory
+        layer, reached over MCP. kenward owns no knowledge model, and does not fork this one.
+      </li>
+      <li>
+        <a href="https://github.com/BlueHeisenberg/keel"><strong>keel</strong></a> &mdash; domain-free Go
+        mechanisms: sandbox isolation, sealed vault, model client, self-update. Apache 2.0.
+      </li>
+      <li>
+        <a href="https://github.com/BlueHeisenberg/kenward"><strong>kenward on GitHub</strong></a>
+        &mdash; source, issues, and the documents this page summarises.
+      </li>
+    </ul>
+    <p class="note">
+      Go 1.25, a single static binary, no cgo. This page loads no fonts, no scripts, no analytics and
+      nothing from anywhere else &mdash; for a project about privacy, anything else would be
+      self-defeating, and people check.
+    </p>
+    <p class="note">kenward is &copy; 2026 David Perez. Licensed under BSL 1.1.</p>
+  </div>
+</footer>
+
+</body>
+</html>
