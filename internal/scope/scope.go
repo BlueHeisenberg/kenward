@@ -8,6 +8,10 @@
 //   - A group scope never names any member's private space, in Read or in Write. The
 //     household chat is not a way to read or write a private memory, and no message
 //     arriving in it, from anyone, changes that.
+//   - Neither does a household scope, which is the same guarantee for the same reason
+//     in the one place it is easier to get wrong: a private chat with kenward carries
+//     the member who is speaking and still reads and writes the shared space alone.
+//     Knowing who is asking is not a route to what is theirs.
 //   - Anything unrecognised resolves to ErrNotEnrolled and nothing else. The caller
 //     drops the message in silence, because replying at all — even to refuse — confirms
 //     to a stranger that this bot is a kenward node serving a real household.
@@ -42,7 +46,17 @@ var ErrNotEnrolled = errors.New("scope: sender is not enrolled in this household
 // is speaking to the household, and their private space is not in the conversation at
 // all. Everything else is ErrNotEnrolled, including a message in the household group
 // from someone who is not a member of the household.
-func Resolve(cfg *config.Config, in transport.Inbound) (domain.Scope, error) {
+//
+// bot names which of the household's bots the message arrived on: a member's id for
+// their own agent's bot, empty for the household's own — kenward's. It is a fact about
+// the process, known by whoever opened the token, and it is a parameter rather than a
+// field on Inbound because Telegram does not put it on the wire: a private chat's id
+// is the member's own account id and is identical across every bot they talk to, so
+// which conversation a direct message belongs to cannot be recovered from the update.
+//
+// It is what separates a member's private chat with their own agent from their private
+// chat with kenward, and under one agent each it is the only thing that does.
+func Resolve(cfg *config.Config, bot domain.MemberID, in transport.Inbound) (domain.Scope, error) {
 	if cfg == nil {
 		// A missing configuration is a wiring fault, but the safe reading of "I do not
 		// know who this is" is always the same one.
@@ -67,6 +81,14 @@ func Resolve(cfg *config.Config, in transport.Inbound) (domain.Scope, error) {
 		// safe guess between "this is the household" and "this is a private chat",
 		// so neither is made.
 		if !in.IsGroup {
+			return domain.Scope{}, ErrNotEnrolled
+		}
+
+		// The household's conversation belongs on the household's bot. A member's
+		// own agent has no part in it, and a member's bot that has been added to the
+		// family group — which any member can do — must not start answering there as
+		// though it were kenward.
+		if bot != "" {
 			return domain.Scope{}, ErrNotEnrolled
 		}
 
@@ -96,6 +118,27 @@ func Resolve(cfg *config.Config, in transport.Inbound) (domain.Scope, error) {
 		return domain.Scope{}, ErrNotEnrolled
 	}
 
+	// A member's own bot is their agent and nobody else's. Another member reaching
+	// it is not a mistake to be served politely with their own scope: their assistant
+	// lives elsewhere, this process holds this member's key and this member's memory,
+	// and the answer a stranger gets is the answer they get. It has been true in
+	// practice only because a pod runs no unit for anyone else; making it true here
+	// means the boundary says so rather than the wiring happening to.
+	if bot != "" {
+		if bot != member.ID {
+			return domain.Scope{}, ErrNotEnrolled
+		}
+		return directScope(member, household, in.ChatID), nil
+	}
+
+	// The household's own bot. Under one agent it is also everybody's agent, so a
+	// private message to it is a member's own conversation and always has been.
+	// Under one agent each it is kenward and only kenward: the member has their own
+	// bot for their own assistant, and this chat is the one place they can add to the
+	// household's memory, or ask what is in it, without doing so in front of everyone.
+	if cfg.AgentPerMember() {
+		return householdScope(member, household, in.ChatID), nil
+	}
 	return directScope(member, household, in.ChatID), nil
 }
 
@@ -106,6 +149,32 @@ func groupScope(h domain.Household, chatID int64) domain.Scope {
 	return domain.Scope{
 		Kind:   domain.ScopeGroup,
 		Member: nil,
+		Write:  h.Shared,
+		Read:   []domain.SpaceID{h.Shared},
+		Tiers:  copyStrings(h.Tiers),
+		ChatID: chatID,
+	}
+}
+
+// householdScope builds a member's private conversation with kenward: the household's
+// shared space, read and written, and the household's tier chain.
+//
+// It is groupScope with a member attached, and that is the whole of it. The member is
+// carried so kenward knows who is asking — to authorise them, to address them, and to
+// route the capture question's buttons to the person who spoke — and their private
+// space is not reachable from here by construction, for exactly the reason a group
+// scope's is not: nothing below reads m.Private, and there is nowhere in the returned
+// Scope for it to go.
+//
+// The tiers are the household's rather than the member's. The subject of this
+// conversation is the household's memory, so it travels wherever household
+// conversations are allowed to travel; a member's own chain is the policy for their
+// own material, and none of that is in this conversation.
+func householdScope(m domain.Member, h domain.Household, chatID int64) domain.Scope {
+	member := m
+	return domain.Scope{
+		Kind:   domain.ScopeHousehold,
+		Member: &member,
 		Write:  h.Shared,
 		Read:   []domain.SpaceID{h.Shared},
 		Tiers:  copyStrings(h.Tiers),

@@ -77,7 +77,7 @@ func podEnvironment() map[string]string {
 // isolatedConfigYAML renders the household in isolated mode. It is the same
 // household the simple-mode harness describes, with the two things the mode adds:
 // a per-member bot token variable and a member who has not claimed yet.
-func isolatedConfigYAML(dataDir, localURL string) string {
+func isolatedConfigYAML(dataDir, localURL string, agents config.Agents) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "mode: isolated\n")
 	fmt.Fprintf(&b, "data_dir: '%s'\n", dataDir)
@@ -86,6 +86,9 @@ func isolatedConfigYAML(dataDir, localURL string) string {
 	fmt.Fprintf(&b, "  shared_space: %s\n", sharedSpace)
 	fmt.Fprintf(&b, "  group_chat_id: %d\n", groupChatID)
 	fmt.Fprintf(&b, "  tiers: [local]\n")
+	if agents != "" {
+		fmt.Fprintf(&b, "  agents: %s\n", agents)
+	}
 	fmt.Fprintf(&b, "telegram:\n")
 	fmt.Fprintf(&b, "  bot_token_env: %s\n", botTokenEnv)
 	fmt.Fprintf(&b, "members:\n")
@@ -109,11 +112,11 @@ func isolatedConfigYAML(dataDir, localURL string) string {
 
 // loadIsolatedConfig writes and loads a real isolated-mode kenward.yaml, returning
 // it with the endpoint it points at and the data directory it was given.
-func loadIsolatedConfig(t *testing.T, lookupEnv config.LookupEnvFunc) (*config.Config, *fakeProvider, string) {
+func loadIsolatedConfig(t *testing.T, lookupEnv config.LookupEnvFunc, agents config.Agents) (*config.Config, *fakeProvider, string) {
 	t.Helper()
 	dir := t.TempDir()
 	local := newFakeProvider(t, "attic")
-	return loadConfigYAML(t, dir, isolatedConfigYAML(dir, local.baseURL()), lookupEnv), local, dir
+	return loadConfigYAML(t, dir, isolatedConfigYAML(dir, local.baseURL(), agents), lookupEnv), local, dir
 }
 
 // loadConfigYAML writes one configuration document into dir and loads it for real.
@@ -134,6 +137,11 @@ func loadConfigYAML(t *testing.T, dir, doc string, lookupEnv config.LookupEnvFun
 type podOptions struct {
 	member domain.MemberID
 	group  bool
+	// agents is household.agents. Empty leaves the key out, which means one
+	// assistant for the household; config.AgentsPerMember gives every member their
+	// own and makes the group's pod kenward's, reachable in a private chat as well
+	// as in the group.
+	agents config.Agents
 	// enrolFor supplies the claimer a pod waits on while its member has not
 	// claimed. It is a callback for the same reason the household's is: a Claimer
 	// is built over a Binder over the configuration, which does not exist until
@@ -148,7 +156,7 @@ type podOptions struct {
 func newPod(t *testing.T, opts podOptions) *harness {
 	t.Helper()
 	lookupEnv := fakeEnv(podEnvironment())
-	cfg, local, dir := loadIsolatedConfig(t, lookupEnv)
+	cfg, local, dir := loadIsolatedConfig(t, lookupEnv, opts.agents)
 
 	// A pod's session manager is in isolated custody and holds one key: the member
 	// this pod serves. The group's pod holds none — a group turn has no session,
@@ -461,7 +469,7 @@ func TestPodForAnUnenrolledMemberStartsClaimOnlyAndServesNothingUntilClaimed(t *
 	// is: with nothing. The claim behind it is the barrier — same pump, in order.
 	h.tr.InjectText(samChatID, samTelegramID, "hello? anyone?", false)
 	h.tr.InjectText(samChatID, samTelegramID, code, false)
-	onboarding := h.waitForReply(samChatID, 3)
+	onboarding := h.waitForReply(samChatID, onboardingMessages)
 
 	if !strings.Contains(onboarding[0].Text, "Hello Sam") {
 		t.Errorf("onboarding opens with %q, want the member greeted by name", onboarding[0].Text)
@@ -480,9 +488,9 @@ func TestPodForAnUnenrolledMemberStartsClaimOnlyAndServesNothingUntilClaimed(t *
 		return memberHealth(t, h, samMemberID).State == supervisor.StateReady
 	})
 	h.tr.InjectText(samChatID, samTelegramID, "what's the bike lock code?", false)
-	sent := h.waitForReply(samChatID, 4)
-	if replyBody(sent[3].Text) != "8812." {
-		t.Errorf("reply after the claim = %q, want the model's text", sent[3].Text)
+	sent := h.waitForReply(samChatID, onboardingMessages+1)
+	if replyBody(sent[onboardingMessages].Text) != "8812." {
+		t.Errorf("reply after the claim = %q, want the model's text", sent[onboardingMessages].Text)
 	}
 	searched := h.mem.searchedSpaces()
 	if len(searched) != 2 || !containsSpace(searched, samSpace) || !containsSpace(searched, sharedSpace) {
@@ -526,18 +534,18 @@ func TestAnotherMembersCodeOnThisBotBindsThemButMintsNoUnitHere(t *testing.T) {
 	// Not served: no unit here is theirs. Sam's own claim behind it is the barrier.
 	h.tr.InjectText(patChatID, patTelegramID, "so what can you do?", false)
 	h.tr.InjectText(samChatID, samTelegramID, samCode, false)
-	h.waitForReply(samChatID, 3)
+	h.waitForReply(samChatID, onboardingMessages)
 	waitFor(t, "sam's unit to be serving", func() bool {
 		return memberHealth(t, h, samMemberID).State == supervisor.StateReady
 	})
 	h.tr.InjectText(samChatID, samTelegramID, "hello", false)
-	h.waitForReply(samChatID, 4)
+	h.waitForReply(samChatID, onboardingMessages+1)
 	if err := h.stop(); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	if got := h.sentTo(patChatID); len(got) != 3 {
-		t.Errorf("pat received %d messages, want only the 3 onboarding ones: %+v; "+
+	if got := h.sentTo(patChatID); len(got) != onboardingMessages {
+		t.Errorf("pat received %d messages, want only their onboarding: %+v; "+
 			"their conversation belongs to their own pod", len(got), got)
 	}
 	health, err := h.sup.Health(context.Background())
@@ -561,7 +569,7 @@ func TestAnotherMembersCodeOnThisBotBindsThemButMintsNoUnitHere(t *testing.T) {
 // healthy while somebody goes unanswered.
 func TestPodConstructionRefusesWhatItCannotServe(t *testing.T) {
 	lookupEnv := fakeEnv(podEnvironment())
-	cfg, _, _ := loadIsolatedConfig(t, lookupEnv)
+	cfg, _, _ := loadIsolatedConfig(t, lookupEnv, "")
 	tr := transport.NewFake()
 	t.Cleanup(func() { _ = tr.Close() })
 

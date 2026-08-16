@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +34,12 @@ type runnerConfig struct {
 	// Which units to run.
 	members []domain.Member
 	group   bool
+	// bot names which of the household's bots this process polls: a member's id for
+	// their own agent's bot, empty for the household's own. It is the same fact
+	// botToken resolves a token for, and scope.Resolve needs it because Telegram
+	// does not put it on the wire — a private chat's id is the member's account id
+	// and is the same whichever bot they are talking to.
+	bot domain.MemberID
 	// unenrolled members are reported in Health with ErrNotEnrolled and get
 	// nothing else.
 	unenrolled []domain.MemberID
@@ -172,6 +179,14 @@ type runner struct {
 	pending  []pendingUnit
 	served   map[int64]struct{}
 	units    map[unitKey]struct{}
+	// tutorials maps a chat with an onboarding in flight to the channel that
+	// onboarding's typed answers go to.
+	//
+	// It is what makes the tutorial multi-turn without a second reader of the update
+	// stream. Between a claim and the end of the tutorial the member is served by no
+	// unit, so their messages keep arriving at the enrolment pump — the same pump —
+	// which hands them across rather than putting them to the Claimer again.
+	tutorials map[int64]chan transport.Inbound
 }
 
 // pendingUnit is a constructed unit waiting for start to give it a goroutine.
@@ -229,6 +244,24 @@ func newRunner(cfg *config.Config, rc runnerConfig) (*runner, error) {
 			turnCancel()
 			r.closeOwned()
 			return nil, err
+		}
+		// Under one agent each, the process holding the household's bot also holds
+		// every member's private conversation with kenward. One unit each, not one
+		// unit serving all of them: a Unit is one conversation — its own history
+		// ring, its own turn slot, its own capture engine — and a shared one would
+		// put David's private message to kenward into the ring the group chat's
+		// prompt is assembled from.
+		if r.cfg.AgentPerMember() {
+			for _, m := range r.cfg.DomainMembers() {
+				if !m.Enrolled() {
+					continue
+				}
+				if err := r.buildHouseholdUnit(m); err != nil {
+					turnCancel()
+					r.closeOwned()
+					return nil, err
+				}
+			}
 		}
 	}
 	if len(r.pending) == 0 && rc.claimer == nil {
@@ -298,7 +331,7 @@ func (r *runner) resolve(in transport.Inbound) (domain.Scope, error) {
 	r.cfgMu.RLock()
 	cfg := r.cfg
 	r.cfgMu.RUnlock()
-	return scope.Resolve(cfg, in)
+	return scope.Resolve(cfg, r.rc.bot, in)
 }
 
 // buildMemberUnit constructs one member's unit over a mux view scoped to their
@@ -344,6 +377,36 @@ func (r *runner) buildGroupUnit() error {
 	return nil
 }
 
+// buildHouseholdUnit constructs one member's private conversation with kenward, over
+// a view scoped to their direct messages on the household's bot.
+//
+// The view is the same shape as buildMemberUnit's and means something different, and
+// the difference is entirely the bot this process polls: on a member's own bot those
+// messages are their own assistant's, and on the household's they are kenward's. The
+// view does not decide that and could not — scope.Resolve does, from the bot — so the
+// two can never both exist over one transport.
+//
+// It runs on the household's tier chain, not the member's, because everything in this
+// conversation is the household's material.
+func (r *runner) buildHouseholdUnit(m domain.Member) error {
+	telegramID := m.TelegramID
+	view := r.mux.View(func(in transport.Inbound) bool {
+		return !in.IsGroup && in.UserID == telegramID
+	})
+	k := unitKey{member: m.ID, group: true}
+	u, clock, err := r.buildUnit(view, k, "household:"+string(m.ID), r.cfg.Household.Tiers)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.pending = append(r.pending, pendingUnit{key: k, unit: u, view: view, clock: clock})
+	r.served[telegramID] = struct{}{}
+	r.units[k] = struct{}{}
+	r.mu.Unlock()
+	r.tracker.add(k)
+	return nil
+}
+
 // buildUnit constructs one unit and the clock that serves it.
 //
 // The reminder store is built here, per unit, over a path derived from the unit's own
@@ -359,7 +422,7 @@ func (r *runner) buildUnit(view transport.Transport, k unitKey, name string, tie
 	}
 	logger := r.logger.With("unit", name)
 	engine := r.captureEngine(view)
-	unitOpts := r.unitOptions(tiers)
+	unitOpts := r.unitOptions(k, tiers)
 	u, err := assistant.New(assistant.Deps{
 		Resolve:   r.resolve,
 		Memory:    r.memory,
@@ -412,10 +475,22 @@ func (r *runner) captureEngine(view transport.Transport) *capture.Engine {
 // sizes, and one household-wide number gets one of them wrong. Explicit seed values
 // win; otherwise both come from config.ChainLimits, and a chain that reaches no
 // endpoint with either stated falls back to the assistant's own defaults.
-func (r *runner) unitOptions(tiers []string) assistant.Options {
+func (r *runner) unitOptions(k unitKey, tiers []string) assistant.Options {
 	o := r.rc.unitOpts
 	if o.HouseholdName == "" {
 		o.HouseholdName = r.cfg.Household.Name
+	}
+	// The persona is per unit because it is per conversation. The group chat is
+	// always kenward's and always gets the household's; a member's private chat gets
+	// their own under household.agents: per_member and the household's under shared,
+	// which is what "one assistant for the household" means and is why the wizard has
+	// to say that kenward's persona is everyone's persona before an admin chooses it.
+	//
+	// Not guarded by a zero check on the seed, unlike the numbers above: an explicit
+	// seed would be a test's, and a test that sets a persona means that persona
+	// rather than "unless the configuration has one".
+	if o.Persona == (assistant.Persona{}) {
+		o.Persona = personaFor(r.cfg, k)
 	}
 	if o.SearchLimit == 0 {
 		o.SearchLimit = r.cfg.Memory.SearchLimit
@@ -444,6 +519,26 @@ func (r *runner) unitOptions(tiers []string) assistant.Options {
 	// next turn, so the group chat and a member's chat are cleared independently.
 	o.HistoryReset = r.cfg.History.ResetEvery.Duration()
 	return o
+}
+
+// personaFor maps one unit onto the persona its conversation is written in.
+//
+// Mapped rather than shared, exactly as capture.PrivateWrites is: the configuration's
+// spelling is an operator's vocabulary and the assistant's is this package's, and
+// internal/assistant must not learn the shape of a configuration file in order to
+// render a prompt. Which persona a unit gets is config.PersonaFor's decision; turning
+// it into the assistant's type is this line's.
+func personaFor(cfg *config.Config, k unitKey) assistant.Persona {
+	p := cfg.HouseholdPersona()
+	if !k.group {
+		p = cfg.PersonaFor(string(k.member))
+	}
+	return assistant.Persona{
+		Name:      p.AgentName,
+		Language:  p.Language,
+		Tone:      p.Tone,
+		Character: p.Character,
+	}
 }
 
 // start launches every unit's goroutine, begins fanning updates out, and blocks
@@ -825,9 +920,16 @@ func (r *runner) runBackstop(ch <-chan transport.Inbound) {
 }
 
 // scopeUnitKey names the unit a resolved scope belongs to.
+//
+// Stated as "not a member's own conversation" rather than "is the group", because a
+// household scope is both: it belongs to the household and it belongs to one member's
+// chat, and it has a unit of its own for exactly that reason.
 func scopeUnitKey(sc domain.Scope) unitKey {
-	if sc.Kind == domain.ScopeGroup || sc.Member == nil {
+	if sc.Member == nil {
 		return unitKey{group: true}
+	}
+	if !sc.TouchesPrivateMemory() {
+		return unitKey{member: sc.Member.ID, group: true}
 	}
 	return unitKey{member: sc.Member.ID}
 }
@@ -839,6 +941,14 @@ func scopeUnitKey(sc domain.Scope) unitKey {
 func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound) {
 	defer r.workerDone()
 	defer r.recoverPump(unitKey{}, "enrolment")
+
+	// A node that died between a member's greeting and the end of their tutorial
+	// owes them the explanation. Nothing else would ever send it: they are enrolled
+	// now, so they never reach this pump again.
+	if err := r.rc.claimer.FinishInterrupted(r.turnCtx, view); err != nil {
+		r.logger.Warn("supervisor: could not finish an interrupted onboarding", "error", err)
+	}
+
 	for {
 		select {
 		case <-r.draining:
@@ -846,6 +956,11 @@ func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound)
 		case in, ok := <-ch:
 			if !ok {
 				return
+			}
+			// A member part-way through onboarding is not a stranger presenting a
+			// code; what they sent is an answer, and the tutorial is waiting for it.
+			if r.deliverToTutorial(in) {
+				continue
 			}
 			res, err := r.rc.claimer.Handle(r.turnCtx, in)
 			if err != nil {
@@ -858,10 +973,130 @@ func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound)
 				}
 			}
 			if res.Enrolled {
-				r.enrolled(res.Member)
+				r.startTutorial(view, res.Member, in.ChatID)
 			}
 		}
 	}
+}
+
+// deliverToTutorial hands a message to an onboarding in flight in that chat,
+// reporting whether it took it.
+//
+// The send is non-blocking onto an unbuffered channel, so a message is delivered
+// only if the tutorial is waiting for typed input at this instant. That is the whole
+// filter: something a member types while a button question is on screen is not an
+// answer to anything, and buffering it would make it the answer to whatever question
+// comes next.
+func (r *runner) deliverToTutorial(in transport.Inbound) bool {
+	r.mu.Lock()
+	ch, ok := r.tutorials[in.ChatID]
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	select {
+	case ch <- in:
+	default:
+	}
+	return true
+}
+
+// startTutorial walks a freshly claimed member through their personal setup, and
+// brings them into service when it ends.
+//
+// It runs on its own goroutine so that one member answering slowly does not stop the
+// household enrolling anybody else, and it is tracked on turnWg so a drain waits for
+// it exactly as it waits for a turn.
+//
+// The member is promoted afterwards rather than before, because until then their
+// messages have to keep arriving here for the tutorial to read. What that costs is
+// bounded and worth naming: for the length of the tutorial — the member's own doing,
+// and capped by enrol.DefaultTutorialTimeout — anything they say in the household
+// group is unrouted. They are at that moment reading a private walk-through, and the
+// alternative is a second reader racing this one for their next message.
+func (r *runner) startTutorial(view transport.Transport, m domain.Member, chatID int64) {
+	answers := make(chan transport.Inbound)
+	r.mu.Lock()
+	if r.tutorials == nil {
+		r.tutorials = make(map[int64]chan transport.Inbound)
+	}
+	r.tutorials[chatID] = answers
+	r.mu.Unlock()
+
+	tut := r.rc.claimer.Tutorial(view, m, chatID, answers)
+	if tut.Logger == nil {
+		tut.Logger = r.logger
+	}
+	r.turnWg.Add(1)
+	go func() {
+		defer r.turnWg.Done()
+		defer func() {
+			r.mu.Lock()
+			delete(r.tutorials, chatID)
+			r.mu.Unlock()
+			// Their answers, before their unit is built from them. The store has
+			// the same values and is the record, but nothing re-reads the state
+			// file while the node runs — so a member who has just named their
+			// agent Alfred would be answered by kenward until the next restart,
+			// which is the same feature not working with none of the symptoms.
+			//
+			// Unconditionally, like the promotion below: a tutorial that stopped
+			// half way still gave the answers it collected, and they are already
+			// on disk.
+			r.personaAnswered(m.ID, tut.Answered().PersonaConfig)
+			// Unconditionally: a tutorial that failed, was abandoned or panicked
+			// still leaves an enrolled member, and withholding their unit over a
+			// setup question would be the worse failure by a distance.
+			r.enrolled(m)
+		}()
+		defer func() {
+			if rec := recover(); rec != nil {
+				r.logger.Error("supervisor: onboarding tutorial panicked; the member is enrolled on defaults",
+					"member", string(m.ID), "error", rec)
+			}
+		}()
+		if err := tut.Run(r.turnCtx); err != nil {
+			r.logger.Warn("supervisor: onboarding tutorial did not finish", "member", string(m.ID), "error", err)
+		}
+	}()
+}
+
+// personaAnswered folds what a member chose in their tutorial into the running
+// configuration, copy-on-write, exactly as a binding is folded.
+//
+// Per field, and an unanswered field leaves whatever the file said, which is
+// config.MergeState's rule and has to be the same rule: the two are the same fold
+// happening at different times — this one while the node runs, that one on the next
+// start — and a member who skipped the language question must not lose a language an
+// operator wrote for them either way.
+func (r *runner) personaAnswered(id domain.MemberID, p config.PersonaConfig) {
+	if p == (config.PersonaConfig{}) {
+		return
+	}
+	r.cfgMu.Lock()
+	defer r.cfgMu.Unlock()
+	out := snapshotConfig(r.cfg)
+	for i := range out.Members {
+		if domain.MemberID(out.Members[i].ID) != id {
+			continue
+		}
+		held := out.Members[i].Persona
+		out.Members[i].Persona = config.PersonaConfig{
+			AgentName: orElse(p.AgentName, held.AgentName),
+			Language:  orElse(p.Language, held.Language),
+			Tone:      orElse(p.Tone, held.Tone),
+			Character: orElse(p.Character, held.Character),
+		}
+		r.cfg = out
+		return
+	}
+}
+
+func orElse(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
 }
 
 // enrolled brings a freshly claimed member into service without a restart: fold

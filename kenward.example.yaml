@@ -40,6 +40,63 @@ household:
   # name is a display label only; it appears in doctor output and log lines and has no
   # effect on routing or privacy. Getting it wrong just makes those lines confusing.
   name: "Home"
+  # agents is the identity question: one assistant for the household, or one each.
+  #   shared:     there is kenward and nothing else. Everyone talks to it, in private
+  #               chats and in the group, and household.persona below is therefore
+  #               EVERYONE'S persona — there is no personal layer to override it. This
+  #               is the default and what kenward has always done.
+  #   per_member: every member gets their own named agent for their private chat, and
+  #               kenward remains the family agent in the group. Each member's name,
+  #               language, tone and character live under members[].persona and are
+  #               written by the member themselves in the Telegram tutorial, not here.
+  #
+  # It is NOT `mode` and must not be reasoned about as though it were. mode is a
+  # security question answered by topology; this is a presentation question about who
+  # the household is talking to. Under per_member a member has their own bot so that
+  # their agent is its own contact — that is a separate CONTACT, not a separate
+  # SECRET. Having your own bot is not sealed memory; the mode is what seals it.
+  #
+  # per_member needs a Telegram bot for each member, because two agents behind one
+  # contact are one agent, and only isolated mode gives each member their own. Naming
+  # it here in simple mode is a validation error rather than a silent downgrade: the
+  # downgrade would resolve every member's private chat to kenward's and quietly take
+  # away the assistant they were promised.
+  #
+  # Under per_member, kenward is also reachable in a private chat, on the household
+  # bot. That conversation reads and writes shared_space and nothing else: it is where
+  # a member adds something to the household's memory, or asks what is in it, without
+  # posting in the group. It never touches their private memory — their own agent is
+  # where that lives.
+  agents: shared
+  # persona is how kenward writes: the language, tone and character of the household's
+  # own assistant. Every field's empty value is the behaviour kenward had before this
+  # section existed, so a household that deletes this block loses nothing.
+  #
+  # There is no agent_name here. kenward's name is not configurable — it is the name
+  # its documentation, its logs and `kenward doctor` all use — and stating one is a
+  # validation error rather than a rename. members[].persona.agent_name is where a
+  # member names their own agent, under agents: per_member.
+  persona:
+    # language is named the way a person names one, not as a code, because it is
+    # passed to the model rather than looked up in a table. Empty means English.
+    #
+    # An honest limit worth knowing before you set it: this reaches THE MODEL. The
+    # node's own strings — the onboarding text, the capture announcements, the
+    # refusals, the retrieval line, the locked notice — are still English. A Spanish
+    # household gets Spanish answers and English machinery around them.
+    language: "Spanish"
+    # tone is the register, in a phrase. Empty means the flat register docs/PROMPT.md
+    # specifies — useful, brief, specific, not a personality — which is the default
+    # and remains the default.
+    tone: "warm but brief"
+    # character is free prose about who this assistant is, up to 1000 characters.
+    # Empty — the default — means there is none.
+    #
+    # It is read by the model as a preference about wording and nothing else: the
+    # prompt renders it inside a delimited block, indented so no line of it can reach
+    # column zero, and states that it cannot change which memories the assistant can
+    # read, what it may propose remembering, or what it must tell you about either.
+    character: "Speaks plainly and does not fuss. Knows the house well."
   # shared_space is the lore space the group chat reads from and writes to, and that
   # every member's private space can read but never coincides with. Required: without
   # it the group conversation has nowhere to read or write, and kenward refuses to
@@ -105,6 +162,28 @@ members:
     # everything the member says to the whole household, silently. A space id from
     # `lore spaces`, not a display name, for the reasons under shared_space above.
     private_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8
+    # persona is this member's own, and it is the one block in this file an operator
+    # should not be writing on somebody's behalf: it is filled in by the member
+    # themselves in the Telegram tutorial after they redeem their invite, and every
+    # answer is changeable later. It is shown here because it appears in the file and
+    # somebody reading it deserves to know what it is.
+    #
+    # It applies only under household.agents: per_member. Under shared there is no
+    # personal layer, and what is written here is carried and ignored rather than
+    # refused — a household that tries one-each and goes back should not have to
+    # delete its members' choices by hand before the file will load.
+    #
+    # Each field falls back to household.persona's, one field at a time rather than
+    # all or nothing. A member who wrote a character and said nothing about language
+    # keeps the household's language; delete any line below and that is what happens.
+    persona:
+      # agent_name is what this member's agent calls itself in conversation. It is not
+      # the Telegram bot's display name, which is global and set in BotFather — which
+      # is why per-member names work however many bots exist.
+      agent_name: "Alfred"
+      language: "Spanish"
+      tone: "very terse"
+      character: "Answers in one line where one line will do."
     # tiers is the ordered endpoint tier chain THIS MEMBER'S PRIVATE conversations may
     # use — the single most consequential setting in this file. It is that member's
     # privacy policy, stated as a fact you can read off the page rather than inferred
@@ -149,6 +228,11 @@ members:
     name: Jordan
     telegram_id: 100200302
     private_space: 5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19
+    persona:
+      agent_name: "Watson"
+      language: "English"
+      tone: "friendly"
+      character: "Explains its reasoning when the answer is not obvious."
     # jordan's chain reaches the cloud tier after the local ones, so an OpenRouter model
     # answers when neither local machine is awake, instead of the turn being refused.
     # That is a deliberate, opted-into widening of what leaves this house for jordan's

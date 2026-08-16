@@ -1,12 +1,21 @@
 package enrol
 
 import (
-	"fmt"
-
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
-// Onboarding is what a member reads in the first minute of knowing kenward exists.
+// Greeting is the first thing a member ever reads: the claim worked, and setup is
+// about to start.
+//
+// It is the one message that cannot be in the language the member chose, because
+// choosing it is the first question and this arrives before it. It goes out in the
+// household's language, which the admin set in the wizard, on the reasoning in
+// IDENTITY.md: kenward's language seeds the default for new members.
+func Greeting(chatID int64, member string, t text) transport.Outbound {
+	return transport.Outbound{ChatID: chatID, Text: t.greeting(member)}
+}
+
+// Explanation is what a member reads once the setup questions are done.
 //
 // It is three short messages and it is the only place the memory model is explained
 // to the person it applies to. Everything downstream — scope resolution, the capture
@@ -19,12 +28,17 @@ import (
 // of the thing, in the order they will run into it — this chat, the group chat, and
 // what happens when it wants to remember something.
 //
+// It is sent on every ending the tutorial has, including the ones where the member
+// answered nothing. The setup questions are conveniences; this is the part the
+// product is obliged to say, and an abandoned tutorial must not swallow it.
+//
 // askPrivate is capture.private_writes: false — kenward's default — means a note to
 // this member's own memory is written and then shown to them with an Undo button;
 // true means it is put as a question first. The third message says which, because
 // it is the one the member acts on, and a member told to expect a Save button who
 // gets a written note and an Undo instead has been lied to about the one promise
 // this product is built on.
+//
 // Each message opens with a bold heading naming what it is about, because three
 // consecutive paragraphs of undifferentiated prose is what the member was getting
 // and none of it survived the first read. The headings are the shape of the
@@ -34,41 +48,20 @@ import (
 // marks events — something was saved, something is being asked — and these are
 // explanations rather than events. A member who sees 🧠 here and 🧠 on a real
 // write learns nothing from either.
-func Onboarding(chatID int64, name string, askPrivate bool) []transport.Outbound {
-	third := transport.Bold("What happens when I remember something") + "\n\n" +
-		"When something sounds worth keeping for your own memory, I write it " +
-		"down and then show you exactly what I wrote and which memory it went to, " +
-		"with an Undo button that takes it back. Anything for the household's " +
-		"shared memory I ask about first and write nothing until you tap Save.\n\n" +
-		"Either way you always see it. That's all of it. Just talk to me normally."
+func Explanation(chatID int64, t text, askPrivate bool) []transport.Outbound {
+	third := t.writesBody
 	if askPrivate {
-		third = transport.Bold("What happens when I remember something") + "\n\n" +
-			"I never save anything by myself. When something sounds worth " +
-			"keeping I'll ask — you'll see what I'd write down and which memory it " +
-			"goes to, and you tap Save or Don't save. If you don't answer, I don't " +
-			"save it.\n\nThat's all of it. Just talk to me normally."
+		third = t.writesAsk
 	}
 	texts := []string{
-		fmt.Sprintf(
-			"Hello %s. You're in.\n\n"+
-				"%s\n\n"+
-				"This chat — just you and me — is your private memory. What you tell me "+
-				"here stays in your space. Nobody else in the household can read it, and "+
-				"I won't bring it up in the group.",
-			transport.Esc(name), transport.Bold("This chat is private")),
-
-		transport.Bold("The group chat is shared") + "\n\n" +
-			"The household group chat is the shared memory. Whatever I remember there, " +
-			"everyone can see. Nothing crosses over on its own: if something private " +
-			"should become shared, ask me, and I'll show you the exact text before any " +
-			"of it moves.",
-
-		third,
+		transport.Bold(t.privateHead) + "\n\n" + t.privateBody,
+		transport.Bold(t.sharedHead) + "\n\n" + t.sharedBody,
+		transport.Bold(t.writesHead) + "\n\n" + third,
 	}
 
 	out := make([]transport.Outbound, 0, len(texts))
-	for _, t := range texts {
-		out = append(out, transport.Outbound{ChatID: chatID, Text: t})
+	for _, s := range texts {
+		out = append(out, transport.Outbound{ChatID: chatID, Text: s})
 	}
 	return out
 }

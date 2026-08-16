@@ -1,0 +1,281 @@
+package enrol
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/BlueHeisenberg/kenward/internal/transport"
+)
+
+// Language tags this package can hold a whole conversation in.
+//
+// The list is short on purpose and it is the honest list, not an aspiration. Every
+// string a member reads between "you're in" and the end of the tutorial is written
+// out by hand below, twice, and a tag only appears here when both copies exist. A
+// third language is a third table and nothing else — no loader, no bundle format,
+// no fallback chain that silently degrades to English halfway through a sentence.
+//
+// It is deliberately not machine translation. This copy makes promises about where
+// a member's words are stored and who can read them, and the package documentation
+// for Onboarding already says wrong copy about privacy is worse than none. A
+// sentence produced by a model at runtime is a sentence nobody has read; running the
+// memory model through one would put the product's central claim on a path with no
+// review in it.
+const (
+	// LangEnglish is the default and the language the wizard runs in.
+	LangEnglish = "en"
+	// LangSpanish is the second language the tutorial is written in.
+	LangSpanish = "es"
+)
+
+// Choice ids. Stable and machine-readable; they are what comes back in an Answer and
+// they never change with the language on screen.
+const (
+	choiceLangEnglish = "lang.en"
+	choiceLangSpanish = "lang.es"
+	choiceLangOther   = "lang.other"
+	choiceToneFlat    = "tone.flat"
+	choiceToneWarm    = "tone.warm"
+	choiceTonePlayful = "tone.playful"
+	choiceSkip        = "skip"
+	choiceBack        = "back"
+)
+
+// skipWord and backWord are what a member types instead of tapping, on the two
+// questions that take typed text and therefore have no buttons.
+const (
+	skipWord = "/skip"
+	backWord = "/back"
+)
+
+// text is every string one language's tutorial needs.
+//
+// A struct rather than a map because a missing key in a map is a runtime empty
+// string in front of a member, and a missing field here does not compile.
+type text struct {
+	// tag is the language this table is written in.
+	tag string
+	// name is what the language calls itself, for the button.
+	name string
+
+	greeting func(member string) string
+
+	languageQ       string
+	languageOther   string
+	otherPrompt     string
+	otherNoted      func(named string) string
+	skip            string
+	back            string
+	sameAsHousehold string
+	// retired replaces the outcome line on a question nobody answered. The
+	// transport's default says the question was declined or withdrawn; for a setup
+	// question the true and more useful fact is which value it was left at.
+	retired string
+
+	nameQ       string
+	nameTooLong string
+	nameKept    string
+	nameSet     func(agent string) string
+
+	registerQ       string
+	registerFlat    string
+	registerWarm    string
+	registerPlayful string
+
+	characterQ       string
+	characterTooLong string
+
+	abandoned string
+
+	privateHead string
+	privateBody string
+	sharedHead  string
+	sharedBody  string
+	writesHead  string
+	writesBody  string
+	writesAsk   string
+}
+
+// tables is every language the tutorial is written in, keyed by tag.
+var tables = map[string]text{
+	LangEnglish: english,
+	LangSpanish: spanish,
+}
+
+// textFor returns the table for a tag, falling back to English for anything this
+// package does not hold. The fallback is never silent where a member can see it:
+// askLanguage only offers tags that are in the table, and a member who names some
+// other language is told in so many words that the rest of this runs in English.
+func textFor(tag string) text {
+	if t, ok := tables[tag]; ok {
+		return t
+	}
+	return english
+}
+
+// Spoken reports whether the tutorial can be delivered end to end in this language.
+// It is what a caller should consult before promising a member anything in it.
+func Spoken(tag string) bool {
+	_, ok := tables[tag]
+	return ok
+}
+
+// TagFor maps a language named the way a person names one onto a tag this package
+// holds copy for, falling back to English for anything it does not.
+//
+// It exists because the two halves of this setting are honestly different.
+// config.PersonaConfig.Language is free text and has to be: it is passed to the model,
+// not looked up in a table, and a household is entitled to ask for a register of a
+// language kenward has never heard of. This package's copy is the opposite — a short,
+// closed list of languages somebody has actually written and read — so somewhere the
+// one has to be resolved against the other, and doing it here keeps the free-text
+// promise intact everywhere else.
+//
+// ponytail: a switch, because there are two languages. A third makes it a field on
+// text — the aliases each table answers to — rather than a longer switch here.
+func TagFor(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "es", "spanish", "español", "espanol", "castellano":
+		return LangSpanish
+	default:
+		return LangEnglish
+	}
+}
+
+var english = text{
+	tag:  LangEnglish,
+	name: "English",
+
+	greeting: func(member string) string {
+		return fmt.Sprintf("Hello %s. You're in.\n\n"+
+			"Four quick questions to set me up for you, then I'll explain how I work. "+
+			"Skip any of them and you get my defaults, and you can change all of it later.",
+			transport.Esc(member))
+	},
+
+	languageQ:     transport.Bold("Language") + "\n\nWhat language should I speak with you?",
+	languageOther: "Another language",
+	otherPrompt:   "Which language? Send me its name.",
+	otherNoted: func(named string) string {
+		return fmt.Sprintf("Noted: %s.\n\n"+
+			"I have to be straight with you: this walkthrough is only written in English "+
+			"and Spanish so far, so the rest of it will be in English. Your choice is "+
+			"saved and you can change it whenever you like.", transport.Esc(named))
+	},
+	skip:            "Skip",
+	back:            "Back",
+	sameAsHousehold: "Same as the household",
+	retired:         "no answer — left on the default",
+
+	nameQ: transport.Bold("My name") + "\n\nWhat would you like to call me? Send a name, " +
+		"or " + transport.Code(skipWord) + " to leave me as kenward. " +
+		transport.Code(backWord) + " goes back a question.",
+	nameTooLong: "That's longer than I can wear. Forty characters or fewer, on one line.",
+	nameKept:    "Staying as kenward, then.",
+	nameSet: func(agent string) string {
+		return fmt.Sprintf("%s it is.", transport.Esc(agent))
+	},
+
+	registerQ:       transport.Bold("How I talk") + "\n\nHow should I sound when I answer you?",
+	registerFlat:    "Plain — short, no small talk",
+	registerWarm:    "Warm — friendly, still brief",
+	registerPlayful: "Playful — a bit of humour",
+
+	characterQ: transport.Bold("Anything else") + "\n\nAnything else about how you'd like me to be? " +
+		"A sentence is plenty — \"a bit dry, into cycling\". Send " + transport.Code(skipWord) +
+		" if you'd rather not, or " + transport.Code(backWord) + " to go back.",
+	characterTooLong: "A bit much for me to hold. Three hundred characters or fewer, please.",
+
+	abandoned: "No rush — I've left the rest on my defaults. You can change any of it later. " +
+		"Here's how I work.",
+
+	privateHead: "This chat is private",
+	privateBody: "This chat — just you and me — is your private memory. What you tell me " +
+		"here stays in your space. Nobody else in the household can read it, and " +
+		"I won't bring it up in the group.",
+	sharedHead: "The group chat is shared",
+	sharedBody: "The household group chat is the shared memory. Whatever I remember there, " +
+		"everyone can see. Nothing crosses over on its own: if something private " +
+		"should become shared, ask me, and I'll show you the exact text before any " +
+		"of it moves.",
+	writesHead: "What happens when I remember something",
+	writesBody: "When something sounds worth keeping for your own memory, I write it " +
+		"down and then show you exactly what I wrote and which memory it went to, " +
+		"with an Undo button that takes it back. Anything for the household's " +
+		"shared memory I ask about first and write nothing until you tap Save.\n\n" +
+		"Either way you always see it. That's all of it. Just talk to me normally.",
+	writesAsk: "I never save anything by myself. When something sounds worth " +
+		"keeping I'll ask — you'll see what I'd write down and which memory it " +
+		"goes to, and you tap Save or Don't save. If you don't answer, I don't " +
+		"save it.\n\nThat's all of it. Just talk to me normally.",
+}
+
+var spanish = text{
+	tag:  LangSpanish,
+	name: "Español",
+
+	greeting: func(member string) string {
+		return fmt.Sprintf("Hola %s. Ya estás dentro.\n\n"+
+			"Cuatro preguntas rápidas para ajustarme a ti y luego te explico cómo funciono. "+
+			"Puedes saltarte cualquiera y te quedas con mis valores por defecto; todo esto "+
+			"se puede cambiar más adelante.",
+			transport.Esc(member))
+	},
+
+	languageQ:     transport.Bold("Idioma") + "\n\n¿En qué idioma quieres que hable contigo?",
+	languageOther: "Otro idioma",
+	otherPrompt:   "¿Cuál? Escríbeme su nombre.",
+	otherNoted: func(named string) string {
+		return fmt.Sprintf("Anotado: %s.\n\n"+
+			"Te lo digo claro: esta introducción solo está escrita en inglés y español por "+
+			"ahora, así que el resto irá en inglés. Tu elección queda guardada y puedes "+
+			"cambiarla cuando quieras.", transport.Esc(named))
+	},
+	skip:            "Saltar",
+	back:            "Atrás",
+	sameAsHousehold: "Igual que la casa",
+	retired:         "sin respuesta — se queda como estaba",
+
+	nameQ: transport.Bold("Mi nombre") + "\n\n¿Cómo quieres llamarme? Escríbeme un nombre, " +
+		"o " + transport.Code(skipWord) + " para dejarme como kenward. " +
+		transport.Code(backWord) + " vuelve a la pregunta anterior.",
+	nameTooLong: "Ese nombre me queda largo. Cuarenta caracteres o menos, en una sola línea.",
+	nameKept:    "Me quedo como kenward, entonces.",
+	nameSet: func(agent string) string {
+		return fmt.Sprintf("%s, pues.", transport.Esc(agent))
+	},
+
+	registerQ:       transport.Bold("Cómo hablo") + "\n\n¿Cómo quieres que suene cuando te conteste?",
+	registerFlat:    "Directo — breve, sin rodeos",
+	registerWarm:    "Cercano — amable, igual de breve",
+	registerPlayful: "Con humor — un poco de guasa",
+
+	characterQ: transport.Bold("Algo más") + "\n\n¿Algo más sobre cómo quieres que sea? " +
+		"Con una frase basta: «un poco seco, le va el ciclismo». Escribe " +
+		transport.Code(skipWord) + " si prefieres dejarlo, o " + transport.Code(backWord) +
+		" para volver atrás.",
+	characterTooLong: "Eso es más de lo que puedo sostener. Trescientos caracteres o menos, por favor.",
+
+	abandoned: "Sin prisa: he dejado el resto con mis valores por defecto y puedes cambiarlo " +
+		"cuando quieras. Te cuento cómo funciono.",
+
+	privateHead: "Este chat es privado",
+	privateBody: "Este chat, tú y yo y nadie más, es tu memoria privada. Lo que me cuentes " +
+		"aquí se queda en tu espacio. Nadie más de la casa puede leerlo y yo no lo saco " +
+		"en el grupo.",
+	sharedHead: "El grupo es la memoria común",
+	sharedBody: "El chat de grupo de la casa es la memoria compartida. Todo lo que recuerde " +
+		"ahí lo ve todo el mundo. Nada pasa de un lado a otro por su cuenta: si algo " +
+		"privado tiene que hacerse común, dímelo y te enseño el texto exacto antes de " +
+		"que se mueva nada.",
+	writesHead: "Qué pasa cuando recuerdo algo",
+	writesBody: "Cuando algo parece que merece guardarse en tu memoria, lo escribo y " +
+		"acto seguido te enseño exactamente qué he escrito y en qué memoria ha quedado, " +
+		"con un botón de Deshacer que lo retira. Lo que sea para la memoria compartida " +
+		"de la casa te lo pregunto antes y no escribo nada hasta que toques Guardar.\n\n" +
+		"De un modo u otro siempre lo ves. Eso es todo. Háblame con normalidad.",
+	writesAsk: "Nunca guardo nada por mi cuenta. Cuando algo parezca que merece guardarse " +
+		"te lo pregunto: verás qué escribiría y en qué memoria iría, y tú tocas Guardar " +
+		"o No guardar. Si no contestas, no lo guardo.\n\n" +
+		"Eso es todo. Háblame con normalidad.",
+}

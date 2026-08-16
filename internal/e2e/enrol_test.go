@@ -13,6 +13,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/enrol"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
+	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
 // -----------------------------------------------------------------------------
@@ -74,9 +75,10 @@ func (s *countingStore) count() int {
 // builds, with nothing about enrolment faked.
 type household struct {
 	*harness
-	clock   *testClock
-	store   *countingStore
-	claimer *enrol.Claimer
+	clock    *testClock
+	store    *countingStore
+	claimer  *enrol.Claimer
+	personas enrol.PersonaStore
 }
 
 func newHousehold(t *testing.T, opts harnessOptions) *household {
@@ -88,6 +90,7 @@ func newHousehold(t *testing.T, opts harnessOptions) *household {
 	// The same file name `kenward invite` writes, in the same place, so a restart
 	// finds the codes exactly where the running node left them.
 	hh.store = &countingStore{Store: enrol.NewFileStore(filepath.Join(opts.dataDir, "invites.json"))}
+	extra := opts.enrolOpts
 	opts.enrolFor = func(t *testing.T, cfg *config.Config) *enrol.Claimer {
 		t.Helper()
 		// The zero Provisioning, as the binary passes: a claim may bind a member
@@ -96,7 +99,16 @@ func newHousehold(t *testing.T, opts harnessOptions) *household {
 		if err != nil {
 			t.Fatalf("building the enrolment binder: %v", err)
 		}
-		c, err := enrol.New(hh.store, binder, enrol.WithClock(hh.clock.now))
+		// The store the binary uses: the member's own answers land in
+		// members[].persona, in the state file, written by the object that wrote
+		// their binding. Nothing about enrolment is faked here and this is part of
+		// it — a separate persona file would be a second writer this wiring does
+		// not have.
+		hh.personas = enrol.BinderPersonas(binder)
+		c, err := enrol.New(hh.store, binder, append([]enrol.Option{
+			enrol.WithClock(hh.clock.now),
+			enrol.WithPersonas(hh.personas),
+		}, extra...)...)
 		if err != nil {
 			t.Fatalf("building the claimer: %v", err)
 		}
@@ -211,7 +223,7 @@ func TestStrangerWithoutACodeGetsNothingAtAll(t *testing.T) {
 	// the stranger's two messages have certainly been dealt with — which makes
 	// everything below an assertion about absence rather than about timing.
 	h.tr.InjectText(davidChatID, davidTelegramID, code, false)
-	h.waitForReply(davidChatID, 3)
+	h.waitForReply(davidChatID, onboardingMessages)
 
 	if got := h.sentTo(strangerChatID); len(got) != 0 {
 		t.Errorf("stranger received %d message(s): %+v; an unknown sender gets silence", len(got), got)
@@ -258,10 +270,12 @@ func TestValidClaimBindsTheMemberAndTheNextMessageIsServed(t *testing.T) {
 	}
 
 	h.tr.InjectText(meiChatID, meiTelegramID, code, false)
-	onboarding := h.waitForReply(meiChatID, 3)
+	onboarding := h.waitForReply(meiChatID, onboardingMessages)
 
-	if len(onboarding) != 3 {
-		t.Fatalf("claim produced %d messages, want the three onboarding messages: %+v", len(onboarding), onboarding)
+	if len(onboarding) != onboardingMessages {
+		t.Fatalf("claim produced %d messages, want %d: the greeting, the note that the "+
+			"tutorial was left on defaults, and the three explanation messages: %+v",
+			len(onboarding), onboardingMessages, onboarding)
 	}
 	if !strings.Contains(onboarding[0].Text, "Hello Mei") {
 		t.Errorf("onboarding opens with %q, want it to greet the member by the configuration's name", onboarding[0].Text)
@@ -270,9 +284,9 @@ func TestValidClaimBindsTheMemberAndTheNextMessageIsServed(t *testing.T) {
 	// The claim is only real if the next message works.
 	h.waitForUnit("mei")
 	h.tr.InjectText(meiChatID, meiTelegramID, "when is my appointment?", false)
-	sent := h.waitForReply(meiChatID, 4)
+	sent := h.waitForReply(meiChatID, onboardingMessages+1)
 
-	if got := replyBody(sent[3].Text); got != "The 3rd." {
+	if got := replyBody(sent[onboardingMessages].Text); got != "The 3rd." {
 		t.Errorf("reply after enrolment = %q, want the model's text", got)
 	}
 	searched := h.mem.searchedSpaces()
@@ -295,7 +309,7 @@ func TestAClaimCodeCannotBeRedeemedTwice(t *testing.T) {
 	h.start()
 
 	h.tr.InjectText(meiChatID, meiTelegramID, code, false)
-	h.waitForReply(meiChatID, 3)
+	h.waitForReply(meiChatID, onboardingMessages)
 
 	// Somebody else presents the same code.
 	h.tr.InjectText(strangerChatID, strangerUserID, code, false)
@@ -304,7 +318,7 @@ func TestAClaimCodeCannotBeRedeemedTwice(t *testing.T) {
 	if got := h.sentTo(strangerChatID); len(got) != 0 {
 		t.Errorf("the second redemption produced %d message(s): %+v; a spent code is refused in silence", len(got), got)
 	}
-	if got := len(h.sentTo(meiChatID)); got != 3 {
+	if got := len(h.sentTo(meiChatID)); got != onboardingMessages {
 		t.Errorf("mei's chat has %d messages, want only her onboarding", got)
 	}
 	// And the refusal is not merely quiet: the second sender is nobody.
@@ -373,9 +387,9 @@ func TestACodeInTheGroupChatIsNotBurnedAndStillWorksInPrivate(t *testing.T) {
 
 	// The subtle half: the same code, in private, afterwards.
 	h.tr.InjectText(meiChatID, meiTelegramID, code, false)
-	onboarding := h.waitForReply(meiChatID, 3)
-	if len(onboarding) != 3 {
-		t.Fatalf("the private claim produced %d messages, want the onboarding: %+v", len(onboarding), onboarding)
+	onboarding := h.waitForReply(meiChatID, onboardingMessages)
+	if len(onboarding) != onboardingMessages {
+		t.Fatalf("the private claim produced %d messages, want %d: %+v", len(onboarding), onboardingMessages, onboarding)
 	}
 	// Exactly one redemption ever reached the store, and it is this one. The check
 	// is here rather than straight after the group message on purpose: the
@@ -393,8 +407,8 @@ func TestACodeInTheGroupChatIsNotBurnedAndStillWorksInPrivate(t *testing.T) {
 	// And the enrolment it produced is a working one, not just three messages.
 	h.waitForUnit("mei")
 	h.tr.InjectText(meiChatID, meiTelegramID, "hello", false)
-	sent := h.waitForReply(meiChatID, 4)
-	if got := replyBody(sent[3].Text); got != "Noted." {
+	sent := h.waitForReply(meiChatID, onboardingMessages+1)
+	if got := replyBody(sent[onboardingMessages].Text); got != "Noted." {
 		t.Errorf("reply after the private claim = %q, want the model's text", got)
 	}
 }
@@ -427,7 +441,7 @@ func TestRepeatedWrongCodesStopBeingProcessedAndTheSenderCannotTell(t *testing.T
 	// Mei claims from her own chat, behind them on the same pump: it is the barrier,
 	// and it also shows the limit is charged per chat rather than to the household.
 	h.tr.InjectText(meiChatID, meiTelegramID, meiCode, false)
-	h.waitForReply(meiChatID, 3)
+	h.waitForReply(meiChatID, onboardingMessages)
 
 	if got := h.store.count(); got != enrol.DefaultAttemptLimit+1 {
 		t.Errorf("the store saw %d redemption attempts, want %d (%d guesses plus mei's claim); "+
@@ -464,7 +478,7 @@ func TestEnrolmentSurvivesAFreshSupervisorOverTheSameDataDirectory(t *testing.T)
 	first.start()
 
 	first.tr.InjectText(meiChatID, meiTelegramID, code, false)
-	first.waitForReply(meiChatID, 3)
+	first.waitForReply(meiChatID, onboardingMessages)
 	first.waitForUnit("mei")
 
 	if err := first.stop(); err != nil {
@@ -509,4 +523,105 @@ func TestEnrolmentSurvivesAFreshSupervisorOverTheSameDataDirectory(t *testing.T)
 	if second.store.count() != 0 {
 		t.Errorf("the restarted household reached the code store %d times; an enrolled member claims nothing", second.store.count())
 	}
+}
+
+// TestTheTutorialIsMultiTurnAndTheMemberIsServedAfterIt is the whole of what
+// enrolment stopped being when it stopped being one-shot.
+//
+// A member part-way through onboarding is a state this node has never had, and it
+// has three properties nothing else asserts: what they type is an answer rather than
+// another claim attempt, each answer is on disk before the next question goes out,
+// and they get their unit when the tutorial ends rather than when the code is
+// redeemed. Get the first wrong and a member's chosen agent name is fed back to the
+// Claimer as a claim code; get the last wrong and the tutorial reads nothing,
+// because the unit is already eating their messages.
+func TestTheTutorialIsMultiTurnAndTheMemberIsServedAfterIt(t *testing.T) {
+	h := newHousehold(t, harnessOptions{
+		unenrolled: []domain.MemberID{"mei"},
+		// One agent each, so the tutorial asks for a name — the only question that
+		// cannot be a button and therefore the only one that proves the routing.
+		enrolOpts: []enrol.Option{enrol.WithOneEach()},
+	})
+	code := h.mint("Mei", 0)
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{Text: "Noted.", FinishReason: "stop"}
+	})
+	// Tap through the button questions; the typed ones are injected below.
+	h.tr.SetAnswerFunc(func(q transport.Question) transport.Answer {
+		for _, c := range q.Choices {
+			if strings.HasPrefix(c.ID, "lang.") && c.ID != "lang.other" && strings.Contains(c.Label, "English") {
+				return transport.Answer{ChoiceID: c.ID, UserID: meiTelegramID}
+			}
+			if strings.HasPrefix(c.ID, "tone.") {
+				return transport.Answer{ChoiceID: c.ID, UserID: meiTelegramID}
+			}
+		}
+		return transport.Answer{TimedOut: true}
+	})
+	h.start()
+
+	h.tr.InjectText(meiChatID, meiTelegramID, code, false)
+	// The greeting, then the name question: the tutorial is now waiting on a typed
+	// answer and the member is still served by no unit.
+	h.waitForReply(meiChatID, 2)
+	if memberHealth(t, h.harness, "mei").State == supervisor.StateReady {
+		t.Error("the member has a unit while their tutorial is still asking questions; " +
+			"their answers would go to the assistant instead of to the question on screen")
+	}
+
+	h.tr.InjectText(meiChatID, meiTelegramID, "Jeeves", false)
+	waitFor(t, "the agent name to be recorded", func() bool {
+		return personaOf(t, h, "mei").AgentName == "Jeeves"
+	})
+	if got := h.store.count(); got != 1 {
+		t.Errorf("the code store saw %d redemptions, want 1; a tutorial answer must not "+
+			"be put to the Claimer as another claim", got)
+	}
+
+	// Wait for the question before answering it. A typed message is handed to the
+	// tutorial only while it is actually waiting for one — see deliverToTutorial,
+	// where the non-blocking send is the whole filter — and between the name being
+	// recorded and the character question going out the tutorial still has a
+	// confirmation to send and a button question to put. Injecting on the strength of
+	// the stored name races that, which is a fact about this fake transport rather
+	// than about Telegram, where nobody types faster than the next message arrives.
+	waitFor(t, "the character question to be on screen", func() bool {
+		for _, m := range h.sentTo(meiChatID) {
+			if strings.Contains(m.Text, "Anything else about how you'd like me to be") {
+				return true
+			}
+		}
+		return false
+	})
+	h.tr.InjectText(meiChatID, meiTelegramID, "a bit dry, into cycling", false)
+	sent := h.waitForReply(meiChatID, onboardingMessages+1)
+	if !strings.Contains(sent[len(sent)-1].Text, "remember something") {
+		t.Errorf("the tutorial did not end with the explanation: %q", sent[len(sent)-1].Text)
+	}
+
+	// Only now is the claim complete in the sense that matters.
+	h.waitForUnit("mei")
+	h.tr.InjectText(meiChatID, meiTelegramID, "hello", false)
+	after := h.waitForReply(meiChatID, len(sent)+1)
+	if got := replyBody(after[len(after)-1].Text); got != "Noted." {
+		t.Errorf("reply after the tutorial = %q, want the model's text", got)
+	}
+
+	p := personaOf(t, h, "mei")
+	if p.Language == "" || p.Tone == "" || p.Character != "a bit dry, into cycling" {
+		t.Errorf("persona = %+v, want every answer recorded", p)
+	}
+	if !p.Explained {
+		t.Error("a completed tutorial did not record that the explanation was sent")
+	}
+}
+
+// personaOf reads what the tutorial has committed for a member so far.
+func personaOf(t *testing.T, h *household, id domain.MemberID) enrol.Persona {
+	t.Helper()
+	all, err := h.personas.Personas(context.Background())
+	if err != nil {
+		t.Fatalf("reading personas: %v", err)
+	}
+	return all[id]
 }

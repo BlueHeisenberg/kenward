@@ -62,7 +62,7 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 		return supervisor.NewIsolated(cfg, iso)
 
 	default:
-		claimer, err := newClaimer(cfg)
+		claimer, err := newClaimer(cfg, logger)
 		if err != nil {
 			return nil, err
 		}
@@ -284,16 +284,30 @@ func passphraseRefFor(cfg *config.Config, members []domain.Member) *config.Secre
 
 // newClaimer builds the enrolment claimer the running node uses to process claim
 // codes from senders it does not yet serve.
-func newClaimer(cfg *config.Config) (*enrol.Claimer, error) {
+func newClaimer(cfg *config.Config, logger *slog.Logger) (*enrol.Claimer, error) {
 	binder, err := newBinder(cfg)
 	if err != nil {
 		return nil, err
 	}
-	// The onboarding's third message describes the buttons this household will
-	// actually show, so it has to know which policy is in force.
-	var opts []enrol.Option
+	// The explanation's third message describes the buttons this household will
+	// actually show, so it has to know which policy is in force. The household's
+	// language is the one the greeting arrives in — it is sent before the member has
+	// been able to say anything — and it is what a member who skips the language
+	// question inherits.
+	opts := []enrol.Option{
+		enrol.WithPersonas(enrol.BinderPersonas(binder)),
+		enrol.WithLogger(logger),
+		enrol.WithLanguage(cfg.Household.Persona.Language),
+	}
 	if cfg.Capture.PrivateWrites == config.PrivateWriteAsk {
 		opts = append(opts, enrol.WithAskPrivateWrites())
+	}
+	// Through AgentPerMember rather than the field: the tutorial asks a member to
+	// name their agent only where they are getting one, and simple mode answers false
+	// however household.agents is written. A member asked to name an assistant that
+	// no arrangement gives them would be answering a question with no consequence.
+	if cfg.AgentPerMember() {
+		opts = append(opts, enrol.WithOneEach())
 	}
 	c, err := enrol.New(inviteStore(cfg), binder, opts...)
 	if err != nil {

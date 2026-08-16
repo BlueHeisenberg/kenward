@@ -94,7 +94,7 @@ func singleUnitOptions(e *env, cfg *config.Config, opts runOptions, logger *slog
 		if err := importInvites(e, cfg, opts.invites, logger); err != nil {
 			return supervisor.SingleOptions{}, err
 		}
-		claimer, err := newClaimer(cfg)
+		claimer, err := newClaimer(cfg, logger)
 		if err != nil {
 			return supervisor.SingleOptions{}, err
 		}

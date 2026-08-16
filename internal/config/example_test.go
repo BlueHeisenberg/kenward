@@ -143,6 +143,7 @@ func TestExampleStatesEveryDefaultedKey(t *testing.T) {
 
 	for _, path := range []string{
 		"data_dir",
+		"household.agents",
 		"memory.lore_command",
 		"memory.search_limit",
 		"history.reset_every",
@@ -229,6 +230,15 @@ var allowedZeroFields = map[string]string{
 	// binding on this machine yet."
 	"Members[0].EnrolledAt": "yaml:\"-\"; only MergeState from state.json sets it, and this example has none",
 	"Members[1].EnrolledAt": "yaml:\"-\"; only MergeState from state.json sets it, and this example has none",
+
+	// kenward's own name is not a setting, and household.persona.agent_name is the
+	// one persona field that is a validation error rather than a choice: the name is
+	// what this product's documentation, its logs and `kenward doctor` all say, and a
+	// household that renamed it would have renamed the subject of all of them. Setting
+	// it here to satisfy this test would ship an example that fails its own validation.
+	// The field a member actually wants is members[].persona.agent_name, and both
+	// members demonstrate it.
+	"Household.Persona.AgentName": "kenward's name is not configurable; config.Validate refuses a value here",
 
 	// idle_timeout's default is 0 — idle expiry off — and the example states it as
 	// "0s" rather than dropping the key, because a knob the example never mentions is

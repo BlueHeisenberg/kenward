@@ -51,11 +51,17 @@ import (
 // with silence — not a refusal, because even a refusal confirms the bot exists.
 type ResolveFunc func(in transport.Inbound) (domain.Scope, error)
 
-// ConfigResolver adapts scope.Resolve over a fixed configuration. It is what the
-// supervisor hands to New in both modes.
-func ConfigResolver(cfg *config.Config) ResolveFunc {
+// ConfigResolver adapts scope.Resolve over a fixed configuration and the bot this
+// process polls — a member's id for their own agent's bot, empty for the household's.
+//
+// The bot is a parameter and not a default because it is the difference between a
+// member's private chat with their own assistant and their private chat with kenward,
+// and an omitted one would silently answer as the household. The supervisor builds its
+// own closure over a configuration it can swap as members enrol; this is the fixed
+// form, for a caller whose configuration does not change under it.
+func ConfigResolver(cfg *config.Config, bot domain.MemberID) ResolveFunc {
 	return func(in transport.Inbound) (domain.Scope, error) {
-		return scope.Resolve(cfg, in)
+		return scope.Resolve(cfg, bot, in)
 	}
 }
 
@@ -136,6 +142,11 @@ const (
 type Options struct {
 	// HouseholdName is rendered into the prompt's identity and scope disclosure.
 	HouseholdName string
+	// Persona is how this unit's agent writes, already resolved: the household's
+	// under one agent and in the group chat, the member's own under one each. The
+	// zero value is kenward's flat register, in English, which is the default and
+	// renders exactly the prompt this package rendered before personas existed.
+	Persona Persona
 	// SearchLimit is the per-space retrieval budget for one turn. Defaults to
 	// DefaultSearchLimit.
 	SearchLimit int
@@ -432,9 +443,13 @@ func (u *Unit) admit(ctx context.Context, sc domain.Scope, in transport.Inbound)
 // question; the caller runs it after releasing the slot, because it waits on the
 // member rather than on the node.
 func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) (func(context.Context), error) {
-	// Session. Only a member has a key; the group conversation has no session of
-	// its own, so a group turn proceeds without one.
-	if sc.Member != nil {
+	// Session. A key unwraps a member's own memory, so one is needed exactly when
+	// the conversation touches it. The household's conversations do not, whether
+	// they happen in the group chat or in a member's private chat with kenward —
+	// the second carries a member and still reads only what belongs to everybody —
+	// and demanding a key there would refuse a conversation for the absence of
+	// something it never uses, in the very process that is not supposed to hold it.
+	if sc.TouchesPrivateMemory() && sc.Member != nil {
 		if _, ok := u.deps.Sessions.Key(sc.Member.ID); !ok {
 			return nil, u.send(ctx, sc, in, lockedText)
 		}

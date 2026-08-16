@@ -114,9 +114,28 @@ func TestResolve(t *testing.T) {
 	noShared := household()
 	noShared.Household.SharedSpace = ""
 
+	// The same household with an agent for every member, which is the only
+	// arrangement in which a private conversation with kenward exists. It is
+	// isolated mode because one agent each needs one bot each.
+	perMember := household()
+	perMember.Mode = config.ModeIsolated
+	perMember.Household.Agents = config.AgentsPerMember
+
+	// And the combination the file may state and the node cannot deliver: one agent
+	// each behind simple mode's single bot. It must resolve exactly as one agent
+	// does, because the alternative is every member's private chat silently becoming
+	// the household's.
+	perMemberSimple := household()
+	perMemberSimple.Household.Agents = config.AgentsPerMember
+
 	tests := []struct {
-		name    string
-		cfg     *config.Config
+		name string
+		cfg  *config.Config
+		// bot is which of the household's bots the message arrived on. The zero
+		// value is the household's own, which under one agent is also everybody's
+		// own assistant — so every case written before the third scope existed
+		// keeps meaning exactly what it meant.
+		bot     domain.MemberID
 		in      transport.Inbound
 		wantErr bool
 		want    want
@@ -353,6 +372,87 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
+			name: "one agent each: a member's private message on the household bot is kenward's conversation",
+			cfg:  perMember,
+			in:   direct(davidID),
+			want: want{
+				kind:     domain.ScopeHousehold,
+				memberID: "david",
+				write:    "household",
+				read:     []domain.SpaceID{"household"},
+				// The household's chain, not David's: everything in this
+				// conversation is the household's material.
+				tiers:  []string{"local", "cloud"},
+				chatID: davidID,
+			},
+		},
+		{
+			name: "one agent each: the same message on the member's own bot is their own conversation",
+			cfg:  perMember,
+			bot:  "david",
+			in:   direct(davidID),
+			want: want{
+				kind:     domain.ScopeDirect,
+				memberID: "david",
+				write:    "david-private",
+				read:     []domain.SpaceID{"david-private", "household"},
+				tiers:    []string{"local"},
+				chatID:   davidID,
+			},
+		},
+		{
+			name:    "one agent each: a member reaching another member's bot is a stranger to it",
+			cfg:     perMember,
+			bot:     "david",
+			in:      direct(mariaID),
+			wantErr: true,
+		},
+		{
+			name:    "one agent each: a stranger reaching a member's bot",
+			cfg:     perMember,
+			bot:     "david",
+			in:      direct(999999),
+			wantErr: true,
+		},
+		{
+			name:    "one agent each: an unenrolled member reaching the household bot",
+			cfg:     perMember,
+			in:      direct(0),
+			wantErr: true,
+		},
+		{
+			name:    "one agent each: a member's own bot in the household group is not kenward",
+			cfg:     perMember,
+			bot:     "david",
+			in:      inGroup(groupChatID, davidID),
+			wantErr: true,
+		},
+		{
+			name: "one agent each: the household group is unchanged and still carries no member",
+			cfg:  perMember,
+			in:   inGroup(groupChatID, davidID),
+			want: want{
+				kind:   domain.ScopeGroup,
+				write:  "household",
+				read:   []domain.SpaceID{"household"},
+				tiers:  []string{"local", "cloud"},
+				chatID: groupChatID,
+			},
+		},
+		{
+			name: "one agent each in simple mode cannot be delivered, so a direct chat stays the member's own",
+			cfg:  perMemberSimple,
+			in:   direct(davidID),
+			want: want{
+				kind:     domain.ScopeDirect,
+				memberID: "david",
+				write:    "david-private",
+				read:     []domain.SpaceID{"david-private", "household"},
+				tiers:    []string{"local"},
+				chatID:   davidID,
+			},
+		},
+		{
 			name: "empty shared space leaves a direct scope reading only the private one",
 			cfg:  noShared,
 			in:   direct(davidID),
@@ -369,7 +469,7 @@ func TestResolve(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := scope.Resolve(tt.cfg, tt.in)
+			got, err := scope.Resolve(tt.cfg, tt.bot, tt.in)
 			if tt.wantErr {
 				if !errors.Is(err, scope.ErrNotEnrolled) {
 					t.Fatalf("Resolve() error = %v, want ErrNotEnrolled", err)
@@ -414,9 +514,20 @@ func checkScope(t *testing.T, got domain.Scope, w want) {
 	case got.Member.ID != w.memberID:
 		t.Errorf("Member.ID = %q, want %q", got.Member.ID, w.memberID)
 	}
-	// The invariant table: a group scope is nil-membered, and a direct scope is not.
+	// The invariant table, restated rather than special-cased. Member is nil exactly
+	// in the group, which is the one scope with no single asker; every other scope
+	// knows who is speaking, including the one that may not touch anything of theirs.
 	if (got.Kind == domain.ScopeGroup) != (got.Member == nil) {
 		t.Errorf("Member is nil iff Kind is ScopeGroup is violated: kind=%v member=%v", got.Kind, got.Member)
+	}
+	// And the other half: knowing who is asking is not access. Exactly one kind
+	// touches a private space, and the two predicates that gate on it agree.
+	if got.TouchesPrivateMemory() != (got.Kind == domain.ScopeDirect) {
+		t.Errorf("TouchesPrivateMemory() = %v for kind %v; only a direct scope touches a private space", got.TouchesPrivateMemory(), got.Kind)
+	}
+	if got.AllowsPrivateCapture() != got.TouchesPrivateMemory() {
+		t.Errorf("AllowsPrivateCapture() = %v but TouchesPrivateMemory() = %v; a scope may offer a private destination exactly when it has one",
+			got.AllowsPrivateCapture(), got.TouchesPrivateMemory())
 	}
 }
 
@@ -428,7 +539,7 @@ func TestGroupScopeNeverExposesAPrivateSpace(t *testing.T) {
 
 	for _, m := range cfg.Members {
 		t.Run(m.ID, func(t *testing.T) {
-			got, err := scope.Resolve(cfg, inGroup(groupChatID, m.TelegramID))
+			got, err := scope.Resolve(cfg, "", inGroup(groupChatID, m.TelegramID))
 			if m.TelegramID == 0 {
 				// An unclaimed member is not admitted to the group either.
 				if !errors.Is(err, scope.ErrNotEnrolled) {
@@ -460,11 +571,11 @@ func assertNoPrivateSpace(t *testing.T, s domain.Scope, private []domain.SpaceID
 			continue
 		}
 		if s.Write == p {
-			t.Errorf("group scope writes to private space %q", p)
+			t.Errorf("%s scope writes to private space %q", s.Kind, p)
 		}
 		for i, r := range s.Read {
 			if r == p {
-				t.Errorf("group scope reads private space %q at Read[%d]", p, i)
+				t.Errorf("%s scope reads private space %q at Read[%d]", s.Kind, p, i)
 			}
 		}
 	}
@@ -473,8 +584,14 @@ func assertNoPrivateSpace(t *testing.T, s domain.Scope, private []domain.SpaceID
 // TestGroupScopeNeverExposesAPrivateSpaceOverGeneratedConfigs is the property the
 // implementation contract requires to be asserted over generated configurations rather
 // than over one hand-written household: whatever the shape of the household and
-// whoever is speaking, a group scope reads and writes the shared space and nothing
-// else.
+// whoever is speaking, a scope that is the household's reads and writes the shared
+// space and nothing else.
+//
+// It is run over every bot the household could have, because which bot a message
+// arrived on is now part of the decision, and a household scope is only ever reached
+// on the household's own. Sweeping the bots is also what makes the second property
+// here checkable at all: a member's own bot serves that member and refuses everybody
+// else, so a household of six is six chances for a lookup to answer the wrong person.
 func TestGroupScopeNeverExposesAPrivateSpaceOverGeneratedConfigs(t *testing.T) {
 	rng := rand.New(rand.NewSource(20260815))
 
@@ -483,64 +600,121 @@ func TestGroupScopeNeverExposesAPrivateSpaceOverGeneratedConfigs(t *testing.T) {
 		cfg := generateHousehold(rng)
 		private := privateSpaces(cfg)
 		enrolled := enrolledIDs(cfg)
+		shared := domain.SpaceID(cfg.Household.SharedSpace)
 
 		for _, in := range generateInbounds(rng, cfg) {
-			got, err := scope.Resolve(cfg, in)
-			if err != nil {
-				if !errors.Is(err, scope.ErrNotEnrolled) {
-					t.Fatalf("config %d, inbound %+v: error = %v, want ErrNotEnrolled", i, in, err)
-				}
-				continue
-			}
-			if got.Kind != domain.ScopeGroup {
-				// Direct scopes may name exactly one private space: the sender's own.
-				if got.Member == nil {
-					t.Fatalf("config %d, inbound %+v: direct scope with nil Member", i, in)
-				}
-				for _, p := range private {
-					if p == got.Member.Private {
-						continue
+			for _, bot := range generateBots(cfg) {
+				got, err := scope.Resolve(cfg, bot, in)
+				if err != nil {
+					if !errors.Is(err, scope.ErrNotEnrolled) {
+						t.Fatalf("config %d, bot %q, inbound %+v: error = %v, want ErrNotEnrolled", i, bot, in, err)
 					}
-					if got.Write == p {
-						t.Fatalf("config %d, inbound %+v: %q writes to %q, another member's private space", i, in, got.Member.ID, p)
+					continue
+				}
+				where := fmt.Sprintf("config %d, bot %q, inbound %+v", i, bot, in)
+
+				// Anything at all that resolved: the sender is an enrolled member.
+				// Being in the household's Telegram group is not enrolment, and
+				// neither is knowing a bot's name.
+				if !enrolled[in.UserID] {
+					t.Fatalf("%s: %s scope served to a sender who is not an enrolled member", where, got.Kind)
+				}
+
+				if got.TouchesPrivateMemory() {
+					// Direct scopes may name exactly one private space: the sender's own.
+					if got.Member == nil {
+						t.Fatalf("%s: direct scope with nil Member", where)
 					}
-					for _, r := range got.Read {
-						if r == p {
-							t.Fatalf("config %d, inbound %+v: %q reads %q, another member's private space", i, in, got.Member.ID, p)
+					// And they are only ever reached on that member's own bot, or on
+					// the household's while it is also serving as everybody's.
+					if bot != "" && bot != got.Member.ID {
+						t.Fatalf("%s: %q's own conversation was resolved on %q's bot", where, got.Member.ID, bot)
+					}
+					for _, p := range private {
+						if p == got.Member.Private {
+							continue
+						}
+						if got.Write == p {
+							t.Fatalf("%s: %q writes to %q, another member's private space", where, got.Member.ID, p)
+						}
+						for _, r := range got.Read {
+							if r == p {
+								t.Fatalf("%s: %q reads %q, another member's private space", where, got.Member.ID, p)
+							}
 						}
 					}
+					continue
 				}
-				continue
+
+				// Everything else is the household's conversation, and every one of
+				// them reads and writes the shared space alone. Asserted before the
+				// per-kind rules on purpose: this is the property that must hold for
+				// a kind nobody has thought of yet.
+				if got.AllowsPrivateCapture() {
+					t.Fatalf("%s: %s scope allows private capture", where, got.Kind)
+				}
+				if got.Write != shared {
+					t.Fatalf("%s: %s Write = %q, want the shared space %q", where, got.Kind, got.Write, shared)
+				}
+				if len(got.Read) != 1 || got.Read[0] != shared {
+					t.Fatalf("%s: %s Read = %v, want exactly [%q]", where, got.Kind, got.Read, shared)
+				}
+				assertNoPrivateSpace(t, got, private)
+
+				// The household's conversations happen on the household's bot. A
+				// member's own bot has no part in either of them.
+				if bot != "" {
+					t.Fatalf("%s: a %s scope was resolved on a member's own bot", where, got.Kind)
+				}
+
+				switch got.Kind {
+				case domain.ScopeGroup:
+					if got.Member != nil {
+						t.Fatalf("%s: group scope carries member %+v", where, *got.Member)
+					}
+					// A group scope is only ever reached from a group message. The
+					// generated households above sometimes give group_chat_id a
+					// member's own chat id, which is the only way a direct message
+					// can carry it — and answering that into the shared space
+					// publishes their private conversation to the household.
+					if !in.IsGroup {
+						t.Fatalf("%s: a message that is not a group message resolved to a group scope", where)
+					}
+				case domain.ScopeHousehold:
+					// It exists only where the household chose one agent each. Under
+					// one agent this chat is the member's own and must resolve as it
+					// always has.
+					if !cfg.AgentPerMember() {
+						t.Fatalf("%s: a household scope was resolved for a household that has one agent", where)
+					}
+					if in.IsGroup {
+						t.Fatalf("%s: a group message resolved to a private conversation with kenward", where)
+					}
+					// It carries the member — that is the whole difference from a
+					// group scope, and the assertions above have already established
+					// that carrying one buys no access to anything of theirs.
+					if got.Member == nil {
+						t.Fatalf("%s: household scope with nil Member; kenward must know who is asking", where)
+					}
+					if got.Member.TelegramID != in.UserID {
+						t.Fatalf("%s: household scope names member %q, who is not the sender", where, got.Member.ID)
+					}
+				default:
+					t.Fatalf("%s: unexpected scope kind %v", where, got.Kind)
+				}
 			}
-			if got.Member != nil {
-				t.Fatalf("config %d, inbound %+v: group scope carries member %+v", i, in, *got.Member)
-			}
-			// A group scope is only ever reached from a group message. The
-			// generated households above sometimes give group_chat_id a member's
-			// own chat id, which is the only way a direct message can carry it —
-			// and answering that into the shared space publishes their private
-			// conversation to the household.
-			if !in.IsGroup {
-				t.Fatalf("config %d, inbound %+v: a message that is not a group message resolved to a group scope", i, in)
-			}
-			// The admission gate: reaching a group scope at all requires the sender to
-			// be an enrolled member. Being in the household's Telegram group is not
-			// enrolment, and the shared space is not open to whoever was added to it.
-			if !enrolled[in.UserID] {
-				t.Fatalf("config %d, inbound %+v: group scope served to a sender who is not an enrolled member", i, in)
-			}
-			if got.AllowsPrivateCapture() {
-				t.Fatalf("config %d, inbound %+v: group scope allows private capture", i, in)
-			}
-			if got.Write != domain.SpaceID(cfg.Household.SharedSpace) {
-				t.Fatalf("config %d, inbound %+v: group Write = %q, want the shared space %q", i, in, got.Write, cfg.Household.SharedSpace)
-			}
-			if len(got.Read) != 1 || got.Read[0] != domain.SpaceID(cfg.Household.SharedSpace) {
-				t.Fatalf("config %d, inbound %+v: group Read = %v, want exactly [%q]", i, in, got.Read, cfg.Household.SharedSpace)
-			}
-			assertNoPrivateSpace(t, got, private)
 		}
 	}
+}
+
+// generateBots lists every bot a household could have a message arrive on: the
+// household's own, each member's, and an id belonging to nobody.
+func generateBots(cfg *config.Config) []domain.MemberID {
+	out := []domain.MemberID{"", "nobody"}
+	for _, m := range cfg.Members {
+		out = append(out, domain.MemberID(m.ID))
+	}
+	return out
 }
 
 // generateHousehold builds a random but coherent household: a random number of members,
@@ -594,6 +768,15 @@ func generateHousehold(rng *rand.Rand) *config.Config {
 	if rng.Intn(7) == 0 {
 		cfg.Household.GroupChatID = 0
 	}
+	// Roughly half the households give every member an agent of their own, which is
+	// the only arrangement in which a private conversation with kenward exists. It
+	// takes isolated mode with it: one agent each needs one bot each, and simple
+	// mode has one for everybody — see config.AgentPerMember, which refuses the
+	// combination rather than serving a member's private chat as the household's.
+	if rng.Intn(2) == 0 {
+		cfg.Mode = config.ModeIsolated
+		cfg.Household.Agents = config.AgentsPerMember
+	}
 	return cfg
 }
 
@@ -628,7 +811,7 @@ func generateInbounds(rng *rand.Rand, cfg *config.Config) []transport.Inbound {
 func TestResolveDoesNotAliasConfiguration(t *testing.T) {
 	cfg := household()
 
-	got, err := scope.Resolve(cfg, direct(mariaID))
+	got, err := scope.Resolve(cfg, "", direct(mariaID))
 	if err != nil {
 		t.Fatalf("Resolve() unexpected error: %v", err)
 	}
@@ -638,7 +821,7 @@ func TestResolveDoesNotAliasConfiguration(t *testing.T) {
 		t.Errorf("editing Scope.Tiers changed the configuration: %v", cfg.Members[1].Tiers)
 	}
 
-	again, err := scope.Resolve(cfg, direct(mariaID))
+	again, err := scope.Resolve(cfg, "", direct(mariaID))
 	if err != nil {
 		t.Fatalf("Resolve() unexpected error: %v", err)
 	}
@@ -646,7 +829,7 @@ func TestResolveDoesNotAliasConfiguration(t *testing.T) {
 		t.Errorf("second Resolve() saw mutated state: tiers=%v read=%v", again.Tiers, again.Read)
 	}
 
-	group, err := scope.Resolve(cfg, inGroup(groupChatID, davidID))
+	group, err := scope.Resolve(cfg, "", inGroup(groupChatID, davidID))
 	if err != nil {
 		t.Fatalf("Resolve() unexpected error: %v", err)
 	}
@@ -661,7 +844,7 @@ func TestResolveDoesNotAliasConfiguration(t *testing.T) {
 // so reversing it would quietly reorder what the assistant sees first.
 func TestDirectScopeReadOrder(t *testing.T) {
 	cfg := household()
-	got, err := scope.Resolve(cfg, direct(davidID))
+	got, err := scope.Resolve(cfg, "", direct(davidID))
 	if err != nil {
 		t.Fatalf("Resolve() unexpected error: %v", err)
 	}
@@ -680,8 +863,8 @@ func TestDirectScopeReadOrder(t *testing.T) {
 func TestUnenrolledMemberIsIndistinguishableFromAStranger(t *testing.T) {
 	cfg := household()
 
-	unclaimed, err := scope.Resolve(cfg, direct(0))
-	strangerScope, strangerErr := scope.Resolve(cfg, direct(424242))
+	unclaimed, err := scope.Resolve(cfg, "", direct(0))
+	strangerScope, strangerErr := scope.Resolve(cfg, "", direct(424242))
 
 	if !errors.Is(err, scope.ErrNotEnrolled) || !errors.Is(strangerErr, scope.ErrNotEnrolled) {
 		t.Fatalf("errors = (%v, %v), want both ErrNotEnrolled", err, strangerErr)

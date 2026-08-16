@@ -44,7 +44,51 @@ It asks, in order:
 4. **Members.** Names only. Telegram ids are not asked for — they arrive through
    `kenward invite`, because asking someone to find their numeric Telegram id is a
    terrible first experience.
-5. **Endpoints.** For each: name, base URL, model, tiers. The wizard probes each one as
+5. **The identity question, and kenward's persona.** A second question, and it is not the
+   trust question's other half — conflating them is the mistake this pair exists to
+   prevent. That one is about security and is answered by topology; this one is about
+   presentation, about who the household is talking to.
+
+   They meet in exactly one place, and it is a counting problem rather than a privacy
+   one: an agent is a Telegram contact, simple mode runs one bot for the whole
+   household, and two agents behind one contact are one agent. So `[2]` below is offered
+   in both modes and declined in simple mode, with that reason — never downgraded,
+   because a household that asked for their own assistants and got kenward wearing
+   several names would have no way to tell. `config.Validate` refuses the same pair in a
+   hand-written file.
+
+   ```
+   One assistant for the whole household, or one each?
+
+     [1] One — kenward, for everybody.            (the character below is then
+                                                   everyone's, not just yours)
+     [2] One each, and kenward for the group.     (each person names their own
+                                                   and writes it in Telegram)
+   ```
+
+   `[1]` is the default, because it is what kenward has always done. Under it there is no
+   personal layer, so the persona the admin writes next is **everyone's**, and the wizard
+   says so at the point of asking rather than in a paragraph above it. Under `[2]` each
+   member writes their own in the Telegram tutorial and the admin is only setting the
+   family agent's.
+
+   Then three questions about how kenward writes — language, tone, character — each with
+   an answer that changes nothing. Pressing Enter three times gives the assistant kenward
+   has always been: English, brief, no character.
+
+   The language question says what it does not do, because it is the sort of half-feature
+   somebody otherwise discovers a week later: it changes what the **model** writes.
+   kenward's own strings — the onboarding, the capture announcements, the refusals, the
+   retrieval line, the locked notice — are still English.
+
+   Under `[2]`, the privacy statement printed at the end gains a paragraph saying what a
+   member's own bot is doing: it is that member's assistant's own **contact**, and it is
+   the **mode** — not the bot — that seals their memory. Somebody who has just made a bot
+   in BotFather with their own name on it has every reason to believe otherwise, and the
+   ceremony is identical either way. That paragraph is `internal/privacy`'s and is
+   golden-tested with the rest.
+
+6. **Endpoints.** For each: name, base URL, model, tiers. The wizard probes each one as
    it is entered and says whether it answered, so a typo is caught immediately rather
    than at the first message.
 
@@ -55,10 +99,10 @@ It asks, in order:
    their defaults instead — 16384 and 4096 — so the keys are visible in the file for the
    operator who knows the real figures. Raise them there; on a reasoning model, raise the
    cap in particular, or it will think through its whole budget and answer nothing.
-6. **Tier chains.** Per member and for the group, defaulting to local-only for private
+7. **Tier chains.** Per member and for the group, defaulting to local-only for private
    spaces and offering to add a cloud tier explicitly. The default is the private one;
    opting into cloud is a deliberate act.
-7. **How long a conversation stays in mind** — `history.reset_every`. Off, or how often
+8. **How long a conversation stays in mind** — `history.reset_every`. Off, or how often
    the last few turns of each conversation are dropped: `6h`, `24h`, up to a day, counted
    from midnight. Off is the default and pressing Enter takes it.
 
@@ -396,6 +440,8 @@ Configuration
   ✓ kenward.yaml parses and validates
       /etc/kenward/kenward.yaml
   ✓ every secret the configuration names can be read
+  ✓ one assistant for this household: kenward answers every private chat and the
+    group
 
 Memory
   ✓ lore answers
@@ -469,6 +515,20 @@ different things. It is the single most important output the product produces, b
 is where a claim becomes checkable, and it must never drift into overstating what the mode
 delivers. The names, paths and space ids above are one household's; only the wording is
 fixed.
+
+**The assistants line says which conversations exist**, which is `household.agents`'
+only visible consequence. The report above is a household with one assistant. A
+household that gave every member their own gets this instead, and the second detail
+line is the one worth reading — it names a chat an operator would otherwise only find
+out about by messaging the bot:
+
+```
+  ✓ one agent each: every member has their own assistant, and kenward is the
+    household's
+      kenward is also reachable in a private chat, on the household bot
+      that conversation reads and writes the household's shared memory only, and
+      never a member's private memory
+```
 
 **Note the space lines.** Those are lore space ids, from the id column of `lore spaces`,
 because that is what `shared_space` and `private_space` must hold. A display name there

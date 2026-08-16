@@ -48,6 +48,49 @@ as text rather than as a list: {{$d.LoreErr}}</p></div>
 <label for="bot_token_env">Household bot token variable</label>
 <input type="text" id="bot_token_env" name="bot_token_env" value="{{$c.Telegram.BotTokenEnv}}">
 
+<h2>Who kenward is</h2>
+<p class="muted">How many assistants this household has, and how kenward writes. Neither
+is a security setting — that is the mode, above in <a href="/">the overview</a>, and it
+is a different question with a different answer.</p>
+
+<div class="choice">
+  <input type="radio" id="agents_shared" name="agents" value="shared" {{if ne $c.Household.Agents "per_member"}}checked{{end}}>
+  <label for="agents_shared">One assistant, kenward, for everybody
+    <span class="hint">There is no personal layer, so the language, tone and character
+    below are <strong>everyone's</strong> — in the group chat and in every private chat
+    alike.</span>
+  </label>
+</div>
+<div class="choice">
+  <input type="radio" id="agents_per_member" name="agents" value="per_member" {{if eq $c.Household.Agents "per_member"}}checked{{end}}>
+  <label for="agents_per_member">One each, and kenward for the group
+    <span class="hint">Each person names their own assistant and writes its language,
+    tone and character themselves, in Telegram. Their bot is a separate contact, not a
+    separate secret: it seals nothing unless this household is also in isolated
+    mode.</span>
+  </label>
+</div>
+
+<label for="persona_language">Language
+  <span class="hint">Named the way you would to a person. Empty is English. It changes
+  what the <em>model</em> writes; kenward's own messages — what it says when it saves
+  something, its refusals, the line naming what it read — are still English.</span>
+</label>
+<input type="text" id="persona_language" name="persona_language" value="{{$c.Household.Persona.Language}}" maxlength="80">
+
+<label for="persona_tone">Tone
+  <span class="hint">A phrase: "warm", "very terse", "formal". Empty leaves the flat
+  register kenward has by default.</span>
+</label>
+<input type="text" id="persona_tone" name="persona_tone" value="{{$c.Household.Persona.Tone}}" maxlength="80">
+
+<label for="persona_character">Character
+  <span class="hint">Optional. It reaches the model as a preference about wording and
+  nothing more: it cannot change which memories the assistant can read, what it may
+  remember, or what it has to tell you about either.</span>
+</label>
+<textarea id="persona_character" name="persona_character" rows="3" maxlength="1000">{{$c.Household.Persona.Character}}</textarea>
+
 <h2>Members</h2>
 <p class="muted">To add or remove somebody, use <a href="/members">Members</a> — adding
 there also creates their lore space and mints their code.</p>

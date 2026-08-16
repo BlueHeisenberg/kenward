@@ -138,6 +138,7 @@ const (
     ScopeUnknown ScopeKind = iota  // the zero value; never valid for a resolved Scope
     ScopeDirect
     ScopeGroup
+    ScopeHousehold                 // a private chat with kenward; household.agents: per_member only
 )
 
 // Scope is the resolved answer to "who is this, and what may this conversation touch".
@@ -145,7 +146,7 @@ const (
 // re-derives nothing.
 type Scope struct {
     Kind      ScopeKind
-    Member    *Member    // nil iff Kind == ScopeGroup
+    Member    *Member    // who is asking; nil iff Kind == ScopeGroup
     Write     SpaceID    // where captures land
     Read      []SpaceID  // ordered: primary first
     Tiers     []string   // ordered tier chain
@@ -155,13 +156,44 @@ type Scope struct {
 
 **The invariants, which are tested directly and must never be weakened:**
 
-| Kind | `Read` | `Write` | May offer "personal" capture |
-| --- | --- | --- | --- |
-| `ScopeDirect` | `[member.Private, household.Shared]` | `member.Private` | yes |
-| `ScopeGroup` | `[household.Shared]` | `household.Shared` | **no** |
+| Kind | `Read` | `Write` | `Member` | May offer "personal" capture |
+| --- | --- | --- | --- | --- |
+| `ScopeDirect` | `[member.Private, household.Shared]` | `member.Private` | the member | yes |
+| `ScopeGroup` | `[household.Shared]` | `household.Shared` | nil | **no** |
+| `ScopeHousehold` | `[household.Shared]` | `household.Shared` | the member | **no** |
 
-A group `Scope` must never contain any member's private `SpaceID` in `Read` or `Write`.
-`scope` package has a test asserting exactly this over generated configurations.
+No `Scope` but a direct one may contain any member's private `SpaceID` in `Read` or
+`Write`. The `scope` package has a test asserting exactly this over generated
+configurations and every bot they could arrive on.
+
+`ScopeHousehold` is the shape worth reading twice: it carries a member and reads the
+shared space alone. Carrying one is not access to one — kenward has to know who is
+asking in order to authorise them and to address them by name — so the predicate
+everything gates on is `Scope.TouchesPrivateMemory()`, which is true for `ScopeDirect`
+and nothing else, and never "is this the group?". `AllowsPrivateCapture()` is defined
+as `TouchesPrivateMemory()` so the two cannot drift: a conversation may offer a private
+destination exactly when it already has one.
+
+**Which bot a message arrived on is part of the decision.** `scope.Resolve` takes it as
+a `domain.MemberID` — a member's id for their own agent's bot, empty for the
+household's — because Telegram does not put it on the wire: a private chat's id is the
+member's own account id and is identical across every bot they talk to. The supervisor
+supplies it from the token it opened the transport with. Under `agents: one` the
+household's bot is also everybody's own assistant, so a direct message to it resolves
+to `ScopeDirect` as it always has; under `per_member` it is kenward alone, and the same
+message resolves to `ScopeHousehold`. A member's own bot serves that member and refuses
+everybody else, at the boundary rather than by there being no unit to hand them to.
+
+`per_member` requires isolated mode, because it needs a bot for each member and simple
+mode runs one for the whole household. Validation refuses the combination and
+`Config.AgentPerMember` returns false for it regardless, so the failure is a refusal at
+startup rather than every member's private chat silently becoming the household's.
+
+Under `per_member` the process holding the household's bot runs one unit per member's
+private conversation with kenward, alongside the group's. One unit is one conversation
+— its own history, its own turn slot, its own capture engine — and a shared one would
+put what a member said to kenward in private into the prompt the group is answered
+from.
 
 ---
 
@@ -584,7 +616,7 @@ that decides how the directory is backed up, mounted and permissioned:
 
 | File | Contents | Sensitive |
 | --- | --- | --- |
-| `state.json` | the enrolment bindings: which Telegram account is which member | no |
+| `state.json` | what the members themselves have done: the enrolment bindings (which Telegram account is which member) and the personas they wrote in their Telegram tutorial | no |
 | `sessions.json` | each member's **wrapped key** | yes |
 | `invites.json` | the **hashed** claim codes not yet redeemed | yes |
 | `invites/<id>.json` | isolated mode only: one member's outstanding codes, for their pod | yes |
@@ -1273,17 +1305,29 @@ Telegram bot usernames are publicly discoverable and anyone may `/start`. Theref
 2. A stranger messaging the bot gets **no reply at all** until a valid code is
    presented. Not an error, not a prompt — silence.
 3. On a valid code: bind `telegram_id` → member, mark the code consumed, provision and
-   unlock that member's key, and run the short onboarding explaining the two memories
-   and how capture works. **The private space is not created here.** Nothing in kenward
-   creates a lore space, anywhere; the space named in `private_space` must already
-   exist, and enrolment binds a person to a configuration entry rather than
-   provisioning storage.
+   unlock that member's key, and greet them. Then a short setup conversation — language,
+   the agent's name under `household.agents: per_member`, register, character — and the
+   explanation of the two memories and how capture works. **The private space is not
+   created here.** Nothing in kenward creates a lore space, anywhere; the space named in
+   `private_space` must already exist, and enrolment binds a person to a configuration
+   entry rather than provisioning storage.
+
+   The setup questions are a convenience and the explanation is not: it is sent on every
+   ending, including the ones where the member answered nothing, and a node that died
+   between the greeting and it sends it on the next start
+   (`enrol.FinishInterrupted`). Each answer is committed as it is given, to
+   `members[].persona` in `state.json`, so an abandoned tutorial and one that never
+   started are the same thing downstream — unanswered fields are empty, and empty means
+   "the household's". The member is served by no unit until the tutorial ends, because
+   until then their messages have to keep reaching the enrolment pump for it to read;
+   whatever they say in the group chat in that window is unrouted, which is bounded by
+   `enrol.DefaultTutorialTimeout`.
 4. Codes are single-use, expiring, rate-limited (5 attempts per chat per hour) and
    compared in constant time.
 
 **A claim mid-run completes without a restart, key included.** Keys were once
 provisioned and unlocked at startup only, so somebody who claimed while the node was
-running got their unit and their onboarding and then "Your assistant is locked" on
+running got their unit and their setup conversation and then "Your assistant is locked" on
 their first private message — a notice whose only remedy is an operator restarting the
 node, on the first thing a household ever does with kenward, addressed to the one
 person who cannot perform it. The process that binds a claim is the process that will

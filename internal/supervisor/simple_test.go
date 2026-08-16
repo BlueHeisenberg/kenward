@@ -742,8 +742,8 @@ func TestPerUnitContextBudgetFromTierChain(t *testing.T) {
 	// resolve to different budgets in the same supervisor — the budget is per
 	// scope, never per household.
 	h := newSimpleHarness(t, budgetTestConfig(), func(o *SimpleOptions) {})
-	member := h.sup.run.unitOptions([]string{"local"})
-	group := h.sup.run.unitOptions([]string{"cloud"})
+	member := h.sup.run.unitOptions(unitKey{member: "david"}, []string{"local"})
+	group := h.sup.run.unitOptions(unitKey{group: true}, []string{"cloud"})
 	if member.ContextBudget != 262144 || group.ContextBudget != 200000 {
 		t.Fatalf("budgets member=%d group=%d, want 262144 and 200000",
 			member.ContextBudget, group.ContextBudget)
@@ -755,7 +755,7 @@ func TestPerUnitContextBudgetFromTierChain(t *testing.T) {
 
 	// A chain reaching no endpoint that states anything leaves both zero, which is
 	// what makes assistant.New apply its own defaults rather than a derived zero.
-	if o := h.sup.run.unitOptions([]string{"mystery"}); o.ContextBudget != 0 || o.MaxTokens != 0 {
+	if o := h.sup.run.unitOptions(unitKey{group: true}, []string{"mystery"}); o.ContextBudget != 0 || o.MaxTokens != 0 {
 		t.Fatalf("undeclared chain = (%d, %d), want (0, 0) so the assistant defaults apply",
 			o.ContextBudget, o.MaxTokens)
 	}
@@ -765,7 +765,7 @@ func TestPerUnitContextBudgetFromTierChain(t *testing.T) {
 		o.Unit.ContextBudget = 4096
 		o.Unit.MaxTokens = 512
 	})
-	if o := h2.sup.run.unitOptions([]string{"cloud"}); o.ContextBudget != 4096 || o.MaxTokens != 512 {
+	if o := h2.sup.run.unitOptions(unitKey{group: true}, []string{"cloud"}); o.ContextBudget != 4096 || o.MaxTokens != 512 {
 		t.Fatalf("explicit budget = (%d, %d), want (4096, 512)", o.ContextBudget, o.MaxTokens)
 	}
 
@@ -887,7 +887,7 @@ func TestConversationResetReachesTheUnits(t *testing.T) {
 		h := newSimpleHarness(t, cfg, func(o *SimpleOptions) {})
 		defer func() { _ = h.sup.Stop(context.Background()); _ = h.fake.Close() }()
 
-		if got := h.sup.run.unitOptions([]string{"local"}).HistoryReset; got != 0 {
+		if got := h.sup.run.unitOptions(unitKey{member: "david"}, []string{"local"}).HistoryReset; got != 0 {
 			t.Errorf("HistoryReset = %v, want off by default", got)
 		}
 	})
@@ -900,7 +900,7 @@ func TestConversationResetReachesTheUnits(t *testing.T) {
 		defer func() { _ = h.sup.Stop(context.Background()); _ = h.fake.Close() }()
 
 		for _, tiers := range [][]string{{"local"}, {"local", "cloud"}} {
-			if got, want := h.sup.run.unitOptions(tiers).HistoryReset, 6*time.Hour; got != want {
+			if got, want := h.sup.run.unitOptions(unitKey{group: true}, tiers).HistoryReset, 6*time.Hour; got != want {
 				t.Errorf("HistoryReset = %v for chain %v, want %v", got, tiers, want)
 			}
 		}
@@ -923,7 +923,7 @@ func TestMemoryPolicyReachesTheUnits(t *testing.T) {
 		h := newSimpleHarness(t, cfg, func(o *SimpleOptions) {})
 		defer func() { _ = h.sup.Stop(context.Background()); _ = h.fake.Close() }()
 
-		if got := h.sup.run.unitOptions([]string{"local"}).ReadNotices; got != assistant.ReadNoticesOn {
+		if got := h.sup.run.unitOptions(unitKey{member: "david"}, []string{"local"}).ReadNotices; got != assistant.ReadNoticesOn {
 			t.Errorf("ReadNotices = %v, want on by default", got)
 		}
 		if got := cfg.Capture.PrivateWrites; got != config.PrivateWriteSave {
@@ -939,7 +939,7 @@ func TestMemoryPolicyReachesTheUnits(t *testing.T) {
 		h := newSimpleHarness(t, cfg, func(o *SimpleOptions) {})
 		defer func() { _ = h.sup.Stop(context.Background()); _ = h.fake.Close() }()
 
-		if got := h.sup.run.unitOptions([]string{"local"}).ReadNotices; got != assistant.ReadNoticesOff {
+		if got := h.sup.run.unitOptions(unitKey{member: "david"}, []string{"local"}).ReadNotices; got != assistant.ReadNoticesOff {
 			t.Errorf("ReadNotices = %v, want off", got)
 		}
 	})

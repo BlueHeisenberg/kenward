@@ -112,10 +112,34 @@ type document struct {
 }
 
 type householdDoc struct {
-	Name        string   `yaml:"name"`
-	SharedSpace string   `yaml:"shared_space"`
-	GroupChatID int64    `yaml:"group_chat_id,omitempty"`
-	Tiers       []string `yaml:"tiers,flow"`
+	Name        string        `yaml:"name"`
+	Agents      config.Agents `yaml:"agents"`
+	SharedSpace string        `yaml:"shared_space"`
+	GroupChatID int64         `yaml:"group_chat_id,omitempty"`
+	Tiers       []string      `yaml:"tiers,flow"`
+	// Persona is omitted entirely from a household that chose the default, because
+	// every field's empty value is a meaning — English, the flat register, no
+	// character — and three empty strings in the file say that less clearly than
+	// their absence does. kenward.example.yaml is where the keys are documented.
+	Persona personaDoc `yaml:"persona,omitempty"`
+}
+
+// personaDoc is the four wording settings. agent_name is written for a member and
+// never for the household, which has no name to choose: config.Validate refuses one.
+type personaDoc struct {
+	AgentName string `yaml:"agent_name,omitempty"`
+	Language  string `yaml:"language,omitempty"`
+	Tone      string `yaml:"tone,omitempty"`
+	Character string `yaml:"character,omitempty"`
+}
+
+func personaDocFor(p config.PersonaConfig) personaDoc {
+	return personaDoc{
+		AgentName: p.AgentName,
+		Language:  p.Language,
+		Tone:      p.Tone,
+		Character: p.Character,
+	}
 }
 
 type telegramDoc struct {
@@ -129,6 +153,11 @@ type memberDoc struct {
 	PrivateSpace string   `yaml:"private_space"`
 	Tiers        []string `yaml:"tiers,flow"`
 	BotTokenEnv  string   `yaml:"bot_token_env,omitempty"`
+	// Persona is a member's own, and the wizard never sets it: it is written in the
+	// Telegram tutorial by the member themselves. It is carried here so that a
+	// configuration rewritten from the dashboard's settings page keeps what a member
+	// chose, rather than a form that never asked about it dropping it silently.
+	Persona personaDoc `yaml:"persona,omitempty"`
 	// PassphraseEnv is written beside the token because in isolated mode a pod
 	// needs both to serve anybody: the bot nobody else speaks on, and the
 	// passphrase that unwraps that member's key and no other member's.
@@ -188,9 +217,11 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 		Mode: cfg.Mode,
 		Household: householdDoc{
 			Name:        cfg.Household.Name,
+			Agents:      cfg.Household.Agents,
 			SharedSpace: cfg.Household.SharedSpace,
 			GroupChatID: cfg.Household.GroupChatID,
 			Tiers:       cfg.Household.Tiers,
+			Persona:     personaDocFor(cfg.Household.Persona),
 		},
 		Telegram: telegramDoc{BotTokenEnv: cfg.Telegram.BotTokenEnv},
 		Memory: memoryDoc{
@@ -225,6 +256,7 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 			PrivateSpace:  m.PrivateSpace,
 			Tiers:         m.Tiers,
 			BotTokenEnv:   m.BotTokenEnv,
+			Persona:       personaDocFor(m.Persona),
 			PassphraseEnv: m.PassphraseEnv,
 		})
 	}

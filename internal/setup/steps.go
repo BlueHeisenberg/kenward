@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 )
@@ -235,6 +236,89 @@ func (w *Wizard) addMember(name string, taken map[string]bool) {
 			fmt.Sprintf("chosen by whoever runs %s's pod; it wraps %s's key and nobody else's", name, name), "")
 	}
 	w.members = append(w.members, m)
+}
+
+// askIdentity asks how many assistants the household has, and then what kenward's own
+// is like.
+//
+// It comes after the people are named, so that "one each" is a concrete offer about
+// people the reader has just listed rather than an abstraction. It comes before the
+// endpoints and the tier chains because those are about machines, and this is the last
+// question about the household itself.
+//
+// It says nothing about who can read what. That is the whole discipline of this step:
+// it is a presentation question, it is not the trust question, and a wizard that
+// implied otherwise would teach the household the misunderstanding internal/privacy
+// then has to correct.
+//
+// It does have to say the one thing the two questions really do share, and only that
+// one: one agent each needs a Telegram bot for each member, two agents behind one
+// contact are one agent, and only isolated mode gives each member their own. So in
+// simple mode the offer is made and then declined with the reason rather than hidden,
+// because a household that wants it should learn what it costs rather than never learn
+// it exists. config.Config.validateHousehold refuses the same combination in a file.
+func (w *Wizard) askIdentity(ctx context.Context) error {
+	w.blank()
+	w.io.Print(identityIntro)
+	w.blank()
+
+	// The default is one assistant. It is today's behaviour, it is what a household
+	// that has not thought about this wants, and a stray Enter must give it.
+	w.agents = config.AgentsShared
+	for {
+		choice, err := w.io.AskChoice(IdentityQuestion,
+			[]string{identityAnswerShared, identityAnswerPerMember}, 0)
+		if err != nil {
+			return err
+		}
+		if choice != 1 {
+			break
+		}
+		if w.mode == config.ModeIsolated {
+			w.agents = config.AgentsPerMember
+			break
+		}
+		w.blank()
+		w.io.Print(identityNeedsIsolated)
+		w.blank()
+	}
+
+	w.blank()
+	if w.agents == config.AgentsPerMember {
+		w.io.Print(personaIntroPerMember)
+	} else {
+		w.io.Print(personaIntroShared)
+	}
+
+	for _, q := range []struct {
+		question string
+		note     string
+		what     string
+		limit    int
+		field    *string
+	}{
+		{questionPersonaLanguage, personaLanguageNote, "a language", config.MaxPersonaLine, &w.persona.Language},
+		{questionPersonaTone, personaToneNote, "a register", config.MaxPersonaLine, &w.persona.Tone},
+		{questionPersonaCharacter, personaCharacterNote, "a character", config.MaxPersonaCharacter, &w.persona.Character},
+	} {
+		w.blank()
+		w.io.Print(q.note)
+		w.blank()
+		for {
+			answer, err := w.io.Ask(q.question, "")
+			if err != nil {
+				return err
+			}
+			answer = strings.TrimSpace(answer)
+			if utf8.RuneCountInString(answer) > q.limit {
+				w.io.Print(personaTooLong(q.what, q.limit))
+				continue
+			}
+			*q.field = answer
+			break
+		}
+	}
+	return nil
 }
 
 // askEndpoints collects the machines that run the model, probing each one as it is
@@ -577,6 +661,11 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 	}
 
 	w.household.Name = orDefault(a.HouseholdName, DefaultHouseholdName)
+	w.agents = a.Agents
+	if w.agents == "" {
+		w.agents = config.DefaultAgents
+	}
+	w.persona = a.Persona
 
 	// No default is possible for a space: it is the id of something that has to
 	// already exist in lore, and inventing one produces the configuration this

@@ -50,6 +50,114 @@ const (
 		"                                                Podman or Docker)"
 )
 
+// The identity step. It is a second question and not a second half of the first one,
+// and the wizard is written so that neither mentions the other.
+//
+// TrustQuestion is about security and is answered by topology: can the person who runs
+// this machine read somebody else's private conversations. This one is about
+// presentation: how many assistants there are, and who each one belongs to. They are
+// easy to conflate, which is why a member's own bot is described here as a separate
+// contact and never as a separate secret. internal/privacy makes the same distinction
+// in the statement this wizard prints at the end.
+//
+// They touch in one place and it is arithmetic: one bot is one contact is one agent,
+// so one agent each needs the per-member bots only isolated mode has. The wizard says
+// that, in those terms, and says nothing about privacy while saying it — see
+// identityNeedsIsolated.
+const (
+	identityIntro = `Who kenward is
+
+Two more questions, and neither of them is about security. The first is how many
+assistants this household has.`
+
+	// IdentityQuestion is exported for the same reason TrustQuestion is: it is a
+	// question a household answers once, and `kenward doctor` and the dashboard
+	// should be able to quote it rather than paraphrase it.
+	IdentityQuestion = `One assistant for the whole household, or one each?`
+
+	identityAnswerShared = "One — kenward, for everybody.            (the character below is then\n" +
+		"                                                everyone's, not just yours)"
+	identityAnswerPerMember = "One each, and kenward for the group.     (each person names their own\n" +
+		"                                                and writes it in Telegram)"
+
+	// identityNeedsIsolated is what "one each" gets in simple mode. It is refused
+	// rather than downgraded, and the reason is a counting one rather than a security
+	// one: an agent is a Telegram contact, simple mode runs one bot for the whole
+	// household, and two agents behind one contact are one agent. A household given
+	// kenward wearing several names would have no way to tell.
+	//
+	// It names isolated mode because that is where the bots come from, and it says
+	// what isolated mode is for in the same breath, so that nobody reads this as the
+	// trust question having been asked again with a different answer.
+	identityNeedsIsolated = `  One each needs a Telegram bot for each person, and this household runs one bot
+  for everybody — two agents behind one contact are one agent. Only isolated mode
+  gives each member a bot of their own, and you chose the shared machine.
+
+  That is a counting problem, not a privacy one. If you want one assistant each,
+  start again and answer the earlier question the other way; kenward will not
+  quietly hand everybody the same assistant under several names.`
+)
+
+// The persona step. Three questions, each with an answer that changes nothing, because
+// the flat register is still the default and pressing Enter three times has to give the
+// household exactly what kenward has always been.
+const (
+	// personaIntroShared is printed under `agents: shared`, and it says the thing
+	// IDENTITY.md exists to make sure gets said: with one assistant there is no
+	// personal layer, so this is not the admin choosing a character for themselves.
+	personaIntroShared = `  You chose one assistant, so what you write now is what everyone in the house
+  gets — in the group chat and in their own private chats alike. There is no
+  personal layer under one assistant, and nobody else can override this.
+
+  Every question has an answer that changes nothing. Press Enter three times and
+  kenward is what it has always been: English, brief, no character.`
+
+	// personaIntroPerMember is printed under `agents: per_member`, where this is
+	// only the family agent and each member writes their own later.
+	personaIntroPerMember = `  This is kenward's own — the assistant in the group chat, which everyone reads.
+  Each person writes their own separately, in Telegram, the first time they talk
+  to their assistant; you are not choosing for them.
+
+  What you set here does seed one thing: a household whose kenward speaks Spanish
+  offers Spanish as the default in everyone's own setup. A default, not a rule.
+
+  Every question has an answer that changes nothing. Press Enter three times and
+  kenward is what it has always been: English, brief, no character.`
+
+	questionPersonaLanguage = "What language should kenward answer in?"
+
+	personaLanguageNote = `  Name it the way you would to a person — Spanish, español, Brazilian Portuguese.
+  It is passed to the model, not looked up in a list.
+
+  One honest limit before you answer: this changes what the MODEL writes. kenward's
+  own messages — the setup notes, what it says when it saves something, its
+  refusals, the line naming what it read — are still English. A Spanish household
+  gets Spanish answers with English machinery around them, and that is the whole of
+  what this setting buys today.`
+
+	questionPersonaTone = "How should it write?"
+
+	personaToneNote = `  A phrase, not an essay: "warm", "very terse", "formal". Empty leaves the register
+  kenward already has — useful, brief, specific, and not a personality.`
+
+	questionPersonaCharacter = "Anything else about who it is? (Enter to skip)"
+
+	personaCharacterNote = `  Optional, and most households leave it empty. It reaches the model as a
+  preference about wording and nothing more: it cannot change which memories the
+  assistant can read, what it may remember, or what it has to tell you about
+  either — the prompt says so, in those words, immediately after your text.`
+)
+
+// personaTooLong is what an answer over the limit gets back. The limit is real and
+// worth explaining rather than asserting: persona text rides in every prompt and is the
+// one part of it the context budget never trims, so a long one is paid for out of the
+// memory that would otherwise have been retrieved.
+func personaTooLong(what string, limit int) string {
+	return fmt.Sprintf(`  That is longer than %d characters, which is the limit for %s. Persona text
+  rides in every prompt and is never trimmed to fit, so a long one costs the
+  memory kenward would otherwise have retrieved to answer with.`, limit, what)
+}
+
 // isolatedNeedsLinux explains, on a machine that cannot run isolated mode, why it
 // cannot — and does not offer a degraded version of it under the same name.
 //
@@ -462,12 +570,25 @@ func memberTokenNote(members []config.MemberConfig) string {
 // telling somebody where they will see this text again. Softening the statement is
 // not this package's to do, and the golden tests in internal/privacy make sure it
 // is nobody's to do by accident.
-func privacyBlock(mode config.Mode) string {
+// The own-bot note is appended only under one agent each, because it is about bots a
+// household with one shared assistant does not have. It is internal/privacy's text and
+// not the wizard's, for the same reason the statement is: this is the paragraph that
+// stops somebody believing their own bot sealed their memory, and a copy of it here
+// would be a copy that could be softened without the golden test noticing.
+func privacyBlock(mode config.Mode, agents config.Agents) string {
 	heading := "Privacy, in simple mode"
 	if mode == config.ModeIsolated {
 		heading = "Privacy, in isolated mode"
 	}
-	return heading + "\n\n" + privacy.Statement(privacyMode(mode)) + "\n\n" + privacyTrailer
+	block := heading + "\n\n" + privacy.Statement(privacyMode(mode))
+	// Both, and not the agents answer alone: one agent each needs a bot for each
+	// member and only isolated mode has them, so this paragraph has bots to describe
+	// exactly when the pair holds. It is the question config.AgentPerMember answers
+	// for a loaded configuration; the wizard has no Config yet.
+	if agents == config.AgentsPerMember && mode == config.ModeIsolated {
+		block += "\n\n" + privacy.OwnBotNote(privacyMode(mode))
+	}
+	return block + "\n\n" + privacyTrailer
 }
 
 // privacyTrailer tells the reader this paragraph is not a one-off reassurance at the

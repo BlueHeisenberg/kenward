@@ -174,6 +174,58 @@
 {{else if eq $d.Slug "advanced"}}
   <p>Everything below already has an answer. Change one only if you know why.</p>
 
+  <details open>
+    <summary>Who kenward is</summary>
+    <p>This is not the question you answered a moment ago. That one was about security —
+    whether everyone here trusts whoever runs this machine. This one is about how many
+    assistants the household has. It costs nothing, it needs no containers, and either
+    answer works in either mode.</p>
+    <div class="choice">
+      <input type="radio" id="agents_shared" name="agents" value="shared" {{if ne $st.Agents "per_member"}}checked{{end}}>
+      <label for="agents_shared">One assistant, kenward, for everybody
+        <span class="hint">Everyone talks to kenward, in their own chats and in the
+        group. There is no personal layer, so the language, tone and character you
+        write below are <strong>everyone's</strong> — not just yours.</span>
+      </label>
+    </div>
+    <div class="choice">
+      <input type="radio" id="agents_per_member" name="agents" value="per_member" {{if eq $st.Agents "per_member"}}checked{{end}}>
+      <label for="agents_per_member">One each, and kenward for the group
+        <span class="hint">Every person names their own assistant and writes its
+        language, tone and character themselves, in Telegram, the first time they talk
+        to it. You are not choosing for them. Each of them makes a bot of their own —
+        that is a separate contact, not a separate secret: it does not seal anybody's
+        memory unless this household is also in isolated mode.</span>
+      </label>
+    </div>
+  </details>
+
+  <details open>
+    <summary>How kenward writes</summary>
+    <p>Every box below can be left empty, and empty is the default: English, brief and
+    specific, no character. What you write here is kenward's own — the assistant in the
+    group chat that everyone reads.</p>
+    <label for="persona_language">Language
+      <span class="hint">Name it the way you would to a person — Spanish, español,
+      Brazilian Portuguese. One honest limit: this changes what the <em>model</em>
+      writes. kenward's own messages — what it says when it saves something, its
+      refusals, the line naming what it read — are still English.</span>
+    </label>
+    <input type="text" id="persona_language" name="persona_language" value="{{$st.Persona.Language}}" maxlength="80">
+    <label for="persona_tone">Tone
+      <span class="hint">A phrase, not an essay: "warm", "very terse", "formal". Empty
+      leaves the register kenward already has.</span>
+    </label>
+    <input type="text" id="persona_tone" name="persona_tone" value="{{$st.Persona.Tone}}" maxlength="80">
+    <label for="persona_character">Character
+      <span class="hint">Optional, and most households leave it empty. It reaches the
+      model as a preference about wording and nothing more: it cannot change which
+      memories the assistant can read, what it may remember, or what it has to tell you
+      about either.</span>
+    </label>
+    <textarea id="persona_character" name="persona_character" rows="3" maxlength="1000">{{$st.Persona.Character}}</textarea>
+  </details>
+
   <details>
     <summary>Retrieval and capture</summary>
     <label for="search_limit">Entries retrieved per space per turn</label>

@@ -142,6 +142,66 @@ it. Your household can turn the private half back into a question, and some do.
 It cannot turn off being told, and it cannot turn off the question for the
 shared memory.`
 
+// ownBotSimple is the paragraph a household under one-agent-each needs and would
+// otherwise have to infer, and inferring it wrong is the one new misunderstanding this
+// design can create.
+//
+// A member gets their own bot for two entirely different reasons, and both can be true
+// at once. Isolation needs a per-member token so the operator never holds the key to
+// somebody else's plaintext: that is a security property, and it is what isolated mode
+// buys. Identity needs a separate contact so each agent is its own conversation: that
+// is a presentation property and it is true in either mode. Somebody who has just made
+// a bot of their own, in BotFather, with their own name on it, has every reason to
+// believe they have bought the first when they have bought the second — the ceremony is
+// identical, and nothing on the screen distinguishes them.
+//
+// So this says it flatly and in the same breath as what a bot does do. Leaving it to
+// inference would be the exact failure this package exists to prevent, and it would be
+// worse than the failures it already guards against, because this one a member would
+// arrive at by reasoning carefully from what they were shown.
+const ownBotSimple = `Your household gave everyone their own assistant, so you have a bot of your own
+in Telegram. That is a separate contact, not a separate secret.
+
+Your own bot does NOT mean your memory is sealed. This household is in simple
+mode: every member's key is still in one process, and the person operating this
+computer can still read every member's private memory, yours included. Making a
+bot in BotFather changes who your assistant is; it does not change who can read
+what you say to it.
+
+Sealing is isolated mode, and it is the other question — the one about whether
+everyone here trusts whoever runs this machine. It needs Linux with Podman or
+Docker. You can have your own assistant without it, and most households do.`
+
+// ownBotIsolated is the same paragraph where the answer is the good one. It is stated
+// rather than omitted because a member who was warned in one household and told nothing
+// in another has no way to know which they are in.
+const ownBotIsolated = `Your household gave everyone their own assistant, and this household is in
+isolated mode, so your bot is doing two jobs at once: it is your assistant's own
+contact, and it is the reason no component anybody else controls ever sees your
+messages in plain text.
+
+The bot alone would not have bought you the second one. Under simple mode the
+same bot would be a separate contact and nothing more. It is the mode that seals
+your memory; the bot is what makes your assistant yours.`
+
+// OwnBotNote states what a per-member bot buys, for a household that chose one
+// assistant each. It is empty for an unknown mode, exactly as Statement is.
+//
+// It is separate from Statement rather than folded into it because a household under
+// one shared agent has no per-member bots to be confused about, and a paragraph about
+// bots nobody has is noise in the one block a privacy-minded reader actually finishes.
+// The caller renders it when household.agents is per_member and never otherwise.
+func OwnBotNote(m Mode) string {
+	switch m {
+	case ModeSimple:
+		return ownBotSimple
+	case ModeIsolated:
+		return ownBotIsolated
+	default:
+		return ""
+	}
+}
+
 // Statement returns the privacy claim for a mode, as prose, with no leading or trailing
 // blank lines.
 func Statement(m Mode) string {
