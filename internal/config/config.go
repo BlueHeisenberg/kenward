@@ -136,6 +136,10 @@ type Config struct {
 	Session   SessionConfig    `yaml:"session"`
 	Capture   CaptureConfig    `yaml:"capture"`
 	Update    UpdateConfig     `yaml:"update"`
+	// Dashboard configures the admin dashboard's HTTP server. Its zero value is off,
+	// which is what every configuration written before it existed means. See
+	// dashboard.go.
+	Dashboard DashboardConfig `yaml:"dashboard"`
 }
 
 // HouseholdConfig describes the group itself.

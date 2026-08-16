@@ -1,0 +1,120 @@
+{{define "content"}}
+{{$d := .Data}}
+{{if not $d.Cfg}}
+<p>There is nothing at <code>{{$d.ConfigPath}}</code> to edit.
+<a href="/setup/install">Run the setup wizard</a>.</p>
+{{else}}
+{{$c := $d.Cfg}}
+
+{{if $d.Problems}}
+<div class="msg error" role="alert">
+  <ul>{{range $d.Problems}}<li>{{.}}</li>{{end}}</ul>
+</div>
+{{end}}
+
+<p class="muted">This is a view of <code class="mono">{{$d.ConfigPath}}</code>. Anything
+not shown here — a secret's file form, a member's Telegram id — is left exactly as it is
+on disk. Writing takes effect when kenward next starts.</p>
+
+{{if $d.LoreErr}}
+<div class="msg warn" role="status"><p>lore could not be listed, so space ids are shown
+as text rather than as a list: {{$d.LoreErr}}</p></div>
+{{end}}
+
+<form method="post" action="/settings">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+
+<h2>Household</h2>
+<label for="household_name">Name</label>
+<input type="text" id="household_name" name="household_name" value="{{$c.Household.Name}}">
+
+<label for="shared_space">Shared memory
+  <span class="hint">A lore space id, not a display name. A name here writes happily and
+  returns nothing on the first read.</span>
+</label>
+<input type="text" id="shared_space" name="shared_space" value="{{$c.Household.SharedSpace}}" list="spaces" class="mono">
+{{if $d.Spaces}}
+<datalist id="spaces">
+  {{range $d.Spaces}}<option value="{{.ID}}">{{.Name}} ({{.Kind}}, {{.Entries}} entries)</option>{{end}}
+</datalist>
+{{end}}
+
+<label for="household_tiers">Where group conversations may go <span class="hint">Comma separated, in order.</span></label>
+<input type="text" id="household_tiers" name="household_tiers" value="{{join $c.Household.Tiers ", "}}">
+
+<label for="group_chat_id">Telegram group chat id <span class="hint">Negative, and blank until a group is mapped.</span></label>
+<input type="text" id="group_chat_id" name="group_chat_id" value="{{if $c.Household.GroupChatID}}{{$c.Household.GroupChatID}}{{end}}">
+
+<label for="bot_token_env">Household bot token variable</label>
+<input type="text" id="bot_token_env" name="bot_token_env" value="{{$c.Telegram.BotTokenEnv}}">
+
+<h2>Members</h2>
+<p class="muted">To add or remove somebody, use <a href="/members">Members</a> — adding
+there also creates their lore space and mints their code.</p>
+{{range $i, $m := $c.Members}}
+<fieldset>
+  <legend>{{$m.ID}}</legend>
+  <label for="m{{$i}}-name">Name</label>
+  <input type="text" id="m{{$i}}-name" name="member.{{$i}}.name" value="{{$m.Name}}">
+  <label for="m{{$i}}-space">Private memory</label>
+  <input type="text" id="m{{$i}}-space" name="member.{{$i}}.private_space" value="{{$m.PrivateSpace}}" list="spaces" class="mono">
+  <label for="m{{$i}}-tiers">Where their private conversations may go</label>
+  <input type="text" id="m{{$i}}-tiers" name="member.{{$i}}.tiers" value="{{join $m.Tiers ", "}}" required>
+</fieldset>
+{{end}}
+
+<h2>Endpoints</h2>
+{{range $i, $e := $c.Endpoints}}
+<fieldset>
+  <legend>{{$e.Name}}</legend>
+  <label for="e{{$i}}-name">Label</label>
+  <input type="text" id="e{{$i}}-name" name="endpoint.{{$i}}.name" value="{{$e.Name}}">
+  <label for="e{{$i}}-url">Address</label>
+  <input type="text" id="e{{$i}}-url" name="endpoint.{{$i}}.base_url" value="{{$e.BaseURL}}">
+  <label for="e{{$i}}-model">Model</label>
+  <input type="text" id="e{{$i}}-model" name="endpoint.{{$i}}.model" value="{{$e.Model}}">
+  <label for="e{{$i}}-tags">Tiers it answers for</label>
+  <input type="text" id="e{{$i}}-tags" name="endpoint.{{$i}}.tags" value="{{join $e.Tags ", "}}">
+  <label for="e{{$i}}-key">API key variable</label>
+  <input type="text" id="e{{$i}}-key" name="endpoint.{{$i}}.api_key_env" value="{{$e.APIKeyEnv}}">
+  <label for="e{{$i}}-timeout">Timeout</label>
+  <input type="text" id="e{{$i}}-timeout" name="endpoint.{{$i}}.timeout" value="{{$e.Timeout}}">
+  <label for="e{{$i}}-window">Context window
+    <span class="hint">What the server was started with, not what the model card says.</span>
+  </label>
+  <input type="number" id="e{{$i}}-window" name="endpoint.{{$i}}.context_window" value="{{$e.ContextWindow}}" min="0">
+  <label for="e{{$i}}-max">Reply cap
+    <span class="hint">Reserved out of the window. A reasoning model spends this before it
+    writes anything anyone sees.</span>
+  </label>
+  <input type="number" id="e{{$i}}-max" name="endpoint.{{$i}}.max_completion_tokens" value="{{$e.MaxCompletionTokens}}" min="0">
+</fieldset>
+{{end}}
+
+<h2>Memory</h2>
+<label for="lore_command">How lore is started <span class="hint">Comma separated argv.</span></label>
+<input type="text" id="lore_command" name="lore_command" value="{{join $c.Memory.LoreCommand ", "}}" class="mono">
+<label for="search_limit">Entries retrieved per space per turn</label>
+<input type="number" id="search_limit" name="search_limit" value="{{$c.Memory.SearchLimit}}" min="0">
+<label for="max_proposals">Capture proposals per turn</label>
+<input type="number" id="max_proposals" name="max_proposals" value="{{$c.Capture.MaxProposalsPerTurn}}" min="0">
+
+<h2>Keys</h2>
+<label for="idle_timeout">Unlocked keys expire after
+  <span class="hint">0s is off. Turning it on stops that member's assistant answering
+  until somebody unlocks it at the machine — a passphrase never travels over Telegram.</span>
+</label>
+<input type="text" id="idle_timeout" name="idle_timeout" value="{{$c.Session.IdleTimeout}}">
+
+<h2>Updates</h2>
+<label for="update_channel">Channel</label>
+<select id="update_channel" name="update_channel">
+  {{range $d.Channels}}<option value="{{.}}" {{if eq . $c.Update.Channel}}selected{{end}}>{{.}}</option>{{end}}
+</select>
+<label for="check_interval">How often to look</label>
+<input type="text" id="check_interval" name="check_interval" value="{{$c.Update.CheckInterval}}">
+
+<div class="actions"><button type="submit">Write it</button></div>
+</form>
+{{end}}
+{{end}}

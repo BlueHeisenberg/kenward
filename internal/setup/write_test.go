@@ -153,6 +153,13 @@ func yamlKeys(t reflect.Type, prefix string) []string {
 		if ft.Kind() == reflect.Slice {
 			ft = ft.Elem()
 		}
+		// A block the generated file omits entirely is written as a pointer to its
+		// own doc type, so that yaml.v3's omitempty actually drops it. Without this
+		// deref the guard would see the block's own key and none of its fields,
+		// which is the exact silent gap it exists to catch.
+		if ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
 		if ft.Kind() == reflect.Struct {
 			keys = append(keys, yamlKeys(ft, path+".")...)
 		}

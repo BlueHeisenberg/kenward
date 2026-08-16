@@ -159,6 +159,10 @@ func dispatch(e *env, args []string) int {
 		return cmdRun(e, args[1:])
 	case "setup":
 		return cmdSetup(e, args[1:])
+	case "dashboard":
+		return cmdDashboard(e, args[1:])
+	case "setup-token":
+		return cmdSetupToken(e, args[1:])
 	case "invite":
 		return cmdInvite(e, args[1:])
 	case "revoke":
@@ -187,8 +191,13 @@ Usage:
 Commands:
   run       Run the node. This is what the container entrypoint and the systemd
             unit call.
-  setup     First-run wizard. Writes kenward.yaml and is the only place the mode
-            is chosen.
+  setup     First-run wizard at the terminal. Writes kenward.yaml and is one of
+            the two places the mode is chosen.
+  dashboard Serve the admin dashboard on its own, without running the household.
+            This is how a first run is done in a browser: it works with no
+            configuration at all, and prints a single-use setup token.
+  setup-token
+            Reissue that token. Only while there is no admin account.
   invite    Mint a single-use claim code for a member.
   revoke    Unbind a member's Telegram account.
   doctor    Check that this node works and report what it is actually doing.

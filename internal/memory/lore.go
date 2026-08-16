@@ -53,6 +53,13 @@ type Config struct {
 	BusyRetries int
 	// Logger receives subprocess lifecycle events. Default: discard.
 	Logger *slog.Logger
+	// RunCLI runs lore's own command line — not its MCP server — and returns the
+	// combined output. Nil means a real subprocess.
+	//
+	// It exists for exactly one operation, CreateSpace, because lore's MCP surface
+	// has no tool that creates a space. It is a seam rather than a bare exec so that
+	// nothing in this package's tests spawns a process. See create.go.
+	RunCLI func(ctx context.Context, args []string, env []string, dir string) ([]byte, error)
 }
 
 // withDefaults fills in the zero values.

@@ -5,6 +5,11 @@ Configuration
       <CONFIG>
   ✓ every secret the configuration names can be read
 
+Access
+  ✓ admin dashboard: off — no port is opened
+      nothing listens; kenward is configured and operated from this machine's
+      own shell
+
 Memory
   ✓ lore mcp responds
   ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
@@ -62,6 +67,9 @@ if you say yes, because other people will have read it by the time you regret
 it. Your household can turn the private half back into a question, and some do.
 It cannot turn off being told, and it cannot turn off the question for the
 shared memory.
+
+The admin dashboard is off. No port is open, and the only way to change
+anything here is at this machine, as whoever runs it.
 
 Where each conversation may go
 

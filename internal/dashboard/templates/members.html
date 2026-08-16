@@ -1,0 +1,79 @@
+{{define "content"}}
+{{$d := .Data}}{{$csrf := .CSRF}}
+{{if not $d.Configured}}
+<p>There is no configuration to add members to yet. <a href="/setup/install">Run the
+setup wizard</a> first.</p>
+{{else}}
+
+{{if $d.Code}}
+<section class="panel">
+  <h2>Claim code for {{$d.CodeFor}}</h2>
+  <code class="code-block">{{$d.Code}}</code>
+  <p>{{$d.CodeNote}}</p>
+  <p class="muted">This is the only time the code is shown. kenward keeps a digest and
+  cannot recover it; if it is lost, mint another. Hand it over in person or by voice —
+  not in a chat, where it becomes a copy nobody can delete.</p>
+</section>
+{{end}}
+
+<table>
+  <caption class="muted">One row per person in this household.</caption>
+  <thead>
+    <tr><th>Name</th><th>Private memory</th><th>May go</th><th>Telegram</th><th></th></tr>
+  </thead>
+  <tbody>
+  {{range $d.Members}}
+    <tr>
+      <td>{{.Name}}<br><span class="muted mono">{{.ID}}</span></td>
+      <td class="mono">{{.Space}}</td>
+      <td>{{.Tiers}}<br><span class="muted">{{.Note}}</span></td>
+      <td>{{if .Enrolled}}<span class="state-ok">bound</span>{{else}}<span class="state-warn">awaiting a claim</span>{{end}}</td>
+      <td>
+        {{if .Enrolled}}
+        <form method="post" action="/members/revoke">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button type="submit" class="danger">Unbind</button>
+        </form>
+        {{else}}
+        <form method="post" action="/members/invite">
+          <input type="hidden" name="csrf" value="{{$csrf}}">
+          <input type="hidden" name="id" value="{{.ID}}">
+          <button type="submit" class="secondary">Mint a code</button>
+        </form>
+        {{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>Add somebody</h2>
+<p>This creates their private lore space, writes them into the configuration, and mints
+their claim code — the three things that used to be three commands, and that used to end
+in a member declared against a space that did not exist.</p>
+
+<form method="post" action="/members/add">
+  <input type="hidden" name="csrf" value="{{$csrf}}">
+  <label for="name">Their name <span class="hint">As they are known in the house. The id is derived from it.</span></label>
+  <input type="text" id="name" name="name" required>
+
+  <fieldset>
+    <legend>Where their private conversations may go</legend>
+    <p class="hint">There is no default. This chain is that person's privacy policy, and
+    nothing here will choose it for them. A chain naming only machines in the house means
+    kenward refuses a turn rather than reaching a provider.</p>
+    {{range $d.Tiers}}
+    <div class="choice">
+      <input type="checkbox" id="tier-{{.}}" name="tiers" value="{{.}}">
+      <label for="tier-{{.}}">{{.}}</label>
+    </div>
+    {{else}}
+    <p class="muted">No endpoints are configured, so there are no tiers to choose from.</p>
+    {{end}}
+  </fieldset>
+
+  <div class="actions"><button type="submit">Add and mint a code</button></div>
+</form>
+{{end}}
+{{end}}

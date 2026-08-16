@@ -1,0 +1,12 @@
+{{define "content"}}
+<form method="post" action="/login">
+  <label for="password">Admin password</label>
+  <input type="password" id="password" name="password" autocomplete="current-password"
+         autofocus required>
+  <div class="actions"><button type="submit">Sign in</button></div>
+</form>
+
+<p class="muted">There is one account, and it is the operator's. Household members never
+sign in: they are bound to a Telegram account by a claim code, once, and there is no
+password to forget or reset.</p>
+{{end}}

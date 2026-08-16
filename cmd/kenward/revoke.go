@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -33,37 +34,57 @@ func cmdRevoke(e *env, args []string) int {
 		return exitUsage
 	}
 
+	rev, recorded, err := revokeMember(e.context(), e, cfg, path, id)
+	switch {
+	case errors.Is(err, enrol.ErrUnknownMember), errors.Is(err, errDeclaredTelegramID):
+		e.errorf("%v", err)
+		return exitUsage
+	case err != nil:
+		e.errorf("%v", err)
+		return exitFailure
+	}
+
+	fmt.Fprint(e.stdout, renderRevocation(rev))
+	fmt.Fprint(e.stdout, renderRevocationDelivery(rev.Member.ID, recorded))
+	return exitOK
+}
+
+// errDeclaredTelegramID marks the refusal below, so a caller that is not a terminal can
+// tell an operator's own edit apart from a runtime failure.
+var errDeclaredTelegramID = errors.New("kenward: telegram_id is declared in the configuration")
+
+// revokeMember unbinds a member and records the fact wherever this household's mode
+// needs it. It returns the revocation and the path of the record written, if any.
+//
+// Shared by `kenward revoke` and the admin dashboard, because the second half of it is
+// mode-dependent and silently wrong when it is skipped — the same reason mintClaimCode
+// is shared.
+func revokeMember(ctx context.Context, e *env, cfg *config.Config, path string, id domain.MemberID) (enrol.Revocation, string, error) {
 	// Before anything is cleared: a telegram_id written into kenward.yaml by hand is
 	// not kenward's to remove, and clearing the state file around it revokes nothing.
 	// See declaredTelegramID.
 	switch declared, derr := declaredTelegramID(path, id); {
 	case derr != nil:
-		e.errorf("re-reading %s: %v", path, derr)
-		return exitFailure
+		return enrol.Revocation{}, "", fmt.Errorf("re-reading %s: %w", path, derr)
 	case declared != 0:
-		e.errorf("%s", declaredTelegramIDHelp(path, id, declared))
-		return exitUsage
+		return enrol.Revocation{}, "", fmt.Errorf("%w\n\n%s", errDeclaredTelegramID, declaredTelegramIDHelp(path, id, declared))
 	}
 
 	binder, err := newBinder(cfg)
 	if err != nil {
-		e.errorf("%v", err)
-		return exitFailure
+		return enrol.Revocation{}, "", err
 	}
 	claimer, err := enrol.New(inviteStore(cfg), binder)
 	if err != nil {
-		e.errorf("%v", err)
-		return exitFailure
+		return enrol.Revocation{}, "", err
 	}
 
-	rev, err := claimer.Revoke(e.context(), id)
+	rev, err := claimer.Revoke(ctx, id)
 	if err != nil {
 		if errors.Is(err, enrol.ErrUnknownMember) {
-			e.errorf("%v", err)
-			return exitUsage
+			return enrol.Revocation{}, "", err
 		}
-		e.errorf("revoking %s: %v", id, err)
-		return exitFailure
+		return enrol.Revocation{}, "", fmt.Errorf("revoking %s: %w", id, err)
 	}
 
 	// In isolated mode the binding this was supposed to clear is not here. The claim
@@ -76,21 +97,18 @@ func cmdRevoke(e *env, args []string) int {
 	//
 	// It is not conditional on the host believing the member enrolled, and must not
 	// be: in this mode the host cannot know either way, which is the whole point.
-	recorded := ""
-	if cfg.Mode == config.ModeIsolated {
-		recorded, err = writeRevocation(revocationDir(cfg), rev.Member.ID, e.now())
-		if err != nil {
-			e.errorf("the revocation could not be written where %s's pod will be given it: %v\n\n"+
-				"Nothing has been revoked: that pod holds the binding and this is the only way to\n"+
-				"reach it. Fix the path and run this again.", rev.Member.Name, err)
-			return exitFailure
-		}
-		rev.Deferred = true
+	if cfg.Mode != config.ModeIsolated {
+		return rev, "", nil
 	}
-
-	fmt.Fprint(e.stdout, renderRevocation(rev))
-	fmt.Fprint(e.stdout, renderRevocationDelivery(rev.Member.ID, recorded))
-	return exitOK
+	recorded, err := writeRevocation(revocationDir(cfg), rev.Member.ID, e.now())
+	if err != nil {
+		return enrol.Revocation{}, "", fmt.Errorf(
+			"the revocation could not be written where %s's pod will be given it: %w\n\n"+
+				"Nothing has been revoked: that pod holds the binding and this is the only way to\n"+
+				"reach it. Fix the path and try again.", rev.Member.Name, err)
+	}
+	rev.Deferred = true
+	return rev, recorded, nil
 }
 
 // declaredTelegramID reports the telegram_id kenward.yaml itself states for a member,

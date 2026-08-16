@@ -1,0 +1,46 @@
+{{define "content"}}
+{{$d := .Data}}
+{{if not $d.Configured}}
+<div class="msg warn" role="status">
+  <p>There is no configuration at <code>{{$d.ConfigPath}}</code> yet.</p>
+  <p><a href="/setup/install">Run the setup wizard</a> to write one.</p>
+</div>
+{{else}}
+
+<section class="panel">
+  <h2>This node</h2>
+  <table>
+    <tr><th scope="row">Household</th><td>{{$d.Household}}</td></tr>
+    <tr><th scope="row">Mode</th><td>{{$d.Mode}}</td></tr>
+    <tr><th scope="row">Members</th><td>{{$d.Members}}, {{$d.Enrolled}}</td></tr>
+    <tr><th scope="row">Endpoints</th><td>{{$d.Endpoints}}</td></tr>
+    <tr><th scope="row">Configuration</th><td class="mono">{{$d.ConfigPath}}</td></tr>
+    <tr><th scope="row">Access</th><td>{{$d.Bind}} — <a href="/exposure">change</a></td></tr>
+  </table>
+</section>
+
+{{if $d.Problems}}
+<div class="msg error" role="alert">
+  <p>kenward would refuse this configuration:</p>
+  <ul>{{range $d.Problems}}<li>{{.}}</li>{{end}}</ul>
+</div>
+{{end}}
+
+{{if $d.Missing}}
+<div class="msg warn" role="status">
+  <p>These secrets are named and cannot be read. kenward will not start until every one
+  of them resolves:</p>
+  <ul>{{range $d.Missing}}<li class="mono">{{.}}</li>{{end}}</ul>
+</div>
+{{end}}
+
+<h2>Where each conversation may go</h2>
+<ul>{{range $d.TierNotes}}<li>{{.}}</li>{{end}}</ul>
+
+<h2>What this household is told about privacy</h2>
+<pre class="statement">{{$d.Statement}}</pre>
+<pre class="statement">{{$d.Exposure}}</pre>
+<p class="muted">Both of these are the words <code>kenward doctor</code> prints, from the
+same place in the code. If one of them stops being true, both stop.</p>
+{{end}}
+{{end}}
