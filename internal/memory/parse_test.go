@@ -482,6 +482,9 @@ func TestParseRejectsChangedFormat(t *testing.T) {
 	}{
 		{"bad_search_header.txt", func(s string) error { _, err := parseSearch(s); return err }, "header line"},
 		{"bad_search_title.txt", func(s string) error { _, err := parseSearch(s); return err }, "title line"},
+		// A result header as the last line: the title never arrived, which is
+		// truncated output rather than an entry with an empty title.
+		{"bad_search_truncated.txt", func(s string) error { _, err := parseSearch(s); return err }, "truncated final result"},
 		{"bad_get_meta.txt", func(s string) error { _, err := parseEntry(s); return err }, "metadata fields"},
 		{"bad_get_confidence.txt", func(s string) error { _, err := parseEntry(s); return err }, "confidence enum"},
 		{"bad_get_origin.txt", func(s string) error { _, err := parseEntry(s); return err }, "origin enum"},
@@ -567,6 +570,10 @@ func TestParseLoreTime(t *testing.T) {
 		// the previous version when the clock has not advanced.
 		{in: "2026-08-01T09:15:00.000000000Z0", want: "2026-08-01T09:15:00Z"},
 		{in: "2026-08-01T09:15:00.000000000Z000", want: "2026-08-01T09:15:00Z"},
+		// A burst is lore's business: the strip has no ceiling, so more padding
+		// than any plausible cap must still parse rather than fail.
+		{in: "2026-08-01T09:15:00.000000000Z000000000", want: "2026-08-01T09:15:00Z"},
+		{in: "2026-08-01T09:15:00.123456789Z000000000000", want: "2026-08-01T09:15:00.123456789Z"},
 		{in: "2026-08-01T11:15:00.000000000+02:00", want: "2026-08-01T09:15:00Z"},
 		{in: "last Tuesday", wantErr: true},
 		{in: "", wantErr: true},

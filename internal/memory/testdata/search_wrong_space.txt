@@ -1,0 +1,8 @@
+2 result(s) for "bin day" (full entry: lore_get with the id)
+
+3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f  space:hearth-private  domain:home/routine
+  Bin day is Tuesday (validated)
+  the green [bin] goes out Tuesday night, recycling…
+a1b2c3d4-0000-4000-8000-000000000001  space:household  domain:home/heating
+  Boiler service window (hardened) [CONTEXT][NON-NEGOTIABLE]
+  the [boiler] must be serviced before…

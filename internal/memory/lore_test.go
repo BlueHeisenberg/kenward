@@ -126,6 +126,31 @@ func TestSearchGroupsInCallerOrder(t *testing.T) {
 	}
 }
 
+// TestSearchChecksTheEchoedSpace covers the other half of the space check: a
+// scoped search asks for one space, and a hit lore labels with a different one
+// must not be relabelled with the caller's id on the way out. Every row is
+// checked, not just the first.
+func TestSearchChecksTheEchoedSpace(t *testing.T) {
+	f := newFake(t, fakeScript{Replies: map[string][]fakeReply{
+		toolSpaces: {{Text: golden(t, "spaces_list.txt")}},
+		// The second hit in the fixture is labelled "household".
+		toolSearch: {{Text: golden(t, "search_wrong_space.txt")}},
+	}}, nil)
+
+	got, err := f.Search(ctxT(t), SearchQuery{
+		Text: "bin day", Spaces: []domain.SpaceID{spacePrivate},
+	})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a hit from another lore space must be ErrNotFound, got %v (%d entries)", err, len(got))
+	}
+	if len(got) != 0 {
+		t.Errorf("nothing may be handed back once a space mismatch is seen, got %+v", got)
+	}
+	if !strings.Contains(err.Error(), "household") {
+		t.Errorf("the error must name the space lore actually returned: %v", err)
+	}
+}
+
 // TestSearchReturnsExcerptsNotEntries covers the distinction the assistant's
 // prompt renderer depends on: a search hit is an excerpt with the match
 // highlighting stripped, and it must announce itself as partial.
