@@ -35,8 +35,10 @@ What you supply is a `lore` binary in the image (see below) and the space ids in
 `kenward.yaml`; what you do not do is run `lore init` against a pod's volume. Read
 `kenward doctor`'s per-space lines afterwards: a pod that made its own store does not
 hold the space ids you configured, and lore has no way to create a space at an id you
-chose. That gap is lore's own sharing to close and `deploy/compose.isolated.yml`'s header
-says so at length.
+chose. Closing that is one `lore space invite` on the store that owns the household space
+and one `lore join` in each other pod — an operator step by design, printed by `doctor` as
+remediation. The pods find each other without help: `kenward run` starts `lore serve --lan`
+in every isolated unit, so once they share a space they converge on it.
 
 **At least one inference endpoint.** Anything OpenAI-compatible: vLLM, llama.cpp,
 Ollama, LM Studio, or a cloud provider. It does not need to be awake during setup —

@@ -20,12 +20,12 @@ One household runs one kenward deployment, on whatever machine is always on. A m
 NAS, an LXC container on a Proxmox host, a desktop that never sleeps. It holds no GPU and
 costs effectively nothing to keep running.
 
-It has no inbound network surface today. It connects outbound to Telegram and outbound to
-inference endpoints on the LAN or a tailnet. Household members need no VPN, no port
-forwarding and no client software beyond Telegram, which they already have — and that stays
-true for members, because the admin dashboard decided in **Non-goals** below is the
-operator's console and nobody else's. That dashboard is the one thing that opens a port,
-and its exposure rules are stated where it is.
+Its only inbound network surface is the admin dashboard, and there is none at all unless
+the configuration asks for one. Everything else is outbound: Telegram, and inference
+endpoints on the LAN or a tailnet. Household members need no VPN, no port forwarding and no
+client software beyond Telegram, which they already have — and that stays true for members,
+because the dashboard described in **Non-goals** below is the operator's console and nobody
+else's. Its exposure rules are stated where it is.
 
 There is no multi-tenant runtime and no `tenant_id` threaded through queries, in any
 deployment shape. A household assistant is idle almost all of the time, so the memory cost
@@ -146,43 +146,56 @@ of these constrain the design:
   kenward pokes it after each write (`lore.Options.NotifyOnWrite`) so the write leaves
   the machine now rather than at the daemon's next poll. Any deployment running more than
   one lore instance must run both.
-- Invites are not on the Go API, so enrolment drives lore's CLI.
+- Space invites and joins are not on the Go API — `Init`, `CreateSpace` and `Members` are,
+  membership changes are not — so they stay operator steps run against lore's CLI. kenward's
+  own enrolment is unrelated: a claim code is kenward's, not lore's.
 - `confidence` and `origin` are enforced enums, but **markers are free-form** — the
   familiar vocabulary is convention only and must not be validated against.
 - Instances isolate by `LORE_HOME`, not by machine. Several lore daemons can run on one
   host, each holding a subset of spaces. This is what makes one lore per member pod
   viable, and it was the most important open question in the whole design.
-- **They do not converge on their own.** See the open limitation below.
+- **They converge only where a daemon is running and a space is shared.** See below.
 
 None of this justifies forking lore. Forking trades a list of known limits for an unbounded
 amount of new work, and every one of these limits is survivable for a household.
 
-### Open limitation: the household's shared space in isolated mode
+### Built: the household's shared space in isolated mode
 
-This document used to say that per-pod lore instances converge on the household's shared
-space. **They do not, and nothing in either deployment path makes them.**
+This section used to be an open limitation: per-pod lore instances did not converge on the
+household's shared space, and nothing in either deployment path made them. **D-044 closed
+it, and `internal/memory.RunSyncDaemon` (`internal/memory/sync.go`) is the symbol that says
+so.** Every isolated unit starts `lore serve --lan` — `memory.SyncCommandArgs`, supervised
+with a backoff for the unit's lifetime — and `cmd/kenward/run.go`'s `startSyncDaemon` starts
+exactly one per pod. It lives in the binary the image already runs, so both deployment paths
+get it with no compose or service change.
 
-One `LORE_HOME` per pod is one lore *account* per pod, and `lore init` gives each account
-its own set of space ids. So the id `household.shared_space` names resolves inside
-whichever store created it and nowhere else. Every other pod's `doctor` reports `space "…"
-is not a space this lore store holds`, and a conversation in that scope reads nothing —
-silently, because a turn that cannot read a space degrades that space rather than failing.
+The defect it closed is worth keeping, because it explains the shape of the fix. One
+`LORE_HOME` per pod is one lore *account* per pod, and `lore init` gives each account its
+own set of space ids, so the id `household.shared_space` names resolved inside whichever
+store created it and nowhere else. Every other pod's `doctor` printed `space "…" is not a
+space this lore store holds` while nothing acted on it, and a conversation in that scope
+read nothing — silently, because a turn that cannot read a space degrades that space rather
+than failing. The cause was that **`lore mcp` never synced and nothing ran `lore serve`**;
+opening a store, then or now, does not sync it.
 
-Making one shared space real across three stores is lore's own sharing: `lore space
-invite` on the owning store, `lore join` on the others, and a `lore serve` reachable
-between them. **The symbol whose existence would falsify this claim is a call to any of
-those three from kenward** — there is none in `internal/supervisor`, none in
-`internal/setup`, and no port, peer or daemon in `deploy/compose.isolated.yml`. The
-supervisor path has the identical gap.
+**Membership is still an operator step, and deliberately.** Carrying an entry between homes
+needs the daemon *and* a shared space: `lore space invite` on the owning store and `lore
+join` on the others. lore's embeddable API declines to expose membership changes, and an
+assistant minting its own memberships would be taking a decision that is not its to take. `doctor` reports what it can see — whether this store holds the space, whether a
+daemon is running, when it last synced, how many instances it reached — and prints the
+invite and join commands as remediation rather than failing the report.
 
-Each member's **private** space is unaffected: it lives in that member's own store, which
-is the property the mode exists for. Until the sharing is wired, isolated mode's household
-group has memory only in the group pod, and `deploy/compose.isolated.yml` says so in its
-header.
+The isolation guarantee is lore's and structural rather than something kenward configures
+correctly. A sync exchange opens with a blinded space-id intersection over
+`HMAC(space_key, …)`, so two stores exchange a space only when both already hold its id and
+its key, and only the invite handshake hands a key over. A member's private space is
+generated inside that member's pod; a sibling cannot compute its blinded id, cannot name it,
+and is refused if it asks. Verified on real Podman with a three-pod household on the real
+image: an entry written in one pod read from the other two, every private entry invisible
+from any sibling.
 
-This was found by running the mode rather than by reading it. It is not fixed by D-036
-either: `lore.CreateSpace` mints a fresh id, so a pod still cannot materialise a space
-whose id an operator already wrote into `kenward.yaml`.
+One thing D-036 did not fix and still has not: `lore.CreateSpace` mints a fresh id, so a pod
+cannot materialise a space whose id an operator already wrote into `kenward.yaml`.
 
 ### Built: lore is an import
 
@@ -393,11 +406,11 @@ group chat, everyone can see and tap an inline keyboard, and without that filter
 member could route someone else's memory. A timeout on an approval is treated as declined,
 never as accepted.
 
-**Where the code is:** D-038 is decided and not yet implemented. Until it is, every private
-write is still a question, and `internal/capture` still says there is deliberately no way
-to turn that question off. The symbols that will say it landed are an announce-and-Undo
-path in `internal/capture` and an outcome for it beside `OutcomeSaved` and
-`OutcomeDeclined` in `capture.OutcomeKind`.
+**Where the code is:** D-038 is built. The symbols that say it landed are
+`capture.OutcomeUndone` beside `OutcomeSaved` and `OutcomeDeclined`, and the
+announce-and-Undo path `(*capture.Engine).writeAndAnnounce` with its `capture.ChoiceUndo`
+button, all in `internal/capture/capture.go`. A private write is performed and announced
+with an Undo; only a shared write is still asked about first.
 
 ## Tool surface
 
@@ -537,9 +550,9 @@ everything the real browser already provides — the password manager, the exten
 zoom and accessibility settings, and a URL that can be bookmarked or opened from a phone on
 the tailnet.
 
-**This is a decision recorded ahead of the code, not a description of it.** Three symbols
-say how far it has got, so the question is answerable by `ls` rather than by asking: an
-`internal/dashboard` package, a `cmd/kenward-desktop` binary, and a listener — anything
-calling `net/http.Server.ListenAndServe` or `net.Listen` — reachable from `kenward run`.
-When this paragraph was written none of the three existed, and the daemon's only use of
-`net/http` was the outbound probe in `cmd/kenward/probes.go`.
+**This was recorded ahead of the code, and the code has caught up.** Three symbols said how
+far it had got, so the question stayed answerable by `ls` rather than by asking, and all
+three now exist: the `internal/dashboard` package with `dashboard.New` and
+`(*Server).Listen`, the `cmd/kenward-desktop` binary, and the listener reachable from
+`kenward run` through `startDashboard` in `cmd/kenward/run.go`. What has *not* happened is a
+release: none of it has ever been installed by anyone but the maintainer.
