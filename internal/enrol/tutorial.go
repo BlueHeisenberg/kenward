@@ -330,7 +330,10 @@ func (t *Tutorial) askCharacter(ctx context.Context, p *Persona) outcome {
 		return retry
 	}
 	p.Character = desc
-	return advance
+	// Acknowledged like the name is. Without it a member who has just written a
+	// sentence about themselves goes straight into three messages of memory model
+	// with nothing to say the sentence landed.
+	return t.confirm(ctx, t.cur.characterNoted)
 }
 
 // skipped is the outcome of a typed answer that was the skip word. It is not one of

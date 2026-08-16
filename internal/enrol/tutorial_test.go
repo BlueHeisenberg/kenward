@@ -537,6 +537,37 @@ func TestGreetingPromisesTheQuestionsItWillAsk(t *testing.T) {
 	}
 }
 
+// TestTutorialConfirmsWhatTheMemberWrote. The name question says "Bruno it is." and
+// the last question said nothing at all: a member typed a sentence about themselves
+// and the next thing they saw was the memory model, with no sign it had landed.
+func TestTutorialConfirmsWhatTheMemberWrote(t *testing.T) {
+	a := &scriptedAsker{script: []string{choiceLangEnglish, choiceToneFlat}}
+	mustRun(t, tutorialFor(t, a, newPersonas(), []string{"a bit dry, into cycling"}, nil))
+
+	sent := a.sentTexts()
+	asked, noted, explained := -1, -1, -1
+	for i, s := range sent {
+		switch {
+		case strings.Contains(s, "Anything else about how"):
+			asked = i
+		case strings.Contains(s, "Noted."):
+			noted = i
+		case strings.Contains(s, "This chat is private"):
+			explained = i
+		}
+	}
+	if asked < 0 || explained < 0 {
+		t.Fatalf("the tutorial did not run as expected:\n%s", strings.Join(sent, "\n---\n"))
+	}
+	if noted < 0 {
+		t.Fatalf("the character answer got no acknowledgement:\n%s", strings.Join(sent, "\n---\n"))
+	}
+	if noted < asked || noted > explained {
+		t.Errorf("the acknowledgement arrived at %d, not between the question (%d) and the explanation (%d)",
+			noted, asked, explained)
+	}
+}
+
 // TestTutorialSkipEverythingIsTodaysBehaviour: every question has a skip, and taking
 // all of them must leave a member indistinguishable from one enrolled before any of
 // this existed.
@@ -702,7 +733,8 @@ func TestEveryLanguageIsComplete(t *testing.T) {
 			"registerQ": tbl.registerQ, "registerFlat": tbl.registerFlat,
 			"registerWarm": tbl.registerWarm, "registerPlayful": tbl.registerPlayful,
 			"characterQ": tbl.characterQ, "characterTooLong": tbl.characterTooLong,
-			"abandoned": tbl.abandoned,
+			"characterNoted": tbl.characterNoted,
+			"abandoned":      tbl.abandoned,
 		} {
 			if strings.TrimSpace(s) == "" {
 				t.Errorf("table %q has no %s", tag, name)

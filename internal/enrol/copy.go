@@ -94,6 +94,10 @@ type text struct {
 
 	characterQ       string
 	characterTooLong string
+	// characterNoted acknowledges what the member wrote, as nameSet does for the
+	// name. It says nothing back to them: the sentence is theirs and quoting it
+	// would be a second copy of it on screen for no gain.
+	characterNoted string
 
 	abandoned string
 }
@@ -209,6 +213,7 @@ var english = text{
 		"A sentence is plenty — \"a bit dry, into cycling\". Send " + transport.Code(skipWord) +
 		" if you'd rather not, or " + transport.Code(backWord) + " to go back.",
 	characterTooLong: "A bit much for me to hold. Three hundred characters or fewer, please.",
+	characterNoted:   "Noted. I'll keep that in mind.",
 
 	abandoned: "No rush — I've left the rest on my defaults. You can change any of it later. " +
 		"Here's how I work.",
@@ -261,6 +266,7 @@ var spanish = text{
 		transport.Code(skipWord) + " si prefieres dejarlo, o " + transport.Code(backWord) +
 		" para volver atrás.",
 	characterTooLong: "Eso es más de lo que puedo sostener. Trescientos caracteres o menos, por favor.",
+	characterNoted:   "Anotado. Lo tendré en cuenta.",
 
 	abandoned: "Sin prisa: he dejado el resto con mis valores por defecto y puedes cambiarlo " +
 		"cuando quieras. Te cuento cómo funciono.",
