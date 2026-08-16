@@ -25,14 +25,25 @@ import (
 // it is the one the member acts on, and a member told to expect a Save button who
 // gets a written note and an Undo instead has been lied to about the one promise
 // this product is built on.
+// Each message opens with a bold heading naming what it is about, because three
+// consecutive paragraphs of undifferentiated prose is what the member was getting
+// and none of it survived the first read. The headings are the shape of the
+// memory model in three words, and they are what a member scrolls back to find.
+//
+// They carry no glyph, unlike the messages they describe. The glyph vocabulary
+// marks events — something was saved, something is being asked — and these are
+// explanations rather than events. A member who sees 🧠 here and 🧠 on a real
+// write learns nothing from either.
 func Onboarding(chatID int64, name string, askPrivate bool) []transport.Outbound {
-	third := "When something sounds worth keeping for your own memory, I write it " +
+	third := transport.Bold("What happens when I remember something") + "\n\n" +
+		"When something sounds worth keeping for your own memory, I write it " +
 		"down and then show you exactly what I wrote and which memory it went to, " +
 		"with an Undo button that takes it back. Anything for the household's " +
 		"shared memory I ask about first and write nothing until you tap Save.\n\n" +
 		"Either way you always see it. That's all of it. Just talk to me normally."
 	if askPrivate {
-		third = "I never save anything by myself. When something sounds worth " +
+		third = transport.Bold("What happens when I remember something") + "\n\n" +
+			"I never save anything by myself. When something sounds worth " +
 			"keeping I'll ask — you'll see what I'd write down and which memory it " +
 			"goes to, and you tap Save or Don't save. If you don't answer, I don't " +
 			"save it.\n\nThat's all of it. Just talk to me normally."
@@ -40,12 +51,14 @@ func Onboarding(chatID int64, name string, askPrivate bool) []transport.Outbound
 	texts := []string{
 		fmt.Sprintf(
 			"Hello %s. You're in.\n\n"+
+				"%s\n\n"+
 				"This chat — just you and me — is your private memory. What you tell me "+
 				"here stays in your space. Nobody else in the household can read it, and "+
 				"I won't bring it up in the group.",
-			name),
+			transport.Esc(name), transport.Bold("This chat is private")),
 
-		"The household group chat is the shared memory. Whatever I remember there, " +
+		transport.Bold("The group chat is shared") + "\n\n" +
+			"The household group chat is the shared memory. Whatever I remember there, " +
 			"everyone can see. Nothing crosses over on its own: if something private " +
 			"should become shared, ask me, and I'll show you the exact text before any " +
 			"of it moves.",

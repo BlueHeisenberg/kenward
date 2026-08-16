@@ -212,10 +212,10 @@ var _ memory.Memory = (*fakeMemory)(nil)
 // exercise the product as it ships, and a suite that quietly configured the shipped
 // behaviour away would stop proving the thing it is for.
 func replyBody(text string) string {
-	if !strings.HasPrefix(text, "[searched ") {
+	if !strings.HasPrefix(text, "<i>🔍 searched ") {
 		return text
 	}
-	if _, rest, ok := strings.Cut(text, "]\n\n"); ok {
+	if _, rest, ok := strings.Cut(text, "</i>\n\n"); ok {
 		return rest
 	}
 	return text

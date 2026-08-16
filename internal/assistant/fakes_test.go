@@ -297,14 +297,14 @@ func (f *fakeTransport) sentTextsRaw() []string {
 	return out
 }
 
-// withoutReadNotice removes a leading "[searched …]" line and the blank line after it.
-// It matches only that exact shape, so a malformed line survives into the assertion
-// that was going to compare it.
+// withoutReadNotice removes a leading "<i>🔍 searched …</i>" line and the blank line
+// after it. It matches only that exact shape, so a malformed line survives into the
+// assertion that was going to compare it.
 func withoutReadNotice(s string) string {
-	if !strings.HasPrefix(s, "[searched ") {
+	if !strings.HasPrefix(s, "<i>🔍 searched ") {
 		return s
 	}
-	_, rest, ok := strings.Cut(s, "]\n\n")
+	_, rest, ok := strings.Cut(s, "</i>\n\n")
 	if !ok {
 		return s
 	}

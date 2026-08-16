@@ -37,10 +37,10 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 // working reply at all. TestReadNoticesReachTheUnitOptions is the assertion about the
 // line itself.
 func replyBody(text string) string {
-	if !strings.HasPrefix(text, "[searched ") {
+	if !strings.HasPrefix(text, "<i>🔍 searched ") {
 		return text
 	}
-	if _, rest, ok := strings.Cut(text, "]\n\n"); ok {
+	if _, rest, ok := strings.Cut(text, "</i>\n\n"); ok {
 		return rest
 	}
 	return text

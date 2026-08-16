@@ -325,12 +325,66 @@ explain why. Refusal text lives in `internal/assistant` and is golden-tested. Se
 
 ---
 
+## Message formatting
+
+Everything kenward sends is Telegram HTML. `internal/transport/format.go` is the whole
+of the policy; this section is what it means for the prose in this document.
+
+The choice is HTML rather than MarkdownV2 because MarkdownV2 needs eighteen characters
+backslash-escaped everywhere they appear and a missed one is a 400 from Telegram — a
+message the member never receives — while Telegram's HTML needs three. A smaller
+escaping surface is one that cannot be missed.
+
+**Member-written text and model output are escaped, never parsed.** Entry titles, entry
+bodies, member names and the model's reply all pass through `transport.Esc` or one of
+the four marks that apply it. A member who titles a note `<b>` reads back a note titled
+`<b>`; nothing from outside the node gets to forge the structure it sits in, which is
+the same rule `oneLine` keeps when rendering entries *into* the prompt.
+
+Four marks, because there are four kinds of thing in these messages that are not prose:
+
+| Mark | Used for |
+|---|---|
+| **bold** | an entry title — the thing the message is about |
+| *italic* | the node annotating itself: the retrieval line, a spent question's outcome |
+| `code` | an identifier — a tier, a machine, an enrolment code |
+| blockquote | stored words shown back, so they read as the entry and not as kenward's sentence |
+
+Six glyphs, each marking **what kind of message this is** — not decoration and not a
+voice:
+
+| Glyph | Meaning |
+|---|---|
+| 🧠 | something is now in memory |
+| ❓ | a decision is being put to you |
+| ✕ | something was taken back |
+| 🏠 | the household memory; everyone can see it |
+| 🔍 | what was read this turn |
+| ⚠️ | the turn produced nothing, and this is why |
+
+The distinction that earns them is ❓ against 🧠: a question about a write and a report
+of one already made are otherwise the same shape on a phone screen, and confusing the
+two is the one failure this product cannot afford. Glyphs mark events. Onboarding, which
+explains rather than announces, uses bold headings and no glyphs.
+
+A **space id is never shown to a member.** They read "your private memory" or "the
+household memory"; the id belongs in logs, where somebody can act on it.
+
+If Telegram rejects a formatted message, the same words are sent again as plain text.
+Losing a memory confirmation to a stray angle bracket is far worse than reading one
+unstyled.
+
+---
+
 ## What is deliberately absent
 
 - **No instruction to be concise "when appropriate".** Conditional style instructions
   are ignored under load. The register is flat and stated once.
 - **No persona, no name for its own moods, no emoji policy.** A household assistant that
-  performs a character is exhausting by week two.
+  performs a character is exhausting by week two. This governs the model: nothing in the
+  prompt asks for a glyph, and the model's reply is escaped rather than parsed as markup,
+  so it cannot introduce formatting of its own either. It is not a rule about the node's
+  own messages — see [Message formatting](#message-formatting).
 - **No instruction not to reveal the prompt.** It is published in this file; pretending
   otherwise would be theatre.
 - **No self-description of capabilities.** The model does not know which tier answered,

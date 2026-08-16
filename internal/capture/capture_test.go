@@ -295,8 +295,14 @@ func TestOfferButtons(t *testing.T) {
 				t.Fatalf("sends = %v, want one confirmation", tr.sends)
 			}
 			if !strings.Contains(tr.sends[0].Text, "Bins go out Tuesday") ||
-				!strings.Contains(tr.sends[0].Text, string(tc.wantIn)) {
+				!strings.Contains(tr.sends[0].Text, destinationPhrase(tc.scope, tc.wantIn)) {
 				t.Errorf("confirmation %q lacks the title or the destination", tr.sends[0].Text)
+			}
+			// The space id is the operator's handle, not the member's. It took a
+			// whole line of a phone screen and named nothing a member could look
+			// up. The parenthesised form is what used to be appended.
+			if id := "(" + string(tc.wantIn) + ")"; strings.Contains(tr.sends[0].Text, id) {
+				t.Errorf("confirmation %q shows the raw space id", tr.sends[0].Text)
 			}
 		})
 	}
@@ -1400,6 +1406,50 @@ func TestOutcomeCarriesTheTitleForTheMember(t *testing.T) {
 	}
 }
 
+// TestMemberMarkupNeverBecomesMarkup: a member is entitled to title a note with
+// the parse mode's own metacharacters, and to read it back as the characters they
+// typed.
+//
+// This is the security-relevant half of setting a parse mode. Every value in
+// these messages that kenward did not write itself — the title, the body — comes
+// from a member or from a model with a member's words in its context. If any of
+// it reached Telegram as markup, an entry body could decide how the message
+// announcing it renders, and the announcement is the one thing standing behind
+// the promise that you always see what was written. It is the same rule
+// prompt.go's oneLine keeps one layer up.
+func TestMemberMarkupNeverBecomesMarkup(t *testing.T) {
+	const title = `<b>Bins</b> & "stuff"`
+	const body = `</blockquote><i>escaped?</i> 5 > 3 & 2 < 4`
+
+	e, _, tr := newEngine(t, transport.Answer{TimedOut: true})
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	p := proposal(TargetPersonal)
+	p.Draft.Title, p.Draft.Body = title, body
+	if _, err := e.Offer(context.Background(), sc, p, davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if len(tr.asks) != 1 {
+		t.Fatalf("asks = %d, want the one announcement", len(tr.asks))
+	}
+	got := tr.asks[0].q.Text
+
+	// Exactly six tags: the bold around the title, the blockquote around the
+	// body, and the italics on the undo hint. Anything the member wrote that
+	// survived as a tag would push this count up.
+	if n := strings.Count(got, "<"); n != 6 {
+		t.Errorf("announcement has %d tags, want the 6 kenward wrote: %q", n, got)
+	}
+	// And what renders is what the member typed, character for character.
+	rendered := transport.PlainText(got)
+	for _, want := range []string{title, body} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("announcement renders as %q, which does not contain %q", rendered, want)
+		}
+	}
+}
+
 // --- the write-first path ----------------------------------------------------
 
 // TestPrivateTargetIsWrittenThenAnnounced is the decided behaviour in one test: a
@@ -1433,10 +1483,13 @@ func TestPrivateTargetIsWrittenThenAnnounced(t *testing.T) {
 	if got := choiceIDs(q); !equal(got, []string{ChoiceUndo}) {
 		t.Errorf("choices = %v, want just [%s]", got, ChoiceUndo)
 	}
-	for _, want := range []string{"Bins go out Tuesday", "Green bin on alternate weeks.", string(personal), "your private memory"} {
+	for _, want := range []string{"Bins go out Tuesday", "Green bin on alternate weeks.", "your private memory"} {
 		if !strings.Contains(q.Text, want) {
 			t.Errorf("announcement %q does not carry %q", q.Text, want)
 		}
+	}
+	if strings.Contains(q.Text, "("+string(personal)+")") {
+		t.Errorf("announcement %q shows the raw space id", q.Text)
 	}
 	// The default retirement line says the question was declined. On a message
 	// reporting a write that already happened, that reads as the write having been
@@ -1621,10 +1674,13 @@ func TestAnnouncementFailureStillSaysItWasWritten(t *testing.T) {
 		t.Fatalf("sends = %v, want the fallback confirmation", tr.sends)
 	}
 	got := tr.sends[0].Text
-	for _, want := range []string{"Saved", "Bins go out Tuesday", string(personal), "undo button didn't go through"} {
+	for _, want := range []string{"Saved", "Bins go out Tuesday", "your private memory", "undo button didn't go through"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("fallback %q is missing %q", got, want)
 		}
+	}
+	if strings.Contains(got, "("+string(personal)+")") {
+		t.Errorf("fallback %q shows the raw space id", got)
 	}
 }
 
