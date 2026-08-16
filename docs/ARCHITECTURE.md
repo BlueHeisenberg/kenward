@@ -146,7 +146,9 @@ of these constrain the design:
   kenward pokes it after each write (`lore.Options.NotifyOnWrite`) so the write leaves
   the machine now rather than at the daemon's next poll. Any deployment running more than
   one lore instance must run both.
-- Invites are not on the Go API, so enrolment drives lore's CLI.
+- Space invites and joins are not on the Go API — `Init`, `CreateSpace` and `Members` are,
+  membership changes are not — so they stay operator steps run against lore's CLI. kenward's
+  own enrolment is unrelated: a claim code is kenward's, not lore's.
 - `confidence` and `origin` are enforced enums, but **markers are free-form** — the
   familiar vocabulary is convention only and must not be validated against.
 - Instances isolate by `LORE_HOME`, not by machine. Several lore daemons can run on one
@@ -178,9 +180,8 @@ opening a store, then or now, does not sync it.
 
 **Membership is still an operator step, and deliberately.** Carrying an entry between homes
 needs the daemon *and* a shared space: `lore space invite` on the owning store and `lore
-join` on the others. lore's embeddable API declines to expose space creation or membership,
-and an assistant minting its own memberships would be taking a decision that is not its to
-take. `doctor` reports what it can see — whether this store holds the space, whether a
+join` on the others. lore's embeddable API declines to expose membership changes, and an
+assistant minting its own memberships would be taking a decision that is not its to take. `doctor` reports what it can see — whether this store holds the space, whether a
 daemon is running, when it last synced, how many instances it reached — and prints the
 invite and join commands as remediation rather than failing the report.
 
