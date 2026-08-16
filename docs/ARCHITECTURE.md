@@ -20,9 +20,12 @@ One household runs one kenward deployment, on whatever machine is always on. A m
 NAS, an LXC container on a Proxmox host, a desktop that never sleeps. It holds no GPU and
 costs effectively nothing to keep running.
 
-It has no inbound network surface. It connects outbound to Telegram and outbound to
+It has no inbound network surface today. It connects outbound to Telegram and outbound to
 inference endpoints on the LAN or a tailnet. Household members need no VPN, no port
-forwarding and no client software beyond Telegram, which they already have.
+forwarding and no client software beyond Telegram, which they already have — and that stays
+true for members, because the admin dashboard decided in **Non-goals** below is the
+operator's console and nobody else's. That dashboard is the one thing that opens a port,
+and its exposure rules are stated where it is.
 
 There is no multi-tenant runtime and no `tenant_id` threaded through queries, in any
 deployment shape. A household assistant is idle almost all of the time, so the memory cost
@@ -131,12 +134,64 @@ of these constrain the design:
 - `confidence` and `origin` are enforced enums, but **markers are free-form** — the
   familiar vocabulary is convention only and must not be validated against.
 - Instances isolate by `LORE_HOME`, not by machine. Several lore daemons can run on one
-  host, each holding a subset of spaces, converging on the shared one. This is what makes
-  one lore per member pod viable, and it was the most important open question in the whole
-  design.
+  host, each holding a subset of spaces. This is what makes one lore per member pod
+  viable, and it was the most important open question in the whole design.
+- **They do not converge on their own.** See the open limitation below.
 
 None of this justifies forking lore. Forking trades a list of known limits for an unbounded
 amount of new work, and every one of these limits is survivable for a household.
+
+### Open limitation: the household's shared space in isolated mode
+
+This document used to say that per-pod lore instances converge on the household's shared
+space. **They do not, and nothing in either deployment path makes them.**
+
+One `LORE_HOME` per pod is one lore *account* per pod, and `lore init` gives each account
+its own set of space ids. So the id `household.shared_space` names resolves inside
+whichever store created it and nowhere else. Every other pod's `doctor` reports `space "…"
+is not a space this lore store holds`, and a conversation in that scope reads nothing —
+silently, because a turn that cannot read a space degrades that space rather than failing.
+
+Making one shared space real across three stores is lore's own sharing: `lore space
+invite` on the owning store, `lore join` on the others, and a `lore serve` reachable
+between them. **The symbol whose existence would falsify this claim is a call to any of
+those three from kenward** — there is none in `internal/supervisor`, none in
+`internal/setup`, and no port, peer or daemon in `deploy/compose.isolated.yml`. The
+supervisor path has the identical gap.
+
+Each member's **private** space is unaffected: it lives in that member's own store, which
+is the property the mode exists for. Until the sharing is wired, isolated mode's household
+group has memory only in the group pod, and `deploy/compose.isolated.yml` says so in its
+header.
+
+This was found by running the mode rather than by reading it, and it is recorded rather
+than fixed because the next section moves kenward from `lore mcp` to a Go import, which may
+change what the fix looks like. Solving it twice would be the waste.
+
+### Decided but not built: lore becomes an import
+
+D-036 replaces the MCP seam described above with a Go package published at lore's module
+root, which kenward imports. `cmd/lore` keeps `lore mcp` for every other MCP client and
+`lore serve` for sync; what goes away is kenward's text-parsing layer, deleted rather than
+ported.
+
+The seam bought two real things — a language rewrite that cost the assistant and nothing
+else, and a lore forced to have an external surface — and neither is still being paid for.
+What it costs is countable: `internal/memory/parse.go` is 500 lines mirroring lore's format
+strings, `errors.go` is 253 lines classifying error text, and `testdata/` holds 31 captured
+fixtures to keep them honest. Several properties this document attributes to lore turn out
+to be artefacts of the MCP server rather than of lore — search returns whole entries with
+origin and timestamps, and the excerpt doctrine threaded through `internal/memory` and the
+prompt exists because the server prints only the snippet.
+
+**The never-fork rule survives unchanged.** kenward imports lore, defines no knowledge
+model, reimplements nothing.
+
+**Nothing of this is built**, and the falsifying symbol is a one-liner: a
+`github.com/BlueHeisenberg/lore` line in `go.mod`. There is none, `internal/memory` still
+speaks MCP over stdio, and everything above this section describes what the code does
+today. Two preconditions also sit on lore's side — its `go.mod` carries an absolute-path
+`replace` for agentmesh, so it builds on one machine, and it has no `LICENSE` file at all.
 
 ## Identity and enrolment
 
@@ -261,13 +316,34 @@ are away. The idle timeout is a guess until there is real usage.
 
 ## Capture
 
-Nothing is written to memory without an explicit confirmation, and there is no
-configuration flag to disable that.
-
 The rule used to be "no automatic memory writing", which was correct and unusable — a
-member has to notice something is worth remembering and then say so, which nobody does.
-The refinement keeps the rule intact: the model may *propose* remembering something, and
-the member *decides*, with buttons, in the chat. The confirmation is the explicit act.
+member has to notice something is worth remembering and then say so, which nobody does. The
+first refinement made the model *propose* and the member *decide*, with buttons, on every
+write.
+
+**That was still one question too many, and D-038 splits the two directions apart.** A
+throttle limits how often the question is asked; it does not change what the question does
+to somebody's attention. A confirmation on every private write makes the assistant's memory
+feel like paperwork, and the failure that follows is not a bad write — it is a household
+that stops letting it remember anything.
+
+- **A private write is performed and announced, with an Undo on the announcement.** The
+  member sees the exact words, after the fact, and one tap removes them.
+- **A shared write is still approved before it happens, and that is not configurable.**
+- **Announcing a write is not configurable.** A memory that fills silently is a different
+  product from this one.
+- **Announcing a read is configurable, default on.** It is information rather than a
+  control.
+
+Undo needs a delete lore does not have, so it is either a lore change or a tombstone the
+retrieval path honours — and a tombstone is not the same promise as a removal. Whichever it
+turns out to be, the announcement has to say which.
+
+This document previously claimed that *nothing is written to memory without the member
+seeing the exact words first and saying yes.* That claim is retired rather than quietly
+softened, because a claim that weakens without saying so is worse than one never made.
+What replaces it is narrower and still true: nothing is written without the member being
+shown the exact words, and nothing leaves their private space without their approval first.
 
 Two invariants, not preferences:
 
@@ -278,13 +354,21 @@ Two invariants, not preferences:
    because publication is irreversible from the household's point of view — and, given that
    lore has no delete, irreversible in a stricter sense than most people expect.
 
-Plus a throttle: one proposal per turn, and none for anything already retrievable.
-Otherwise everyone learns to reflexively decline, and the feature is worse than not having
-it. A proposal that was declined recently is suppressed rather than repeated.
+Plus a throttle on whatever is still asked: one proposal per turn, and none for anything
+already retrievable. Otherwise everyone learns to reflexively decline, and the feature is
+worse than not having it. A proposal that was declined recently is suppressed rather than
+repeated.
 
-Answers are accepted only from the member being asked. In a group chat, everyone can see
-and tap an inline keyboard, and without that filter another member could route someone
-else's memory. A timeout is treated as declined, never as accepted.
+Answers — approvals and Undos alike — are accepted only from the member being asked. In a
+group chat, everyone can see and tap an inline keyboard, and without that filter another
+member could route someone else's memory. A timeout on an approval is treated as declined,
+never as accepted.
+
+**Where the code is:** D-038 is decided and not yet implemented. Until it is, every private
+write is still a question, and `internal/capture` still says there is deliberately no way
+to turn that question off. The symbols that will say it landed are an announce-and-Undo
+path in `internal/capture` and an outcome for it beside `OutcomeSaved` and
+`OutcomeDeclined` in `capture.OutcomeKind`.
 
 ## Tool surface
 
@@ -367,7 +451,53 @@ private memory.
 
 ## Non-goals
 
-Billing, tenant orchestration, an onboarding wizard, a web dashboard, a control plane, SSO,
-organisations and teams, usage quotas, cost tracking, and any multi-tenant runtime. All of
-it is bolt-on precisely because one household is one deployment, and none of it is designed
-around.
+Billing, tenant orchestration, a control plane, SSO, organisations and teams, usage quotas,
+cost tracking, and any multi-tenant runtime. All of it is bolt-on precisely because one
+household is one deployment, and none of it is designed around.
+
+**A web dashboard and an onboarding wizard used to be on that list, and are not any more.**
+
+The premise underneath the old line was that the operator is the author. Someone who can
+edit `kenward.yaml`, read a systemd unit and run `kenward doctor` genuinely does not need a
+dashboard, and for that person the line was right. The premise is gone: the operator this
+project is now aimed at is a stranger who downloaded an app. They have no terminal open,
+and everything kenward asks of an operator — mint a claim code, see who is enrolled, notice
+a pod crash-looping, read the privacy statement for the mode they are actually running —
+has no interface at all for them.
+
+So kenward gets a web dashboard, admin-only, with the setup wizard as its first screen. It
+is the operator's console, not a chat client; members keep Telegram.
+
+Its exposure is decided with it, because this is the first inbound port the design has ever
+opened and *"it has no inbound network surface"* — the second paragraph of **What a
+household runs** — is a property being given up deliberately rather than by accident.
+
+- **Setup always happens on loopback, before any account exists.** First run binds the
+  loopback interface and prints a single-use setup token the operator must paste. Nothing
+  else is reachable until an admin account exists.
+- **LAN or tailnet exposure is an explicit post-setup choice**, never a default, and never
+  something setup itself can be completed over.
+- **TLS is required for LAN.** A tailnet carries its own transport encryption; a household
+  LAN does not, and an admin console handing a session cookie to anyone on the same Wi-Fi
+  is worse than no console.
+
+The cost is the largest single expansion of attack surface in this project: an HTTP server,
+sessions, an admin authentication story and a CSRF posture, in a process holding household
+keys. The discipline that keeps it honest is that **the dashboard must never be the only
+way to do anything.** A server install with no tray and no browser is a complete
+deployment, so the CLI keeps parity rather than decaying into an escape hatch — which means
+every operator action gets two implementations from here on, permanently.
+
+On a laptop the desktop app is a tray icon that supervises the daemon and opens the
+dashboard in the user's own browser. No embedded webview: it would buy a title bar and cost
+a browser engine per platform, a second rendering target, its own update problem, and
+everything the real browser already provides — the password manager, the extensions, the
+zoom and accessibility settings, and a URL that can be bookmarked or opened from a phone on
+the tailnet.
+
+**This is a decision recorded ahead of the code, not a description of it.** Three symbols
+say how far it has got, so the question is answerable by `ls` rather than by asking: an
+`internal/dashboard` package, a `cmd/kenward-desktop` binary, and a listener — anything
+calling `net/http.Server.ListenAndServe` or `net.Listen` — reachable from `kenward run`.
+When this paragraph was written none of the three existed, and the daemon's only use of
+`net/http` was the outbound probe in `cmd/kenward/probes.go`.
