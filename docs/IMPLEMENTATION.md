@@ -920,6 +920,34 @@ unit starts serving in place, with no restart — see §7.
 The `Unit` implementation is identical in all three. If a change to `Unit` needs to know
 which one it is running under, that change is wrong.
 
+### How a supervisor-started pod is configured
+
+D-022's two isolated deployment paths hand a pod the same things by different means, and
+the pod's own process cannot tell which one started it. Compose mounts `kenward.yaml` at
+`/etc/kenward/kenward.yaml` and passes `--config … --data-dir … --member ID | --group` in
+`command:`. The host supervisor provisions the same file at the same path
+(`supervisor.PodConfigPath`) from `IsolatedOptions.ConfigFile` — which `kenward run` fills
+with whichever configuration it is itself serving — and starts the pod with that same
+argv.
+
+The argv is not decoration. Without it a pod runs the image's own `CMD`, which names
+`--config /etc/kenward/kenward.yaml --data-dir /var/lib/kenward`: the first against a path
+this deployment path would then never provision, and the second beating the
+`KENWARD_DATA_DIR` the supervisor sets, which would put the member's wrapped key somewhere
+other than `/work` — the only volume `Recreate` preserves — so the first rolling update
+would take it.
+
+**The whole household file goes into every pod, not a per-member slice of it.**
+Configuration names secrets and never holds one (§4), and `Isolated` provisions only that
+pod's own token beside it, so what a member's pod gains is the household roster and the
+*names* of other members' token variables and file paths, never a value: no lore space, no
+chat and no bot becomes reachable from holding it. Filtering it would buy nothing and
+would put the two deployment paths back out of step, which is what D-022 decided against.
+
+The file is read once when the supervisor is constructed and every pod is recreated from
+that snapshot, so a configuration edited while the household is running reaches pods on
+the next `kenward run` rather than on the next `Roll`.
+
 ---
 
 ## 9. Update

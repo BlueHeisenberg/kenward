@@ -44,25 +44,11 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 		return newSingleUnitSupervisor(e, cfg, opts, logger)
 
 	case cfg.Mode == config.ModeIsolated:
-		image := opts.image
-		if image == "" {
-			v := version.Short()
-			if v == "" || v == "dev" {
-				return nil, fmt.Errorf("isolated mode needs a pod image and this is a %q build, "+
-					"which has no published tag: pass --image REF", v)
-			}
-			image = defaultPodImageRepo + ":" + v
+		iso, err := isolatedOptions(e, opts, logger)
+		if err != nil {
+			return nil, err
 		}
-		return supervisor.NewIsolated(cfg, supervisor.IsolatedOptions{
-			Image: image,
-			// The same resolver this command's own checks use, so a pod's token
-			// is read from whichever source the configuration names rather than
-			// from the environment alone.
-			Secrets:   e.secrets(),
-			Logger:    logger,
-			LookupEnv: e.env(),
-			Now:       e.now,
-		})
+		return supervisor.NewIsolated(cfg, iso)
 
 	default:
 		claimer, err := newClaimer(cfg)
@@ -96,6 +82,57 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 			Now:           e.now,
 		})
 	}
+}
+
+// isolatedOptions is the wiring defaultSupervisor hands to supervisor.NewIsolated,
+// separated from the construction the way singleUnitOptions is and for a sharper
+// reason: NewIsolated refuses on anything but Linux, so a test that went through it
+// could not assert what this decides from any other machine.
+func isolatedOptions(e *env, opts runOptions, logger *slog.Logger) (supervisor.IsolatedOptions, error) {
+	image := opts.image
+	if image == "" {
+		v := version.Short()
+		if v == "" || v == "dev" {
+			return supervisor.IsolatedOptions{}, fmt.Errorf("isolated mode needs a pod image and this is a %q build, "+
+				"which has no published tag: pass --image REF", v)
+		}
+		image = defaultPodImageRepo + ":" + v
+	}
+	return supervisor.IsolatedOptions{
+		Image: image,
+		// D-022: the two isolated deployment paths must express the same thing. A
+		// non-empty ConfigFile is what makes that true — the household configuration
+		// is provisioned into every pod at supervisor.PodConfigPath and the pod is
+		// started with the compose-identical argv, instead of the image's own CMD.
+		//
+		// Left empty, as it was, a pod ran that CMD: `run --config
+		// /etc/kenward/kenward.yaml --data-dir /var/lib/kenward` (see the Dockerfile),
+		// against a path this deployment path never provisions. Every pod exited on a
+		// missing configuration and was restarted forever. The `--data-dir` in that
+		// same CMD is the quieter half: an explicit flag beats the KENWARD_DATA_DIR
+		// the supervisor sets, so a pod that did somehow start would keep its member's
+		// wrapped key off /work — the one volume Recreate preserves — and the first
+		// rolling update would take it.
+		//
+		// The whole household file goes in, not a per-member slice of it, because that
+		// is what the compose path mounts and because there is nothing in it to
+		// withhold: configuration names secrets and never holds one, and Isolated
+		// provisions only this pod's own token beside it. What a member's pod gains is
+		// the household roster — ids, spaces, and the *names* of other members' token
+		// variables — which grants no access to any of them.
+		//
+		// The path is used on the host and never travels into a pod, so unlike
+		// bot_token_file it needs no absolute form: relative resolves against the same
+		// working directory loadConfig already read it from.
+		ConfigFile: opts.configPath,
+		// The same resolver this command's own checks use, so a pod's token
+		// is read from whichever source the configuration names rather than
+		// from the environment alone.
+		Secrets:   e.secrets(),
+		Logger:    logger,
+		LookupEnv: e.env(),
+		Now:       e.now,
+	}, nil
 }
 
 // startSessions reads the passphrase, provisions any of the given members who has no
