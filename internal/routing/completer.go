@@ -20,9 +20,10 @@ import (
 // per-attempt timeout — and the pool may try another machine. A *llm.APIError
 // means the endpoint answered non-2xx; only a 5xx status justifies failover,
 // because a 4xx would be rejected identically everywhere. A
-// *llm.EmptyResponseError splits on its finish reason: genuinely empty fails
-// over, a content-filter refusal does not — see shouldFailover for why that
-// split is a privacy boundary. Anything else — llm.ErrInvalidRequest, a key
+// *llm.EmptyResponseError splits three ways: genuinely empty fails over, while
+// a content-filter refusal and a turn the model spent thinking without
+// answering do not — see shouldFailover for why those splits are a privacy
+// boundary. Anything else — llm.ErrInvalidRequest, a key
 // that could not be resolved — is returned to the caller as-is and never
 // triggers failover.
 type Completer interface {

@@ -153,10 +153,12 @@ func (p *Pool) Complete(ctx context.Context, chain []string, req Request) (Compl
 // includes 429. llm.ErrInvalidRequest was never sent anywhere and falls
 // through to false.
 //
-// An empty response (*llm.EmptyResponseError) splits on its finish reason, and
-// the split is a privacy decision, not an inconsistency — do not tidy it away.
-// A genuinely empty answer (no choices, an empty choice, no finish reason at
-// all) is a broken endpoint and fails over with cooldown, exactly like a 5xx.
+// An empty response (*llm.EmptyResponseError) is three cases, not one, and the
+// splits are privacy decisions rather than inconsistencies — do not tidy them
+// away. A genuinely empty answer (no choices, an empty choice, nothing at all
+// from the model) is a broken endpoint and fails over with cooldown, exactly
+// like a 5xx.
+//
 // But llm.FinishContentFilter means the model declined to answer, and a
 // refusal is a final answer, not an availability problem: if routing treated
 // it as an outage it would walk the rest of the tier chain offering the same
@@ -166,6 +168,20 @@ func (p *Pool) Complete(ctx context.Context, chain []string, req Request) (Compl
 // the exact leak this package exists to prevent, so a content-filter refusal
 // returns to the caller unchanged and the endpoint is not cooled: nothing is
 // wrong with the machine.
+//
+// A non-empty ee.Reasoning is the same shape of mistake with a different cause:
+// the model thought for the whole turn and produced no answer. The endpoint
+// worked, the model worked, and the next machine down the chain running the
+// same class of model will think itself into the same silence — so failing over
+// buys nothing and, on a chain ending in a cloud tier, hands a provider a turn
+// the household's own machine was halfway through. It is not cooled either;
+// what would help is room to answer in, not a different machine.
+//
+// The finish reason cannot carry this case and must not be asked to. Measured
+// against the household's own vLLM endpoint, the identical request came back
+// with null content under both "length" and "stop", the latter with a third of
+// the budget unspent. ee.Reasoning is the discriminator — a typed field, never
+// a substring match on ee.Detail.
 //
 // The check uses errors.As on the concrete type rather than reading the
 // Response llm.Chat returns alongside the sentinel, so the same path works
@@ -177,7 +193,7 @@ func shouldFailover(err error) bool {
 	}
 	var ee *llm.EmptyResponseError
 	if errors.As(err, &ee) {
-		return ee.FinishReason != llm.FinishContentFilter
+		return ee.FinishReason != llm.FinishContentFilter && ee.Reasoning == ""
 	}
 	var ae *llm.APIError
 	if errors.As(err, &ae) {

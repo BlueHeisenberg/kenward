@@ -723,6 +723,46 @@ func TestRouterFailuresGetReplies(t *testing.T) {
 			err:    &llm.EmptyResponseError{Endpoint: "monster", Detail: "no choices"},
 			golden: "turn_failed.golden",
 		},
+		{
+			// A reasoning model that thought for the whole turn and answered
+			// nothing. Routing declines to fail over on it, so it arrives here
+			// instead of as a refusal naming machines that were never at fault,
+			// and the member is told what actually happened rather than that
+			// their household has no reachable machine.
+			name: "reasoning only",
+			err: &llm.EmptyResponseError{
+				Endpoint:     "monster",
+				FinishReason: llm.FinishLength,
+				Detail:       llm.DetailReasoningOnly,
+				Reasoning:    "Okay, the user wants annual appliance energy costs.",
+			},
+			golden: "reasoning_only.golden",
+		},
+		{
+			// The finish reason must not be the discriminator: measured, the
+			// same endpoint returns null content under "stop" with a third of
+			// the budget unspent. Reasoning is what identifies the case.
+			name: "reasoning only claiming a normal stop",
+			err: &llm.EmptyResponseError{
+				Endpoint:     "monster",
+				FinishReason: llm.FinishStop,
+				Detail:       llm.DetailReasoningOnly,
+				Reasoning:    "Okay, the user wants annual appliance energy costs.",
+			},
+			golden: "reasoning_only.golden",
+		},
+		{
+			// A model that reasoned its way to declining still declined, and
+			// the decline is the more important thing to say.
+			name: "content filter that also carried a trace",
+			err: &llm.EmptyResponseError{
+				Endpoint:     "monster",
+				FinishReason: llm.FinishContentFilter,
+				Detail:       llm.DetailReasoningOnly,
+				Reasoning:    "This asks me to do something I won't.",
+			},
+			golden: "content_filter.golden",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

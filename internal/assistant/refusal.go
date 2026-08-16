@@ -74,6 +74,14 @@ const (
 	// turnFailedText covers everything else. It promises nothing it does not know:
 	// the message arrived, no answer was produced.
 	turnFailedText = "Something went wrong reaching the model, and your message wasn't answered. Try again in a moment."
+	// reasoningOnlyText covers a turn the model spent thinking and never finished:
+	// it produced a reasoning trace and no answer. Nothing is broken — the machine
+	// answered, the model ran — so this deliberately does not read as an outage,
+	// and it does not read as the model declining either. The one thing the member
+	// can actually do is give the model less to chew on; more room to answer in is
+	// the operator's knob, not theirs, so it is not offered as advice they cannot
+	// take.
+	reasoningOnlyText = "The model spent the whole turn thinking and didn't get to an answer. Nothing is broken — try asking again, or in smaller pieces."
 )
 
 // completionFailureText classifies a router failure that is not a *NoBackendError
@@ -84,11 +92,22 @@ const (
 // The classification reads keel/llm's error vocabulary, which the routing seam
 // passes through unchanged: a content-filter refusal arrives as an
 // *llm.EmptyResponseError rather than a Completion whenever the declining endpoint
-// sent no text alongside the finish reason, which is the common form.
+// sent no text alongside the finish reason, which is the common form. So does a
+// turn a reasoning model spent thinking without answering — routing declines to
+// fail over on either (see routing.shouldFailover), so both land here rather than
+// as a *NoBackendError blaming machines that were never the problem.
+//
+// A decline is checked first: a model that reasoned its way to refusing still
+// refused, and the refusal is the more important thing to say.
 func completionFailureText(err error) string {
 	var ee *llm.EmptyResponseError
-	if errors.As(err, &ee) && ee.FinishReason == llm.FinishContentFilter {
-		return contentFilterText
+	if errors.As(err, &ee) {
+		switch {
+		case ee.FinishReason == llm.FinishContentFilter:
+			return contentFilterText
+		case ee.Reasoning != "":
+			return reasoningOnlyText
+		}
 	}
 	var ae *llm.APIError
 	if errors.As(err, &ae) {

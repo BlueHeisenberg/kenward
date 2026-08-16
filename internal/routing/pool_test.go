@@ -517,10 +517,57 @@ func TestEmptyResponseDoesNotFailOver(t *testing.T) {
 	}
 }
 
+// TestReasoningOnlyDoesNotFailOver pins the other half of the rule. A model
+// that spent the whole turn thinking and produced no answer is not a broken
+// machine: the endpoint answered, the model ran, and the next machine down the
+// chain running the same class of model thinks itself into the same silence. So
+// the error returns to the caller unchanged with its reasoning trace intact for
+// the layers above, the healthy sibling is never consulted, and the endpoint is
+// not cooled — cooling it would drop the household's own machine out of the
+// next turn's chain and push that turn toward whatever tier comes after.
+//
+// Both finish reasons are covered on purpose. Measured against the household's
+// own vLLM endpoint the identical request came back with null content under
+// "length" and under "stop" alike, so the finish reason cannot discriminate and
+// this behaviour must not depend on it: llm.EmptyResponseError.Reasoning is the
+// discriminator.
+func TestReasoningOnlyDoesNotFailOver(t *testing.T) {
+	for _, finish := range []string{"length", "stop"} {
+		t.Run(finish, func(t *testing.T) {
+			p, healthyHits := emptyVsHealthyPool(t,
+				`{"choices":[{"message":{"content":null,"reasoning_content":"Okay, the user wants annual appliance energy costs. Let me work out the tariff first."},"finish_reason":"`+finish+`"}]}`)
+
+			_, err := p.Complete(context.Background(), []string{"local"},
+				Request{Messages: []Message{{Role: "user", Content: "hi"}}})
+			if n := atomic.LoadInt32(healthyHits); n != 0 {
+				t.Errorf("healthy sibling received %d requests, want 0 (a thinking model must not walk the chain)", n)
+			}
+			if p.inCooldown("empty") {
+				t.Error("a reasoning-only turn must not cool the endpoint: nothing is wrong with the machine")
+			}
+			var nbe *NoBackendError
+			if errors.As(err, &nbe) {
+				t.Fatalf("got %v, want the empty-response error itself: a thinking model is not an unreachable machine", err)
+			}
+			var ee *llm.EmptyResponseError
+			if !errors.As(err, &ee) {
+				t.Fatalf("got %v, want *llm.EmptyResponseError returned to the caller", err)
+			}
+			if ee.Reasoning == "" {
+				t.Error("the reasoning trace must survive to the layers above; it is the only signal that tells this from silence")
+			}
+			if ee.Detail != llm.DetailReasoningOnly {
+				t.Errorf("Detail = %q, want %q", ee.Detail, llm.DetailReasoningOnly)
+			}
+		})
+	}
+}
+
 // TestEmptyResponseFailsOverWhenGenuinelyEmpty is the mirror: an empty answer
-// with no content-filter finish reason is a malfunction — no choices at all,
-// or an empty choice from a model that claims it stopped normally — and a
-// broken endpoint deserves failover and cooldown, exactly like a 5xx.
+// with no content-filter finish reason and no reasoning trace is a malfunction
+// — no choices at all, or an empty choice from a model that claims it stopped
+// normally — and a broken endpoint deserves failover and cooldown, exactly like
+// a 5xx.
 func TestEmptyResponseFailsOverWhenGenuinelyEmpty(t *testing.T) {
 	cases := []struct {
 		name string

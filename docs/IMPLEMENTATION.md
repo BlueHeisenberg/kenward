@@ -74,7 +74,7 @@ Third-party dependencies, fixed:
 | `github.com/modelcontextprotocol/go-sdk` | v1.7.0 | `memory` |
 | `gopkg.in/yaml.v3` | v3.0.1 | `config` |
 | `golang.org/x/sys` | v0.47.0 | `setup` (terminal echo suppression) |
-| `github.com/BlueHeisenberg/keel` | v0.5.0 | `routing` and `assistant` (llm), `session` (vault), `supervisor` (sandbox), `updater`, `cmd/kenward` and `cmd/kenward-release` (update) |
+| `github.com/BlueHeisenberg/keel` | v0.5.4 | `routing` and `assistant` (llm), `session` (vault), `supervisor` (sandbox), `updater`, `cmd/kenward` and `cmd/kenward-release` (update) |
 
 Note: the MCP SDK requires Go 1.25, which is why the module targets it.
 
@@ -381,12 +381,33 @@ package. Routing is the wrong place to look, and that is the design.
 3. If every tier is exhausted, return `*NoBackendError`. **Never** silently widen the
    chain — the chain is the privacy policy.
 
+**Not every failure is a machine failure.** An endpoint error is cooled and routed
+around only when trying a different machine could plausibly help: a transport failure,
+or an HTTP 5xx. A 4xx would be rejected identically everywhere. And an **empty response**
+is three cases, not one:
+
+| Empty response | Fails over? | Cooled? | Why |
+| --- | --- | --- | --- |
+| No choices, or an empty choice with nothing else | yes | yes | The endpoint said nothing. It is broken, exactly like a 5xx. |
+| `finish_reason` = `content_filter` | no | no | The model declined. A refusal is a final answer; walking the chain would offer the same content to every machine in turn, and for a chain ending in a cloud tier that hands a provider content a local model just declined. |
+| `llm.EmptyResponseError.Reasoning` non-empty (`Detail` = `"reasoning only"`) | no | no | The model spent the turn thinking and produced no answer. The endpoint worked and the model worked; the next machine running the same class of model thinks itself into the same silence. What helps is room to answer in, not a different machine. |
+
+Both of the non-failover cases return the `*llm.EmptyResponseError` to the caller
+unchanged, so `internal/assistant` can tell the member what actually happened (§10).
+
+**The finish reason cannot identify a reasoning-only turn, and must not be asked to.**
+Measured against the household's own vLLM endpoint, the identical request came back with
+null content under both `length` and `stop`, the latter with a third of the token budget
+unspent. The discriminator is the typed `Reasoning` field — never a substring match on
+`Detail`.
+
 **Failover happens before the first token only.** Once a response has begun, an error
 is returned to the caller as a partial failure; there is no retry, because retrying
 produces spliced or duplicated output.
 
-**Cooldown:** an endpoint that errors is cooled for 30s, doubling per consecutive
-failure to a 5m ceiling, reset on success.
+**Cooldown:** an endpoint whose failure justified failover is cooled for 30s, doubling
+per consecutive failure to a 5m ceiling, reset on success. A decline and a reasoning-only
+turn are not failures and do not cool anything.
 
 ### `internal/session`
 
@@ -1604,21 +1625,31 @@ the one response that teaches a household the assistant is broken and unpredicta
 message that arrives always produces something, and the node writes it: a model that
 cannot be reached cannot explain why it cannot be reached.
 
-Beyond the tier-chain refusal, the router's other failures are classified into three
+Beyond the tier-chain refusal, the router's other failures are classified into four
 notices, chosen so that each one tells the member the truth about what they can do next:
 
 | What happened | What is sent |
 | --- | --- |
 | Rate limited (HTTP 429) | "The model is busy right now. Try again in a moment." |
 | A rejected key, an unknown model, a request the endpoint will not parse (400, 401, 403, 404, invalid request) | "Something is wrong with this household's setup — tell whoever runs it." |
+| The model spent the turn thinking and never answered (empty response carrying a reasoning trace) | "The model spent the whole turn thinking and didn't get to an answer. Nothing is broken — try asking again, or in smaller pieces." |
 | Anything else | "Something went wrong reaching the model, and your message wasn't answered. Try again in a moment." |
 
-The middle row is the one that earns its place: no amount of retrying fixes a rejected
+The setup row is the one that earns its place: no amount of retrying fixes a rejected
 key, the member cannot repair it, and the operator can — so the notice sends them to the
 person who can. **400 belongs in that row, not in the transient one.** It is the endpoint
 saying it will not parse this request — the same permanent fault as `ErrInvalidRequest`,
 caught one hop later — and telling a member to try again for it sends them back to a
 wall.
+
+The thinking row exists because the alternative was a lie. Routing declines to fail over
+on a reasoning-only turn (§7), so it reaches this classifier instead of exhausting the
+chain — and before that split existed, a member whose local model thought its way past
+the token budget was told *no machine in your allowed tiers is reachable*, naming healthy
+machines as unavailable while the one that answered sat in cooldown for the next turn.
+The notice says the two things that are true: nothing is broken, and a smaller question
+is the one lever the member actually holds. More room to answer in is the operator's
+knob, not theirs, so it is not offered as advice they cannot take.
 
 Five further notices come from outside the router, sent by the Unit around a turn rather
 than as part of one. They are product surface exactly as the refusals are.
@@ -1669,7 +1700,9 @@ the notice delay, and at the limit — and a golden of the text alone would not 
 
 The classification reads `keel/llm`'s error vocabulary, which the routing seam passes
 through unchanged; a content-filter decline commonly arrives as an empty response
-carrying the finish reason rather than as a completion with text.
+carrying the finish reason rather than as a completion with text, and a reasoning-only
+turn always arrives that way. A decline is checked first: a model that reasoned its way
+to refusing still refused, and the refusal is the more important thing to say.
 
 ---
 
@@ -1680,8 +1713,9 @@ carrying the finish reason rather than as a completion with text.
   chats, a member messaging from a different chat, and a group id that collides with a
   member's private space.
 - `routing` is tested against a fake endpoint set: cooldown behaviour, probe caching,
-  tier fallthrough, and the assertion that an exhausted chain **never** reaches an
-  endpoint outside it.
+  tier fallthrough, the three-way split of an empty response (§7) with the healthy
+  sibling counting the requests that reach it, and the assertion that an exhausted chain
+  **never** reaches an endpoint outside it.
 - `capture` is tested as a state machine including timeout-as-decline and the
   taps-from-the-wrong-user case.
 - `memory` is tested against a scripted fake MCP server, not a live lore.
