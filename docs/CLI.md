@@ -276,6 +276,14 @@ authorisation failure. This matters beyond tidiness: the container's `HEALTHCHEC
 `doctor`, so treating a sleeping GPU box as unhealthy would put a perfectly good
 household into a restart loop.
 
+It takes `--member ID` and `--group`, and reads `KENWARD_MEMBER` / `KENWARD_GROUP` when
+neither is given, exactly as `run` does — the container's `HEALTHCHECK` is a separate
+process with no arguments, so the environment is how it learns which unit its container
+is. Scoped that way, the report is about that one unit: the first line says so, and only
+that unit's bot token, provider keys, lore spaces, key custody and tier notes are checked.
+It has to be: a member's pod holds only that member's token, so a household-wide check
+inside it would fail on every sibling secret the container correctly does not have.
+
 ---
 
 ## `kenward update [--check] [--config PATH] [--data-dir PATH]`

@@ -25,7 +25,7 @@ import (
 // where every machine is switched off. None of those cases can be arranged with a
 // real network, and the last one is the case that must not fail.
 type probes struct {
-	lore     func(ctx context.Context, cfg *config.Config) loreResult
+	lore     func(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult
 	telegram func(ctx context.Context, token string) telegramResult
 	endpoint func(ctx context.Context, ep routing.Endpoint) endpointResult
 	sessions func(ctx context.Context, cfg *config.Config) sessionsResult
@@ -38,7 +38,7 @@ func (p probes) sessionsProbe() func(context.Context, *config.Config) sessionsRe
 	return probeSessions
 }
 
-func (p probes) loreProbe() func(context.Context, *config.Config) loreResult {
+func (p probes) loreProbe() func(context.Context, *config.Config, config.UnitScope) loreResult {
 	if p.lore != nil {
 		return p.lore
 	}
@@ -82,7 +82,7 @@ type spaceResult struct {
 // counted or printed. `doctor` may confirm that a space answers, and may not report
 // anything about what is in it — the contents of anyone's memory are not this
 // command's to show.
-func probeLore(ctx context.Context, cfg *config.Config) loreResult {
+func probeLore(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
 	cmd := cfg.Memory.LoreCommand
 	if len(cmd) == 0 {
 		return loreResult{Err: errors.New("memory.lore_command is empty")}
@@ -94,7 +94,7 @@ func probeLore(ctx context.Context, cfg *config.Config) loreResult {
 	defer client.Close()
 
 	var out loreResult
-	for i, space := range configuredSpaces(cfg) {
+	for i, space := range configuredSpaces(cfg, scope) {
 		_, err := client.Search(ctx, memory.SearchQuery{
 			Text:   "kenward doctor",
 			Spaces: []domain.SpaceID{space},
@@ -116,14 +116,24 @@ func isSpaceError(err error) bool {
 	return errors.Is(err, memory.ErrUnknownSpace) || errors.Is(err, memory.ErrNotWriter)
 }
 
-// configuredSpaces lists every lore space this household uses, shared space first.
-func configuredSpaces(cfg *config.Config) []domain.SpaceID {
+// configuredSpaces lists the lore spaces this process uses, shared space first.
+//
+// It is scoped for the same reason the bot tokens are, and the scoping here matters
+// more. A pod has its own lore instance over its own LORE_HOME, so a member's pod
+// legitimately holds only the shared space and that member's own private one — probing
+// a sibling's would fail on a perfectly healthy pod, and on a household that had put
+// every space in one store it would *succeed*, which is doctor searching a member's
+// private memory from another member's container. Neither is acceptable.
+//
+// A member's pod does need the shared space: its capture engine writes household
+// knowledge there (internal/supervisor's buildUnit). The group's pod needs only that.
+func configuredSpaces(cfg *config.Config, scope config.UnitScope) []domain.SpaceID {
 	var spaces []domain.SpaceID
 	if cfg.Household.SharedSpace != "" {
 		spaces = append(spaces, domain.SpaceID(cfg.Household.SharedSpace))
 	}
 	for _, m := range cfg.Members {
-		if m.PrivateSpace != "" {
+		if m.PrivateSpace != "" && scope.Serves(m.ID) {
 			spaces = append(spaces, domain.SpaceID(m.PrivateSpace))
 		}
 	}

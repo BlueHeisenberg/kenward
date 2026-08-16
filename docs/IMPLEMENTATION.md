@@ -545,9 +545,44 @@ Validation rules that are errors, not warnings:
   naming the same `bot_token_env`, or the same `bot_token_file`, share a bot and defeat
   the mode
 - naming two sources for one secret is an error, not a precedence — see below
-- every secret the configuration depends on must be readable at startup, or `kenward`
-  exits with a list of what is missing and where each one was looked for; it never
-  starts half-configured
+- every secret **this process's own unit** depends on must be readable at startup, or
+  `kenward` exits with a list of what is missing and where each one was looked for; it
+  never starts half-configured
+
+### Secrets are demanded of the unit, not of the household
+
+Everything above is a property of the file and is checked in full by every process that
+reads it. The last rule is not: which secrets have to *resolve* depends on which unit the
+process was asked to be, because in isolated mode a pod is given the household's whole
+configuration and only its own unit's secrets. That is D-007 — a pod that held a
+sibling's bot token would be a pod that could read that member's private conversation —
+and it is what both compose files and the host supervisor already do. Demanding the
+household's secrets in a pod would have meant putting every member's token in every
+member's container, which is exactly the failure the mode exists to prevent.
+
+`config.UnitScope` carries the selection; its zero value is the whole household, so a
+simple-mode node and an operator at a terminal are unchanged. `Config.ValidateForUnit`
+and `Config.MissingSecretNamesForUnit` take it. There are three kinds of process:
+
+| Process | Bot tokens it must have | Provider keys it must have |
+| --- | --- | --- |
+| Household node (zero scope) | the household's, plus every member's in isolated mode | every endpoint's |
+| The group's pod (`--group` / `KENWARD_GROUP=1`) | the household's, when `group_chat_id` is set | the endpoints `household.tiers` reaches |
+| A member's pod (`--member ID` / `KENWARD_MEMBER=ID`) | that member's, and no other — not even the household's | the endpoints that member's `tiers` reaches |
+
+Provider keys are scoped by tier chain for the same reason `deploy/compose.isolated.yml`
+hands each container only the keys its own chain can reach: a key present in an
+environment is a key that can be used whatever routing intended. A key that is *named*
+and unset is a hard fault rather than an absent optional secret, so an unscoped check
+refused a local-only member's pod for obeying its own configuration.
+
+What the scope does **not** touch: mode, endpoints, tier chains, space uniqueness,
+`telegram_id` uniqueness, bot-token-source uniqueness, the lore command, the limits, the
+update channel, and the "one source per secret" rule. Every pod reads the same file, so a
+file that cannot be served is refused by whichever pod picks it up. One check is added
+rather than relaxed: a process told to serve a member the file does not name is refused,
+because a scope that selects nobody would otherwise select no secrets and report itself
+healthy.
 
 ### Where a secret comes from
 
@@ -944,6 +979,19 @@ pod's own token beside it, so what a member's pod gains is the household roster 
 chat and no bot becomes reachable from holding it. Filtering it would buy nothing and
 would put the two deployment paths back out of step, which is what D-022 decided against.
 
+The consequence is that the pod must read a household file while holding one unit's
+secrets, so everything it checks is checked at the scope of its own unit — see
+"Secrets are demanded of the unit, not of the household" in §4. That applies past
+validation: `kenward doctor` authorises only this unit's bot token, probes only this
+unit's lore spaces (the shared space, plus this member's private one), and reports key
+custody and tier notes for this unit alone. It has to, because the image's `HEALTHCHECK`
+runs `doctor` — as a *second* process with no arguments of its own, so it takes the unit
+from `KENWARD_MEMBER` / `KENWARD_GROUP` in the container's environment. The host
+supervisor already sets those; `deploy/compose.isolated.yml` sets them alongside the
+`--member` in `command:` for exactly this reason, and the two must agree or `kenward`
+refuses to start (D-022). Without it a member's pod would be marked unhealthy for every
+sibling secret it correctly does not hold, and restarted every thirty seconds forever.
+
 The file is read once when the supervisor is constructed and every pod is recreated from
 that snapshot, so a configuration edited while the household is running reaches pods on
 the next `kenward run` rather than on the next `Roll`.
@@ -1001,7 +1049,7 @@ including no stdin at all — is `Unanswered`, and it says so.
 
 ### What of that is wired
 
-The requirements above are the destination. Most of them are now reached; two are not,
+The requirements above are the destination. Most of them are now reached; one is not,
 and the distance is worth stating precisely, because a household reading this section
 would otherwise conclude that every release arrives on its own.
 
@@ -1037,16 +1085,44 @@ answer will implement — a member's tap, taps from anyone else not counting, ti
 undeliverable both meaning `Unanswered`. Wiring it means the supervisor exposing a way to
 ask the household group something, and that is the supervisor's decision.
 
-**Not wired: one member at a time.** This one is not merely unbuilt; the obvious
+**Wired, but not from inside the updater: one member at a time.** The obvious
 implementation does not exist and cannot. keel's cross-process lock serialises processes
 that share **one install path** — several pods running off one mounted binary — and it is
 taken *before* the drain, so a process that loses it skips the cycle quietly without
 having silenced anybody first. But containerised isolated-mode pods each carry a private
 copy of the binary in their own image filesystem. They never contend for that lock, so it
-delivers no per-member sequencing for them at all. Two independent analyses reached the
-same conclusion: rolling one member at a time is not expressible from inside the process
-being updated. It belongs to whatever owns the pods' shared artifact — the image, and the
-process that rolls it — and pretending otherwise would be a promise the lock cannot keep.
+delivers no per-member sequencing for them at all. Rolling one member at a time is not
+expressible from inside the process being updated. It belongs to whatever owns the pods'
+shared artifact — the image, and the process that rolls it — which is the **host**
+supervisor, `supervisor.Isolated`, and that is where it lives.
+
+`Isolated.Roll` recreates each pod in turn: graceful stop, recreation from the pod's full
+spec on the current image, then a wait for the new pod to hold running across two polls
+before the next is touched. Members in configuration file order, the household group
+last, so the pod every member shares stays on the working old image until every member's
+own pod has proven the new one. **It stops at the first failure** and leaves every later
+pod untouched on its working old image, because a rolling update that keeps rolling
+through failures turns one broken member into a broken household. Recreation goes through
+`sandbox.Recreate`, which preserves the work volume structurally; `Purge`, the one call
+that would take a member's lore with it, is not reachable from this path.
+
+**What fires it is a startup comparison, and it has to be.** The pod's image is not
+observable — keel's `Inspect` reports whether a container runs, never what it was built
+from — and this process does not learn it is a new build at the moment it becomes one,
+because the build that swapped the binary has already exited. So the host writes down
+which image it last brought the pods up on (`pod-image`, beside the state file under the
+data directory) and, on the next `Start`, compares it with the image it would now start
+pods from. Different, or no record at all, means roll. `ensureRunning` cannot do this job
+and must not learn to: it starts a pod that exists and creates one that does not, and a
+restart path that recreated pods would roll a new image across the whole household on the
+first crash. A pod that does not exist yet is skipped rather than recreated — it is on no
+image, and its own monitor will create it on the current one.
+
+A failed or partial roll is logged and never fatal, and it leaves the record unchanged so
+the next start tries again rather than recording a state the household is not in. The
+household serves throughout, on whichever mixture of images it ended up with: the rule
+that nothing in the update path may stop kenward serving outranks arriving at one
+version.
 
 `INSTALL.md` and `CLI.md` describe the update path in these terms rather than the
 requirements list's.

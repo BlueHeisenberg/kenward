@@ -12,7 +12,6 @@ import (
 	keelupdate "github.com/BlueHeisenberg/keel/update"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
-	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 	"github.com/BlueHeisenberg/kenward/internal/updater"
@@ -57,8 +56,11 @@ func cmdRun(e *env, args []string) int {
 		return exitUsage
 	}
 
+	// Scoped to the unit this process was told to be, so that a pod holding only its
+	// own bot token — which is all D-007 lets it hold — is not refused for the
+	// household's other tokens being where they belong, in the other pods.
 	path := resolveConfigPath(e, *configPath)
-	cfg, cfgErr := loadConfig(path, resolveDataDir(e, *dataDir), e.secrets())
+	cfg, cfgErr := loadConfigForUnit(path, resolveDataDir(e, *dataDir), e.secrets(), sel.scope())
 	if cfgErr != nil {
 		fmt.Fprint(e.stderr, renderConfigError(path, cfgErr))
 		return exitUsage
@@ -75,12 +77,9 @@ func cmdRun(e *env, args []string) int {
 			sel.flagName(), sel.source)
 		return exitUsage
 	}
-	if sel.member != "" {
-		if _, ok := cfg.MemberByID(domain.MemberID(sel.member)); !ok {
-			e.errorf("--member %s names no member in %s", sel.member, path)
-			return exitUsage
-		}
-	}
+	// A --member naming nobody is caught by the load above, in internal/config, which
+	// has to know about it anyway: the scope decides which secrets are demanded, so a
+	// selector pointing at nobody would otherwise be a pod that demands none.
 
 	// memory.lore_command is internal/config's now: it defaults an omitted command to
 	// DefaultLoreCommand and rejects one that could not be executed, so the check that

@@ -99,6 +99,20 @@ VOLUME ["/var/lib/kenward"]
 # are legitimately powered off, and treating that as unhealthy would restart
 # a perfectly healthy container in a loop (see docs/IMPLEMENTATION.md §9).
 #
+# No --member/--group here, deliberately, and it is not an omission: this is a
+# second process with no arguments of its own, so it takes the unit from
+# KENWARD_MEMBER / KENWARD_GROUP in the container's environment — which is
+# exactly where an isolated pod's identity already lives, whether the pod was
+# started by the host supervisor (which sets those variables) or by a compose
+# file (deploy/compose.isolated.yml sets them alongside the `--member` in
+# `command:`, for this reason). `doctor` then reports on that one unit: in an
+# isolated pod it authorises that unit's bot token and probes that unit's lore
+# spaces, and nothing else. It must not do more — a member's container holds
+# only that member's token (D-007), so a household-wide check inside it would
+# fail on every sibling secret the container correctly does not have, and
+# restart a perfectly good pod forever. In Simple mode neither variable is set
+# and the check is household-wide, as it should be.
+#
 # Absolute path, not a bare "kenward": distroless's PATH is not guaranteed to
 # include /usr/local/bin, and exec-form HEALTHCHECK/ENTRYPOINT do no shell
 # lookup to fall back on.

@@ -252,9 +252,9 @@ func unknownSpaceErr(space domain.SpaceID) error {
 // is awake.
 func healthyProbes() probes {
 	return probes{
-		lore: func(_ context.Context, cfg *config.Config) loreResult {
+		lore: func(_ context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
 			var res loreResult
-			for _, s := range configuredSpaces(cfg) {
+			for _, s := range configuredSpaces(cfg, scope) {
 				r := spaceResult{Space: s}
 				if !looksLikeSpaceID(string(s)) {
 					r.Err = unknownSpaceErr(s)
@@ -328,7 +328,7 @@ func everythingAsleep(base probes) probes {
 }
 
 func loreDown(base probes) probes {
-	base.lore = func(context.Context, *config.Config) loreResult {
+	base.lore = func(context.Context, *config.Config, config.UnitScope) loreResult {
 		return loreResult{Err: errors.New("lore mcp: exec: \"lore\": executable file not found in $PATH")}
 	}
 	return base

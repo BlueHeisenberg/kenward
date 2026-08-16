@@ -273,9 +273,9 @@ func TestDoctorJSON(t *testing.T) {
 func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, simpleYAML, fullEnvironment())
-	h.e.probes.lore = func(_ context.Context, cfg *config.Config) loreResult {
+	h.e.probes.lore = func(_ context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
 		var res loreResult
-		for _, s := range configuredSpaces(cfg) {
+		for _, s := range configuredSpaces(cfg, scope) {
 			r := spaceResult{Space: s}
 			if s == "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19" {
 				// The error internal/memory returns for exactly this, wrapped the

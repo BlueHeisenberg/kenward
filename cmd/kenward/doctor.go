@@ -52,6 +52,10 @@ type doctorReport struct {
 	Version    string `json:"version"`
 	Mode       string `json:"mode"`
 	ConfigPath string `json:"config_path"`
+	// Unit names the single unit this report is about, empty for a household-wide
+	// one. It is the difference between "no bot token for jordan" being a fault and
+	// being the mode working, so it is on the report rather than left to be inferred.
+	Unit string `json:"unit,omitempty"`
 
 	Configuration []check          `json:"configuration"`
 	Memory        []check          `json:"memory"`
@@ -78,9 +82,11 @@ type endpointReport struct {
 }
 
 func cmdDoctor(e *env, args []string) int {
-	fs := newFlagSet(e, "doctor", "kenward doctor [--config PATH] [--data-dir PATH] [--json]")
+	fs := newFlagSet(e, "doctor", "kenward doctor [--config PATH] [--data-dir PATH] [--member ID | --group] [--json]")
 	configPath := fs.String("config", "", "path to kenward.yaml")
 	dataDir := fs.String("data-dir", "", "override the data directory")
+	member := fs.String("member", "", "isolated mode only: report on this member's pod and nothing else")
+	group := fs.Bool("group", false, "isolated mode only: report on the household group's pod and nothing else")
 	asJSON := fs.Bool("json", false, "emit the report as JSON")
 	if code, ok := parseFlags(e, fs, args); !ok {
 		return code
@@ -90,7 +96,19 @@ func cmdDoctor(e *env, args []string) int {
 		return exitUsage
 	}
 
-	rep := runDoctor(e, resolveConfigPath(e, *configPath), resolveDataDir(e, *dataDir))
+	// The same resolution `run` uses, flags then environment, and for the same reason
+	// it matters here: the container's HEALTHCHECK is a second process with no
+	// arguments of its own, so the only way it can know which unit its container is
+	// serving is the environment KENWARD_MEMBER/KENWARD_GROUP that the pod already
+	// carries. Without that a member's pod would be reported unhealthy for every
+	// sibling token it correctly does not hold, and restarted in a loop.
+	sel, err := resolveUnitSelection(*member, *group, e.env())
+	if err != nil {
+		e.errorf("%v", err)
+		return exitUsage
+	}
+
+	rep := runDoctor(e, resolveConfigPath(e, *configPath), resolveDataDir(e, *dataDir), sel)
 	if *asJSON {
 		enc := json.NewEncoder(e.stdout)
 		enc.SetIndent("", "  ")
@@ -108,17 +126,23 @@ func cmdDoctor(e *env, args []string) int {
 //
 // Nothing stops at the first failure. A household's configuration is edited rarely
 // and by hand; surfacing one problem per run turns a five-minute fix into an evening.
-func runDoctor(e *env, path, dataDir string) doctorReport {
+// sel is which unit this process is reporting on. The zero selection is the whole
+// household, which is what a simple-mode node and an operator at a terminal both are.
+func runDoctor(e *env, path, dataDir string, sel unitSelection) doctorReport {
 	ctx := e.context()
+	scope := sel.scope()
 	rep := doctorReport{
 		Version:    version.Short(),
 		ConfigPath: path,
 		Mode:       "unknown",
 		Exit:       exitOK,
 	}
+	if sel.single() {
+		rep.Unit = sel.describe()
+	}
 
 	secrets := e.secrets()
-	cfg, cfgErr := loadConfig(path, dataDir, secrets)
+	cfg, cfgErr := loadConfigForUnit(path, dataDir, secrets, scope)
 	var ve *config.ValidationError
 	switch {
 	case cfgErr != nil && !errors.As(cfgErr, &ve):
@@ -152,8 +176,9 @@ func runDoctor(e *env, path, dataDir string) doctorReport {
 	// to fix rather than by variable name — a household may supply a token as a
 	// file or a systemd credential, and "KENWARD_BOT_TOKEN is unset" would be a
 	// confusing thing to tell somebody who never intended to use a variable.
-	// Paths only: nothing here ever prints a value.
-	if missing := cfg.MissingSecretNames(secrets); len(missing) > 0 {
+	// Paths only: nothing here ever prints a value. Scoped: in a member's pod the
+	// secrets that count are that member's, and a sibling's absence is D-007 working.
+	if missing := cfg.MissingSecretNamesForUnit(secrets, scope); len(missing) > 0 {
 		rep.Configuration = append(rep.Configuration, check{
 			Status: statusFail,
 			Text:   fmt.Sprintf("%s no readable value", plural(len(missing), "1 secret has", fmt.Sprintf("%d secrets have", len(missing)))),
@@ -161,19 +186,23 @@ func runDoctor(e *env, path, dataDir string) doctorReport {
 		})
 		rep.Exit = exitUsage
 	} else {
-		rep.Configuration = append(rep.Configuration, check{
-			Status: statusOK,
-			Text:   "every secret the configuration names can be read",
-		})
+		// Worded for the scope it was judged at. "Every secret the configuration
+		// names" would be a false claim in a pod, which holds one unit's secrets on
+		// purpose and reads none of the others.
+		text := "every secret the configuration names can be read"
+		if rep.Unit != "" {
+			text = "every secret this unit needs can be read"
+		}
+		rep.Configuration = append(rep.Configuration, check{Status: statusOK, Text: text})
 	}
 
-	rep.Memory = doctorMemory(ctx, e, cfg, &rep)
-	rep.Sessions = doctorSessions(ctx, e, cfg)
-	rep.Transport = doctorTransport(ctx, e, cfg, secrets, &rep)
-	rep.Transport = append(rep.Transport, doctorEndpointKeys(cfg, secrets, &rep)...)
+	rep.Memory = doctorMemory(ctx, e, cfg, scope, &rep)
+	rep.Sessions = doctorSessions(ctx, e, cfg, scope)
+	rep.Transport = doctorTransport(ctx, e, cfg, secrets, scope, &rep)
+	rep.Transport = append(rep.Transport, doctorEndpointKeys(cfg, secrets, scope, &rep)...)
 	rep.Endpoints = doctorEndpoints(ctx, e, cfg)
 	rep.Statement = privacy.Statement(privacyModeFor(cfg.Mode))
-	rep.TierNotes = tierNotes(cfg)
+	rep.TierNotes = tierNotes(cfg, scope)
 	return rep
 }
 
@@ -196,8 +225,8 @@ func runDoctor(e *env, path, dataDir string) doctorReport {
 // comes back. That is why this is worth catching at doctor time rather than at the
 // first Get. The explanation comes from internal/memory's own error rather than a
 // second copy of it written here.
-func doctorMemory(ctx context.Context, e *env, cfg *config.Config, rep *doctorReport) []check {
-	res := e.probes.loreProbe()(ctx, cfg)
+func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.UnitScope, rep *doctorReport) []check {
+	res := e.probes.loreProbe()(ctx, cfg, scope)
 	if res.Err != nil {
 		if rep.Exit == exitOK {
 			rep.Exit = exitFailure
@@ -275,7 +304,7 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, rep *doctorRe
 // command, and a household mid-enrolment is not unhealthy. Whether a key is unwrapped
 // *right now* is not knowable from here at all: that lives in the running node's
 // memory and this is a different process. Saying so is better than implying otherwise.
-func doctorSessions(ctx context.Context, e *env, cfg *config.Config) []check {
+func doctorSessions(ctx context.Context, e *env, cfg *config.Config, scope config.UnitScope) []check {
 	res := e.probes.sessionsProbe()(ctx, cfg)
 	if res.Err != nil {
 		return []check{{
@@ -303,6 +332,12 @@ func doctorSessions(ctx context.Context, e *env, cfg *config.Config) []check {
 	})
 	checks = append(checks, idleExpiryCheck(cfg.Session.IdleTimeout.Duration()))
 	for _, id := range res.MissingKey {
+		// A member's pod holds one member's key and no other, so a sibling with no
+		// key here is not a finding — it is the mode. Reporting it would tell an
+		// operator to go and fix something that must never be fixed in this pod.
+		if !scope.Serves(string(id)) {
+			continue
+		}
 		checks = append(checks, check{
 			Status: statusWarn,
 			Text:   fmt.Sprintf("%s is enrolled but has no wrapped key", id),
@@ -353,7 +388,12 @@ func idleExpiryCheck(d time.Duration) check {
 // A token Telegram refuses is a failure: the node has no way to receive or send
 // anything, which is not a household machine being asleep but a deployment that
 // cannot work.
-func doctorTransport(ctx context.Context, e *env, cfg *config.Config, secrets *config.Secrets, rep *doctorReport) []check {
+//
+// Every bot token *this unit* names, that is. In a member's pod the household's own
+// token and every sibling's are deliberately absent (D-007), and asking Telegram about
+// a token this container was correctly never given would fail the pod's health check
+// for doing the one thing isolated mode is for.
+func doctorTransport(ctx context.Context, e *env, cfg *config.Config, secrets *config.Secrets, scope config.UnitScope, rep *doctorReport) []check {
 	probe := e.probes.telegramProbe()
 	var checks []check
 
@@ -418,9 +458,16 @@ func doctorTransport(ctx context.Context, e *env, cfg *config.Config, secrets *c
 
 	if cfg.Mode == config.ModeIsolated {
 		for _, m := range cfg.Members {
+			if !scope.Serves(m.ID) {
+				continue
+			}
 			add(m.Name, m.BotTokenRef(), func() (config.Secret, error) { return m.BotToken(secrets) })
 		}
-		add("household group", cfg.BotTokenRef(), func() (config.Secret, error) { return cfg.BotToken(secrets) })
+		// The group's bot, for whoever runs the group conversation. A member's pod
+		// does not and never holds that token.
+		if scope.ServesGroup() {
+			add("household group", cfg.BotTokenRef(), func() (config.Secret, error) { return cfg.BotToken(secrets) })
+		}
 		return checks
 	}
 	add("household", cfg.BotTokenRef(), func() (config.Secret, error) { return cfg.BotToken(secrets) })
@@ -434,9 +481,14 @@ func doctorTransport(ctx context.Context, e *env, cfg *config.Config, secrets *c
 // be read — a file with the wrong mode, a credential that is not there — because that
 // endpoint will refuse every request while looking configured, and the tier chain
 // will fall through it silently.
-func doctorEndpointKeys(cfg *config.Config, secrets *config.Secrets, rep *doctorReport) []check {
+//
+// The endpoints this unit's own chain can reach, and no others. A pod is given only
+// those keys on purpose — a key in an environment is a key that can be used whatever
+// routing intended — so an absent key for an endpoint this unit may not route to is the
+// configuration working.
+func doctorEndpointKeys(cfg *config.Config, secrets *config.Secrets, scope config.UnitScope, rep *doctorReport) []check {
 	var checks []check
-	for _, ep := range cfg.Endpoints {
+	for _, ep := range cfg.EndpointsForUnit(scope) {
 		sec, err := ep.APIKey(secrets)
 		switch {
 		case err != nil:
@@ -480,21 +532,28 @@ func doctorEndpoints(ctx context.Context, e *env, cfg *config.Config) []endpoint
 	return out
 }
 
-// tierNotes renders, for each conversation, what its tier chain means in practice.
-// Every line comes from internal/privacy; the only decision made here is which tiers
-// count as local, which privacy.TierNote asks its caller for because that is
-// configuration rather than something the privacy package can know.
-func tierNotes(cfg *config.Config) []string {
+// tierNotes renders, for each conversation this process serves, what its tier chain
+// means in practice. Every line comes from internal/privacy; the only decision made here
+// is which tiers count as local, which privacy.TierNote asks its caller for because that
+// is configuration rather than something the privacy package can know.
+//
+// Scoped, because "where each conversation may go" is a claim about the conversations
+// this process actually holds. A member's pod listing every other member's chain would
+// be answering for pods it has no part in.
+func tierNotes(cfg *config.Config, scope config.UnitScope) []string {
 	local := localTiers(cfg)
 	var notes []string
 	for _, m := range cfg.DomainMembers() {
+		if !scope.Serves(string(m.ID)) {
+			continue
+		}
 		notes = append(notes, privacy.MemberNote(m, staysHome(local, m.Tiers)))
 	}
 	label := cfg.Household.Name
 	if label == "" {
 		label = cfg.Household.SharedSpace
 	}
-	if label != "" {
+	if label != "" && scope.ServesGroup() {
 		notes = append(notes, privacy.TierNote(label, cfg.Household.Tiers, staysHome(local, cfg.Household.Tiers)))
 	}
 	return notes
@@ -503,7 +562,13 @@ func tierNotes(cfg *config.Config) []string {
 // renderDoctor draws the report.
 func renderDoctor(r doctorReport) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "kenward %s — mode: %s\n", r.Version, r.Mode)
+	fmt.Fprintf(&b, "kenward %s — mode: %s", r.Version, r.Mode)
+	if r.Unit != "" {
+		// Named on the first line so that nobody reads a pod's report as the
+		// household's. Half the checks below are about this unit alone.
+		fmt.Fprintf(&b, " — this pod runs only %s", r.Unit)
+	}
+	b.WriteString("\n")
 
 	writeSection(&b, "Configuration", r.Configuration)
 	writeSection(&b, "Memory", r.Memory)

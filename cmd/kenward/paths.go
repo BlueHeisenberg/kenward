@@ -63,6 +63,17 @@ func resolveDataDir(e *env, flagValue string) string {
 // under the data directory and reading it from the configured location before
 // applying --data-dir would merge the wrong household's bindings.
 func loadConfig(path, dataDir string, secrets *config.Secrets) (*config.Config, error) {
+	return loadConfigForUnit(path, dataDir, secrets, config.UnitScope{})
+}
+
+// loadConfigForUnit is loadConfig for a process that runs one unit: `run` in a pod, and
+// the `doctor` its health check invokes.
+//
+// The scope reaches only as far as which secrets have to resolve. A member's pod holds
+// its own bot token and no other (D-007), so demanding the household's tokens of it
+// would be demanding the one thing the mode forbids — but everything else in the file is
+// still checked in full, because it is the same file every other pod reads.
+func loadConfigForUnit(path, dataDir string, secrets *config.Secrets, scope config.UnitScope) (*config.Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("opening %s: %w", path, err)
@@ -83,10 +94,10 @@ func loadConfig(path, dataDir string, secrets *config.Secrets) (*config.Config, 
 	}
 
 	mergeErr := cfg.MergeState(st)
-	// ValidateWithSecrets rather than Validate: a household may supply its token as
-	// a file or a systemd credential, and judging it against the environment alone
+	// ValidateForUnit rather than Validate: a household may supply its token as a
+	// file or a systemd credential, and judging it against the environment alone
 	// would refuse a configuration that is in fact complete.
-	validateErr := cfg.ValidateWithSecrets(secrets)
+	validateErr := cfg.ValidateForUnit(secrets, scope)
 	if joined := joinValidation(mergeErr, validateErr); joined != nil {
 		return cfg, joined
 	}

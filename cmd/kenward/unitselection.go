@@ -22,6 +22,13 @@ type unitSelection struct {
 
 func (u unitSelection) single() bool { return u.member != "" || u.group }
 
+// scope is this selection as internal/config's, for the checks that depend on which
+// unit is being run — which secrets have to resolve, above all. The zero selection
+// becomes the zero scope, the whole household.
+func (u unitSelection) scope() config.UnitScope {
+	return config.UnitScope{Member: u.member, Group: u.group}
+}
+
 func (u unitSelection) label() string {
 	if u.group {
 		return "the household group"

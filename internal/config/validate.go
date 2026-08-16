@@ -54,6 +54,106 @@ func (p *problems) addf(format string, args ...any) {
 	p.list = append(p.list, fmt.Sprintf(format, args...))
 }
 
+// UnitScope names the one unit a process was asked to be.
+//
+// Isolated mode runs one pod per unit, and each pod holds only that unit's bot token —
+// that is D-007, and it is the whole point of the mode. Every pod is nevertheless given
+// the household's whole configuration, because a pod has to know the members it may not
+// serve in order to refuse them. Unscoped, validation therefore demanded every token
+// named in the file from every pod, and the only way to satisfy that is to put every
+// member's token in every member's container: exactly the failure the mode exists to
+// prevent.
+//
+// The zero value is the whole household — a simple-mode node, or the isolated host
+// supervisor that starts the pods — so a household-wide process validates exactly as it
+// always did.
+//
+// It scopes secret *resolution* and nothing else. Every structural rule in this file is
+// a property of the file rather than of the pod reading it, and stays household-wide: a
+// pod handed a configuration with two members on one private space, a tier no endpoint
+// serves, or two members on one bot token must refuse it, whichever unit the pod is.
+type UnitScope struct {
+	// Member is the id of the member this pod serves. Empty means it serves none.
+	Member string
+	// Group marks the household group's pod.
+	Group bool
+}
+
+// ServesGroup reports whether this scope covers the household group's conversation, and
+// so the household bot it runs on. A member's pod never speaks on that bot; the group's
+// pod and a household-wide process both do.
+func (u UnitScope) ServesGroup() bool { return strings.TrimSpace(u.Member) == "" }
+
+// Serves reports whether this scope covers the member with this id — their bot, their
+// key, their private space.
+func (u UnitScope) Serves(memberID string) bool {
+	if u.Group {
+		return false
+	}
+	member := strings.TrimSpace(u.Member)
+	return member == "" || member == strings.TrimSpace(memberID)
+}
+
+// EndpointsForUnit lists the endpoints this unit's conversations can actually route to:
+// the ones tagged with a tier in its own chain.
+//
+// A pod is given only the provider keys its chain can reach, and deliberately so — a key
+// present in an environment is a key that can be used whatever the routing policy
+// intended, so david's local-only pod holds none. deploy/compose.isolated.yml says
+// exactly that, in those words. Demanding every endpoint's key of every pod would have
+// made that file unstartable for a second reason after the bot tokens, so the same
+// scoping applies here.
+//
+// The zero scope returns every endpoint, unchanged: a household-wide process may route
+// any conversation, and an endpoint no chain names is a configuration fault worth
+// surfacing rather than quietly skipping.
+func (c *Config) EndpointsForUnit(scope UnitScope) []EndpointConfig {
+	chain, scoped := c.unitTiers(scope)
+	if !scoped {
+		return c.Endpoints
+	}
+	var out []EndpointConfig
+	for _, e := range c.Endpoints {
+		if chainReaches(chain, e.Tags) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// chainReaches reports whether a tier chain names any of an endpoint's tags. It is the
+// same question the router asks at routing time, asked here about credentials.
+func chainReaches(chain, tags []string) bool {
+	for _, t := range chain {
+		for _, tag := range tags {
+			if strings.TrimSpace(t) == strings.TrimSpace(tag) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// unitTiers returns the tier chain this scope's conversations use. scoped is false for a
+// household-wide process, which uses every chain in the file and so reaches everything.
+//
+// A member the file does not name yields an empty chain rather than every chain: that
+// pod reaches nothing, which is the safe reading, and validateScope refuses it anyway.
+func (c *Config) unitTiers(scope UnitScope) (chain []string, scoped bool) {
+	if scope.Group {
+		return c.Household.Tiers, true
+	}
+	if member := strings.TrimSpace(scope.Member); member != "" {
+		for _, m := range c.Members {
+			if strings.TrimSpace(m.ID) == member {
+				return m.Tiers, true
+			}
+		}
+		return nil, true
+	}
+	return nil, false
+}
+
 // Validate checks the configuration against the rules in the implementation contract
 // and against the environment it will run in.
 //
@@ -68,10 +168,17 @@ func (c *Config) Validate(lookupEnv LookupEnvFunc) error {
 }
 
 // ValidateWithSecrets is Validate with the secret sources injected, for tests and for
-// `doctor` judging a configuration against an environment other than its own.
+// `doctor` judging a configuration against an environment other than its own. It judges
+// the whole household; ValidateForUnit judges one pod.
 //
 // s may be nil, in which case the process environment and the real filesystem are used.
 func (c *Config) ValidateWithSecrets(s *Secrets) error {
+	return c.ValidateForUnit(s, UnitScope{})
+}
+
+// ValidateForUnit is ValidateWithSecrets for a process that runs one unit: the secrets
+// it demands are the ones that unit reads, and nothing else changes. See UnitScope.
+func (c *Config) ValidateForUnit(s *Secrets, scope UnitScope) error {
 	s = s.orDefault()
 	p := &problems{}
 
@@ -82,12 +189,37 @@ func (c *Config) ValidateWithSecrets(s *Secrets) error {
 	c.validateMemory(p)
 	c.validateLimits(p)
 	c.validateUpdate(p)
-	c.validateSecrets(p, s)
+	c.validateScope(p, scope)
+	c.validateSecrets(p, s, scope)
 
 	if len(p.list) == 0 {
 		return nil
 	}
 	return &ValidationError{Problems: p.list, MissingEnv: p.missingEnv, MissingSecrets: p.missingSecrets}
+}
+
+// validateScope checks the unit this process was asked to be against the household it
+// was handed.
+//
+// Without it a pod told to serve a member the file does not name would validate clean —
+// scoped secret resolution finds no such member, so it demands no token at all — and
+// then refuse to start. That is a green health check on a pod that cannot work, which is
+// worse than the fault it hides.
+//
+// A selector in simple mode is not checked here. There is nothing to select in simple
+// mode, and the refusal for that belongs where the selector was given, with the reason
+// it is wrong there; it is not a fault in the file.
+func (c *Config) validateScope(p *problems, scope UnitScope) {
+	member := strings.TrimSpace(scope.Member)
+	if member == "" || c.Mode != ModeIsolated {
+		return
+	}
+	for _, m := range c.Members {
+		if strings.TrimSpace(m.ID) == member {
+			return
+		}
+	}
+	p.addf("members: this process was asked to serve member %q, and this configuration names no member with that id", member)
 }
 
 func (c *Config) validateMode(p *problems) {
@@ -407,7 +539,21 @@ type secretRef struct {
 //
 // Every reference is included even when the file states no source for it, because the
 // systemd credential is the source in that case and the only way to find out is to look.
-func (c *Config) secretRefs() []secretRef {
+//
+// scope narrows the bot tokens to the ones this process speaks on — see UnitScope. The
+// three cases are the three kinds of process there are:
+//
+//   - the household node (the zero scope): every member's token, plus the household's.
+//   - the household group's pod: the household's token and no member's. It serves the
+//     shared space over the household bot and never opens a private conversation.
+//   - a member's pod: that member's token and nothing else, not even the household's.
+//     The group conversation is another pod's work.
+//
+// Endpoint API keys are scoped too, by the unit's tier chain — see EndpointsForUnit. A
+// key that is named and unset is a hard fault rather than an absent optional secret, so
+// leaving these unscoped would refuse a local-only member's pod for not holding the
+// provider key its own configuration forbids it to use.
+func (c *Config) secretRefs(scope UnitScope) []secretRef {
 	var refs []secretRef
 	seenEnv := make(map[string]bool)
 	seenFile := make(map[string]bool)
@@ -434,15 +580,19 @@ func (c *Config) secretRefs() []secretRef {
 	if c.Mode == ModeSimple {
 		add(c.BotTokenRef(), "required in simple mode; the household shares one bot")
 	}
-	if c.Mode == ModeIsolated && c.Household.GroupChatID != 0 {
+	if c.Mode == ModeIsolated && c.Household.GroupChatID != 0 && scope.ServesGroup() {
 		// Per-member bots cover the members; the household group conversation still
 		// runs on the household bot. Only when there is a group to serve — isolated
 		// mode without one is a legitimate configuration and must not be made to
-		// invent a token it will never use.
+		// invent a token it will never use — and not in a member's pod, which never
+		// speaks on that bot and must never be handed it.
 		add(c.BotTokenRef(), "required in isolated mode when household.group_chat_id is set; the group pod runs on the household bot")
 	}
 	if c.Mode == ModeIsolated {
 		for i, m := range c.Members {
+			if !scope.Serves(m.ID) {
+				continue
+			}
 			ref := m.BotTokenRef()
 			// Indexed rather than named: a member with no id at all still has a
 			// row in the file, and the row is what the operator has to edit.
@@ -450,7 +600,13 @@ func (c *Config) secretRefs() []secretRef {
 			add(ref, "required in isolated mode; each member's pod holds its own bot token")
 		}
 	}
+	// Walked over the whole list, and skipped rather than filtered, so that the index
+	// in a message is the row in the file whoever is reading it.
+	chain, scoped := c.unitTiers(scope)
 	for i, e := range c.Endpoints {
+		if scoped && !chainReaches(chain, e.Tags) {
+			continue
+		}
 		ref := e.APIKeyRef()
 		ref.Where = fmt.Sprintf("endpoints[%d].api_key", i)
 		add(ref, "")
@@ -465,10 +621,13 @@ func (c *Config) secretRefs() []secretRef {
 // is a refusal a member cannot act on; a missing key discovered at startup is a line in
 // the operator's terminal. Values read here are proved and dropped: nothing is kept, and
 // no fault message quotes one.
-func (c *Config) validateSecrets(p *problems, s *Secrets) {
+//
+// scope decides which secrets that is; validateSecretSources, below, is unscoped,
+// because naming two sources for one secret is wrong in the file whoever reads it.
+func (c *Config) validateSecrets(p *problems, s *Secrets, scope UnitScope) {
 	s = s.orDefault()
 	c.validateSecretSources(p)
-	for _, ref := range c.secretRefs() {
+	for _, ref := range c.secretRefs(scope) {
 		if ref.File != "" && ref.Env != "" {
 			// Already reported by validateSecretSources, which sees the secrets
 			// this mode does not use as well. Resolving would say it twice.
@@ -547,17 +706,24 @@ func (c *Config) MissingEnvNames(lookupEnv LookupEnvFunc) []string {
 		lookupEnv = os.LookupEnv
 	}
 	p := &problems{}
-	c.validateSecrets(p, NewSecrets(SecretOptions{LookupEnv: lookupEnv}))
+	c.validateSecrets(p, NewSecrets(SecretOptions{LookupEnv: lookupEnv}), UnitScope{})
 	sort.Strings(p.missingEnv)
 	return p.missingEnv
 }
 
-// MissingSecretNames returns the configuration paths of every secret that could not be
-// resolved, sorted — the whole set an operator has to fix, whatever form each one was
-// meant to arrive in.
+// MissingSecretNames returns the configuration paths of every secret the household needs
+// and could not resolve, sorted — the whole set an operator has to fix, whatever form
+// each one was meant to arrive in. MissingSecretNamesForUnit answers for one pod.
 func (c *Config) MissingSecretNames(s *Secrets) []string {
+	return c.MissingSecretNamesForUnit(s, UnitScope{})
+}
+
+// MissingSecretNamesForUnit is MissingSecretNames for a process that runs one unit. A
+// pod's health check asks this one: a sibling's token being absent from this container
+// is the mode working, not a fault.
+func (c *Config) MissingSecretNamesForUnit(s *Secrets, scope UnitScope) []string {
 	p := &problems{}
-	c.validateSecrets(p, s.orDefault())
+	c.validateSecrets(p, s.orDefault(), scope)
 	sort.Strings(p.missingSecrets)
 	return p.missingSecrets
 }

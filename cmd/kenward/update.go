@@ -235,7 +235,10 @@ func newScheduler(e *env, cfg *config.Config, sel unitSelection, drain updater.D
 func nodeHealthProbes(e *env, cfg *config.Config, sel unitSelection) updater.HealthProbes {
 	return updater.HealthProbes{
 		Lore: func(ctx context.Context) error {
-			if res := e.probes.loreProbe()(ctx, cfg); res.Err != nil {
+			// Scoped like healthToken below: in a pod, health is this unit's
+			// lore holding this unit's spaces. A sibling's private space is
+			// not in this pod's store and must not be looked for there.
+			if res := e.probes.loreProbe()(ctx, cfg, sel.scope()); res.Err != nil {
 				return fmt.Errorf("lore did not respond: %w", res.Err)
 			}
 			return nil

@@ -63,6 +63,13 @@ services:
       # from .env reaches this container — see the note at the top of this
       # file on why `env_file:` is not used here.
       KENWARD_BOT_TOKEN_DAVID: ${KENWARD_BOT_TOKEN_DAVID}
+      # Which unit this container is, stated to the container rather than only
+      # to the `run` process below. `--member=david` in `command:` is what
+      # `run` reads; the image's HEALTHCHECK is a *separate* process with no
+      # arguments, and without this it would check the whole household — and
+      # fail, because this container holds only david's token, which is the
+      # entire point. Keep the two in step: the same member id in both.
+      KENWARD_MEMBER: david
       # This pod's own lore instance. Distinct per service even though the
       # in-container path is the same string everywhere below — it resolves
       # against this service's own volume, never another's.
@@ -98,6 +105,9 @@ services:
       # As with david, above: only this member's own token, nothing else
       # from .env.
       KENWARD_BOT_TOKEN_JORDAN: ${KENWARD_BOT_TOKEN_JORDAN}
+      # As with david: the unit, for the HEALTHCHECK's benefit. Must match
+      # --member=jordan below.
+      KENWARD_MEMBER: jordan
       LORE_HOME: /var/lib/kenward/lore
       # Worked-example difference from david: say jordan's tiers in
       # kenward.yaml DO include a cloud tier (e.g. `[local, cloud]`) backed by
@@ -129,6 +139,9 @@ services:
     environment:
       # The group's own token, nothing else from .env.
       KENWARD_BOT_TOKEN_HOUSEHOLD: ${KENWARD_BOT_TOKEN_HOUSEHOLD}
+      # The group pod's unit, for the HEALTHCHECK. "1" is the only true value;
+      # must match the `--group` in command: below.
+      KENWARD_GROUP: "1"
       LORE_HOME: /var/lib/kenward/lore
       # Add only the api_key_env values named by endpoints tagged with a tier
       # in household.tiers (kenward.yaml). If household.tiers includes
@@ -154,9 +167,12 @@ services:
   # 1. Copy one of the per-member blocks above (david or jordan).
   # 2. Rename the service key, container_name, and both volume references to
   #    kenward-sam / kenward-sam-data.
-  # 3. Set --member=sam in `command:` and swap the environment line for
-  #    KENWARD_BOT_TOKEN_SAM (add it to kenward.yaml's members[].bot_token_env
-  #    and to .env — never reuse another member's token variable).
+  # 3. Set --member=sam in `command:`, set KENWARD_MEMBER: sam in
+  #    `environment:` (the HEALTHCHECK reads that one — see david's block), and
+  #    swap the token line for KENWARD_BOT_TOKEN_SAM (add it to kenward.yaml's
+  #    members[].bot_token_env and to .env — never reuse another member's token
+  #    variable). If the two disagree, kenward refuses to start and says so
+  #    rather than quietly serving the wrong member.
   # 4. Add a `kenward-sam-data:` entry under `volumes:` below.
   # 5. Do NOT point sam's LORE_HOME or data volume at david's or jordan's —
   #    each member's lore instance must be exclusive to their own container.
