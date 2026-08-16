@@ -88,7 +88,7 @@ file that no longer exists. The refusal is a usage error, so a script notices.
 
 ---
 
-## `kenward run [--config PATH] [--data-dir PATH] [--member ID | --group]`
+## `kenward run [--config PATH] [--data-dir PATH] [--member ID | --group] [--image REF]`
 
 Runs the node. This is what the container entrypoint and the systemd unit call.
 
@@ -101,6 +101,15 @@ one unit: a member's pod is started with `--member david`, the household's with
 `--group`. In simple mode both are omitted and one process runs every unit. Passing
 either in simple mode is a usage error rather than a silently ignored flag — a flag that
 does nothing is how someone ends up believing they are isolated when they are not.
+
+`--image REF` is **isolated mode only** as well, and names the pod image the host
+supervisor starts pods from. It has no configuration field, deliberately: there is no
+sensible default for the artifact a household's private conversations run inside. Omitted,
+a released build starts pods from `ghcr.io/blueheisenberg/kenward:<its own version>`, so
+the host and its pods run the same code by default rather than by an operator remembering
+to keep two strings in step. A development build has no published tag to fall back to, so
+it refuses to start and says to pass `--image REF` — guessing a tag there would start pods
+from somebody else's build of kenward.
 
 - Loads and validates the config; refuses to start on any validation error, printing all
   of them at once.

@@ -19,7 +19,11 @@ Companion documents: `ARCHITECTURE.md` (why), this file (what and how).
 - **`context.Context` is the first argument** of anything that can block.
 - **No global state**, no package-level singletons, no `init()` side effects.
 - **Typed sentinel errors** for anything the caller must distinguish
-  (`ErrNoBackend`, `ErrNotEnrolled`, `ErrLocked`, …). Wrap with `%w`.
+  (`scope.ErrNotEnrolled`, `session.ErrLocked`, `capture.ErrMemberNotified`, …). Wrap
+  with `%w`. Where the caller needs the *details* of the failure and not just its
+  identity, the error is a struct rather than a sentinel — `routing.NoBackendError`
+  carries the tier chain and the endpoints tried, because the refusal shown to a member
+  names them.
 - **Every package has table-driven tests.** Unit tests make no network calls and touch
   no real Telegram, provider or lore instance — all three are interfaces with fakes.
 - **Nothing writes to memory without an explicit user confirmation.** No exceptions, no
@@ -31,6 +35,8 @@ Companion documents: `ARCHITECTURE.md` (why), this file (what and how).
 
 ```
 cmd/kenward/            entrypoint: run, setup, invite, revoke, doctor, update, version
+cmd/kenward-release/    release tooling: signing keys, manifests, sign, verify.
+                        Never shipped in the image or the release artifacts.
 internal/domain/        core types. Depends on nothing.
 internal/config/        YAML load, defaults, validation
 internal/scope/         message -> Scope resolution. THE authorization boundary.
@@ -42,13 +48,23 @@ internal/capture/       capture proposal + confirmation state machine
 internal/enrol/         claim codes, onboarding state machine
 internal/assistant/     the per-member Unit: one turn, end to end
 internal/supervisor/    simple (goroutines) | isolated (pods)
+internal/updater/       update checks, health gating, rollback, consent
+internal/privacy/       the per-mode privacy statements, stated once
 internal/setup/         first-run wizard
 internal/version/       build metadata
+internal/e2e/           tests only, no production code: whole messages through
+                        the real wiring, faked only at the three outer edges
 ```
 
 Dependency direction is strictly downward: `domain` depends on nothing; `assistant`
 depends on the interfaces, never on their implementations. `supervisor` wires
 concrete implementations together and is the only package that may import all of them.
+
+One exception, and it is deliberate rather than an erosion: `assistant` imports
+`keel/llm` for its **error vocabulary** alone, to classify a router failure into the right
+member-facing notice (§10). It reaches no provider and constructs no client; the routing
+seam passes those error types through unchanged, so re-declaring them in `routing` would
+only add a mapping that could disagree with itself.
 
 Third-party dependencies, fixed:
 
@@ -58,7 +74,7 @@ Third-party dependencies, fixed:
 | `github.com/modelcontextprotocol/go-sdk` | v1.7.0 | `memory` |
 | `gopkg.in/yaml.v3` | v3.0.1 | `config` |
 | `golang.org/x/sys` | v0.47.0 | `setup` (terminal echo suppression) |
-| `github.com/BlueHeisenberg/keel` | v0.4.0 | `routing` (llm), `session` (vault), `supervisor` (sandbox), `updater` (update) |
+| `github.com/BlueHeisenberg/keel` | v0.5.0 | `routing` and `assistant` (llm), `session` (vault), `supervisor` (sandbox), `updater`, `cmd/kenward` and `cmd/kenward-release` (update) |
 
 Note: the MCP SDK requires Go 1.25, which is why the module targets it.
 
@@ -238,9 +254,24 @@ type Transport interface {
 keyboard. A tap from anyone else is ignored — not answered, not acknowledged. Without
 this, another member could route someone's capture.
 
-`Mux` fans a single bot's `Updates` channel out to per-member scoped `Transport` views
-by `(UserID, ChatID)`. Simple mode uses it; Isolated mode does not (each pod owns its
-own bot).
+**A reply is split; a question is not.** Telegram caps one text message at 4096 UTF-16
+units, so `Send` splits an over-long `Outbound` across several messages and delivers them
+in order. `Ask` refuses instead, with `ErrTextTooLong`: the buttons belong to exactly one
+message, and a question split across two would put the choices under half of what they
+answer. Splitting is the right answer for prose and the wrong one for a decision.
+
+The transport's other sentinels are the malformed-input guards on the same boundary:
+`ErrUpdatesActive` (a second `Updates` stream on one transport), `ErrEmptyText` (a message
+or question carrying nothing), and `ErrNoChoices` (a question with no buttons — a question
+nobody can answer).
+
+`Mux` fans a single bot's `Updates` channel out to scoped `Transport` views, each defined
+by a predicate over `Inbound` rather than by a key: a member's view matches
+`!in.IsGroup && in.UserID == <their telegram id>`, and the household group's matches
+`in.IsGroup && in.ChatID == <the group chat>`. A member is therefore identified by who
+sent the message and the group by which chat it arrived in — never the other way round,
+which is what keeps a member's direct view from ever seeing a group message. Simple mode
+uses the Mux; Isolated mode does not (each pod owns its own bot).
 
 ### `internal/routing`
 
@@ -312,7 +343,8 @@ type KeyFunc func(ep Endpoint) (string, error)
 func NewPool(endpoints []Endpoint, c Completer) *Pool   // *Pool implements Router
 func NewHTTPCompleter(client *http.Client, key KeyFunc, logger *slog.Logger) Completer
 
-// ErrNoBackend carries what was tried, so the refusal can be specific.
+// NoBackendError carries what was tried, so the refusal can be specific. It is a
+// typed error, not a sentinel: the caller needs the chain and the endpoint names.
 type NoBackendError struct{ Chain []string; Tried []string }
 func (e *NoBackendError) Error() string
 ```
@@ -455,11 +487,25 @@ update:
   check_interval: 6h
 ```
 
-`data_dir` holds only what kenward writes about itself — today `state.json`, the record
-of which Telegram account is bound to which member. It is not where lore keeps its data
-and it never holds a secret. Left empty it resolves to the per-OS state location; the
-`--data-dir` flag and `$KENWARD_DATA_DIR` override it in that order, which is how the
-container image runs with no arguments. See `CLI.md`.
+`data_dir` holds only what kenward writes about itself, and is not where lore keeps its
+data. Left empty it resolves to the per-OS state location; the `--data-dir` flag and
+`$KENWARD_DATA_DIR` override it in that order, which is how the container image runs with
+no arguments. See `CLI.md`.
+
+Three files live there, and **two of them are secret material** — which is the fact that
+decides how the directory is backed up, mounted and permissioned:
+
+| File | Contents | Sensitive |
+| --- | --- | --- |
+| `state.json` | the enrolment bindings: which Telegram account is which member | no |
+| `sessions.json` | each member's **wrapped key** | yes |
+| `invites.json` | the **hashed** claim codes not yet redeemed | yes |
+
+Neither sensitive file holds a plaintext secret: a wrapped key needs the passphrase and a
+claim code is stored only as a digest. But a wrapped key is worth exactly one offline
+guessing campaign to whoever copies it, which is why `sessions.json` is written `0600`
+inside a `0700` directory, and why this directory is not a thing to sync somewhere
+convenient. A backup of `data_dir` is a backup of every member's key material.
 
 ### Spaces are configured by id, never by display name
 
@@ -582,18 +628,35 @@ that no amount of `%+v` on a configuration can print a token; the type's `String
 where the value came from and not what it is. Names, paths, variable names and file modes
 appear freely — that is what makes a fault fixable.
 
-**Only the resolver is wired.** `config.Secrets` implements all three sources and
-validation uses it, so a configuration naming a file or relying on a credential
-validates, and `kenward run` will not start if that file is unreadable. But the
-components that actually *use* a token still read the environment variable name directly
-— `internal/supervisor` when it hands a bot token to a unit or a pod, `doctor` when it
-reports whether tokens are set, and the update health check when it asks whether Telegram
-authorises. None of them holds a `*Secrets`. The consequence is specific and worth
-knowing before an operator meets it: a household supplying its token only through
-`bot_token_file` or a systemd credential passes validation and then finds no token where
-it is needed. Until the accessors are plumbed through the supervisor, `bot_token_env` and
-`api_key_env` remain the sources that work end to end, and `deploy/kenward.service`'s
-`LoadCredential=` lines are ahead of the runtime rather than behind it.
+**All three sources work end to end.** `config.Secrets` implements them, validation uses
+it, and so does every component that actually consumes a secret: both supervisors and the
+single-unit runner resolve bot tokens and endpoint keys through it
+(`supervisor/simple.go`, `supervisor/single.go`, `supervisor/isolated.go`,
+`endpointKeyFunc` in `supervisor/runner.go`), `doctor` reports each secret by the
+configuration path it was named on and by where it was looked for, and the update health
+check resolves the token it needs to ask whether Telegram authorises. A household
+supplying its token only through `bot_token_file` or a systemd credential is a supported
+household, and `deploy/kenward.service`'s `LoadCredential=` lines describe the runtime
+rather than run ahead of it.
+
+Nothing holds a resolved value. Each consumer holds a `func() (config.Secret, error)` and
+calls it at the moment of use, which is what makes rotation work: a token file or
+credential rewritten under a running node is picked up the next time the closure is
+called, with no restart to reload a value that was never cached.
+
+**Into a pod, delivery mirrors the stated source.** `Isolated` resolves each pod's token
+*on the host* and provisions it so that the pod's own resolver — reading the same
+configuration — finds it exactly where the host did: an environment variable stays an
+environment variable, a `bot_token_file` becomes a `0600` file at the same path, and a
+systemd credential becomes the same credential name under a synthetic
+`CREDENTIALS_DIRECTORY` at `/run/kenward/credentials`. The value is added to the pod spec
+only at Create and Recreate time, so it never rests on a struct a logger could print, and
+a rotated source is picked up by the next recreation without a supervisor restart.
+
+One constraint follows from that and is worth knowing before it is met: in isolated mode a
+`bot_token_file` **must be an absolute path**, because a relative one names nothing
+determinate inside the pod. It is refused with that reason rather than provisioned to a
+guess.
 
 ---
 
@@ -604,7 +667,14 @@ it is needed. Until the accessors are plumbed through the supervisor, `bot_token
 1. **Resolve scope.** `scope.Resolve(cfg, in)`. Unknown sender or unmapped chat →
    return `ErrNotEnrolled`; the caller drops it silently, sending nothing. Never reply
    "you are not authorised" — that confirms the bot exists to a stranger.
-2. **Ensure session.** If locked → prompt for unlock and stop.
+2. **Ensure session.** Only a member has a key, so a group turn proceeds without one. If
+   the member's key is not unwrapped, the turn stops with the locked notice from §10 and
+   nothing else: retrieval without a session would be retrieval without the member
+   present. The notice deliberately does **not** invite the member to send a passphrase.
+   There is no unlock flow over Telegram and there cannot be one — a passphrase typed into
+   a chat travels through Telegram, stays in the member's own history, and in simple mode
+   is readable by whoever holds the bot token. Otherwise the session's idle clock is
+   touched and the turn continues.
 3. **Retrieve.** The member's message is reduced to its content words — lore's own
    tokens, minus a stopword list, capped at six — and each word is searched on its own
    in every space in `scope.Read`, concurrently. Each space's hits are unioned and
@@ -625,7 +695,23 @@ it is needed. Until the accessors are plumbed through the supervisor, `bot_token
    Searching word by word makes retrieval degrade instead of failing outright: one
    relevant word among six filler ones still finds the entry.
 4. **Assemble.** System prompt + retrieved entries (rendered with their markers and
-   confidence) + the last N turns from the unit-local history ring.
+   confidence) + the last N turns from the unit-local history ring, trimmed to fit
+   `Options.ContextBudget` with `Options.MaxTokens` reserved out of it for the completion.
+   `MaxTokens >= ContextBudget` is a construction error, not a runtime surprise: it leaves
+   no room for a prompt at all.
+
+   The budget is the **smallest** context window among the endpoints in this unit's tier
+   chain, supplied by the wiring, because the Unit cannot know which endpoint will answer
+   — the router picks one *after* the prompt is assembled. Assembling for the largest and
+   failing over to the smallest would be a truncation nobody chose. The cost is stated
+   rather than hidden: mixing endpoints with materially different windows inside one tier
+   wastes the larger ones.
+
+   `DefaultContextBudget` is 8192 and `DefaultMaxTokens` is 1024. **Today the default is
+   what every unit gets**, because no endpoint window is configurable — there is no
+   `context_window` field on an endpoint, so the wiring has nothing to derive a smaller or
+   larger one from. The plumbing is in place and the input is not; when the field exists,
+   nothing above changes.
 5. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
    explicit refusal naming the tiers tried — never a silent fallback. Any other router
    failure becomes one of the notices in §10; a turn never ends in silence.
@@ -635,6 +721,52 @@ it is needed. Until the accessors are plumbed through the supervisor, `bot_token
 
 History is unit-local, in memory, bounded (default 20 turns), and is **not** written to
 lore. lore holds distilled knowledge, not transcripts.
+
+### Turns are serialised
+
+A `Unit` runs **at most one turn at a time**. The history ring, the capture engine's
+decline window and its per-turn proposal budget are all per-unit state that a second
+concurrent turn would interleave with the first, and the resulting conversation would be
+one nobody had. Serialising is cheaper than making each of those safe to interleave, and
+it is also what a member expects: a reply belongs to the message before it.
+
+Scope is resolved *before* admission (step 1 above), so nothing below can send anything to
+a stranger.
+
+A message arriving mid-turn joins a bounded queue and waits for the turn slot:
+
+| Knob | Default | Meaning |
+| --- | --- | --- |
+| `Options.QueueLimit` | `DefaultQueueLimit` = 8 | how many messages may wait behind a running turn |
+| `Options.QueueNoticeAfter` | `DefaultQueueNoticeAfter` = 2s | how long a queued message waits in silence first |
+
+- Under the limit, the message waits. If it is still waiting after `QueueNoticeAfter`, the
+  member is told **once** that it is queued — the queue notice in §10 — and then it keeps
+  waiting. Once, not repeatedly: a member who has been told is told, and a second notice
+  is noise about noise.
+- At the limit, the message is **dropped with a notice**, not silently. Dropping silently
+  and being ignored are indistinguishable from inside a chat, and one of them is a bug the
+  household would report as the other.
+- A cancelled context ends the wait; nothing is sent.
+
+Both defaults are small on purpose. A queue deep enough to hide a stuck turn is worse than
+a short one that admits to being full, because the member finds out either way and only
+one of the two tells them in time to do something about it.
+
+Two boundaries of the mechanism are worth stating, because both are easy to assume the
+other way:
+
+- **The turn slot covers steps 3–8 and stops there. It does not cover the capture
+  question.** That question waits on the *member*, not on the node, so it is run after the
+  slot is released. Holding the slot across it would mean a member who ignores the buttons
+  and asks something else gets a queue notice blaming them for a turn that is waiting on
+  their own tap — or, at the limit, gets their next message dropped by a "busy" node that
+  is doing nothing at all.
+- **Order among queued messages is not guaranteed.** They contend for the slot rather than
+  forming a line. Telegram's own delivery makes no ordering promise either, so a queue
+  that invented one would be pretending to a property the layer beneath it does not have.
+  What *is* guaranteed is the part that matters: no message is processed twice, and no
+  unit state is touched outside the running turn.
 
 ---
 
@@ -655,8 +787,20 @@ conversation only. It takes `{title}` and no id — see *Promotion* below.
 
 Rules:
 
-- At most `capture.max_proposals_per_turn` (default 1) proposals per turn.
-- A proposal whose title matches one declined in the last 10 turns is suppressed.
+- At most `capture.max_proposals_per_turn` (default 1) proposals per turn, **per
+  speaker**.
+- A proposal whose title matches one **that speaker** declined in the last 10 turns is
+  suppressed.
+- Both budgets key on the member who spoke, not on the conversation, and in the household
+  group that distinction is the whole point: one member's question is not another
+  member's, so N speakers in one turn window may each be asked once, and a title member A
+  declined is still offered to member B. Keying on the conversation instead would let the
+  first speaker in a group spend everyone's budget, and let one member silently decide
+  what another is never asked about.
+- A proposal that never became a question — the question could not be built, or could not
+  be sent — **refunds** the budget it took, on the same reasoning as duplicate
+  suppression: only a question the member actually saw should cost them the one they were
+  allowed.
 - Timeout on the question is treated as **declined**, never as accepted.
 - The answer is only accepted from `AllowedUserID`.
 - Promotion uses `memory.Share`, never a read-then-put, so lore's own provenance is
@@ -729,8 +873,24 @@ type Supervisor interface {
   pod holds its own bot token, its own lore instance and its own key. Linux only.
   Restarts are per-pod, so one crashing member does not take the household down.
 
-The `Unit` implementation is identical in both. If a change to `Unit` needs to know
-which mode it is in, that change is wrong.
+There is a **third implementation, and it is not a third mode**: `Single`, selected by
+`kenward run --member ID` or `--group`. It serves exactly one unit and is what runs
+*inside* an isolated pod — `isolated` is the host half of that mode, `Single` the pod
+half. It is listed here because §8 is where a reader goes to learn what process runs
+where, and the pod's own process is otherwise invisible.
+
+`Single` differs from `simple` in the two ways the pod boundary forces, and in no others:
+it fixes session custody to isolated mode over a store that holds exactly one wrapped key,
+and it builds its transport from *that member's* `bot_token_env` rather than the
+household's. It also has a state `simple` has no need for: a member whose pod exists but
+who has not yet claimed their invite starts **claim-only** — no unit, no session, nothing
+touching lore, just a claimer waiting for the code. A member's bot exists before they
+claim and the claim happens in a conversation with that bot, so the pod must be able to
+serve the claim without being able to serve a turn. When the claim binds, the unit starts
+serving in place, with no restart.
+
+The `Unit` implementation is identical in all three. If a change to `Unit` needs to know
+which one it is running under, that change is wrong.
 
 ---
 
@@ -881,13 +1041,23 @@ saying it will not parse this request — the same permanent fault as `ErrInvali
 caught one hop later — and telling a member to try again for it sends them back to a
 wall.
 
-Three further notices come from outside the router. A model that declined the turn
-produces "The model declined to answer this."; a direct message arriving while the
-member's key is locked produces "Your assistant is locked. It needs to be unlocked on the
-machine it runs on."; and a turn that ran to the end and produced nothing the member
-could see produces "I didn't get a usable answer to that. Try asking again."
+Five further notices come from outside the router, sent by the Unit around a turn rather
+than as part of one. They are product surface exactly as the refusals are.
 
-That last one covers the two ways a turn can succeed and still say nothing: a completion
+| When | What is sent |
+| --- | --- |
+| The model declined the turn (content filter) | "The model declined to answer this." |
+| A direct message arrives while the member's key is locked | "Your assistant is locked. It needs to be unlocked on the machine it runs on." |
+| A message has waited behind a running turn for longer than `QueueNoticeAfter` | "Still working on your last message — this one is queued and I'll take it next." |
+| A message arrives when the queue behind a running turn is already full | "I'm backed up and had to drop that message. Send it again in a moment." |
+| The turn ran to the end and produced nothing the member could see | "I didn't get a usable answer to that. Try asking again." |
+
+The two queue notices exist because turns are serialised (§5) and a member cannot see
+that. Waiting in silence and being ignored look identical from inside a chat; so do a
+dropped message and a lost one. Both notices are sent only after the scope has resolved,
+so neither ever reaches a stranger.
+
+The last row covers the two ways a turn can succeed and still say nothing: a completion
 with no text and no tool call, and a bare tool call whose capture proposal was suppressed
 without asking. Neither is a failure the node can classify further, and neither may be
 answered with silence — this section promises every message produces something, and until
@@ -911,7 +1081,12 @@ published … a publication can't be taken back" — on the same reasoning as an
 write in section 12: the copy may have landed, lore has no delete, and a member who is
 told a flat failure will simply publish again.
 
-All of them are golden-tested alongside the refusals.
+The router notices, the content-filter decline, the locked notice and the "no usable
+answer" notice are golden-tested alongside the refusals, under
+`internal/assistant/testdata/`. The two queue notices are asserted in
+`assistant_test.go` against the serialisation behaviour that produces them rather than
+held in a golden file, because what needs pinning there is *when* each is sent — after
+the notice delay, and at the limit — and a golden of the text alone would not pin it.
 
 The classification reads `keel/llm`'s error vocabulary, which the routing seam passes
 through unchanged; a content-filter decline commonly arrives as an empty response
