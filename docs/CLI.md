@@ -431,6 +431,8 @@ Configuration
   ✓ kenward.yaml parses and validates
       /etc/kenward/kenward.yaml
   ✓ every secret the configuration names can be read
+  ✓ one assistant for this household: kenward answers every private chat and the
+    group
 
 Memory
   ✓ lore answers
@@ -504,6 +506,20 @@ different things. It is the single most important output the product produces, b
 is where a claim becomes checkable, and it must never drift into overstating what the mode
 delivers. The names, paths and space ids above are one household's; only the wording is
 fixed.
+
+**The assistants line says which conversations exist**, which is `household.agents`'
+only visible consequence. The report above is a household with one assistant. A
+household that gave every member their own gets this instead, and the second detail
+line is the one worth reading — it names a chat an operator would otherwise only find
+out about by messaging the bot:
+
+```
+  ✓ one agent each: every member has their own assistant, and kenward is the
+    household's
+      kenward is also reachable in a private chat, on the household bot
+      that conversation reads and writes the household's shared memory only, and
+      never a member's private memory
+```
 
 **Note the space lines.** Those are lore space ids, from the id column of `lore spaces`,
 because that is what `shared_space` and `private_space` must hold. A display name there

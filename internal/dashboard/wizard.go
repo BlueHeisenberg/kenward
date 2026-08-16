@@ -390,6 +390,34 @@ func checkPersonaLengths(p config.PersonaConfig) error {
 	return nil
 }
 
+// checkAgents maps the identity question's answer onto a value.
+//
+// It refuses per_member in simple mode rather than downgrading it, and it says why in
+// the words of somebody who has just clicked a radio button. config.Validate refuses
+// the same pair and would answer with a field path; this runs first so the page can
+// answer where the choosing happened, and so the wizard never writes a file kenward
+// would then refuse to load.
+//
+// The reason is a counting one and is deliberately not a privacy one: an agent is a
+// Telegram contact, simple mode runs one bot for the whole household, and two agents
+// behind one contact are one agent. The trust question is asked on its own step and
+// this is not it.
+func checkAgents(raw string, mode config.Mode) (config.Agents, error) {
+	switch agents := config.Agents(strings.TrimSpace(raw)); agents {
+	case "":
+		return config.DefaultAgents, nil
+	case config.AgentsShared:
+		return agents, nil
+	case config.AgentsPerMember:
+		if mode == config.ModeSimple {
+			return "", fmt.Errorf("One assistant each needs a Telegram bot for each person, and simple mode runs one bot for the whole household — two agents behind one contact are one agent. Choose one assistant for everybody, or seal the household in isolated mode, where each member already has a bot of their own")
+		}
+		return agents, nil
+	default:
+		return "", fmt.Errorf("%q is not an answer to how many assistants this household has; it is shared or per_member", agents)
+	}
+}
+
 // splitList turns a comma-separated field into a list, dropping blanks and repeats.
 func splitList(s string) []string {
 	var out []string

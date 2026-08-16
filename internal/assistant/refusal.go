@@ -26,8 +26,12 @@ func refusalText(sc domain.Scope, e *routing.NoBackendError) string {
 		return transport.GlyphProblem + " No machine is allowed to answer this conversation — its tier chain is empty. Ask whoever runs this node to configure one."
 	}
 
+	// Whose chain was walked, which is the household's for every conversation that
+	// is the household's — the group chat and a member's private chat with kenward
+	// alike. Saying "your allowed tiers" in the second would name a policy the member
+	// did not set and cannot change from there.
 	whose := "your allowed tiers"
-	if sc.Kind == domain.ScopeGroup {
+	if !sc.TouchesPrivateMemory() {
 		whose = "the household's allowed tiers"
 	}
 	tierWord := "those tiers"

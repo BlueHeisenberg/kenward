@@ -147,14 +147,11 @@ func applySettingsForm(cfg *config.Config, r *http.Request) error {
 	// is an answer people get wrong. A member's own persona is not on this page and
 	// must not be — it is theirs, written in Telegram, and an admin form that could
 	// overwrite it would make "your assistant is yours" false.
-	switch agents := config.Agents(strings.TrimSpace(r.PostFormValue("agents"))); agents {
-	case config.AgentsShared, config.AgentsPerMember:
-		cfg.Household.Agents = agents
-	case "":
-		cfg.Household.Agents = config.DefaultAgents
-	default:
-		return fmt.Errorf("%q is not an answer to how many assistants this household has; it is shared or per_member", agents)
+	agents, err := checkAgents(r.PostFormValue("agents"), cfg.Mode)
+	if err != nil {
+		return err
 	}
+	cfg.Household.Agents = agents
 	cfg.Household.Persona = config.PersonaConfig{
 		Language:  strings.TrimSpace(r.PostFormValue("persona_language")),
 		Tone:      strings.TrimSpace(r.PostFormValue("persona_tone")),

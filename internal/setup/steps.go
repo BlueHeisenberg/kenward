@@ -246,10 +246,17 @@ func (w *Wizard) addMember(name string, taken map[string]bool) {
 // endpoints and the tier chains because those are about machines, and this is the last
 // question about the household itself.
 //
-// It says nothing about the trust question and nothing about containers. That is the
-// whole discipline of this step: the two questions are independent, all four
-// combinations are coherent, and a wizard that implied otherwise would teach the
-// household the misunderstanding internal/privacy then has to correct.
+// It says nothing about who can read what. That is the whole discipline of this step:
+// it is a presentation question, it is not the trust question, and a wizard that
+// implied otherwise would teach the household the misunderstanding internal/privacy
+// then has to correct.
+//
+// It does have to say the one thing the two questions really do share, and only that
+// one: one agent each needs a Telegram bot for each member, two agents behind one
+// contact are one agent, and only isolated mode gives each member their own. So in
+// simple mode the offer is made and then declined with the reason rather than hidden,
+// because a household that wants it should learn what it costs rather than never learn
+// it exists. config.Config.validateHousehold refuses the same combination in a file.
 func (w *Wizard) askIdentity(ctx context.Context) error {
 	w.blank()
 	w.io.Print(identityIntro)
@@ -257,14 +264,23 @@ func (w *Wizard) askIdentity(ctx context.Context) error {
 
 	// The default is one assistant. It is today's behaviour, it is what a household
 	// that has not thought about this wants, and a stray Enter must give it.
-	choice, err := w.io.AskChoice(IdentityQuestion,
-		[]string{identityAnswerShared, identityAnswerPerMember}, 0)
-	if err != nil {
-		return err
-	}
 	w.agents = config.AgentsShared
-	if choice == 1 {
-		w.agents = config.AgentsPerMember
+	for {
+		choice, err := w.io.AskChoice(IdentityQuestion,
+			[]string{identityAnswerShared, identityAnswerPerMember}, 0)
+		if err != nil {
+			return err
+		}
+		if choice != 1 {
+			break
+		}
+		if w.mode == config.ModeIsolated {
+			w.agents = config.AgentsPerMember
+			break
+		}
+		w.blank()
+		w.io.Print(identityNeedsIsolated)
+		w.blank()
 	}
 
 	w.blank()

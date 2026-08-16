@@ -309,9 +309,14 @@ func (c *Config) HouseholdPersona() PersonaConfig {
 // caller with an id no member owns is asking about a conversation that should not be
 // served at all, and answering with kenward's own voice is the reading that cannot
 // leak somebody else's.
+//
+// The question is asked through AgentPerMember and never by comparing the field here.
+// There is one predicate for "does every member have an agent of their own", and it
+// answers false in simple mode whatever the file says; a second reading of the field
+// would give a member a persona for an agent that mode cannot deliver.
 func (c *Config) PersonaFor(memberID string) PersonaConfig {
 	household := c.HouseholdPersona()
-	if c.Household.Agents != AgentsPerMember {
+	if !c.AgentPerMember() {
 		return household
 	}
 	for _, m := range c.Members {

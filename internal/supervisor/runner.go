@@ -33,6 +33,12 @@ type runnerConfig struct {
 	// Which units to run.
 	members []domain.Member
 	group   bool
+	// bot names which of the household's bots this process polls: a member's id for
+	// their own agent's bot, empty for the household's own. It is the same fact
+	// botToken resolves a token for, and scope.Resolve needs it because Telegram
+	// does not put it on the wire — a private chat's id is the member's account id
+	// and is the same whichever bot they are talking to.
+	bot domain.MemberID
 	// unenrolled members are reported in Health with ErrNotEnrolled and get
 	// nothing else.
 	unenrolled []domain.MemberID
@@ -230,6 +236,24 @@ func newRunner(cfg *config.Config, rc runnerConfig) (*runner, error) {
 			r.closeOwned()
 			return nil, err
 		}
+		// Under one agent each, the process holding the household's bot also holds
+		// every member's private conversation with kenward. One unit each, not one
+		// unit serving all of them: a Unit is one conversation — its own history
+		// ring, its own turn slot, its own capture engine — and a shared one would
+		// put David's private message to kenward into the ring the group chat's
+		// prompt is assembled from.
+		if r.cfg.AgentPerMember() {
+			for _, m := range r.cfg.DomainMembers() {
+				if !m.Enrolled() {
+					continue
+				}
+				if err := r.buildHouseholdUnit(m); err != nil {
+					turnCancel()
+					r.closeOwned()
+					return nil, err
+				}
+			}
+		}
 	}
 	if len(r.pending) == 0 && rc.claimer == nil {
 		turnCancel()
@@ -298,7 +322,7 @@ func (r *runner) resolve(in transport.Inbound) (domain.Scope, error) {
 	r.cfgMu.RLock()
 	cfg := r.cfg
 	r.cfgMu.RUnlock()
-	return scope.Resolve(cfg, in)
+	return scope.Resolve(cfg, r.rc.bot, in)
 }
 
 // buildMemberUnit constructs one member's unit over a mux view scoped to their
@@ -338,6 +362,36 @@ func (r *runner) buildGroupUnit() error {
 	}
 	r.mu.Lock()
 	r.pending = append(r.pending, pendingUnit{key: k, unit: u, view: view, clock: clock})
+	r.units[k] = struct{}{}
+	r.mu.Unlock()
+	r.tracker.add(k)
+	return nil
+}
+
+// buildHouseholdUnit constructs one member's private conversation with kenward, over
+// a view scoped to their direct messages on the household's bot.
+//
+// The view is the same shape as buildMemberUnit's and means something different, and
+// the difference is entirely the bot this process polls: on a member's own bot those
+// messages are their own assistant's, and on the household's they are kenward's. The
+// view does not decide that and could not — scope.Resolve does, from the bot — so the
+// two can never both exist over one transport.
+//
+// It runs on the household's tier chain, not the member's, because everything in this
+// conversation is the household's material.
+func (r *runner) buildHouseholdUnit(m domain.Member) error {
+	telegramID := m.TelegramID
+	view := r.mux.View(func(in transport.Inbound) bool {
+		return !in.IsGroup && in.UserID == telegramID
+	})
+	k := unitKey{member: m.ID, group: true}
+	u, clock, err := r.buildUnit(view, k, "household:"+string(m.ID), r.cfg.Household.Tiers)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	r.pending = append(r.pending, pendingUnit{key: k, unit: u, view: view, clock: clock})
+	r.served[telegramID] = struct{}{}
 	r.units[k] = struct{}{}
 	r.mu.Unlock()
 	r.tracker.add(k)
@@ -857,9 +911,16 @@ func (r *runner) runBackstop(ch <-chan transport.Inbound) {
 }
 
 // scopeUnitKey names the unit a resolved scope belongs to.
+//
+// Stated as "not a member's own conversation" rather than "is the group", because a
+// household scope is both: it belongs to the household and it belongs to one member's
+// chat, and it has a unit of its own for exactly that reason.
 func scopeUnitKey(sc domain.Scope) unitKey {
-	if sc.Kind == domain.ScopeGroup || sc.Member == nil {
+	if sc.Member == nil {
 		return unitKey{group: true}
+	}
+	if !sc.TouchesPrivateMemory() {
+		return unitKey{member: sc.Member.ID, group: true}
 	}
 	return unitKey{member: sc.Member.ID}
 }

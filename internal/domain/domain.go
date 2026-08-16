@@ -60,10 +60,21 @@ type ScopeKind int
 const (
 	// ScopeUnknown is the zero value and is never valid for a resolved Scope.
 	ScopeUnknown ScopeKind = iota
-	// ScopeDirect is a one-to-one conversation with an enrolled member.
+	// ScopeDirect is a one-to-one conversation between an enrolled member and
+	// their own assistant. It is the only kind that touches a private space.
 	ScopeDirect
 	// ScopeGroup is the household group conversation.
 	ScopeGroup
+	// ScopeHousehold is a private conversation with the household's own agent —
+	// kenward — rather than with the member's own.
+	//
+	// It exists only where a household gave every member an agent of their own, so
+	// that there is something for kenward to be separate from. It reads and writes
+	// the household's shared memory and nothing else, exactly as a group scope
+	// does, and it exists for the two things the group chat makes impossible: adding
+	// to the household's memory without notifying everybody, and asking what the
+	// household knows without asking in front of everybody.
+	ScopeHousehold
 )
 
 func (k ScopeKind) String() string {
@@ -72,6 +83,8 @@ func (k ScopeKind) String() string {
 		return "direct"
 	case ScopeGroup:
 		return "group"
+	case ScopeHousehold:
+		return "household"
 	default:
 		return "unknown"
 	}
@@ -85,12 +98,21 @@ func (k ScopeKind) String() string {
 // to decide what it may access, that path is wrong.
 type Scope struct {
 	Kind ScopeKind
-	// Member is nil if and only if Kind is ScopeGroup.
+	// Member is who is asking, and is nil if and only if Kind is ScopeGroup — the
+	// one kind with no single asker, because the household chat is the household
+	// speaking.
+	//
+	// Carrying a member is not a licence to read one. ScopeHousehold carries a
+	// member and reads the shared space alone: kenward has to know who is asking in
+	// order to authorise them and to address them by name, and knowing that is a
+	// different thing from being allowed anywhere near their private memory. What a
+	// conversation may touch is Read, Write and Tiers below, and nothing downstream
+	// derives a space from Member.
 	Member *Member
 	// Write is the single space captures land in.
 	Write SpaceID
 	// Read is the ordered set of spaces retrieval may search, primary first. For a
-	// group scope it contains the shared space and nothing else.
+	// group or household scope it contains the shared space and nothing else.
 	Read []SpaceID
 	// Tiers is the ordered endpoint tier chain this conversation may use.
 	Tiers []string
@@ -98,10 +120,30 @@ type Scope struct {
 	ChatID int64
 }
 
+// TouchesPrivateMemory reports whether this conversation reads or writes a member's
+// private space.
+//
+// It is the positive statement of the boundary, and it is deliberately a property of
+// the kind rather than a comparison of spaces: ScopeDirect is the only kind whose
+// Write is a member's own space and whose Read begins with it. Every other kind —
+// the household group, and a member's private chat with kenward — reads and writes
+// the household's shared space, which belongs to everybody and is nobody's private
+// memory.
+//
+// Stated this way round on purpose. "Not a group" was true of the boundary while
+// there were two kinds and stopped being true the moment a third arrived that carries
+// a member and must still never reach one; anything asking "is this the group?" to
+// decide what it may touch is asking the wrong question and would have silently
+// admitted ScopeHousehold to a private space.
+func (s Scope) TouchesPrivateMemory() bool { return s.Kind == ScopeDirect }
+
 // AllowsPrivateCapture reports whether a capture in this scope may offer to save to a
 // member's private space.
 //
-// This is false for group scopes and must stay false: a group conversation offering a
-// "personal" destination would turn the household chat into a write path into a private
-// space, which is the one thing the memory model exists to prevent.
-func (s Scope) AllowsPrivateCapture() bool { return s.Kind == ScopeDirect }
+// A conversation may offer a private destination exactly when it already has one. A
+// scope that reads only the household's shared memory offering a "personal"
+// destination would turn a shared conversation into a write path into a private
+// space, which is the one thing the memory model exists to prevent — and that is as
+// true of a member's private chat with kenward, where they might reasonably expect
+// otherwise, as it is of the household chat, where nobody would.
+func (s Scope) AllowsPrivateCapture() bool { return s.TouchesPrivateMemory() }

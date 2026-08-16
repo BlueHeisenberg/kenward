@@ -356,6 +356,18 @@ func (c *Config) validateHousehold(p *problems, tags map[string]bool) {
 	default:
 		p.addf("household.agents: %q is not one of shared or per_member; shared is one assistant for everybody, per_member gives each person their own and keeps kenward for the group", c.Household.Agents)
 	}
+	// One agent each means one bot each: two agents behind one Telegram contact are
+	// one agent, and there would be no chat in which kenward is a separate party.
+	// Simple mode runs the whole household behind a single bot, so the combination
+	// cannot be delivered — and the failure it would produce silently is the bad
+	// kind, every member's private chat resolving to the household's instead of
+	// their own. Refused with the reason rather than downgraded, because a household
+	// that asked for their own assistants and got kenward wearing several names
+	// would have no way to tell.
+	if c.Household.Agents == AgentsPerMember && c.Mode == ModeSimple {
+		p.addf("household.agents: %q needs a bot for each member and simple mode runs one bot for the whole household; choose %q, or mode: %s",
+			AgentsPerMember, AgentsShared, ModeIsolated)
+	}
 	if strings.TrimSpace(c.Household.Persona.AgentName) != "" {
 		p.addf("household.persona.agent_name: kenward's name is not configurable; it is the name its documentation, its logs and `kenward doctor` all use. A member renames their own agent with members[].persona.agent_name, under household.agents: per_member")
 	}

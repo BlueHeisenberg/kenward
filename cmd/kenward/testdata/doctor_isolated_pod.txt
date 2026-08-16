@@ -4,6 +4,8 @@ Configuration
   ✓ kenward.yaml parses and validates
       <CONFIG>
   ✓ every secret this unit needs can be read
+  ✓ one assistant for this household: kenward answers every private chat and the
+    group
 
 Access
   ✓ admin dashboard: off — no port is opened

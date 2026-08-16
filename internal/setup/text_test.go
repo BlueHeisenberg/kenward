@@ -111,10 +111,18 @@ func TestPrivacyBlockPrintsTheSharedStatementVerbatim(t *testing.T) {
 			t.Errorf("the %s block explains per-member bots to a household that has none", tc.mode)
 		}
 		// Under one agent each it is printed, immediately after the mode's own
-		// statement, because that is where somebody is deciding what their bot means.
+		// statement, because that is where somebody is deciding what their bot means
+		// — but only in isolated mode, which is the only mode one agent each exists
+		// in. One agent each needs a Telegram bot for each member and simple mode
+		// runs one bot for the whole household, so config.Validate refuses the pair
+		// and the wizard declines it at the question. A simple-mode household never
+		// has per-member bots, whatever it wrote in the file, and telling one what
+		// their own bot did not buy them would be describing a bot they do not have.
 		withBots := privacyBlock(tc.mode, config.AgentsPerMember)
-		if !strings.Contains(withBots, privacy.OwnBotNote(tc.want)) {
-			t.Errorf("the %s block under one agent each does not say what a member's own bot buys:\n%s", tc.mode, withBots)
+		printed := strings.Contains(withBots, privacy.OwnBotNote(tc.want))
+		if want := tc.mode == config.ModeIsolated; printed != want {
+			t.Errorf("the %s block under one agent each prints the own-bot note = %v, want %v:\n%s",
+				tc.mode, printed, want, withBots)
 		}
 		if !strings.HasPrefix(block, tc.heading) {
 			t.Errorf("%s block does not open with %q", tc.mode, tc.heading)

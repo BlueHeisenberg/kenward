@@ -15,6 +15,25 @@ func (c *Config) DomainHousehold() domain.Household {
 	}
 }
 
+// AgentPerMember reports whether every member has an agent of their own, with kenward
+// alongside as the household's rather than as everybody's.
+//
+// It is the one predicate the third scope hangs on. Under one agent there is nothing
+// for a private conversation with kenward to be separate from — the member's own chat
+// already is one — so domain.ScopeHousehold does not exist and scope.Resolve never
+// produces it.
+//
+// Simple mode answers false whatever the file says, and that is a refusal rather than
+// a default. One agent each needs one bot per member, because two agents sharing one
+// Telegram contact are one agent; simple mode runs the household behind a single bot
+// token, so honouring the setting there would resolve every member's private chat to
+// kenward's and quietly take away the private assistant they were promised. Validation
+// reports the combination with the reason; this is what stands behind it for the
+// configurations that reach here unvalidated.
+func (c *Config) AgentPerMember() bool {
+	return c.Mode == ModeIsolated && c.Household.Agents == AgentsPerMember
+}
+
 // DomainMembers converts the members section into domain types, in file order.
 //
 // Every slice is copied, so nothing downstream can reach back into the configuration

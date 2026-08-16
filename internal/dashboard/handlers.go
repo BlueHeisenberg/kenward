@@ -246,16 +246,12 @@ func (s *Server) handleWizardSubmit(w http.ResponseWriter, r *http.Request, sess
 		st.Mode = mode
 
 	case "advanced":
-		agents := config.Agents(strings.TrimSpace(r.PostFormValue("agents")))
-		switch agents {
-		case config.AgentsShared, config.AgentsPerMember:
-			st.Agents = agents
-		case "":
-			st.Agents = config.DefaultAgents
-		default:
-			s.wizardError(w, sess, idx, "Choose one assistant for the household, or one each.")
+		agents, err := checkAgents(r.PostFormValue("agents"), st.Mode)
+		if err != nil {
+			s.wizardError(w, sess, idx, err.Error())
 			return
 		}
+		st.Agents = agents
 		st.Persona = config.PersonaConfig{
 			Language:  strings.TrimSpace(r.PostFormValue("persona_language")),
 			Tone:      strings.TrimSpace(r.PostFormValue("persona_tone")),

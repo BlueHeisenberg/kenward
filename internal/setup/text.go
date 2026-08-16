@@ -75,6 +75,23 @@ assistants this household has.`
 		"                                                everyone's, not just yours)"
 	identityAnswerPerMember = "One each, and kenward for the group.     (each person names their own\n" +
 		"                                                and writes it in Telegram)"
+
+	// identityNeedsIsolated is what "one each" gets in simple mode. It is refused
+	// rather than downgraded, and the reason is a counting one rather than a security
+	// one: an agent is a Telegram contact, simple mode runs one bot for the whole
+	// household, and two agents behind one contact are one agent. A household given
+	// kenward wearing several names would have no way to tell.
+	//
+	// It names isolated mode because that is where the bots come from, and it says
+	// what isolated mode is for in the same breath, so that nobody reads this as the
+	// trust question having been asked again with a different answer.
+	identityNeedsIsolated = `  One each needs a Telegram bot for each person, and this household runs one bot
+  for everybody — two agents behind one contact are one agent. Only isolated mode
+  gives each member a bot of their own, and you chose the shared machine.
+
+  That is a counting problem, not a privacy one. If you want one assistant each,
+  start again and answer the earlier question the other way; kenward will not
+  quietly hand everybody the same assistant under several names.`
 )
 
 // The persona step. Three questions, each with an answer that changes nothing, because
@@ -560,7 +577,11 @@ func privacyBlock(mode config.Mode, agents config.Agents) string {
 		heading = "Privacy, in isolated mode"
 	}
 	block := heading + "\n\n" + privacy.Statement(privacyMode(mode))
-	if agents == config.AgentsPerMember {
+	// Both, and not the agents answer alone: one agent each needs a bot for each
+	// member and only isolated mode has them, so this paragraph has bots to describe
+	// exactly when the pair holds. It is the question config.AgentPerMember answers
+	// for a loaded configuration; the wizard has no Config yet.
+	if agents == config.AgentsPerMember && mode == config.ModeIsolated {
 		block += "\n\n" + privacy.OwnBotNote(privacyMode(mode))
 	}
 	return block + "\n\n" + privacyTrailer

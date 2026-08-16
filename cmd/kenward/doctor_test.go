@@ -54,6 +54,64 @@ func TestDoctorGolden(t *testing.T) {
 	}
 }
 
+// TestDoctorReportsWhichConversationsTheHouseholdHas covers household.agents, whose
+// only visible consequence is which chats exist.
+//
+// The third conversation is the reason this is on the report at all. "kenward is
+// reachable in a private chat" is a fact about where a member's words go, and an
+// operator who cannot see it here has no way to find it out short of messaging the
+// bot — so it is asserted rather than left to the goldens, which cover one agent.
+func TestDoctorReportsWhichConversationsTheHouseholdHas(t *testing.T) {
+	t.Parallel()
+	perMember := strings.Replace(isolatedYAML,
+		"  tiers: [local]\ntelegram:", "  tiers: [local]\n  agents: per_member\ntelegram:", 1)
+	if perMember == isolatedYAML {
+		t.Fatal("the fixture no longer has the shape this test edits")
+	}
+
+	for _, tc := range []struct {
+		name string
+		yaml string
+		want []string
+		deny []string
+	}{
+		{
+			name: "one agent",
+			yaml: isolatedYAML,
+			want: []string{"one assistant for this household"},
+			deny: []string{"reachable in a private chat"},
+		},
+		{
+			name: "one agent each",
+			yaml: perMember,
+			want: []string{
+				"one agent each",
+				"kenward is also reachable in a private chat, on the household bot",
+				"never a member's private memory",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, tc.yaml, fullEnvironment())
+			if code := h.run("doctor"); code != exitOK {
+				t.Fatalf("exit = %d, want 0\n%s", code, h.stderr())
+			}
+			out := strings.Join(strings.Fields(h.stdout()), " ")
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("doctor output does not mention %q:\n%s", want, h.stdout())
+				}
+			}
+			for _, deny := range tc.deny {
+				if strings.Contains(out, deny) {
+					t.Errorf("doctor output mentions %q for a household that has one assistant:\n%s", deny, h.stdout())
+				}
+			}
+		})
+	}
+}
+
 // TestDoctorListsWhatIsScheduled. The Reminders section is the only part of this
 // report about what the node will do when nobody is talking to it, so an operator has
 // to be able to see what is set without going near a member's chat — and must not see

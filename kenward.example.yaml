@@ -51,11 +51,22 @@ household:
   #               written by the member themselves in the Telegram tutorial, not here.
   #
   # It is NOT `mode` and must not be reasoned about as though it were. mode is a
-  # security question answered by topology; this is a presentation question, it costs
-  # nothing, it needs no container runtime, and all four combinations are coherent.
-  # Under per_member a member has their own bot so that their agent is its own contact
-  # — that is a separate CONTACT, not a separate SECRET. Having your own bot is not
-  # sealed memory unless mode is also isolated.
+  # security question answered by topology; this is a presentation question about who
+  # the household is talking to. Under per_member a member has their own bot so that
+  # their agent is its own contact — that is a separate CONTACT, not a separate
+  # SECRET. Having your own bot is not sealed memory; the mode is what seals it.
+  #
+  # per_member needs a Telegram bot for each member, because two agents behind one
+  # contact are one agent, and only isolated mode gives each member their own. Naming
+  # it here in simple mode is a validation error rather than a silent downgrade: the
+  # downgrade would resolve every member's private chat to kenward's and quietly take
+  # away the assistant they were promised.
+  #
+  # Under per_member, kenward is also reachable in a private chat, on the household
+  # bot. That conversation reads and writes shared_space and nothing else: it is where
+  # a member adds something to the household's memory, or asks what is in it, without
+  # posting in the group. It never touches their private memory — their own agent is
+  # where that lives.
   agents: shared
   # persona is how kenward writes: the language, tone and character of the household's
   # own assistant. Every field's empty value is the behaviour kenward had before this

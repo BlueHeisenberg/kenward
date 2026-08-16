@@ -8,9 +8,28 @@ import (
 )
 
 // personaConfig is a minimal household with a persona on both layers.
+//
+// The mode follows the answer rather than being fixed, because the two are not
+// independent: per_member needs a Telegram bot for each member and only isolated mode
+// has them, so validateHousehold refuses the combination and Config.AgentPerMember
+// answers false for it. A fixture that asked for per_member in simple mode would be
+// asking what a member's persona is in a household kenward will not start.
 func personaConfig(agents config.Agents) *config.Config {
+	mode := config.ModeSimple
+	if agents == config.AgentsPerMember {
+		mode = config.ModeIsolated
+	}
+	david := config.MemberConfig{
+		ID: "david", Name: "David", PrivateSpace: "david", Tiers: []string{"local"},
+		Persona: config.PersonaConfig{AgentName: "Alfred", Tone: "very terse"},
+	}
+	jordan := config.MemberConfig{ID: "jordan", Name: "Jordan", PrivateSpace: "jordan", Tiers: []string{"local"}}
+	if mode == config.ModeIsolated {
+		david.BotTokenEnv, david.PassphraseEnv = "DAVID_BOT_TOKEN", "DAVID_PASSPHRASE"
+		jordan.BotTokenEnv, jordan.PassphraseEnv = "JORDAN_BOT_TOKEN", "JORDAN_PASSPHRASE"
+	}
 	cfg := &config.Config{
-		Mode:     config.ModeSimple,
+		Mode:     mode,
 		Telegram: config.TelegramConfig{BotTokenEnv: "KENWARD_BOT_TOKEN"},
 		Household: config.HouseholdConfig{
 			Name:        "Home",
@@ -23,13 +42,7 @@ func personaConfig(agents config.Agents) *config.Config {
 				Character: "Knows the house well.",
 			},
 		},
-		Members: []config.MemberConfig{
-			{
-				ID: "david", Name: "David", PrivateSpace: "david", Tiers: []string{"local"},
-				Persona: config.PersonaConfig{AgentName: "Alfred", Tone: "very terse"},
-			},
-			{ID: "jordan", Name: "Jordan", PrivateSpace: "jordan", Tiers: []string{"local"}},
-		},
+		Members: []config.MemberConfig{david, jordan},
 	}
 	cfg.ApplyDefaults()
 	return cfg

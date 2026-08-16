@@ -11,7 +11,19 @@ import (
 // simpleAnswers takes the default for all four; these tests are about what happens
 // when somebody answers them.
 func identityAnswers(identity, language, tone, character string) []string {
-	answers := simpleAnswers()
+	return identityAnswersIn(simpleAnswers(), identity, language, tone, character)
+}
+
+// isolatedIdentityAnswers is the same for a household that answered the trust
+// question the other way. One agent each needs a bot for each member, and only
+// isolated mode has them, so it is the only script in which choosing it gets past
+// the question.
+func isolatedIdentityAnswers(language, tone, character string) []string {
+	answers := append([]string{"2"}, simpleAnswers()[1:]...)
+	return identityAnswersIn(answers, "2", language, tone, character)
+}
+
+func identityAnswersIn(answers []string, identity, language, tone, character string) []string {
 	for i, a := range answers {
 		// The identity step sits between the members' spaces and the first endpoint,
 		// and simpleAnswers marks it with four empty answers in a row.
@@ -21,7 +33,7 @@ func identityAnswers(identity, language, tone, character string) []string {
 			return append(out, answers[i+4:]...)
 		}
 	}
-	panic("simpleAnswers no longer has the identity step's four defaults in a row")
+	panic("the answer script no longer has the identity step's four defaults in a row")
 }
 
 // TestIdentityDefaultsToOneAssistant: pressing Enter through the whole step writes the
@@ -68,8 +80,11 @@ func TestIdentityQuestionStatesItsConsequence(t *testing.T) {
 // TestOneEachIsWrittenAndSaysWhoWritesTheRest: choosing one agent each records it, and
 // says plainly that the admin is not choosing anybody else's persona.
 func TestOneEachIsWrittenAndSaysWhoWritesTheRest(t *testing.T) {
+	// Isolated, because that is the only mode one agent each can be delivered in:
+	// an agent is a Telegram contact and simple mode runs one bot. See
+	// TestOneEachInSimpleModeIsRefusedWithTheReason for the other half.
 	_, cfg, io, err := runWizard(t, "linux", Options{},
-		identityAnswers("2", "Spanish", "warm", "Knows the house well.")...)
+		isolatedIdentityAnswers("Spanish", "warm", "Knows the house well.")...)
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, io.Transcript())
 	}
@@ -127,4 +142,50 @@ func TestPersonaTooLongIsRefusedInTheWizard(t *testing.T) {
 	if !strings.Contains(io.Transcript(), "is never trimmed to fit") {
 		t.Error("the wizard refused the long answer without saying why the limit exists")
 	}
+}
+
+// TestOneEachInSimpleModeIsRefusedWithTheReason: the offer is made in both modes and
+// declined in the one that cannot keep it, in the wizard rather than three screens
+// later in config.Validate.
+//
+// Refused rather than hidden, and refused rather than downgraded. Hidden, and a
+// household never learns the arrangement exists; downgraded, and they are handed
+// kenward under several names with no way to tell. The reason it gives is a counting
+// one — one bot, one contact, one agent — because the trust question has already been
+// asked and this is not it being asked again.
+func TestOneEachInSimpleModeIsRefusedWithTheReason(t *testing.T) {
+	// Ask for one each, get told why not, then take the default. The refusal re-puts
+	// the question, so one more answer is needed at that point.
+	answers := identityAnswers("2", "", "", "")
+	idx := identityIndex(answers)
+	answers = append(answers[:idx+1], append([]string{"1"}, answers[idx+1:]...)...)
+
+	_, cfg, io, err := runWizard(t, "linux", Options{}, answers...)
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, io.Transcript())
+	}
+	if cfg.Household.Agents != config.AgentsShared {
+		t.Errorf("household.agents = %q, want %q; simple mode has one bot and therefore one agent",
+			cfg.Household.Agents, config.AgentsShared)
+	}
+	transcript := io.Transcript()
+	if !strings.Contains(transcript, "two agents behind one contact are one agent") {
+		t.Errorf("the wizard refused one each without saying why:\n%s", transcript)
+	}
+	// And the configuration it wrote is one kenward will actually serve, which is the
+	// property the refusal exists for.
+	if err := cfg.Validate(func(string) (string, bool) { return "x", true }); err != nil {
+		t.Errorf("the wizard wrote a configuration kenward refuses: %v", err)
+	}
+}
+
+// identityIndex finds the identity step's answer in a script built by identityAnswers:
+// the first of the four answers the step consumes.
+func identityIndex(answers []string) int {
+	for i := range answers {
+		if answers[i] == "2" && i+3 < len(answers) && answers[i+1] == "" && answers[i+2] == "" && answers[i+3] == "" {
+			return i
+		}
+	}
+	panic("the answer script does not contain an identity step answered with one each")
 }
