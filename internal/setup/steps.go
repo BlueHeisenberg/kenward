@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -106,6 +107,14 @@ func (w *Wizard) askTelegram(ctx context.Context) error {
 	if token == "" {
 		return nil
 	}
+
+	// Asked here because this is the only moment it can be asked: the token is in
+	// hand, the bot is not in any group yet, and Telegram applies a privacy-mode
+	// change only to groups the bot joins afterwards. Later means removing the bot
+	// from the group and adding it again.
+	if err := w.checkBotPrivacy(ctx, token); err != nil {
+		return err
+	}
 	w.blank()
 	w.io.Print(envFileNote)
 	w.blank()
@@ -115,6 +124,42 @@ func (w *Wizard) askTelegram(ctx context.Context) error {
 	}
 	w.wantEnvFile = want
 	return nil
+}
+
+// checkBotPrivacy asks Telegram whether this bot can hear a group chat, and offers to
+// ask again once it cannot.
+//
+// The loop is the point. Printing the instruction and moving on would leave the operator
+// with no way to know the fix took, and this is a setting whose failure has no symptom —
+// a bot with privacy mode on receives nothing in a group, so there is no error, no log
+// line and nothing to search for. Asking again turns a paragraph into something that can
+// be verified while they are still standing here.
+//
+// It never blocks. A household that will never use a group chat is a real household, and
+// so is one whose connection is down; both are offered the way out and neither is stopped.
+func (w *Wizard) checkBotPrivacy(ctx context.Context, token string) error {
+	for {
+		info, err := w.botProbe(ctx, token)
+		w.blank()
+		if err != nil {
+			w.io.Print(privacyModeUnknown)
+			return nil
+		}
+		w.io.Print(botIs(info.Username))
+		if info.ReadsGroupMessages {
+			return nil
+		}
+		w.blank()
+		w.io.Print(privacyModeOn(info.Username))
+		w.blank()
+		again, err := w.io.AskYesNo(questionCheckPrivacyAgain, true)
+		if err != nil {
+			return err
+		}
+		if !again {
+			return nil
+		}
+	}
 }
 
 // askToken reads a bot token without echo, checking its shape.
@@ -283,6 +328,18 @@ func (w *Wizard) askIdentity(ctx context.Context) error {
 		w.blank()
 	}
 
+	// One each puts kenward in the group chat and nowhere else, so the group's id is
+	// asked for here and refused blank. It is the same refusal per_member + simple
+	// gets, for the same reason: an operator told they have one assistant each must
+	// not be handed a household that cannot answer.
+	if w.agents == config.AgentsPerMember {
+		id, err := w.askGroupChat()
+		if err != nil {
+			return err
+		}
+		w.household.GroupChatID = id
+	}
+
 	w.blank()
 	if w.agents == config.AgentsPerMember {
 		w.io.Print(personaIntroPerMember)
@@ -319,6 +376,40 @@ func (w *Wizard) askIdentity(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// askGroupChat takes the household group's Telegram chat id, and will not take a blank
+// one.
+//
+// It re-asks rather than accepting nothing, because nothing is the answer that produces
+// the household this question exists to prevent. Any non-zero whole number is accepted:
+// the shape check is a question rather than a rule, exactly like the bot token's, since
+// Telegram's numbering is theirs to change and a wizard with opinions about it would be
+// unfixable from the outside.
+func (w *Wizard) askGroupChat() (int64, error) {
+	w.blank()
+	w.io.Print(groupChatIntro)
+	w.blank()
+	for {
+		answer, err := w.io.Ask(questionGroupChatID, "")
+		if err != nil {
+			return 0, err
+		}
+		if id, ok := parseGroupChatID(answer); ok {
+			return id, nil
+		}
+		w.io.Print(badGroupChatID(answer))
+	}
+}
+
+// parseGroupChatID reads a chat id. Zero is not one: it is the value that means "no
+// group is configured", which is what this question refuses to write.
+func parseGroupChatID(answer string) (int64, bool) {
+	id, err := strconv.ParseInt(strings.TrimSpace(answer), 10, 64)
+	if err != nil || id == 0 {
+		return 0, false
+	}
+	return id, true
 }
 
 // askEndpoints collects the machines that run the model, probing each one as it is
@@ -666,6 +757,14 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 		w.agents = config.DefaultAgents
 	}
 	w.persona = a.Persona
+	w.household.GroupChatID = a.GroupChatID
+	// The same refusal the interactive question makes, for the same reason: under one
+	// agent each kenward lives only in the group chat, so a household with no group
+	// chat id has no kenward in it — not in the group, and not in a private chat. A
+	// scripted install must not be able to produce that quietly either.
+	if w.agents == config.AgentsPerMember && w.household.GroupChatID == 0 {
+		return fmt.Errorf("setup: one assistant each needs household.group_chat_id, the Telegram id of the household's own group; under `agents: per_member` every private chat belongs to somebody's own assistant and the group is the only place kenward speaks, so a household without one cannot be reached at all")
+	}
 
 	// No default is possible for a space: it is the id of something that has to
 	// already exist in lore, and inventing one produces the configuration this

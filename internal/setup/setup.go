@@ -132,6 +132,9 @@ type Options struct {
 	GOOS string
 	// Probe checks that an endpoint answers. Nil means DefaultProbe.
 	Probe Probe
+	// Telegram asks Telegram which bot a token belongs to, and whether it can hear a
+	// group chat. Nil means DefaultTelegramProbe.
+	Telegram TelegramProbe
 	// Spaces lists the lore spaces this household can be configured with. Nil
 	// means asking the real lore, with the same argv the wizard writes into the
 	// configuration.
@@ -182,6 +185,11 @@ type Answers struct {
 	// Empty means config.DefaultAgents, which is one — today's behaviour, and the
 	// answer a scripted install that has not thought about it should get.
 	Agents config.Agents
+	// GroupChatID is the Telegram id of the household's own group. Required under
+	// Agents == config.AgentsPerMember and optional otherwise: with one assistant
+	// each, kenward speaks only in the group, so a configuration without one has no
+	// kenward in it and is refused rather than written.
+	GroupChatID int64
 	// Persona is kenward's own: the language, tone and character the household's
 	// assistant writes in. Every field's zero value is what kenward has always done,
 	// so a scripted install that says nothing gets English, the flat register and no
@@ -241,11 +249,12 @@ type EndpointAnswer struct {
 
 // Wizard runs the first-run flow.
 type Wizard struct {
-	io     IO
-	opts   Options
-	goos   string
-	probe  Probe
-	lister SpaceLister
+	io       IO
+	opts     Options
+	goos     string
+	probe    Probe
+	botProbe TelegramProbe
+	lister   SpaceLister
 
 	// The lore listing, fetched once. Spaces are chosen by id, so every question
 	// about one is answered from the same snapshot.
@@ -287,6 +296,10 @@ func New(io IO, opts Options) *Wizard {
 	}
 	if w.probe == nil {
 		w.probe = DefaultProbe
+	}
+	w.botProbe = opts.Telegram
+	if w.botProbe == nil {
+		w.botProbe = DefaultTelegramProbe
 	}
 	w.lister = opts.Spaces
 	if w.lister == nil {

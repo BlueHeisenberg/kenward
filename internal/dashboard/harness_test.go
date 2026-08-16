@@ -97,6 +97,10 @@ type harness struct {
 	lore       *fakeLore
 	now        time.Time
 
+	// bot overrides what Telegram says about the token, for the tests about a bot
+	// that cannot hear a group chat.
+	bot *setup.BotInfo
+
 	// minted records every claim code handed out, so a test can assert one was
 	// produced without the production code having to expose it.
 	minted  []string
@@ -125,6 +129,16 @@ func newHarness(t *testing.T) *harness {
 		},
 		Models: func(context.Context, string, string) ([]setup.ModelInfo, error) {
 			return []setup.ModelInfo{{ID: "test-model", ContextWindow: 262144}}, nil
+		},
+		// A bot Telegram accepts, with privacy mode already off. Injected rather
+		// than left nil for two reasons: nil is the real api.telegram.org, and a
+		// test suite that reaches it is a test suite that fails on a train; and
+		// false here is the defect, so the healthy default has to be stated.
+		Telegram: func(context.Context, string) (setup.BotInfo, error) {
+			if h.bot != nil {
+				return *h.bot, nil
+			}
+			return setup.BotInfo{Username: "casa_household_bot", ReadsGroupMessages: true}, nil
 		},
 		MintInvite: func(_ context.Context, _ *config.Config, id domain.MemberID, _ string, _ time.Duration) (string, error) {
 			if h.mintErr != nil {

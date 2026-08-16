@@ -145,6 +145,25 @@ services:
       # image>.
       - ./bin/lore:/usr/local/bin/lore:ro,z
 
+    # Declared here as well as in the image, and it is not a duplicate: the
+    # image's HEALTHCHECK instruction is Docker-format only, and `podman build`
+    # defaults to OCI, where it is dropped with the warning "HEALTHCHECK is not
+    # supported for OCI image format and will be ignored". Podman is one of the
+    # two runtimes this deployment supports, so the check that actually runs is
+    # the one written here. Same command, same intervals — `doctor` exits 0 when
+    # the config loads, lore answers and Telegram authorises, and deliberately
+    # does NOT probe any routing endpoint: a household GPU box is legitimately
+    # switched off, and treating that as unhealthy restarts a healthy container
+    # in a loop.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/kenward", "doctor",
+             "--config", "/etc/kenward/kenward.yaml",
+             "--data-dir", "/var/lib/kenward"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+
     # --- hardening ---
     security_opt:
       - no-new-privileges:true

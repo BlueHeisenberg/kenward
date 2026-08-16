@@ -311,16 +311,21 @@ func healthyProbes() probes {
 		// lore has no delete. Tests that care what `run` asked for install a recorder
 		// over this; the rest simply never reach a real binary.
 		loreInit: func(context.Context, string, string) (bool, error) { return false, nil },
+		// Every bot here has Telegram's privacy mode off — ReadsGroupMessages is
+		// true — which is a healthy household and is not the default a real
+		// BotFather hands out. Stated rather than left to the zero value on
+		// purpose: false is the defect, so a fake that took the zero value would
+		// put the warning into every golden and make it invisible.
 		telegram: func(_ context.Context, token string) telegramResult {
 			switch token {
 			case fakeDavidToken:
-				return telegramResult{Username: "david_kenward_bot"}
+				return telegramResult{Username: "david_kenward_bot", ReadsGroupMessages: true}
 			case fakeJordanToken:
-				return telegramResult{Username: "jordan_kenward_bot"}
+				return telegramResult{Username: "jordan_kenward_bot", ReadsGroupMessages: true}
 			case fakeGroupToken:
-				return telegramResult{Username: "casa_household_bot"}
+				return telegramResult{Username: "casa_household_bot", ReadsGroupMessages: true}
 			default:
-				return telegramResult{Username: "our_household_bot"}
+				return telegramResult{Username: "our_household_bot", ReadsGroupMessages: true}
 			}
 		},
 		endpoint: func(_ context.Context, ep routing.Endpoint) endpointResult {

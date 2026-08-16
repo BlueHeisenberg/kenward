@@ -57,6 +57,22 @@ func TestProbeAnswers(t *testing.T) {
 	}
 }
 
+// TestAFastAnswerIsNotReportedAsNoTimeAtAll.
+//
+// A machine on the household's own network accepts a connection in a few hundred
+// microseconds, which is the common case rather than the exception, and "answered in
+// 0ms" reads as though the wizard did not actually try — the opposite of what just
+// happened, on the one line that exists to reassure somebody the address is right.
+func TestAFastAnswerIsNotReportedAsNoTimeAtAll(t *testing.T) {
+	got := ProbeResult{State: Answered, Elapsed: 200 * time.Microsecond, Addr: "monster.tail:8000"}
+	if strings.Contains(got.describe(), "0ms") {
+		t.Errorf("a sub-millisecond answer reads as no attempt at all: %q", got.describe())
+	}
+	if !strings.Contains(got.describe(), "answered") {
+		t.Errorf("describe() = %q, want it to say the endpoint answered", got.describe())
+	}
+}
+
 func TestProbeRefused(t *testing.T) {
 	p := &Prober{Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 		return nil, &net.OpError{Op: "dial", Err: errors.New("connection refused")}

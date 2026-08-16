@@ -41,6 +41,27 @@ It asks, in order:
 3. **The Telegram bot.** Simple mode: one token, with a short walkthrough of BotFather.
    Isolated mode: the household group bot now, and a note that each member creates their
    own during enrolment.
+
+   **The walkthrough includes `/setprivacy` → the bot → Disable, and setup then checks
+   it.** Telegram turns bot privacy mode on for every new bot, and with it on the bot
+   receives *nothing* sent in a group chat — not plain messages, not a reply to it, not
+   an @mention; only `/start@thebot` is delivered. A household adds the bot to their
+   family group and it ignores everyone, with no error, no warning and no log line
+   anywhere, because nothing arrives to log. It is the worst failure shape this product
+   has, and it is the default state of every bot BotFather hands out.
+
+   So it is in the walkthrough *before* the token is pasted, and setup asks Telegram
+   about it as soon as it has one: `getMe` returns `can_read_all_group_messages`, and
+   when it is false the wizard says what is wrong, what to do in BotFather, and offers
+   to check again — which is what turns the paragraph into something verifiable while
+   somebody is still standing at the machine. It never blocks: a household that will
+   never use a group chat, and one whose connection is down, both carry on.
+
+   The ordering matters and the copy says so. **Telegram applies a privacy-mode change
+   only to groups the bot joins afterwards**, so a bot already in the group has to be
+   removed and added again. Doing it during setup, before the bot is in anything, costs
+   one message to BotFather. `kenward doctor` reports the same thing, as a warning, for
+   the household that maps its group months later.
 4. **Members.** Names only. Telegram ids are not asked for — they arrive through
    `kenward invite`, because asking someone to find their numeric Telegram id is a
    terrible first experience.
@@ -71,6 +92,20 @@ It asks, in order:
    says so at the point of asking rather than in a paragraph above it. Under `[2]` each
    member writes their own in the Telegram tutorial and the admin is only setting the
    family agent's.
+
+   **`[2]` then asks for the household group's Telegram chat id, and will not take a
+   blank one.** It is the only numeric Telegram id the wizard ever asks for, and it is
+   asked because under one assistant each there is no other route to it: every private
+   chat belongs to somebody's own assistant, so kenward itself lives in the group chat
+   and nowhere else, and the supervisor creates the group's pod only when
+   `household.group_chat_id` is set. A `per_member` configuration without one is a
+   household that cannot be reached at all — not in the group, and not in a private chat
+   — which is the same failure `[2]` + simple is refused to prevent, arriving through the
+   other door. `doctor` warns about it afterwards, and a warning nobody was told to run
+   is not a remedy, so this is a refusal in the wizard instead. The question says how to
+   find the number: add the bot to the group, send a message, and read it off
+   `https://api.telegram.org/bot<TOKEN>/getUpdates`. `--non-interactive` refuses the same
+   combination, and so does the dashboard's wizard and its settings page.
 
    Then three questions about how kenward writes — language, tone, character — each with
    an answer that changes nothing. Pressing Enter three times gives the assistant kenward
@@ -116,6 +151,11 @@ It asks, in order:
 It finishes by printing the privacy statement for the chosen mode — the honest one, in
 full, from `internal/privacy`, which is the same text `doctor` prints — and the path it
 wrote.
+
+Two things leave the machine while it runs, and the banner says so rather than claiming
+otherwise: each endpoint address is connected to, and the bot token is shown to Telegram
+to ask which bot it is and whether it can hear a group chat. Nothing else typed into the
+wizard is sent anywhere, and nothing is written until the end.
 
 Details the first draft of this document left out, settled during implementation:
 

@@ -64,6 +64,9 @@ type Deps struct {
 	// Models reads an endpoint's model list and its published context window. Nil
 	// means setup.DefaultModelsProbe.
 	Models setup.ModelsProbe
+	// Telegram asks Telegram which bot a token belongs to, and whether it can hear a
+	// group chat. Nil means setup.DefaultTelegramProbe.
+	Telegram setup.TelegramProbe
 
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
@@ -90,6 +93,13 @@ func (d Deps) models() setup.ModelsProbe {
 		return setup.DefaultModelsProbe
 	}
 	return d.Models
+}
+
+func (d Deps) telegram() setup.TelegramProbe {
+	if d.Telegram == nil {
+		return setup.DefaultTelegramProbe
+	}
+	return d.Telegram
 }
 
 func (d Deps) logger() *slog.Logger {

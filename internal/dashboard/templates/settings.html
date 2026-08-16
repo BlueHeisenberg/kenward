@@ -42,7 +42,13 @@ as text rather than as a list: {{$d.LoreErr}}</p></div>
 <label for="household_tiers">Where group conversations may go <span class="hint">Comma separated, in order.</span></label>
 <input type="text" id="household_tiers" name="household_tiers" value="{{join $c.Household.Tiers ", "}}">
 
-<label for="group_chat_id">Telegram group chat id <span class="hint">Negative, and blank until a group is mapped.</span></label>
+<label for="group_chat_id">Telegram group chat id
+  <span class="hint">Negative, and blank until a group is mapped. Blank is only allowed
+  under one shared assistant: with one each, kenward lives in the group chat and nowhere
+  else, so a household without one has no kenward in it. Add the bot to the group, send a
+  message there, open <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>
+  and copy the negative number after <code>"chat":{"id":</code>.</span>
+</label>
 <input type="text" id="group_chat_id" name="group_chat_id" value="{{if $c.Household.GroupChatID}}{{$c.Household.GroupChatID}}{{end}}">
 
 <label for="bot_token_env">Household bot token variable</label>
@@ -50,8 +56,10 @@ as text rather than as a list: {{$d.LoreErr}}</p></div>
 
 <h2>Who kenward is</h2>
 <p class="muted">How many assistants this household has, and how kenward writes. Neither
-is a security setting — that is the mode, above in <a href="/">the overview</a>, and it
-is a different question with a different answer.</p>
+is a security setting — that is the mode, which <a href="/">the overview</a> shows and no
+page in this dashboard changes: it decides where every member's key lives, so it is
+chosen when the household is set up, and changing it afterwards means editing
+<code>mode:</code> in the file by hand and re-enrolling everyone.</p>
 
 <div class="choice">
   <input type="radio" id="agents_shared" name="agents" value="shared" {{if ne $c.Household.Agents "per_member"}}checked{{end}}>

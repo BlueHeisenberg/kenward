@@ -24,10 +24,19 @@ import (
 // somebody just chose is worse than no wizard, because it is believed.
 
 // Banner opens the wizard.
+//
+// It used to say that nothing leaves the machine, which stopped being true the moment
+// setup started asking Telegram about the bot token — and a wizard whose first paragraph
+// oversells its own discretion is worse than one that says what it does. What it says
+// now is exactly what happens: two checks go out, both to machines the answers name, and
+// nothing else does.
 const Banner = `kenward setup
 
-A handful of questions, then one file. Nothing is sent anywhere while this runs,
-and nothing you type here leaves the machine.`
+A handful of questions, then one file. Two things leave this machine while it
+runs, both of them checks: each endpoint address you give is connected to, and
+the bot token is shown to Telegram to ask which bot it is and whether it can hear
+a group chat. Nothing else you type is sent anywhere, and nothing is written
+until the end.`
 
 // TrustQuestion is the question the mode is chosen with, verbatim from
 // docs/CLI.md.
@@ -89,14 +98,72 @@ assistants this household has.`
 	// It names isolated mode because that is where the bots come from, and it says
 	// what isolated mode is for in the same breath, so that nobody reads this as the
 	// trust question having been asked again with a different answer.
-	identityNeedsIsolated = `  One each needs a Telegram bot for each person, and this household runs one bot
-  for everybody — two agents behind one contact are one agent. Only isolated mode
-  gives each member a bot of their own, and you chose the shared machine.
+	//
+	// The load-bearing half is a sentence of its own, first. An earlier version ran the
+	// arithmetic, both remedies and the definition of an agent together in one
+	// sixty-word sentence, which buried the only line somebody has to understand in
+	// the middle of it.
+	identityNeedsIsolated = `  Here, two agents behind one contact are one agent.
+
+  One each needs a Telegram bot for each person, and this household runs one bot
+  for everybody. Only isolated mode gives each member a bot of their own, and you
+  chose the shared machine.
 
   That is a counting problem, not a privacy one. If you want one assistant each,
   start again and answer the earlier question the other way; kenward will not
   quietly hand everybody the same assistant under several names.`
 )
+
+// The group chat, asked only under one agent each.
+//
+// Under `agents: per_member` kenward itself lives in exactly one place: the household
+// group. Every member's private chat belongs to their own assistant, so a household
+// that answers "one each" and gives no group chat id gets a deployment with no kenward
+// in it at all — the supervisor creates the group's pod only when
+// household.group_chat_id is set. That is the same failure the per_member + simple
+// refusal exists to prevent, arriving through a different door, so this question has no
+// default and no skip.
+//
+// It is the one numeric Telegram id the wizard asks for, and it is asked here rather
+// than left to `kenward doctor` because doctor already warns about it and the warning
+// did not reach anybody. A member's id is never asked for — that arrives through
+// `kenward invite` — but a group's cannot: nobody claims a group, and there is no
+// second route to the number.
+const (
+	groupChatIntro = `  One each means kenward itself lives in the group chat and nowhere else. Each
+  person's own assistant answers their private messages; kenward answers the
+  household's group, and reads and writes the shared memory.
+
+  So this household needs its group, and kenward needs its number. Without it
+  there is no kenward anywhere — not in the group, and not in a private chat.
+
+  To find it:
+
+  1. Make the group in Telegram if it does not exist, and add the bot you just
+     made to it.
+  2. Send any message in the group.
+  3. Open this in a browser, with your bot's token where TOKEN is:
+
+         https://api.telegram.org/botTOKEN/getUpdates
+
+  4. Look for "chat":{"id":-1001234567890 — that number, minus sign and all.`
+
+	questionGroupChatID = "The group's chat id"
+)
+
+// badGroupChatID is what an unusable answer gets. It says there is no skipping rather
+// than only what the format is, because the commonest reason for a blank here is
+// somebody hoping to come back to it, and coming back to it means a household that
+// cannot be reached in the meantime.
+func badGroupChatID(answer string) string {
+	if strings.TrimSpace(answer) == "" {
+		return `  There is no skipping this one. One assistant each with no group chat is a
+  household with no kenward in it — every private chat belongs to somebody's own
+  assistant, and the group is the only place kenward speaks.`
+	}
+	return fmt.Sprintf(`  %q is not a chat id. It is a whole number, and Telegram's is negative for a
+  group — like -1001234567890.`, answer)
+}
 
 // The persona step. Three questions, each with an answer that changes nothing, because
 // the flat register is still the default and pressing Enter three times has to give the
@@ -240,6 +307,12 @@ One name per line. Press Enter on an empty line when everyone is in.`
 // part of setup that happens in another application, and the reader has to be able
 // to look up from the screen and back down again without losing their place.
 const (
+	// Step 5 is not optional and is not a preference. Telegram turns privacy mode on
+	// for every new bot, and a bot with it on receives nothing in a group — not plain
+	// messages, not even an @mention — with no error anywhere, because nothing
+	// arrives. It is here, before the token is pasted, because Telegram applies the
+	// change only to groups the bot joins afterwards: done now, the household never
+	// hits it; done later, the bot has to be removed from the group and re-added.
 	botFatherWalkthrough = `  1. Open Telegram and start a chat with @BotFather.
   2. Send /newbot.
   3. Give it a name — anything — and a username ending in "bot".
@@ -247,7 +320,11 @@ const (
 
          123456789:AAF-3jkkQ_pP8vd2X9j1kZq7wRsTuVwXyZ0
 
-  5. Paste it below. It is not shown as you type.`
+  5. In the same chat, send /setprivacy, choose the bot you just made, and choose
+     Disable. Do it now, before the bot is in any group: with privacy mode on it
+     cannot see a single message sent in a group chat, and Telegram applies the
+     change only to groups it joins afterwards.
+  6. Paste the token below. It is not shown as you type.`
 
 	telegramIntroSimple = `Telegram
 
@@ -272,6 +349,66 @@ What is needed now is the household's own bot — the one for the group chat.`
 	questionUseTokenAnyway  = "Use it anyway?"
 	questionLeaveTokenUnset = "Leave it unset for now?"
 )
+
+// The privacy-mode check, made against Telegram at the moment the token is entered.
+//
+// It is a check rather than only an instruction because the instruction can be read and
+// skipped, and what it prevents has no symptom: a household adds the bot to their family
+// group and it ignores every message, silently, forever. There is no error to search
+// for, no log line, and nothing in the assistant's behaviour to distinguish it from a
+// machine that is switched off.
+const (
+	questionCheckPrivacyAgain = "Check again?"
+
+	// privacyModeUnknown is what a probe that could not reach Telegram prints. It
+	// does not stop setup: the token may be perfectly good and the household's
+	// connection merely down, and a wizard that refused to continue over a check it
+	// could not make would be worse than one that says what it could not check.
+	privacyModeUnknown = `  kenward could not ask Telegram about this token, so one thing is unchecked: bot
+  privacy mode. It is on by default, and with it on the bot cannot see any message
+  in a group chat. If you have not already, send /setprivacy to @BotFather, choose
+  this bot and choose Disable. ` + "`kenward doctor`" + ` checks it again later.`
+)
+
+// botIs names the bot the token belongs to, which is the line that catches a household
+// pointed at last month's test bot.
+func botIs(username string) string {
+	if username == "" {
+		return "  Telegram accepted the token."
+	}
+	return fmt.Sprintf("  Telegram accepted the token: this is @%s.", username)
+}
+
+// privacyModeOn is the whole point of asking Telegram anything here.
+//
+// It says the consequence first, because the consequence is the part that is invisible:
+// there is no error to go looking for. It says the ordering caveat last and plainly,
+// because an operator who flips the setting, sends a message to the group they already
+// added the bot to, and sees nothing happen will conclude the fix did not work.
+func privacyModeOn(username string) string {
+	name := "this bot"
+	if username != "" {
+		name = "@" + username
+	}
+	return fmt.Sprintf(`  This bot cannot see messages in a group chat.
+
+  Telegram calls it privacy mode and turns it on for every new bot. With it on,
+  %s receives nothing at all in a group — not plain messages, not
+  a reply to it, not an @mention. Nothing arrives, so nothing is logged and
+  nothing goes wrong that anybody can see: the household adds the bot to their
+  group and it ignores everyone.
+
+  To fix it, in Telegram:
+
+  1. Send /setprivacy to @BotFather.
+  2. Choose %s.
+  3. Choose Disable.
+
+  If the bot is already in the group, remove it and add it again afterwards.
+  Telegram applies this to groups the bot joins after the change and not to the
+  ones it is already in, so flipping the setting alone will look like it did
+  nothing.`, name, name)
+}
 
 // tokenNotStored is printed after a token is taken, every time. It is the moment to
 // say where secrets live, because it is the moment the reader has just handed one

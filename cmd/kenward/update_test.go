@@ -188,7 +188,7 @@ func TestHealthChecksThePodsOwnToken(t *testing.T) {
 	var seen string
 	h.e.probes.telegram = func(_ context.Context, token string) telegramResult {
 		seen = token
-		return telegramResult{Username: "david_kenward_bot"}
+		return telegramResult{Username: "david_kenward_bot", ReadsGroupMessages: true}
 	}
 	if err := nodeHealthProbes(h.e, cfg, unitSelection{member: "david"}).Telegram(h.e.context()); err != nil {
 		t.Fatal(err)

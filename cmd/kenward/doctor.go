@@ -869,7 +869,10 @@ func doctorTransport(ctx context.Context, e *env, cfg *config.Config, secrets *c
 	// exactly this, and "token from systemd credential bot_token" versus "token
 	// from environment variable KENWARD_BOT_TOKEN" is the line that settles an
 	// argument about why a node will not start.
-	add := func(label string, ref config.SecretRef, resolve func() (config.Secret, error)) {
+	// group says this token is the one a group conversation runs on. Bot privacy mode
+	// only matters there: a member's own bot in isolated mode never speaks in a group,
+	// so reporting on it would be a warning about nothing on every member's pod.
+	add := func(label string, group bool, ref config.SecretRef, resolve func() (config.Secret, error)) {
 		sec, err := resolve()
 		switch {
 		case err != nil:
@@ -921,6 +924,25 @@ func doctorTransport(ctx context.Context, e *env, cfg *config.Config, secrets *c
 			Text:   fmt.Sprintf("%s: Telegram authorises as %s", label, name),
 			Detail: []string{"token from " + sec.Source()},
 		})
+
+		// Bot privacy mode, which Telegram turns on for every new bot. With it on
+		// the bot receives nothing whatever in a group chat — not plain messages,
+		// not even an @mention — and there is no symptom: nothing arrives, so
+		// nothing is logged and the household simply finds itself ignored. It is a
+		// warning rather than a failure because the container's HEALTHCHECK runs
+		// this command and a household that never uses its group chat is a working
+		// household.
+		if group && !res.ReadsGroupMessages {
+			checks = append(checks, check{
+				Status: statusWarn,
+				Text:   fmt.Sprintf("%s: %s cannot see messages in a group chat (Telegram's bot privacy mode is on)", label, name),
+				Detail: []string{
+					"with it on the bot receives nothing sent in a group — not plain messages, not a reply to it, not an @mention — so the group conversation never reaches kenward and nothing anywhere reports an error",
+					"fix it in Telegram: send /setprivacy to @BotFather, choose " + name + ", choose Disable",
+					"then remove the bot from the group and add it again: Telegram applies the change only to groups the bot joins afterwards, so the setting alone will look as though it did nothing",
+				},
+			})
+		}
 	}
 
 	if cfg.Mode == config.ModeIsolated {
@@ -928,16 +950,16 @@ func doctorTransport(ctx context.Context, e *env, cfg *config.Config, secrets *c
 			if !scope.Serves(m.ID) {
 				continue
 			}
-			add(m.Name, m.BotTokenRef(), func() (config.Secret, error) { return m.BotToken(secrets) })
+			add(m.Name, false, m.BotTokenRef(), func() (config.Secret, error) { return m.BotToken(secrets) })
 		}
 		// The group's bot, for whoever runs the group conversation. A member's pod
 		// does not and never holds that token.
 		if scope.ServesGroup() {
-			add("household group", cfg.BotTokenRef(), func() (config.Secret, error) { return cfg.BotToken(secrets) })
+			add("household group", true, cfg.BotTokenRef(), func() (config.Secret, error) { return cfg.BotToken(secrets) })
 		}
 		return checks
 	}
-	add("household", cfg.BotTokenRef(), func() (config.Secret, error) { return cfg.BotToken(secrets) })
+	add("household", true, cfg.BotTokenRef(), func() (config.Secret, error) { return cfg.BotToken(secrets) })
 	return checks
 }
 

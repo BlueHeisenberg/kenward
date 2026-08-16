@@ -41,6 +41,12 @@ func runWizard(t *testing.T, goos string, opts Options, answers ...string) (*Wiz
 	if opts.Probe == nil {
 		opts.Probe = fixedProbe(Answered)
 	}
+	// A bot Telegram accepts, with privacy mode already off. Never nil: nil is the
+	// real api.telegram.org, and no test in this package may need a network. False
+	// here is the defect D8 is about, so the healthy answer is the one stated.
+	if opts.Telegram == nil {
+		opts.Telegram = fixedBot(BotInfo{Username: "casa_household_bot", ReadsGroupMessages: true})
+	}
 	if opts.Spaces == nil {
 		opts.Spaces = fixedSpaces(testSpaces)
 	}
@@ -1184,4 +1190,14 @@ func assertNoSecrets(t *testing.T, path string, secrets ...string) {
 			t.Errorf("a secret was written into %s", filepath.Base(path))
 		}
 	}
+}
+
+// fixedBot is a Telegram that always says the same thing about a token.
+func fixedBot(info BotInfo) TelegramProbe {
+	return func(context.Context, string) (BotInfo, error) { return info, nil }
+}
+
+// unreachableTelegram is a Telegram that cannot be asked.
+func unreachableTelegram(err error) TelegramProbe {
+	return func(context.Context, string) (BotInfo, error) { return BotInfo{}, err }
 }

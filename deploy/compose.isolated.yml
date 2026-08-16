@@ -315,6 +315,24 @@ services:
       # and this container carries on serving the account.
       - "--revoked=/etc/kenward/revoked.json"
       - "--member=david"
+    # Declared here as well as in the image, and it is not a duplicate: the
+    # image's HEALTHCHECK instruction is Docker-format only, and `podman build`
+    # defaults to OCI, where it is dropped with the warning "HEALTHCHECK is not
+    # supported for OCI image format and will be ignored". Podman is one of the
+    # two runtimes isolated mode supports, so this is the check that actually
+    # runs on half the supported surface. No --member here: `doctor` takes the
+    # unit from KENWARD_MEMBER in this container's environment, which is exactly
+    # the one this pod serves, and a household-wide check inside a member's pod
+    # would fail on every sibling secret the pod correctly does not hold.
+    # Repeated per service below for the same reason.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/kenward", "doctor",
+             "--config", "/etc/kenward/kenward.yaml",
+             "--data-dir", "/var/lib/kenward"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -366,6 +384,15 @@ services:
       # from, with the mount added only when there is one.
       - "--revoked=/etc/kenward/revoked.json"
       - "--member=jordan"
+    # Same reason as david's, above: podman drops the image's HEALTHCHECK.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/kenward", "doctor",
+             "--config", "/etc/kenward/kenward.yaml",
+             "--data-dir", "/var/lib/kenward"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -403,6 +430,17 @@ services:
       - "--config=/etc/kenward/kenward.yaml"
       - "--data-dir=/var/lib/kenward"
       - "--group"
+    # Same reason as david's, above: podman drops the image's HEALTHCHECK. The
+    # unit comes from KENWARD_GROUP in this container's environment, so `doctor`
+    # reports on the group's unit and nothing else.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/kenward", "doctor",
+             "--config", "/etc/kenward/kenward.yaml",
+             "--data-dir", "/var/lib/kenward"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
     security_opt:
       - no-new-privileges:true
     read_only: true

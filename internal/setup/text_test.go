@@ -212,6 +212,12 @@ func TestLinesAreReadable(t *testing.T) {
 		"privacyTrailer":         privacyTrailer,
 		"systemdNote":            systemdNote,
 		"tokenLooksWrongMessage": tokenLooksWrong,
+		"identityNeedsIsolated":  identityNeedsIsolated,
+		"groupChatIntro":         groupChatIntro,
+		"badGroupChatIDBlank":    badGroupChatID(""),
+		"badGroupChatID":         badGroupChatID("nope"),
+		"privacyModeOn":          privacyModeOn("casa_household_bot"),
+		"privacyModeUnknown":     privacyModeUnknown,
 	}
 	const limit = 82
 	for name, block := range blocks {
