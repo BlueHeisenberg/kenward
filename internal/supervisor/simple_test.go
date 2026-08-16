@@ -689,54 +689,119 @@ func TestUnitRefusesStrangerWithoutMux(t *testing.T) {
 	_ = h.fake.Close()
 }
 
-func TestPerUnitContextBudgetFromTierChain(t *testing.T) {
-	windows := map[string]int{"local": 8192, "cloud": 200000}
-
-	// The derivation itself: minimum across the chain, unknown tiers do not
-	// constrain, empty derivation falls back to the assistant's default.
-	cases := []struct {
-		tiers []string
-		want  int
-	}{
-		{[]string{"local"}, 8192},
-		{[]string{"cloud"}, 200000},
-		{[]string{"local", "cloud"}, 8192},
-		{[]string{"cloud", "local"}, 8192},
-		{[]string{"mystery"}, 0},
-		{nil, 0},
+// budgetTestConfig is simpleTestConfig with endpoints that state their own windows
+// and caps: monster is a large local machine serving a reasoning model, mini is a
+// small one on the same local tier, and the cloud tier is somewhere in between.
+func budgetTestConfig() *config.Config {
+	cfg := simpleTestConfig()
+	cfg.Endpoints = []config.EndpointConfig{
+		{
+			Name: "monster", BaseURL: "http://monster:8000/v1", Model: "big",
+			Tags: []string{"local"}, ContextWindow: 262144, MaxCompletionTokens: 32768,
+		},
+		{
+			Name: "mini", BaseURL: "http://mini:11434/v1", Model: "small",
+			Tags: []string{"local-slow"}, ContextWindow: 8192, MaxCompletionTokens: 2048,
+		},
+		{
+			Name: "openrouter", BaseURL: "https://openrouter.ai/api/v1", Model: "cloudy",
+			Tags: []string{"cloud"}, ContextWindow: 200000, MaxCompletionTokens: 8192,
+		},
 	}
+	return cfg
+}
+
+func TestPerUnitContextBudgetFromTierChain(t *testing.T) {
+	// The derivation: an endpoint's declared window is honoured, a chain takes the
+	// minimum of every endpoint it reaches in either direction, and a chain that
+	// reaches no endpoint derives nothing and leaves the assistant's default.
+	cases := []struct {
+		tiers            []string
+		window, maxToken int
+	}{
+		{[]string{"local"}, 262144, 32768},
+		{[]string{"cloud"}, 200000, 8192},
+		{[]string{"local", "local-slow"}, 8192, 2048},
+		{[]string{"local-slow", "local"}, 8192, 2048},
+		{[]string{"local", "local-slow", "cloud"}, 8192, 2048},
+		{[]string{"mystery"}, 0, 0},
+		{nil, 0, 0},
+	}
+	cfg := budgetTestConfig()
 	for _, c := range cases {
-		if got := minWindow(windows, c.tiers); got != c.want {
-			t.Fatalf("minWindow(%v) = %d, want %d", c.tiers, got, c.want)
+		w, m := cfg.ChainLimits(c.tiers)
+		if w != c.window || m != c.maxToken {
+			t.Fatalf("ChainLimits(%v) = (%d, %d), want (%d, %d)", c.tiers, w, m, c.window, c.maxToken)
 		}
 	}
 
 	// Wired through: david's local-only chain and the household's cloud chain
 	// resolve to different budgets in the same supervisor — the budget is per
 	// scope, never per household.
-	h := newSimpleHarness(t, simpleTestConfig(), func(o *SimpleOptions) {
-		o.TierWindows = windows
-	})
+	h := newSimpleHarness(t, budgetTestConfig(), func(o *SimpleOptions) {})
 	member := h.sup.run.unitOptions([]string{"local"})
 	group := h.sup.run.unitOptions([]string{"cloud"})
-	if member.ContextBudget != 8192 || group.ContextBudget != 200000 {
-		t.Fatalf("budgets member=%d group=%d, want 8192 and 200000",
+	if member.ContextBudget != 262144 || group.ContextBudget != 200000 {
+		t.Fatalf("budgets member=%d group=%d, want 262144 and 200000",
 			member.ContextBudget, group.ContextBudget)
+	}
+	if member.MaxTokens != 32768 || group.MaxTokens != 8192 {
+		t.Fatalf("completion caps member=%d group=%d, want 32768 and 8192",
+			member.MaxTokens, group.MaxTokens)
+	}
+
+	// A chain reaching no endpoint that states anything leaves both zero, which is
+	// what makes assistant.New apply its own defaults rather than a derived zero.
+	if o := h.sup.run.unitOptions([]string{"mystery"}); o.ContextBudget != 0 || o.MaxTokens != 0 {
+		t.Fatalf("undeclared chain = (%d, %d), want (0, 0) so the assistant defaults apply",
+			o.ContextBudget, o.MaxTokens)
 	}
 
 	// An explicit household-wide budget still wins when the operator sets one.
-	h2 := newSimpleHarness(t, simpleTestConfig(), func(o *SimpleOptions) {
-		o.TierWindows = windows
+	h2 := newSimpleHarness(t, budgetTestConfig(), func(o *SimpleOptions) {
 		o.Unit.ContextBudget = 4096
+		o.Unit.MaxTokens = 512
 	})
-	if got := h2.sup.run.unitOptions([]string{"cloud"}).ContextBudget; got != 4096 {
-		t.Fatalf("explicit budget = %d, want 4096", got)
+	if o := h2.sup.run.unitOptions([]string{"cloud"}); o.ContextBudget != 4096 || o.MaxTokens != 512 {
+		t.Fatalf("explicit budget = (%d, %d), want (4096, 512)", o.ContextBudget, o.MaxTokens)
 	}
 
 	_ = h.sup.Stop(context.Background())
 	_ = h2.sup.Stop(context.Background())
 	_ = h.fake.Close()
 	_ = h2.fake.Close()
+}
+
+// TestDerivedBudgetNeverContradictsTheAssistant is the interaction the two checks have
+// to survive. assistant.New refuses MaxTokens >= ContextBudget; the budget and the cap
+// are derived independently, as two separate minima over the same chain. They cannot
+// disagree — the endpoint holding the smallest window contributes a cap smaller than
+// that window, by validation — and this asserts it over the shapes that would break a
+// naive derivation, including the one where the largest window and the smallest cap
+// come from different endpoints.
+func TestDerivedBudgetNeverContradictsTheAssistant(t *testing.T) {
+	cfg := budgetTestConfig()
+	// A fourth endpoint whose cap is the smallest in the household but whose window
+	// is the largest: min(window) and min(cap) now come from different machines.
+	cfg.Endpoints = append(cfg.Endpoints, config.EndpointConfig{
+		Name: "huge-but-terse", BaseURL: "http://huge:8000/v1", Model: "h",
+		Tags: []string{"local", "cloud"}, ContextWindow: 1000000, MaxCompletionTokens: 256,
+	})
+	cfg.ApplyDefaults()
+	if err := cfg.Validate(func(string) (string, bool) { return "t", true }); err != nil {
+		t.Fatalf("the fixture must itself be a valid configuration: %v", err)
+	}
+
+	for _, chain := range [][]string{
+		{"local"}, {"cloud"}, {"local-slow"},
+		{"local", "cloud"}, {"local", "local-slow", "cloud"},
+	} {
+		window, maxTokens := cfg.ChainLimits(chain)
+		if maxTokens >= window {
+			t.Fatalf("ChainLimits(%v) = (%d, %d): the cap must stay below the budget or "+
+				"assistant.New refuses to build the unit", chain, window, maxTokens)
+		}
+	}
 }
 
 func TestSimpleBotTokenResolvedThroughSecrets(t *testing.T) {

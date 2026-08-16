@@ -57,13 +57,10 @@ type SingleOptions struct {
 	// one who has, whose claim window is over.
 	Enrol *enrol.Claimer
 	// Unit seeds the unit's options. HouseholdName and SearchLimit are filled
-	// from the configuration when zero.
+	// from the configuration when zero, and so are ContextBudget and MaxTokens —
+	// from the endpoints this unit's own tier chain reaches; see the same field
+	// on SimpleOptions.
 	Unit assistant.Options
-	// TierWindows names the smallest context window, in the assistant's estimated
-	// tokens, of any endpoint tagged with each tier. The unit's context budget is
-	// derived as the minimum across its own tier chain; see the same field on
-	// SimpleOptions. Ignored when Unit.ContextBudget is set explicitly.
-	TierWindows map[string]int
 	// Logger receives lifecycle events and per-message failures. Nil discards.
 	Logger *slog.Logger
 	// Secrets resolves the bot token from whichever source the configuration
@@ -138,7 +135,6 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 		sessionMode:       session.ModeIsolated,
 		endpointKey:       endpointKeyFunc(cfg, secrets),
 		lookupEnv:         opts.LookupEnv,
-		tierWindows:       opts.TierWindows,
 		unitOpts:          opts.Unit,
 		logger:            opts.Logger,
 		drainTimeout:      opts.DrainTimeout,

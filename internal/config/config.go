@@ -67,6 +67,32 @@ const (
 	DefaultUpdateChannel       = UpdateStable
 	DefaultCheckInterval       = 6 * time.Hour
 	DefaultEndpointTimeout     = 120 * time.Second
+	// DefaultContextWindow is the context window assumed for an endpoint that does
+	// not state one, in tokens as the assistant estimates them.
+	//
+	// 16384 rather than a number matching the largest machines, because this is the
+	// figure used for an endpoint nobody described, and the two ways of being wrong
+	// are not symmetrical. Too small only wastes a window somebody paid for; too
+	// large overflows the server mid-conversation and turns into a provider error in
+	// front of a member. So the default is the floor of what is still in ordinary
+	// service — Phi-4 holds 16k, Qwen2.5 32k, Llama 3.x and Gemma 3 128k, and the
+	// hosted providers far more — and an operator running something smaller, or
+	// anything larger and wanting the rest of it, says so on the endpoint.
+	DefaultContextWindow = 16384
+	// DefaultMaxCompletionTokens caps a reply from an endpoint that does not state
+	// its own cap, and is reserved out of the context window.
+	//
+	// 4096 rather than something tighter because a reasoning model spends this
+	// budget on hidden tokens before it emits any content. Measured against a local
+	// Qwen3 endpoint with an ordinary household question — work out the yearly
+	// running cost of three appliances — the old 1024 cap returned a complete
+	// reasoning trace, no content at all, and finish_reason "length"; the same
+	// request at 4096 answered in full, having spent 1379 tokens. An empty
+	// completion is not read as a short answer: the router treats it as an endpoint
+	// that failed, cools a perfectly healthy machine, and refuses the turn naming
+	// the tier. 4096 covers a short trace and a real answer after it, while still
+	// leaving three quarters of the default window for the prompt.
+	DefaultMaxCompletionTokens = 4096
 )
 
 // DefaultLoreCommand returns the argv that starts lore's MCP server.
@@ -196,6 +222,54 @@ type EndpointConfig struct {
 	Tags []string `yaml:"tags"`
 	// Timeout bounds one completion. Defaults to DefaultEndpointTimeout.
 	Timeout Duration `yaml:"timeout"`
+	// ContextWindow is how many tokens this endpoint can hold in one request,
+	// prompt and completion together. Defaults to DefaultContextWindow.
+	//
+	// It is stated per endpoint because it is a fact about the machine and the
+	// model it serves, not a household policy: the number is whatever the server
+	// was started with — vLLM's --max-model-len, llama.cpp's -c, ollama's num_ctx
+	// — which is frequently smaller than the window the model advertises. A
+	// conversation's budget is derived from it as the smallest window across the
+	// endpoints its tier chain reaches; see ChainLimits.
+	ContextWindow int `yaml:"context_window"`
+	// MaxCompletionTokens caps one reply and is reserved out of ContextWindow.
+	// Defaults to DefaultMaxCompletionTokens.
+	//
+	// Per endpoint for the same reason the window is, and it is not merely a
+	// question of taste in reply length: a reasoning model spends this budget on
+	// hidden tokens before it writes a word the member will see, so a cap sized
+	// for a plain instruct model makes a reasoning model stop having thought and
+	// said nothing. Raise it on the endpoints that think.
+	MaxCompletionTokens int `yaml:"max_completion_tokens"`
+}
+
+// ChainLimits reports what a conversation on this tier chain has to fit inside: the
+// smallest context window, and the smallest completion cap, of any endpoint the chain
+// reaches.
+//
+// Both are minima because the prompt is assembled before the router picks an endpoint,
+// so the turn may land on any endpoint in the chain and must fit the smallest of them.
+// A tier chain that reaches nothing returns zeroes, and the caller takes its own
+// defaults; validation refuses such a chain long before this matters.
+//
+// The two minima cannot contradict each other. Validation requires every endpoint's cap
+// to be smaller than its own window, and the endpoint holding the smallest window
+// contributes a cap no larger than its own — so maxTokens is always below
+// contextWindow, and the assistant's construction check can never fire on numbers
+// derived here.
+func (c *Config) ChainLimits(chain []string) (contextWindow, maxTokens int) {
+	for _, e := range c.Endpoints {
+		if !chainReaches(chain, e.Tags) {
+			continue
+		}
+		if e.ContextWindow > 0 && (contextWindow == 0 || e.ContextWindow < contextWindow) {
+			contextWindow = e.ContextWindow
+		}
+		if e.MaxCompletionTokens > 0 && (maxTokens == 0 || e.MaxCompletionTokens < maxTokens) {
+			maxTokens = e.MaxCompletionTokens
+		}
+	}
+	return contextWindow, maxTokens
 }
 
 // MemoryConfig configures the lore client.
@@ -384,6 +458,12 @@ func (c *Config) ApplyDefaults() {
 	for i := range c.Endpoints {
 		if c.Endpoints[i].Timeout == 0 {
 			c.Endpoints[i].Timeout = Duration(DefaultEndpointTimeout)
+		}
+		if c.Endpoints[i].ContextWindow == 0 {
+			c.Endpoints[i].ContextWindow = DefaultContextWindow
+		}
+		if c.Endpoints[i].MaxCompletionTokens == 0 {
+			c.Endpoints[i].MaxCompletionTokens = DefaultMaxCompletionTokens
 		}
 	}
 }

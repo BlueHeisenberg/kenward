@@ -46,6 +46,14 @@ It asks, in order:
 5. **Endpoints.** For each: name, base URL, model, tiers. The wizard probes each one as
    it is entered and says whether it answered, so a typo is caught immediately rather
    than at the first message.
+
+   It does **not** ask for the endpoint's context window or its completion cap, because
+   it cannot check either answer: the probe learns that an address answers, not what the
+   server behind it was started with, and an unverifiable number typed into a wizard is
+   worse than a default. It writes `context_window` and `max_completion_tokens` out at
+   their defaults instead — 16384 and 4096 — so the keys are visible in the file for the
+   operator who knows the real figures. Raise them there; on a reasoning model, raise the
+   cap in particular, or it will think through its whole budget and answer nothing.
 6. **Tier chains.** Per member and for the group, defaulting to local-only for private
    spaces and offering to add a cloud tier explicitly. The default is the private one;
    opting into cloud is a deliberate act.

@@ -86,7 +86,6 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 			// got.
 			UnlockOnEnrol: onEnrol,
 			Sessions:      sessions,
-			TierWindows:   tierWindows(cfg),
 			Secrets:       e.secrets(),
 			Logger:        logger,
 			LookupEnv:     e.env(),

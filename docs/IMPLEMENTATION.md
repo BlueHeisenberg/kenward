@@ -476,12 +476,16 @@ endpoints:
     model: qwen3.6-27b-awq
     tags: [local]
     timeout: 120s
+    context_window: 262144        # what the server was started with, not the model card
+    max_completion_tokens: 32768  # a reasoning model thinks inside this budget
   - name: openrouter
     base_url: https://openrouter.ai/api/v1
     model: anthropic/claude-sonnet-5
     api_key_env: OPENROUTER_API_KEY
     # api_key_file: /run/secrets/openrouter    # or this; never both
     tags: [cloud]
+    context_window: 200000        # defaults to 16384; see §5 on the budget
+    max_completion_tokens: 8192   # defaults to 4096; must be < context_window
 
 memory:
   lore_command: ["lore", "mcp"]
@@ -853,11 +857,32 @@ another member's plaintext, and that one member's compromise reaches no one else
    rather than hidden: mixing endpoints with materially different windows inside one tier
    wastes the larger ones.
 
-   `DefaultContextBudget` is 8192 and `DefaultMaxTokens` is 1024. **Today the default is
-   what every unit gets**, because no endpoint window is configurable — there is no
-   `context_window` field on an endpoint, so the wiring has nothing to derive a smaller or
-   larger one from. The plumbing is in place and the input is not; when the field exists,
-   nothing above changes.
+   Both numbers come from the endpoints. `endpoints[].context_window` and
+   `endpoints[].max_completion_tokens` are per-endpoint because they are facts about a
+   machine and the model it serves, not household policy, and `Config.ChainLimits` reduces
+   them to one pair per tier chain by taking the minimum of each. The completion cap is a
+   minimum for the same reason the window is: the turn may land on any endpoint in the
+   chain.
+
+   The two minima cannot contradict each other, and that is load-bearing rather than
+   lucky. Validation requires every endpoint's `max_completion_tokens` to be **smaller
+   than its own** `context_window`, reported at load with the endpoint named; the endpoint
+   holding the smallest window contributes a cap no larger than its own, so the derived
+   cap is always below the derived budget and `assistant.New`'s
+   `MaxTokens >= ContextBudget` check can never fire on derived numbers. That check remains
+   for values a caller sets directly.
+
+   `DefaultContextWindow` is 16384 and `DefaultMaxCompletionTokens` is 4096, applied per
+   endpoint by `ApplyDefaults`; `assistant.DefaultContextBudget` and
+   `assistant.DefaultMaxTokens` are those same two constants, so the assistant's fallback
+   and the configuration's default cannot drift apart. The window default is deliberately
+   modest rather than generous: it is the figure used for an endpoint nobody described, and
+   guessing high overflows a small server mid-conversation — a provider error in front of a
+   member — where guessing low only wastes a window somebody bought. The completion default
+   is deliberately not tight: a reasoning model spends that budget on hidden tokens before
+   emitting any content, and a cap sized for a plain instruct model makes it return a full
+   reasoning trace, no content, and `finish_reason: stop` — which reaches the member as the
+   §10 "no usable answer" notice from a model that is working perfectly.
 5. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
    explicit refusal naming the tiers tried — never a silent fallback. Any other router
    failure becomes one of the notices in §10; a turn never ends in silence.

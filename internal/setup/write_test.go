@@ -220,6 +220,12 @@ func TestTheFileReadsLikeSomebodyWroteIt(t *testing.T) {
 		"lore_command: [lore, mcp]", // and so does an argv
 		"idle_timeout: 0s",          // defaults are visible rather than implied, including "off"
 		"max_proposals_per_turn: 1", //
+		// The wizard cannot learn an endpoint's window or its completion cap — it
+		// probes that an address answers, not what the server behind it was started
+		// with — so it writes the defaults out where the operator can correct them.
+		// A machine bought for the size of its window is wasted silently otherwise.
+		"context_window: 16384",
+		"max_completion_tokens: 4096",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the written file does not contain %q:\n%s", want, body)

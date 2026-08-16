@@ -44,8 +44,6 @@ func singleUnitOptions(e *env, cfg *config.Config, opts runOptions, logger *slog
 		Logger:    logger,
 		LookupEnv: e.env(),
 		Now:       e.now,
-		// TierWindows is deliberately not set; see tierWindows.
-		TierWindows: tierWindows(cfg),
 	}
 
 	if !sel.group {
@@ -211,21 +209,3 @@ func applyRevocation(e *env, cfg *config.Config, sel unitSelection, path string)
 	}
 	return nil
 }
-
-// tierWindows would name the smallest context window, in the assistant's estimated
-// tokens, of any endpoint tagged with each tier — the per-conversation context budget
-// is derived from it as the minimum across that conversation's own chain.
-//
-// It returns nil, because there is nothing to build it from. kenward.yaml's
-// endpoints carry a name, a base URL, a model, tags and a timeout, and no context
-// window; internal/config has no field for one and nothing else in the module knows
-// a model's window either. Guessing from the model string would be worse than the
-// fallback: too high silently truncates the oldest turns of every conversation on
-// that tier, and too low wastes a machine somebody bought for the size of its
-// window. Both are invisible until somebody notices the assistant has become
-// forgetful.
-//
-// Left nil, every unit takes assistant.DefaultContextBudget, which is the documented
-// fallback. Giving this a real answer means adding a context_window to
-// config.EndpointConfig — that is internal/config's decision, not this layer's.
-func tierWindows(*config.Config) map[string]int { return nil }

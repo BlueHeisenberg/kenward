@@ -107,9 +107,16 @@ const (
 	// package estimates them. The Unit cannot know which endpoint will answer — the
 	// router decides after the prompt is assembled — so the budget is the smallest
 	// window in the pool, supplied by wiring.
-	DefaultContextBudget = 8192
-	// DefaultMaxTokens bounds the completion and is reserved out of the budget.
-	DefaultMaxTokens = 1024
+	//
+	// It is the configuration package's endpoint default rather than a number of this
+	// package's own. Two constants meaning "the window of an endpoint nobody
+	// described" would eventually disagree, and the one an operator can read in
+	// kenward.example.yaml is the one that has to be true. This is a constant, not a
+	// lookup: nothing here consults configuration at runtime.
+	DefaultContextBudget = config.DefaultContextWindow
+	// DefaultMaxTokens bounds the completion and is reserved out of the budget. Same
+	// source, for the same reason.
+	DefaultMaxTokens = config.DefaultMaxCompletionTokens
 	// DefaultQueueLimit bounds how many messages may wait behind a running turn.
 	DefaultQueueLimit = 8
 	// DefaultQueueNoticeAfter is how long a queued message waits before the member

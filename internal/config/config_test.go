@@ -1040,6 +1040,138 @@ func TestBaseURLValidation(t *testing.T) {
 	}
 }
 
+// budgetYAML is a household whose two local machines have very different windows and
+// whose cloud endpoint states neither field, so one file exercises all three cases:
+// declared, declared-and-smaller, and defaulted.
+const budgetYAML = `
+mode: simple
+
+household:
+  name: Home
+  shared_space: household
+  tiers: [local, local-slow, cloud]
+
+telegram:
+  bot_token_env: KENWARD_BOT_TOKEN
+
+members:
+  - id: david
+    name: David
+    private_space: david-private
+    tiers: [local]
+
+endpoints:
+  - name: monster
+    base_url: http://192.168.1.20:8000/v1
+    model: monster
+    tags: [local]
+    context_window: 262144
+    max_completion_tokens: 32768
+  - name: mini
+    base_url: http://localhost:11434/v1
+    model: qwen2.5:3b
+    tags: [local-slow]
+    context_window: 8192
+    max_completion_tokens: 2048
+  - name: openrouter
+    base_url: https://openrouter.ai/api/v1
+    model: anthropic/claude-sonnet-5
+    tags: [cloud]
+
+memory:
+  search_limit: 8
+`
+
+// TestEndpointBudgetFields is the whole feature read off one configuration: a stated
+// window is honoured, a chain takes the minimum across every endpoint it reaches, and
+// an endpoint that states nothing is defaulted rather than left at zero.
+func TestEndpointBudgetFields(t *testing.T) {
+	cfg, err := config.ParseWithEnv(strings.NewReader(budgetYAML), env(map[string]string{"KENWARD_BOT_TOKEN": "t"}))
+	if err != nil {
+		t.Fatalf("ParseWithEnv() error: %v", err)
+	}
+
+	// Declared values survive the load untouched.
+	if got := cfg.Endpoints[0]; got.ContextWindow != 262144 || got.MaxCompletionTokens != 32768 {
+		t.Errorf("monster = (%d, %d), want (262144, 32768)", got.ContextWindow, got.MaxCompletionTokens)
+	}
+	// An endpoint that states neither gets the defaults, which is what makes the
+	// fallback a number an operator can look up rather than a silent zero.
+	if got := cfg.Endpoints[2]; got.ContextWindow != config.DefaultContextWindow ||
+		got.MaxCompletionTokens != config.DefaultMaxCompletionTokens {
+		t.Errorf("openrouter = (%d, %d), want the defaults (%d, %d)",
+			got.ContextWindow, got.MaxCompletionTokens,
+			config.DefaultContextWindow, config.DefaultMaxCompletionTokens)
+	}
+
+	for _, tt := range []struct {
+		name             string
+		chain            []string
+		window, maxToken int
+	}{
+		{"one big endpoint", []string{"local"}, 262144, 32768},
+		{"the defaulted endpoint", []string{"cloud"}, config.DefaultContextWindow, config.DefaultMaxCompletionTokens},
+		{"a chain takes the minimum", []string{"local", "local-slow"}, 8192, 2048},
+		{"order does not matter", []string{"local-slow", "local"}, 8192, 2048},
+		{"and across all three", []string{"local", "local-slow", "cloud"}, 8192, 2048},
+		{"a chain reaching nothing derives nothing", []string{"mystery"}, 0, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			w, m := cfg.ChainLimits(tt.chain)
+			if w != tt.window || m != tt.maxToken {
+				t.Errorf("ChainLimits(%v) = (%d, %d), want (%d, %d)", tt.chain, w, m, tt.window, tt.maxToken)
+			}
+		})
+	}
+}
+
+// TestEndpointBudgetValidation covers the refusal. A cap that does not fit inside its
+// own endpoint's window is a configuration error caught at load, with the endpoint
+// named, rather than a unit that fails to construct at startup on two derived numbers
+// that name nobody.
+func TestEndpointBudgetValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		window    int
+		maxTokens int
+		wantErr   bool
+	}{
+		{"comfortably inside", 262144, 32768, false},
+		{"both defaulted", 0, 0, false},
+		{"a small window against the default cap", 2048, 0, true},
+		{"cap equals window", 8192, 8192, true},
+		{"cap exceeds window", 8192, 16384, true},
+		{"negative window", -1, 1024, true},
+		{"negative cap", 8192, -1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Mode:      config.ModeSimple,
+				Household: config.HouseholdConfig{SharedSpace: "household", Tiers: []string{"local"}},
+				Telegram:  config.TelegramConfig{BotTokenEnv: "T"},
+				Endpoints: []config.EndpointConfig{{
+					Name: "monster", BaseURL: "http://192.168.1.20:8000/v1", Model: "monster",
+					Tags: []string{"local"}, ContextWindow: tt.window, MaxCompletionTokens: tt.maxTokens,
+				}},
+			}
+			cfg.ApplyDefaults()
+			err := cfg.Validate(env(map[string]string{"T": "t"}))
+
+			var ve *config.ValidationError
+			got := errors.As(err, &ve) && containsSub(ve.Problems, "endpoints[0].")
+			if got != tt.wantErr {
+				t.Fatalf("budget problem = %v, want %v (err: %v)", got, tt.wantErr, err)
+			}
+			// The endpoint's name, not just its index: an operator reading this has
+			// a file with several endpoints in it and needs to know which one.
+			if tt.wantErr && !containsSub(ve.Problems, `"monster"`) {
+				t.Errorf("problem does not name the endpoint: %v", ve.Problems)
+			}
+		})
+	}
+}
+
 // TestMissingEnvNames covers the list `kenward doctor` prints.
 func TestMissingEnvNames(t *testing.T) {
 	cfg, err := config.Decode(strings.NewReader(fullYAML))

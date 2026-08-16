@@ -67,11 +67,6 @@ type runnerConfig struct {
 	loreHome    string
 	lookupEnv   config.LookupEnvFunc
 
-	// tierWindows names the smallest context window of any endpoint tagged with
-	// each tier. A unit's budget is the minimum across its own chain; see
-	// unitOptions.
-	tierWindows map[string]int
-
 	unitOpts          assistant.Options
 	logger            *slog.Logger
 	drainTimeout      time.Duration
@@ -351,14 +346,13 @@ func (r *runner) buildUnit(view transport.Transport, name string, tiers []string
 // unitOptions resolves one unit's options from the shared seed and the unit's own
 // tier chain.
 //
-// The context budget is per unit because it is per scope: the assistant assembles
-// the prompt before the router picks an endpoint, so the budget must be the
-// smallest window reachable through this conversation's chain — the group's cloud
-// chain and a member's local-only chain are legitimately different sizes, and one
-// household-wide number gets one of them wrong. An explicit seed value wins; when
-// it is zero the budget is derived as the minimum of tierWindows across the
-// chain's tiers, and a chain with no listed tier falls back to the assistant's
-// default.
+// The context budget and the completion cap are per unit because they are per
+// scope: the assistant assembles the prompt before the router picks an endpoint, so
+// both must hold at the smallest endpoint this conversation's chain can reach — the
+// group's cloud chain and a member's local-only chain are legitimately different
+// sizes, and one household-wide number gets one of them wrong. Explicit seed values
+// win; otherwise both come from config.ChainLimits, and a chain that reaches no
+// endpoint with either stated falls back to the assistant's own defaults.
 func (r *runner) unitOptions(tiers []string) assistant.Options {
 	o := r.rc.unitOpts
 	if o.HouseholdName == "" {
@@ -367,27 +361,14 @@ func (r *runner) unitOptions(tiers []string) assistant.Options {
 	if o.SearchLimit == 0 {
 		o.SearchLimit = r.cfg.Memory.SearchLimit
 	}
+	window, maxTokens := r.cfg.ChainLimits(tiers)
 	if o.ContextBudget == 0 {
-		o.ContextBudget = minWindow(r.rc.tierWindows, tiers)
+		o.ContextBudget = window
+	}
+	if o.MaxTokens == 0 {
+		o.MaxTokens = maxTokens
 	}
 	return o
-}
-
-// minWindow is the smallest window named for any tier in the chain, or zero when
-// none is named — the turn might land on any tier in the chain, so the budget
-// must hold at the smallest of them.
-func minWindow(windows map[string]int, tiers []string) int {
-	min := 0
-	for _, t := range tiers {
-		w, ok := windows[t]
-		if !ok || w <= 0 {
-			continue
-		}
-		if min == 0 || w < min {
-			min = w
-		}
-	}
-	return min
 }
 
 // start launches every unit's goroutine, begins fanning updates out, and blocks

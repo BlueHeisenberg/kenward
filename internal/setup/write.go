@@ -136,6 +136,14 @@ type endpointDoc struct {
 	APIKeyEnv string          `yaml:"api_key_env,omitempty"`
 	Tags      []string        `yaml:"tags,flow"`
 	Timeout   config.Duration `yaml:"timeout"`
+	// ContextWindow and MaxCompletionTokens are written out at whatever the
+	// defaults filled in, exactly as timeout is, and for the same reason: the
+	// wizard cannot learn either number — it probes whether an address answers,
+	// not what the server behind it was started with — so what it can usefully do
+	// is put the keys in the file where the operator will see them. A machine
+	// bought for the size of its window is wasted silently otherwise.
+	ContextWindow       int `yaml:"context_window"`
+	MaxCompletionTokens int `yaml:"max_completion_tokens"`
 }
 
 type memoryDoc struct {
@@ -205,6 +213,9 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 			APIKeyEnv: e.APIKeyEnv,
 			Tags:      e.Tags,
 			Timeout:   e.Timeout,
+
+			ContextWindow:       e.ContextWindow,
+			MaxCompletionTokens: e.MaxCompletionTokens,
 		})
 	}
 	return doc

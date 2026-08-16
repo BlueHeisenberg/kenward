@@ -281,6 +281,8 @@ func (c *Config) validateEndpoints(p *problems) map[string]bool {
 			}
 		}
 
+		validateEndpointBudget(p, where, e)
+
 		for _, t := range e.Tags {
 			if strings.TrimSpace(t) == "" {
 				p.addf("%s.tags: contains an empty tier name", where)
@@ -290,6 +292,36 @@ func (c *Config) validateEndpoints(p *problems) map[string]bool {
 		}
 	}
 	return tags
+}
+
+// validateEndpointBudget checks one endpoint's context window against its completion
+// cap.
+//
+// The completion is reserved out of the window, so a cap that meets or exceeds it
+// leaves nothing for the prompt — the assistant refuses to construct a unit on those
+// numbers, and it refuses at startup with no endpoint named, because by then the two
+// figures are a single derived pair. Caught here it is a line in a file with a name
+// beside it. Both fields are defaulted before validation runs, so an endpoint that
+// states only a small window is checked against the default cap, which is exactly the
+// pairing it will run with.
+func validateEndpointBudget(p *problems, where string, e EndpointConfig) {
+	name := strings.TrimSpace(e.Name)
+	if name == "" {
+		name = "this endpoint"
+	} else {
+		name = fmt.Sprintf("%q", name)
+	}
+	if e.ContextWindow < 0 {
+		p.addf("%s.context_window: %d is negative; %s has no window of that size", where, e.ContextWindow, name)
+	}
+	if e.MaxCompletionTokens < 0 {
+		p.addf("%s.max_completion_tokens: %d is negative; %s cannot be asked for fewer than no tokens", where, e.MaxCompletionTokens, name)
+	}
+	if e.ContextWindow > 0 && e.MaxCompletionTokens > 0 && e.MaxCompletionTokens >= e.ContextWindow {
+		p.addf("%s.max_completion_tokens: %d must be smaller than %s's context_window (%d); the completion is\n"+
+			"reserved out of the window, so a cap this large leaves no room for the prompt at all",
+			where, e.MaxCompletionTokens, name, e.ContextWindow)
+	}
 }
 
 // validateBaseURL requires an absolute http or https URL. A relative URL, or one with a

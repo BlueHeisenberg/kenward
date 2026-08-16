@@ -156,7 +156,10 @@ func TestExampleStatesEveryDefaultedKey(t *testing.T) {
 		}
 	}
 
-	// Endpoint timeouts default too, and are per-endpoint rather than a single key.
+	// Endpoint timeouts, windows and completion caps default too, and are
+	// per-endpoint rather than a single key. The window and the cap especially:
+	// an operator who never learns those keys exist runs a machine bought for the
+	// size of its window at 16384 tokens of it, and never finds out.
 	endpoints, ok := raw["endpoints"].([]any)
 	if !ok || len(endpoints) == 0 {
 		t.Fatalf("kenward.example.yaml has no endpoints list")
@@ -166,8 +169,10 @@ func TestExampleStatesEveryDefaultedKey(t *testing.T) {
 		if !ok {
 			t.Fatalf("endpoints[%d] is not a mapping", i)
 		}
-		if v, ok := m["timeout"]; !ok || isEmptyYAMLValue(v) {
-			t.Errorf("kenward.example.yaml endpoints[%d] does not state a timeout; it defaults, so the example must show it", i)
+		for _, key := range []string{"timeout", "context_window", "max_completion_tokens"} {
+			if v, ok := m[key]; !ok || isEmptyYAMLValue(v) {
+				t.Errorf("kenward.example.yaml endpoints[%d] does not state %s; it defaults, so the example must show it", i, key)
+			}
 		}
 	}
 }

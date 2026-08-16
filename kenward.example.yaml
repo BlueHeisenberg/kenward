@@ -189,6 +189,24 @@ endpoints:
     # model, which is the normal state for a household box that is not kept always-on.
     # Too short and a slow-but-working machine looks indistinguishable from a dead one.
     timeout: 120s
+    # context_window is how many tokens this endpoint holds in one request, prompt and
+    # completion together. State the number the server was actually started with —
+    # vLLM's --max-model-len, llama.cpp's -c, ollama's num_ctx — not the number the
+    # model's card advertises, because the two differ constantly and it is the server
+    # that refuses the request. Left out it is 16384, which is deliberately modest:
+    # guessing high on an endpoint nobody described turns into a provider error in
+    # front of a member, where guessing low only wastes a window.
+    context_window: 262144
+    # max_completion_tokens caps one reply and is reserved out of context_window, so it
+    # must be smaller than it — validation says so at load, naming this endpoint,
+    # rather than letting the node fail to start with two numbers and no name.
+    #
+    # Raised well above the 4096 default here because this endpoint serves a reasoning
+    # model, and a reasoning model spends this budget thinking before it writes
+    # anything the member will see. Capped too tightly it returns a complete reasoning
+    # trace, no content at all, and a perfectly healthy "stop" — which the member
+    # experiences as an assistant that has quietly stopped working.
+    max_completion_tokens: 32768
   - name: battlestation
     base_url: http://battlestation.tail:8000/v1
     model: llama-3.1-8b-instruct-awq
@@ -196,6 +214,14 @@ endpoints:
     # reasoning as monster above.
     tags: [local-slow]
     timeout: 120s
+    # Smaller than monster's, and it is this number rather than monster's that decides
+    # what david's conversations get: his chain is [local, local-slow], the router
+    # picks an endpoint only after the prompt has been assembled, so the prompt has to
+    # fit the smallest machine the chain can reach. Two endpoints with very different
+    # windows in one chain means the larger one is never used to its size — which is
+    # the argument for keeping them in different tiers, not the same one.
+    context_window: 32768
+    max_completion_tokens: 4096
   - name: openrouter
     base_url: https://openrouter.ai/api/v1
     model: anthropic/claude-sonnet-5
@@ -208,6 +234,12 @@ endpoints:
     # has not answered in 90s is almost certainly not going to, where a local machine
     # might still be booting.
     timeout: 90s
+    # A hosted provider's window, and a cap sized for an ordinary instruct model rather
+    # than a thinking one. Note what this does to the household's own chain, which is
+    # [local, local-slow, cloud]: the group conversation is budgeted at battlestation's
+    # 32768, the smallest of the three, even though two of its endpoints are far larger.
+    context_window: 200000
+    max_completion_tokens: 8192
 
 # memory configures the lore client every unit uses for retrieval and capture.
 memory:
