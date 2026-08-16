@@ -11,7 +11,12 @@ boundary is separate stores, separate keys and separate processes — not a
 It runs on hardware you already own, routing each request to whichever of your machines
 is awake, and falling back to a cloud provider only where you allow it.
 
-> **Status: in development.** Nothing here is installable yet.
+> **Status: in development, and not yet released.** Everything needed to publish is
+> wired: a tag builds six binaries, a container image, `.deb`/`.rpm` packages and a
+> signed update manifest. No tag has been cut, so the releases page is still empty and
+> there is nothing to install yet. [docs/INSTALL.md](docs/INSTALL.md) describes the
+> install the first tag turns on; [docs/RELEASING.md](docs/RELEASING.md) describes cutting
+> it.
 
 ## The gap it fills
 

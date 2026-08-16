@@ -62,6 +62,29 @@ They are excluded because they need equipment, not because they matter less. `in
 is deliberately **not** among them — it needs nothing but the test binary, so it runs on
 every commit, which is the only reason it caught what it caught.
 
+## The installer
+
+`install.sh` is a couple of hundred lines of branching that nobody exercises until somebody
+pipes it into a shell on a machine unlike this one. `install_test.sh` runs it against a
+locally built binary served over `file://`, inside a throwaway container, once for each of
+those machines: no write permission to the target, no `sudo`, no `curl`, an architecture
+with no build, a corrupted download, a release with no checksums, an install that is
+already there.
+
+```sh
+task install:test        # needs Docker
+```
+
+It moves system binaries about and installs into `/usr/local/bin`, so it runs in the
+container and nowhere else.
+
+The release build itself is rehearsable without publishing anything:
+
+```sh
+task release:check       # validate .goreleaser.yaml
+task snapshot            # build every artifact into dist/, publish nothing
+```
+
 ## What this has and has not proved
 
 It has proved that the logic is right and that the pieces fit together: scope resolution

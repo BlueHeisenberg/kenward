@@ -1,9 +1,5 @@
 # Installing kenward
 
-> **Status: not yet installable.** kenward is under construction and there is no
-> published binary or image. This document describes the intended install and is
-> written down now so the build has something to be measured against.
-
 kenward is one binary. Which mode you run is chosen during setup, by answering one
 question about trust — see [ARCHITECTURE.md](ARCHITECTURE.md) if you want the reasoning
 before you decide.
@@ -48,16 +44,62 @@ family machine — and it is by far the easiest thing to run.
 ### Linux
 
 ```sh
-curl -L https://github.com/BlueHeisenberg/kenward/releases/latest/download/kenward_linux_amd64 -o kenward
-chmod +x kenward
-sudo mv kenward /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/BlueHeisenberg/kenward/main/install.sh | sh
 kenward setup
 ```
 
-To run it as a service, copy `deploy/kenward.service` into `/etc/systemd/system/`, adjust
-the config path, then `systemctl enable --now kenward`. The unit ships with hardening
-already applied and each line commented, so you can loosen one knowingly rather than
-discovering it later.
+The script picks the right build for your machine, checks it against the SHA-256 published
+with the release, installs it to `/usr/local/bin` (or `~/.local/bin` if it cannot write
+there), and offers to install the systemd unit. It is short and commented; read it first
+if you would rather —
+[install.sh](https://github.com/BlueHeisenberg/kenward/blob/main/install.sh). Options,
+through a pipe, take a `-s --`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/BlueHeisenberg/kenward/main/install.sh \
+  | sh -s -- --dir "$HOME/.local/bin" --no-service
+```
+
+`--version v0.2.0` pins a release, `--force` reinstalls one you already have, `--help`
+lists the rest.
+
+What it does not check is the release *signature*. That covers the update manifest and
+needs an Ed25519 verifier, which a shell has not got; the checksum proves you got the file
+GitHub published and no more. `kenward update` from then on does verify signatures, against
+a key compiled into the binary.
+
+**By hand**, if you would rather not pipe anything into a shell:
+
+```sh
+curl -fLO https://github.com/BlueHeisenberg/kenward/releases/latest/download/kenward_linux_amd64
+curl -fLO https://github.com/BlueHeisenberg/kenward/releases/latest/download/checksums.txt
+sha256sum --check --ignore-missing checksums.txt
+chmod +x kenward_linux_amd64
+sudo install -m 0755 kenward_linux_amd64 /usr/local/bin/kenward
+```
+
+`kenward_linux_arm64` for a Raspberry Pi or an Ampere box.
+
+**From a package**, if you would rather your package manager knew about it. `.deb` and
+`.rpm` builds are attached to every release; they put the binary in `/usr/bin` and the
+systemd unit in `/usr/lib/systemd/system/kenward.service`:
+
+```sh
+curl -fLO https://github.com/BlueHeisenberg/kenward/releases/latest/download/kenward_0.2.0_linux_amd64.deb
+sudo dpkg -i kenward_0.2.0_linux_amd64.deb
+```
+
+There is no apt or yum repository, and there is no plan for one — a repository is a second
+distribution channel to keep honest, and the signed update manifest is the one that
+matters.
+
+To run it as a service after a script or by-hand install, copy `deploy/kenward.service`
+into `/etc/systemd/system/`, adjust the config path, then `systemctl enable --now kenward`.
+(The installer's service offer does this for you, including pointing `ExecStart=` at
+wherever the binary actually landed.) The unit ships with hardening already applied and
+each line commented, so you can loosen one knowingly rather than discovering it later.
+Nothing enables or starts it for you: kenward needs a config file and a bot token first,
+and a unit that fails on install is a unit people learn to ignore.
 
 The unit supplies secrets as **systemd credentials** rather than environment variables,
 because an `EnvironmentFile=` value stays in the process's environment for as long as it
@@ -90,16 +132,53 @@ find no token where it is needed. Until that is plumbed through, keep `bot_token
 
 ### macOS
 
-Download `kenward_darwin_arm64` (or `_amd64` on Intel), make it executable, and run
-`kenward setup`. macOS will refuse to run an unnotarised binary the first time; right
-click, Open, and confirm.
+The same installer works:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/BlueHeisenberg/kenward/main/install.sh | sh
+kenward setup
+```
+
+Or by hand: download `kenward_darwin_arm64` (or `_amd64` on Intel) and `checksums.txt`,
+check it with `shasum -a 256 --check --ignore-missing checksums.txt`, `chmod +x`, and move
+it onto your PATH.
+
+Nothing here is notarised, so Gatekeeper will refuse the binary the first time. Either
+right click, Open, and confirm, or clear the quarantine flag yourself:
+
+```sh
+xattr -d com.apple.quarantine /usr/local/bin/kenward
+```
+
+Once `github.com/BlueHeisenberg/homebrew-tap` exists there will be a cask, and it clears
+the flag for you:
+
+```sh
+brew install --cask BlueHeisenberg/tap/kenward
+```
 
 ### Windows
 
-Download `kenward_windows_amd64.exe` and run it from a terminal. `kenward setup` works
-the same as everywhere else.
+Download `kenward_windows_amd64.exe` (or `_arm64` on an ARM device) from the
+[latest release](https://github.com/BlueHeisenberg/kenward/releases/latest), check it
+against `checksums.txt`, rename it to `kenward.exe`, put it somewhere on your PATH, and run
+it from a terminal. `kenward setup` works the same as everywhere else.
+
+```powershell
+$v = 'https://github.com/BlueHeisenberg/kenward/releases/latest/download'
+Invoke-WebRequest "$v/kenward_windows_amd64.exe" -OutFile kenward.exe
+Get-FileHash kenward.exe -Algorithm SHA256   # compare against checksums.txt
+```
+
+The install script is not for Windows: it is POSIX shell, and it says so rather than
+half-working under Git Bash.
 
 ### Container
+
+The image is `ghcr.io/blueheisenberg/kenward`, published for linux/amd64 and linux/arm64
+on every release. `:latest` follows the newest non-prerelease; a version tag
+(`:v0.2.0`) pins one, and pinning is the better habit for something holding your
+household's keys.
 
 ```sh
 docker compose -f deploy/compose.simple.yml up -d

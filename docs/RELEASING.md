@@ -65,24 +65,98 @@ except by hand.
 
 ## Cutting a release
 
+A release happens in two halves, and the split is the whole point: **CI builds and
+publishes nothing that a household will act on; a human signs.**
+
+### 1. Tag it
+
 ```sh
-task cross                                   # build every platform into dist/
-kenward-release manifest --version v0.2.0 \
-    --channel edge \
-    --dist dist/ \
-    --notes "..." \
-    --out manifest.json
-kenward-release sign --key ~/.kenward-release/release-1.key --in manifest.json --out signed.json
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
 ```
 
-Then publish `signed.json` at the manifest URL and the artifacts at the URLs it names.
+That is the only command that starts a release. `.github/workflows/release.yml` then:
+
+- reruns the full gate — gofmt, vet, `go test -race` — on the exact commit the tag names,
+  because a tag can point at anything, including a commit that never saw a pull request;
+- builds six binaries (linux, darwin, windows × amd64, arm64) with `CGO_ENABLED=0`,
+  `GOWORK=off` and `-trimpath`, stamping `internal/version` from the tag;
+- publishes them, plus `.tar.gz`/`.zip` archives, `.deb` and `.rpm` packages,
+  `checksums.txt` and `install.sh`, to a **draft** GitHub release;
+- pushes `ghcr.io/blueheisenberg/kenward:v0.2.0` (and `:latest`, unless the tag carries a
+  hyphen and is therefore a prerelease) for linux/amd64 and linux/arm64.
+
+The release is a draft because `kenward update` fetches
+`.../releases/latest/download/manifest.json`, and "latest" means the newest *published*
+release. Publishing binaries before the signed manifest is attached would hand every
+household a release whose manifest 404s.
+
+The workflow can also be run by hand from the Actions tab on a branch: it then builds a
+snapshot, publishes nothing, and uploads the artifacts for inspection. Locally, the same
+rehearsal is `task snapshot`.
+
+### 2. Sign it, attach the manifest, publish
+
+On the machine holding the private key, which is not a build machine and not CI:
+
+```sh
+mkdir -p /tmp/rel && cd /tmp/rel
+gh release download v0.2.0 --repo BlueHeisenberg/kenward --pattern 'kenward_*'
+
+kenward-release manifest --version v0.2.0 \
+    --channel edge,stable \
+    --dist . \
+    --notes "..." \
+    --out manifest-unsigned.json
+kenward-release sign --key ~/.kenward-release/release-1.key \
+    --in manifest-unsigned.json --out manifest.json
+kenward-release verify --in manifest.json --pub ~/.kenward-release/release-1.pub
+
+gh release upload v0.2.0 manifest.json --repo BlueHeisenberg/kenward
+gh release edit v0.2.0 --draft=false --repo BlueHeisenberg/kenward
+```
+
+Download the artifacts rather than hashing a local `dist/`: the digests then cover exactly
+the bytes GitHub will serve, not bytes that ought to be the same. The archives and packages
+that come down with them are ignored — `manifest` only recognises files named
+`kenward_<goos>_<goarch>`.
+
+The signed envelope must be attached under the name `manifest.json`, because that is the
+filename `releaseManifestURL` in `cmd/kenward/release.go` asks for.
 
 `--channel` takes a list, because the Channels section below says to publish once to both:
 `--channel edge,stable` writes the same release into each and lets the client-side delay
 separate them. Artifact URLs default to
-`https://github.com/BlueHeisenberg/kenward/releases/download/{version}/{file}`; override
-with `--base-url` if artifacts are hosted elsewhere. `--published-at` overrides the
-timestamp, which matters only for reproducing a manifest exactly.
+`https://github.com/BlueHeisenberg/kenward/releases/download/{version}/{file}`, which is
+where the workflow puts them; override with `--base-url` if artifacts are hosted elsewhere.
+`--published-at` overrides the timestamp, which matters only for reproducing a manifest
+exactly.
+
+### The public key has to be in the build
+
+`cmd/kenward/release.go` ships with an empty trusted set, on purpose. A build that trusts
+nothing refuses to update rather than fetching something it cannot verify — correct, and
+useless to a household.
+
+Set the repository **variable** (not secret — it is compiled into every published binary
+anyway) `KENWARD_RELEASE_KEYS` to the base64 public key `keygen` printed, comma-separated
+if more than one is trusted during a rotation:
+
+```sh
+gh variable set KENWARD_RELEASE_KEYS --repo BlueHeisenberg/kenward --body 'BASE64KEY'
+```
+
+The workflow passes it to `-X main.releaseTrustedKeys`. Nothing else in CI ever touches key
+material, and the private half never appears there in any form.
+
+### Homebrew
+
+`.goreleaser.yaml` generates a cask but does not push it: `HOMEBREW_TAP_SKIP` defaults to
+`true` because `github.com/BlueHeisenberg/homebrew-tap` does not exist yet. To turn it on,
+create that repository — a bare public repo with a `Casks/` directory is enough — put a
+token that can write to it in the secret `HOMEBREW_TAP_TOKEN`, and set the variable
+`HOMEBREW_TAP_SKIP` to `false`. The generated cask is in `dist/homebrew/Casks/kenward.rb`
+after any `task snapshot`, so it can be read before the tap is ever created.
 
 The manifest carries, per channel: the version, release notes, publication timestamp, a
 `securitySensitive` flag, and for each platform an artifact URL, SHA-256 and size. The
@@ -139,16 +213,19 @@ you are not running `edge` at home, the stable channel is not being tested by an
 ## Before you publish
 
 - [ ] CI green on all three platforms
-- [ ] `task cross` produced every artifact, and each one runs `kenward version` on its
-      own platform — the updater's preflight will execute exactly this before swapping,
-      and a binary that fails it refuses the update rather than bricking the install
-- [ ] Version bumped; major version implies the update will ask for consent
+- [ ] The draft release carries all six `kenward_<goos>_<goarch>` binaries, and each one
+      runs `kenward version` on its own platform — the updater's preflight will execute
+      exactly this before swapping, and a binary that fails it refuses the update rather
+      than bricking the install
+- [ ] `KENWARD_RELEASE_KEYS` is set, so the published binaries can verify anything at all
+- [ ] Major version implies the update will ask for consent
 - [ ] `securitySensitive` set if anything in the list above changed
 - [ ] Release notes say what changes for a household, not what changed in the code
 - [ ] Manifest signed on a machine holding the key, not in CI
-- [ ] `kenward-release verify --in signed.json --pub <every trusted key>` run on the
+- [ ] `kenward-release verify --in manifest.json --pub <every trusted key>` run on the
       exact file about to be published, and its output read — the signature, the
       versions, the flags and every digest
+- [ ] `manifest.json` attached to the draft release **before** it is undrafted
 - [ ] Installed the release on your own household from `edge` and used it for a day
 
 ---

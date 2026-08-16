@@ -17,7 +17,8 @@ import (
 )
 
 // defaultPlatforms is the set of targets a release is expected to carry. It
-// mirrors CROSS_TARGETS in Taskfile.yml. A manifest published without one of
+// mirrors CROSS_TARGETS in Taskfile.yml and the build matrix in
+// .goreleaser.yaml. A manifest published without one of
 // these silently strands every installation on that platform — it will fetch
 // the manifest, find no artifact for itself, and simply never update — so a
 // missing platform is an error here rather than a note in the output.
@@ -27,13 +28,17 @@ var defaultPlatforms = []string{
 	"darwin/amd64",
 	"darwin/arm64",
 	"windows/amd64",
+	"windows/arm64",
 }
 
 // defaultBaseURL is where the artifacts named by a manifest are expected to
 // be published. {version} and {file} are substituted per artifact.
 const defaultBaseURL = "https://github.com/BlueHeisenberg/kenward/releases/download/{version}/{file}"
 
-const manifestUsage = `kenward-release manifest --version V --channel C --dist DIR --notes TEXT --out FILE
+// A var rather than a const because the platform list is built from
+// defaultPlatforms: the help text and the list actually enforced must not be
+// able to drift apart.
+var manifestUsage = `kenward-release manifest --version V --channel C --dist DIR --notes TEXT --out FILE
 
 Walks DIR, works out which platform each build is for from its filename,
 computes each one's SHA-256 and size, and writes an unsigned manifest. The
@@ -62,7 +67,7 @@ Flags:
                          substituted. Default:
                          ` + defaultBaseURL + `
   --platforms LIST       Comma-separated platforms that must be present.
-                         Default: ` + "linux/amd64,linux/arm64,darwin/amd64,darwin/arm64,windows/amd64" + `
+                         Default: ` + strings.Join(defaultPlatforms, ",") + `
   --published-at TIME    RFC3339 publication timestamp. Defaults to now.
 `
 
