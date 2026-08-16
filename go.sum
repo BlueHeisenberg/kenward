@@ -8,6 +8,8 @@ github.com/BlueHeisenberg/keel v0.5.0 h1:b8RdY5gMZK3MXumzWb1MNeT0Gqdl3IIaXX2+HWX
 github.com/BlueHeisenberg/keel v0.5.0/go.mod h1:pBnwO09OQwgNPwbW3Emoa7fbDHVjAu8rIYYuGGv3YLE=
 github.com/BlueHeisenberg/keel v0.5.1 h1:8lwox6cYkSXFIqJUc04F2+TUmPoF2U9uh2h5eeTDIFI=
 github.com/BlueHeisenberg/keel v0.5.1/go.mod h1:pBnwO09OQwgNPwbW3Emoa7fbDHVjAu8rIYYuGGv3YLE=
+github.com/BlueHeisenberg/keel v0.5.2 h1:duiEKb5Z+FNkFmKBcyU6GDLA6fpAfHvgsrsC9o+2uzc=
+github.com/BlueHeisenberg/keel v0.5.2/go.mod h1:pBnwO09OQwgNPwbW3Emoa7fbDHVjAu8rIYYuGGv3YLE=
 github.com/go-telegram/bot v1.23.0 h1:CKKQq115G/GUGBG8uuWl5uXbiBHyVjZBp/qqOLWZjJk=
 github.com/go-telegram/bot v1.23.0/go.mod h1:i2TRs7fXWIeaceF3z7KzsMt/he0TwkVC680mvdTFYeM=
 github.com/golang-jwt/jwt/v5 v5.3.1 h1:kYf81DTWFe7t+1VvL7eS+jKFVWaUnK9cB1qbwn63YCY=

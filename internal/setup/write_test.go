@@ -18,7 +18,7 @@ import (
 // the reason. Anything not on this list that the wizard fails to write is a field
 // that will silently never appear in a generated configuration.
 //
-// All three entries are the *_file half of a secret source. The wizard writes the
+// All four entries are the *_file half of a secret source. The wizard writes the
 // *_env half, for two reasons:
 //
 //   - It is the one form that works in every deployment. The file form needs a path
@@ -39,6 +39,7 @@ import (
 var notWritten = map[string]string{
 	"telegram.bot_token_file": "the wizard writes bot_token_env; naming both sources is a validation error",
 	"members.bot_token_file":  "the wizard writes bot_token_env; naming both sources is a validation error",
+	"members.passphrase_file": "the wizard writes passphrase_env; naming both sources is a validation error",
 	"endpoints.api_key_file":  "the wizard writes api_key_env; naming both sources is a validation error",
 }
 

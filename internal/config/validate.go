@@ -360,6 +360,8 @@ func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 	telegrams := make(map[int64]int)
 	tokens := make(map[string]int)
 	tokenFiles := make(map[string]int)
+	passphrases := make(map[string]int)
+	passphraseFiles := make(map[string]int)
 
 	// The household's own bot token joins the member-vs-member check rather than being
 	// checked only against itself. In isolated mode it is the group pod's token, so a
@@ -444,6 +446,13 @@ func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 		if c.Mode == ModeIsolated {
 			c.checkTokenSource(p, where, "bot_token_env", "variable", strings.TrimSpace(m.BotTokenEnv), tokens, i)
 			c.checkTokenSource(p, where, "bot_token_file", "file", strings.TrimSpace(m.BotTokenFile), tokenFiles, i)
+			// And the same rule for the passphrase, which is the other half of what
+			// makes a pod isolated. Two members on one passphrase is one wrapping
+			// secret for both keys — simple mode's custody model wearing isolated
+			// mode's name — and nothing downstream would ever notice: both pods
+			// unwrap, both serve, and the property the mode was chosen for is gone.
+			c.checkPassphraseSource(p, where, "passphrase_env", "variable", strings.TrimSpace(m.PassphraseEnv), passphrases, i)
+			c.checkPassphraseSource(p, where, "passphrase_file", "file", strings.TrimSpace(m.PassphraseFile), passphraseFiles, i)
 		}
 	}
 }
@@ -464,6 +473,21 @@ func (c *Config) checkTokenSource(p *problems, where, field, kind, value string,
 	default:
 		p.addf("%s.%s: %s is already members[%d]'s token %s; sharing a bot defeats isolated mode", where, field, value, first, kind)
 	}
+}
+
+// checkPassphraseSource is checkTokenSource for the passphrase that wraps a member's
+// key. It is a second function rather than a second call because the household seeds
+// nothing here — there is no household passphrase in the file — and because the loss
+// it reports is a different one, worth saying in its own words.
+func (c *Config) checkPassphraseSource(p *problems, where, field, kind, value string, seen map[string]int, i int) {
+	if value == "" {
+		return
+	}
+	if first, dup := seen[value]; dup {
+		p.addf("%s.%s: %s is already members[%d]'s passphrase %s; one passphrase across two members wraps both their keys, which is simple mode's custody with isolated mode's name on it", where, field, value, first, kind)
+		return
+	}
+	seen[value] = i
 }
 
 // validateMemory checks the lore command is something that could be executed.
@@ -598,6 +622,14 @@ func (c *Config) secretRefs(scope UnitScope) []secretRef {
 			// row in the file, and the row is what the operator has to edit.
 			ref.Where = fmt.Sprintf("members[%d].bot_token", i)
 			add(ref, "required in isolated mode; each member's pod holds its own bot token")
+
+			pass := m.PassphraseRef()
+			pass.Where = fmt.Sprintf("members[%d].passphrase", i)
+			// Required for a member who has not claimed yet as much as for one who
+			// has: D-023 puts their bot up before the claim, and the claim is what
+			// provisions their key — under this passphrase, in their own pod, with
+			// nobody standing at a terminal to be asked for one.
+			add(pass, "required in isolated mode; each member's key is wrapped under their own passphrase, and a pod given none can unwrap nothing")
 		}
 	}
 	// Walked over the whole list, and skipped rather than filtered, so that the index
@@ -680,6 +712,10 @@ func (c *Config) validateSecretSources(p *problems) {
 		ref := m.BotTokenRef()
 		ref.Where = fmt.Sprintf("members[%d].bot_token", i)
 		refs = append(refs, ref)
+
+		pass := m.PassphraseRef()
+		pass.Where = fmt.Sprintf("members[%d].passphrase", i)
+		refs = append(refs, pass)
 	}
 	for i, e := range c.Endpoints {
 		ref := e.APIKeyRef()

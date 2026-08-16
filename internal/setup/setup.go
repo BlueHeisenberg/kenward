@@ -55,6 +55,12 @@ const (
 	// MemberBotTokenPrefix is the prefix for a member's own token variable in
 	// isolated mode; the member's id is appended.
 	MemberBotTokenPrefix = "KENWARD_BOT_TOKEN"
+	// MemberPassphrasePrefix is the prefix for the variable holding the passphrase
+	// that wraps a member's key in isolated mode; the member's id is appended. One
+	// per member, never one for the household: in that mode each key is wrapped
+	// under its own passphrase, and a shared one would be simple mode's custody
+	// under isolated mode's name.
+	MemberPassphrasePrefix = "KENWARD_PASSPHRASE"
 )
 
 // Tier names the wizard suggests. They are only a convention — a tier is any name

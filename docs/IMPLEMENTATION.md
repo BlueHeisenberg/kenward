@@ -467,6 +467,8 @@ members:
     tiers: [local]            # local-only: refuses rather than reaching for cloud
     bot_token_env: KENWARD_BOT_TOKEN_DAVID   # isolated mode only
     # bot_token_file: /run/secrets/david-token   # or this; never both
+    passphrase_env: KENWARD_PASSPHRASE_DAVID # isolated mode only; wraps david's key
+    # passphrase_file: /run/secrets/david-passphrase   # or this; never both
 
 endpoints:
   - name: monster
@@ -544,6 +546,13 @@ Validation rules that are errors, not warnings:
 - in `isolated` mode every member must have a distinct bot token source: two members
   naming the same `bot_token_env`, or the same `bot_token_file`, share a bot and defeat
   the mode
+- in `isolated` mode every member must have a passphrase source — `passphrase_env`,
+  `passphrase_file`, or the systemd credential `passphrase.<id>` — and it must be
+  distinct per member for the same reason: one passphrase across two members is one
+  wrapping secret for both their keys, which is simple mode's custody with isolated
+  mode's name on it. It is required for a member who has not claimed yet as much as for
+  one who has, because the claim is what provisions their key and it happens in their
+  own pod (D-023) with nobody at a terminal to be asked
 - naming two sources for one secret is an error, not a precedence — see below
 - every secret **this process's own unit** depends on must be readable at startup, or
   `kenward` exits with a list of what is missing and where each one was looked for; it
@@ -564,11 +573,11 @@ member's container, which is exactly the failure the mode exists to prevent.
 simple-mode node and an operator at a terminal are unchanged. `Config.ValidateForUnit`
 and `Config.MissingSecretNamesForUnit` take it. There are three kinds of process:
 
-| Process | Bot tokens it must have | Provider keys it must have |
-| --- | --- | --- |
-| Household node (zero scope) | the household's, plus every member's in isolated mode | every endpoint's |
-| The group's pod (`--group` / `KENWARD_GROUP=1`) | the household's, when `group_chat_id` is set | the endpoints `household.tiers` reaches |
-| A member's pod (`--member ID` / `KENWARD_MEMBER=ID`) | that member's, and no other — not even the household's | the endpoints that member's `tiers` reaches |
+| Process | Bot tokens it must have | Passphrases it must have | Provider keys it must have |
+| --- | --- | --- | --- |
+| Household node (zero scope) | the household's, plus every member's in isolated mode | every member's, in isolated mode: it is the host supervisor, and it provisions each pod's | every endpoint's |
+| The group's pod (`--group` / `KENWARD_GROUP=1`) | the household's, when `group_chat_id` is set | **none** — it serves the shared space and holds no member's key | the endpoints `household.tiers` reaches |
+| A member's pod (`--member ID` / `KENWARD_MEMBER=ID`) | that member's, and no other — not even the household's | that member's, and no other | the endpoints that member's `tiers` reaches |
 
 Provider keys are scoped by tier chain for the same reason `deploy/compose.isolated.yml`
 hands each container only the keys its own chain can reach: a key present in an
@@ -599,9 +608,16 @@ So a secret has three possible sources:
 
 | Source | Form | Applies to |
 | --- | --- | --- |
-| A file | `bot_token_file`, `members[].bot_token_file`, `endpoints[].api_key_file` | any deployment that can mount a file |
-| An environment variable | `bot_token_env`, `members[].bot_token_env`, `endpoints[].api_key_env` | a hand-run binary, and the compose path |
+| A file | `bot_token_file`, `members[].bot_token_file`, `members[].passphrase_file`, `endpoints[].api_key_file` | any deployment that can mount a file |
+| An environment variable | `bot_token_env`, `members[].bot_token_env`, `members[].passphrase_env`, `endpoints[].api_key_env` | a hand-run binary, and the compose path |
 | A systemd credential | no configuration at all | the systemd unit |
+
+`members[].passphrase_*` is the isolated-mode session passphrase, and it is a secret the
+configuration *names* like any other — the invariant is untouched, no value goes in the
+file. Simple mode has no such field: there one node passphrase wraps everybody's key, and
+it reaches the process through `$CREDENTIALS_DIRECTORY/kenward-passphrase`,
+`KENWARD_PASSPHRASE`, or a terminal prompt, in that order. Those three still work inside a
+pod for an operator running one by hand; what a pod uses first is its own member's.
 
 Resolution is `_file` → `_env` → credential.
 
@@ -638,7 +654,9 @@ configuration whatsoever, for:
 ```
 bot_token                 the household bot (simple mode, and the group unit)
 bot_token.<member id>     a member's own bot
+passphrase.<member id>    the passphrase wrapping that member's key (isolated mode)
 api_key.<endpoint name>   one per endpoint that needs a key
+kenward-passphrase        the node passphrase (simple mode)
 ```
 
 The unit file already names each credential; making the operator repeat the name in
@@ -688,19 +706,53 @@ calls it at the moment of use, which is what makes rotation work: a token file o
 credential rewritten under a running node is picked up the next time the closure is
 called, with no restart to reload a value that was never cached.
 
-**Into a pod, delivery mirrors the stated source.** `Isolated` resolves each pod's token
-*on the host* and provisions it so that the pod's own resolver — reading the same
-configuration — finds it exactly where the host did: an environment variable stays an
-environment variable, a `bot_token_file` becomes a `0600` file at the same path, and a
+**Into a pod, delivery mirrors the stated source.** `Isolated` resolves each pod's secrets
+*on the host* and provisions them so that the pod's own resolver — reading the same
+configuration — finds each one exactly where the host did: an environment variable stays an
+environment variable, a `*_file` becomes a `0600` file at the same path, and a
 systemd credential becomes the same credential name under a synthetic
-`CREDENTIALS_DIRECTORY` at `/run/kenward/credentials`. The value is added to the pod spec
-only at Create and Recreate time, so it never rests on a struct a logger could print, and
+`CREDENTIALS_DIRECTORY` at `/run/kenward/credentials`. Values are added to the pod spec
+only at Create and Recreate time, so none rests on a struct a logger could print, and
 a rotated source is picked up by the next recreation without a supervisor restart.
 
+Each pod gets exactly the secrets its unit needs and no others: a member's pod gets that
+member's bot token and that member's passphrase; the group's pod gets the household bot
+token and no passphrase at all.
+
+Every provisioned secret file is **owned by the identity the image runs as** — uid=gid=65532,
+the distroless base's `nonroot`. That is not a nicety. keel provisions a file root-owned
+unless told otherwise, and a root-owned `0600` file is one the pod's own process cannot
+open, so before it was set the file and credential sources failed in this deployment path
+while the environment one worked — a pod refusing its own configuration with `permission
+denied`. Loosening the mode is not the alternative: `config.Secrets` refuses a secret file
+that is group- or world-readable, so `0644` trades one refusal for another and hands the
+token to every process in the container on the way past.
+
 One constraint follows from that and is worth knowing before it is met: in isolated mode a
-`bot_token_file` **must be an absolute path**, because a relative one names nothing
-determinate inside the pod. It is refused with that reason rather than provisioned to a
-guess.
+`bot_token_file` or `passphrase_file` **must be an absolute path**, because a relative one
+names nothing determinate inside the pod. It is refused with that reason rather than
+provisioned to a guess.
+
+**What the host learns, stated plainly**, because it is the property the mode exists to
+provide. The host process holds no member's wrapped key, no member's lore instance and no
+member's plaintext — those live in the pods' work volumes and the pods' memory. What it
+does do, at Create and Recreate time and only there, is read a member's passphrase in
+order to hand it to that member's pod, and drop it again. There is no way around that: a
+supervisor that starts a process with a secret holds that secret for the length of the
+call, and `keel/sandbox` has no bind-mount by which a host could pass a path instead of a
+value. So the claim is not "the host never sees a member's secret" — that would be false —
+but three narrower ones that are true, and that simple mode keeps none of:
+
+- the host retains nothing; every value is resolved through a closure at the moment of use
+  and never cached (the same mechanism that makes rotation work);
+- no member's secret is ever given to another member's pod, or to the group's;
+- what the host forwards is a wrapping secret for a key it does not have.
+
+An operator with root on the household machine can of course reach both halves — they run
+the container runtime. Isolated mode has never claimed otherwise (D-021 accepts a
+root-writable key record; D-019 accepts that a key stays unwrapped in its pod's memory).
+What it claims, and what this delivery keeps true, is that no *component* of kenward holds
+another member's plaintext, and that one member's compromise reaches no one else.
 
 ---
 
@@ -949,8 +1001,10 @@ who has not yet claimed their invite starts **claim-only** — no unit, no sessi
 touching lore, just a claimer waiting for the code. A member's bot exists before they
 claim and the claim happens in a conversation with that bot, so the pod must be able to
 serve the claim without being able to serve a turn. When the claim binds, the member's
-key is provisioned and unlocked under the passphrase that pod was started with, and the
-unit starts serving in place, with no restart — see §7.
+key is provisioned and unlocked under **that member's own passphrase**, named by
+`members[].passphrase_env` / `_file` (or the systemd credential `passphrase.<id>`) and
+delivered to that pod alone, and the unit starts serving in place, with no restart — see
+§7 and "How a supervisor-started pod gets a passphrase" below.
 
 The `Unit` implementation is identical in all three. If a change to `Unit` needs to know
 which one it is running under, that change is wrong.
@@ -995,6 +1049,42 @@ sibling secret it correctly does not hold, and restarted every thirty seconds fo
 The file is read once when the supervisor is constructed and every pod is recreated from
 that snapshot, so a configuration edited while the household is running reaches pods on
 the next `kenward run` rather than on the next `Roll`.
+
+### How a supervisor-started pod gets a passphrase
+
+This is where the mode failed outright the first time it was run against a real container
+runtime, so it is written down rather than left to be inferred. `readPassphrase` accepted
+a systemd credential, `KENWARD_PASSPHRASE`, or a terminal prompt. A pod has no terminal,
+the host provisioned neither of the other two, and `kenward.yaml` had nowhere to name one.
+Every member's pod exited at startup with *"no session passphrase available, so no
+member's key can be unwrapped"*, on every restart, forever.
+
+A passphrase cannot arrive any other way. D-019 settles that it never travels over
+Telegram, and there is no second channel to a member: the operator supplies it when the
+process starts or it does not arrive. So it is a per-member secret named in the household
+configuration beside that member's bot token, and delivered by the same mechanism:
+
+- **The supervisor path.** `Isolated` resolves `members[].passphrase_*` on the host and
+  provisions it into that member's pod, mirroring the stated source — see §4's "Into a pod,
+  delivery mirrors the stated source", which also states plainly what the host learns by
+  doing so. A member whose passphrase cannot be resolved stops the whole household from
+  starting, next to the same refusal for an unresolvable bot token: one pod that silently
+  never comes up is worse than a household that refuses and says why.
+- **The compose path.** There is no host, so the operator sets the same variable on that
+  member's service and on no other, or mounts the file the member's `passphrase_file`
+  names. `deploy/compose.isolated.yml` does the first, with the reasoning in its header.
+
+**One passphrase per member, never one for the household.** Isolated mode's whole session
+custody is that each member's key is wrapped under their own — a household-wide passphrase
+would mean one compromised container's secret opens every member's memory, which is simple
+mode's custody with isolated mode's name on it, and nothing downstream would report it:
+every pod would unlock and every member would be served. Two members naming the same
+`passphrase_env` or `passphrase_file` is therefore a validation error, in the same
+sentence as two members naming the same bot token.
+
+**The group's pod gets none.** It serves the shared space and holds no member's key, so a
+passphrase there would unwrap nothing — and a secret that opens a member's memory, sitting
+in the one pod every member talks to, is exactly what the mode exists to keep out of it.
 
 ---
 

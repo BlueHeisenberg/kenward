@@ -293,8 +293,8 @@ const secretYAML = `
 mode: isolated
 household: {shared_space: household, tiers: [local]}
 members:
-  - {id: david, private_space: dp, tiers: [local], bot_token_file: /etc/kenward/david.token}
-  - {id: maria, private_space: mp, tiers: [local], bot_token_env: T_MARIA}
+  - {id: david, private_space: dp, tiers: [local], bot_token_file: /etc/kenward/david.token, passphrase_file: /etc/kenward/david.pass}
+  - {id: maria, private_space: mp, tiers: [local], bot_token_env: T_MARIA, passphrase_env: P_MARIA}
   - {id: jordan, private_space: jp, tiers: [local]}
 endpoints:
   - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
@@ -312,10 +312,15 @@ func secretConfig(t *testing.T) *config.Config {
 
 func fullySuppliedSecrets() *config.Secrets {
 	return secrets(fakeFS{
-		"/etc/kenward/david.token":     {data: "david-" + secretValue, mode: 0o600},
-		"/etc/kenward/or.key":          {data: "key-" + secretValue + "\n", mode: 0o600},
-		credsDir + "/bot_token.jordan": {data: "jordan-" + secretValue, mode: 0o400},
-	}, map[string]string{"T_MARIA": "maria-" + secretValue}, credsDir)
+		"/etc/kenward/david.token":      {data: "david-" + secretValue, mode: 0o600},
+		"/etc/kenward/david.pass":       {data: "david-pass-" + secretValue, mode: 0o600},
+		"/etc/kenward/or.key":           {data: "key-" + secretValue + "\n", mode: 0o600},
+		credsDir + "/bot_token.jordan":  {data: "jordan-" + secretValue, mode: 0o400},
+		credsDir + "/passphrase.jordan": {data: "jordan-pass-" + secretValue, mode: 0o400},
+	}, map[string]string{
+		"T_MARIA": "maria-" + secretValue,
+		"P_MARIA": "maria-pass-" + secretValue,
+	}, credsDir)
 }
 
 // TestValidateAcceptsEverySource is the whole feature seen from the operator's side: a
@@ -340,14 +345,19 @@ func TestValidateReportsEverySecretAtOnce(t *testing.T) {
 	// Every unmet secret, in file order: the two whose stated source is not there,
 	// the one with no source at all, and the endpoint key file that is also absent.
 	// The local endpoint, which states nothing and needs nothing, is not on the list.
-	want := []string{"members[0].bot_token", "members[1].bot_token", "members[2].bot_token", "endpoints[1].api_key"}
+	want := []string{
+		"members[0].bot_token", "members[0].passphrase",
+		"members[1].bot_token", "members[1].passphrase",
+		"members[2].bot_token", "members[2].passphrase",
+		"endpoints[1].api_key",
+	}
 	if got := ve.MissingSecrets; !equalStrings(got, want) {
 		t.Errorf("MissingSecrets = %v, want %v", got, want)
 	}
 	// The variable-named one is still on the export list `kenward doctor` prints; the
 	// file and credential ones have no variable to export and are not invented.
-	if got := ve.MissingEnv; !equalStrings(got, []string{"T_MARIA"}) {
-		t.Errorf("MissingEnv = %v, want [T_MARIA]", got)
+	if got := ve.MissingEnv; !equalStrings(got, []string{"T_MARIA", "P_MARIA"}) {
+		t.Errorf("MissingEnv = %v, want [T_MARIA P_MARIA]", got)
 	}
 	// members[2] states no source at all, so the message has to teach all three.
 	joined := err.Error()
@@ -497,7 +507,12 @@ func TestMissingSecretNames(t *testing.T) {
 
 	// Sorted, and mixing the forms: a variable nobody exported, a credential the unit
 	// does not carry, and a key file that is not there.
-	want := []string{"endpoints[1].api_key", "members[1].bot_token", "members[2].bot_token"}
+	want := []string{
+		"endpoints[1].api_key",
+		"members[0].passphrase",
+		"members[1].bot_token", "members[1].passphrase",
+		"members[2].bot_token", "members[2].passphrase",
+	}
 	if got := cfg.MissingSecretNames(s); !equalStrings(got, want) {
 		t.Errorf("MissingSecretNames() = %v, want %v", got, want)
 	}

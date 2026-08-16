@@ -66,6 +66,9 @@ const (
 	credentialBotTokenPrefix = "bot_token."
 	// credentialAPIKeyPrefix is followed by the endpoint's name.
 	credentialAPIKeyPrefix = "api_key."
+	// credentialPassphrasePrefix is followed by the member's id. Isolated mode
+	// only: it is the passphrase that wraps that one member's session key.
+	credentialPassphrasePrefix = "passphrase."
 )
 
 // maxSecretFileSize bounds what will be read as a secret. A bot token is under a hundred
@@ -78,6 +81,14 @@ const maxSecretFileSize = 64 << 10
 // disables the automatic lookup for that member rather than guessing at a filename.
 func MemberBotTokenCredential(memberID string) string {
 	return credentialName(credentialBotTokenPrefix + strings.TrimSpace(memberID))
+}
+
+// MemberPassphraseCredential is the systemd credential name for the passphrase that
+// wraps one member's session key. Like MemberBotTokenCredential it returns "" for a
+// member id systemd would not accept, which disables the automatic lookup for that
+// member rather than guessing at a filename.
+func MemberPassphraseCredential(memberID string) string {
+	return credentialName(credentialPassphrasePrefix + strings.TrimSpace(memberID))
 }
 
 // EndpointAPIKeyCredential is the systemd credential name for one endpoint's API key.
@@ -479,6 +490,28 @@ func (m MemberConfig) BotTokenRef() SecretRef {
 // BotToken resolves this member's own bot token.
 func (m MemberConfig) BotToken(s *Secrets) (Secret, error) {
 	return s.orDefault().Resolve(m.BotTokenRef())
+}
+
+// PassphraseRef describes the passphrase that wraps this member's session key: what
+// isolated mode needs and simple mode has no use for, where one node passphrase wraps
+// everybody's.
+//
+// Naming it here rather than deriving a variable name from the member id is the same
+// choice bot tokens made, for the same reason: an id is not an environment variable
+// name, and any rule turning one into the other maps distinct ids onto one name — which
+// for a passphrase means two members silently sharing a wrapping secret.
+func (m MemberConfig) PassphraseRef() SecretRef {
+	return SecretRef{
+		Where:      fmt.Sprintf("members[%s].passphrase", m.ID),
+		File:       strings.TrimSpace(m.PassphraseFile),
+		Env:        strings.TrimSpace(m.PassphraseEnv),
+		Credential: MemberPassphraseCredential(m.ID),
+	}
+}
+
+// Passphrase resolves the passphrase that wraps this member's session key.
+func (m MemberConfig) Passphrase(s *Secrets) (Secret, error) {
+	return s.orDefault().Resolve(m.PassphraseRef())
 }
 
 // APIKeyRef describes this endpoint's key.

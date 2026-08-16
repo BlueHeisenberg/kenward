@@ -158,6 +158,20 @@ type MemberConfig struct {
 	// credential named by MemberBotTokenCredential(ID) is used if systemd supplied
 	// one. See secret.go.
 	BotTokenFile string `yaml:"bot_token_file"`
+	// PassphraseEnv names the variable holding the passphrase that wraps this
+	// member's session key. Isolated mode only, and required there: each member's
+	// key is wrapped under their own passphrase (session.ModeIsolated), so a pod
+	// that is handed no passphrase can unwrap nothing and answers every private
+	// message with the locked notice. It must differ from every other member's for
+	// the same reason their bot tokens must — one passphrase across two members is
+	// one wrapping secret across two members.
+	PassphraseEnv string `yaml:"passphrase_env"`
+	// PassphraseFile names a file holding it — the form a pod wants, where an
+	// environment value is readable by every process in the container and is
+	// inherited by the `lore` subprocess. One source only: stating this and
+	// PassphraseEnv is an error. With neither, the credential named by
+	// MemberPassphraseCredential(ID) is used if systemd supplied one. See secret.go.
+	PassphraseFile string `yaml:"passphrase_file"`
 	// EnrolledAt is filled in from the state file by MergeState and is deliberately
 	// not readable from the YAML: when a member claimed their invite is something that
 	// happened, not something an operator declares. Writing enrolled_at in the file is

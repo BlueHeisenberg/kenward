@@ -60,11 +60,31 @@ const (
 	// pod — the same path the compose deployment mounts it at.
 	PodConfigPath = "/etc/kenward/kenward.yaml"
 	// podCredentialsDir is the synthetic CREDENTIALS_DIRECTORY a pod is given
-	// when its token's source is a systemd credential: the credential is
+	// when one of its secrets' sources is a systemd credential: the credential is
 	// provisioned as a 0600 file there, mirroring on the inside exactly what
 	// systemd did on the outside, so the pod's own resolver finds it without
 	// the configuration changing shape.
 	podCredentialsDir = "/run/kenward/credentials"
+	// podSecretUID and podSecretGID own every secret file provisioned into a pod.
+	//
+	// They are the fixed non-root identity the image runs as — `USER
+	// nonroot:nonroot`, uid=gid=65532, baked into the distroless base the
+	// Dockerfile's final stage uses and inherited by any image derived from it,
+	// which is the supported way to add `lore`. Without them keel provisions the
+	// file root-owned, and a 0600 file owned by root is a file the pod's own
+	// process cannot open:
+	//
+	//	kenward: /etc/kenward/kenward.yaml cannot be served (problem):
+	//	  - members[1].passphrase_file: /run/kenward/eve.pass: permission denied
+	//
+	// which is the whole of the file and credential sources broken in this
+	// deployment path while the environment one worked, found by running the mode
+	// against real podman. Loosening the mode instead would be worse and would not
+	// even work: config.Secrets refuses a secret file group- or world-readable, so
+	// 0644 trades one refusal for another and gives every process in the container
+	// the token on the way past.
+	podSecretUID = 65532
+	podSecretGID = 65532
 )
 
 // RollError reports where a rolling update stopped. Everything before the named
@@ -194,22 +214,15 @@ func (o IsolatedOptions) normalized() IsolatedOptions {
 type pod struct {
 	key  unitKey
 	name string
-	// base is the pod's spec without its secret. specFor completes it at
-	// Create and Recreate time, so the token's value never rests on a struct a
+	// base is the pod's spec without its secrets. specFor completes it at
+	// Create and Recreate time, so no secret's value ever rests on a struct a
 	// logger could print, and a rotated token file or credential is picked up
 	// by the next recreation without a supervisor restart.
 	base sandbox.Spec
-	// token resolves this pod's own bot token through config's Secrets API —
-	// file, environment variable or systemd credential, whichever the
-	// configuration states for this unit.
-	token func() (config.Secret, error)
-	// Exactly one of these carries the token into the pod, mirroring the
-	// stated source: set as an environment variable of this name, provisioned
-	// as a 0600 file at this path, or provisioned as this credential under
-	// podCredentialsDir.
-	tokenEnv  string
-	tokenFile string
-	tokenCred string
+	// secrets are the values this pod cannot run without: its own bot token, and
+	// for a member's pod the passphrase that unwraps that member's key. Nobody
+	// else's, ever — that is the mode.
+	secrets []podSecret
 
 	// opMu serialises lifecycle operations on this pod, which the sandbox
 	// backend requires per id. The monitor takes it with TryLock and stands
@@ -220,10 +233,22 @@ type pod struct {
 
 // Isolated runs one pod per enrolled member plus one for the household group, via
 // keel/sandbox. Each pod holds its own bot token, its own lore instance behind its
-// own LORE_HOME, and its own key; the host process holds none of them, which is
-// the whole point of the mode. Inside every pod runs the same assistant.Unit that
-// simple mode runs as a goroutine — the pod boundary is the only difference, and
-// no unit can tell.
+// own LORE_HOME, and its own key, wrapped under its own passphrase. Inside every pod
+// runs the same assistant.Unit that simple mode runs as a goroutine — the pod
+// boundary is the only difference, and no unit can tell.
+//
+// What this host process holds, stated plainly because it is the property the mode
+// exists to provide. It holds no member's wrapped key, no member's lore instance and
+// no member's plaintext, ever: those live in the pods' work volumes and the pods'
+// memory. What it does do, at Create and Recreate time and only there, is read each
+// member's bot token and each member's passphrase in order to hand them to that one
+// member's pod, and drop them again — a supervisor that starts a process with a
+// secret must hold that secret for the length of the call, and there is no way to
+// deliver one to a child without it. So the honest claim is not "the host never sees
+// a member's secret" but three narrower ones that are true: the host retains nothing,
+// no member's secret is ever given to another member's pod or to the group's, and the
+// passphrase it forwards unwraps a key it does not have. Simple mode's one operator
+// passphrase over one shared store keeps none of those.
 //
 // Restarts are per-pod with per-pod backoff, so one member crash-looping burns
 // their own schedule and never takes the household down. A pod is only ever
@@ -330,6 +355,15 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 		return nil
 	}
 
+	// prove reads a secret now — a household must never start half-configured — and
+	// drops the value: pods resolve again at create time, through the same closure.
+	prove := func(what string, ref config.SecretRef, get func() (config.Secret, error)) (podSecret, error) {
+		if _, err := get(); err != nil {
+			return podSecret{}, err
+		}
+		return newPodSecret(what, ref, get)
+	}
+
 	var missing []string
 	for _, mc := range i.cfg.Members {
 		m := mc.Domain()
@@ -337,13 +371,22 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			i.tracker.addNotEnrolled(m.ID)
 			continue
 		}
-		// Prove the token readable now — a household must never start
-		// half-configured — and drop the value: pods resolve again at create
-		// time, through the same closure.
 		mc := mc
-		tokenFn := func() (config.Secret, error) { return mc.BotToken(secrets) }
-		if _, err := tokenFn(); err != nil {
-			missing = append(missing, fmt.Sprintf("member %s: %v", m.ID, err))
+		// A member's pod needs two secrets and no others: the bot nobody else
+		// speaks on, and the passphrase that unwraps that member's key and no
+		// other member's. Both are proved here so that a household with one
+		// unreadable secret is refused rather than started with one pod that
+		// crash-loops out of sight.
+		token, terr := prove("bot token", mc.BotTokenRef(),
+			func() (config.Secret, error) { return mc.BotToken(secrets) })
+		pass, perr := prove("session passphrase", mc.PassphraseRef(),
+			func() (config.Secret, error) { return mc.Passphrase(secrets) })
+		if terr != nil || perr != nil {
+			for _, err := range []error{terr, perr} {
+				if err != nil {
+					missing = append(missing, fmt.Sprintf("member %s: %v", m.ID, err))
+				}
+			}
 			continue
 		}
 		k := unitKey{member: m.ID}
@@ -352,26 +395,28 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			return nil, err
 		}
 		p := &pod{
-			key:   k,
-			name:  name,
-			token: tokenFn,
+			key:     k,
+			name:    name,
+			secrets: []podSecret{token, pass},
 			base: i.podSpec(name, map[string]string{
 				EnvMember:   string(m.ID),
 				EnvLoreHome: opts.LoreHome,
 				EnvDataDir:  DefaultPodDataDir,
 			}, "--member="+string(m.ID), configYAML),
 		}
-		if err := p.setDelivery(mc.BotTokenRef()); err != nil {
-			missing = append(missing, fmt.Sprintf("member %s: %v", m.ID, err))
-			continue
-		}
 		i.pods = append(i.pods, p)
 		i.tracker.add(k)
 	}
 	if i.cfg.Household.GroupChatID != 0 {
 		cfgSnapshot := i.cfg
-		tokenFn := func() (config.Secret, error) { return cfgSnapshot.BotToken(secrets) }
-		if _, err := tokenFn(); err != nil {
+		// The group pod gets a token and deliberately no passphrase. It serves the
+		// shared space and holds no member's key, so a passphrase here would be a
+		// secret that unwraps nothing — and a household passphrase sitting in the
+		// one pod every member talks to is exactly the shape of thing this mode
+		// exists to keep out of it.
+		token, err := prove("bot token", cfgSnapshot.BotTokenRef(),
+			func() (config.Secret, error) { return cfgSnapshot.BotToken(secrets) })
+		if err != nil {
 			missing = append(missing, fmt.Sprintf("group: %v", err))
 		} else {
 			k := unitKey{group: true}
@@ -379,28 +424,23 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			if err := claimName(name, "the household group"); err != nil {
 				return nil, err
 			}
-			p := &pod{
-				key:   k,
-				name:  name,
-				token: tokenFn,
+			i.pods = append(i.pods, &pod{
+				key:     k,
+				name:    name,
+				secrets: []podSecret{token},
 				base: i.podSpec(name, map[string]string{
 					EnvGroup:    "1",
 					EnvLoreHome: opts.LoreHome,
 					EnvDataDir:  DefaultPodDataDir,
 				}, "--group", configYAML),
-			}
-			if err := p.setDelivery(cfgSnapshot.BotTokenRef()); err != nil {
-				missing = append(missing, fmt.Sprintf("group: %v", err))
-			} else {
-				i.pods = append(i.pods, p)
-				i.tracker.add(k)
-			}
+			})
+			i.tracker.add(k)
 		}
 	}
 	if len(missing) > 0 {
 		// Refusing to start half-configured beats starting a household where one
 		// member's pod silently never comes up.
-		return nil, fmt.Errorf("supervisor: bot tokens unresolvable: %s",
+		return nil, fmt.Errorf("supervisor: this household cannot be started as configured: %s",
 			strings.Join(missing, "; "))
 	}
 	if len(i.pods) == 0 {
@@ -465,60 +505,82 @@ func (i *Isolated) podSpec(name string, env map[string]string, unitFlag string, 
 	return spec
 }
 
-// setDelivery decides how the pod's token travels into it, mirroring the source
-// the configuration states so the pod's own resolver — reading the provisioned
-// configuration — finds the token exactly where the host did: an environment
-// variable stays an environment variable, a token file becomes a 0600 file at
-// the same path, and a systemd credential becomes the same credential under a
-// synthetic CREDENTIALS_DIRECTORY.
-func (p *pod) setDelivery(ref config.SecretRef) error {
+// podSecret is one value a pod cannot run without, together with how it travels in.
+//
+// Exactly one of env, file and cred is set, mirroring the source the configuration
+// states for that secret: an environment variable stays an environment variable, a
+// `*_file` becomes a 0600 file at the same path, and a systemd credential becomes the
+// same credential name under a synthetic CREDENTIALS_DIRECTORY. Mirroring is what lets
+// the pod's own resolver — reading the same provisioned configuration — find the value
+// exactly where the host found it, with no second mechanism to keep in step.
+//
+// resolve is called at Create and Recreate time and never before, so the value never
+// rests on this struct.
+type podSecret struct {
+	// what names the secret for an error message. Never any part of the value.
+	what    string
+	resolve func() (config.Secret, error)
+	env     string
+	file    string
+	cred    string
+}
+
+// newPodSecret decides how one secret travels into a pod.
+func newPodSecret(what string, ref config.SecretRef, resolve func() (config.Secret, error)) (podSecret, error) {
+	s := podSecret{what: what, resolve: resolve}
 	switch {
 	case ref.File != "":
 		if !strings.HasPrefix(ref.File, "/") {
-			return fmt.Errorf("bot token file %q must be an absolute path to be provisioned into a pod", ref.File)
+			return podSecret{}, fmt.Errorf("%s file %q must be an absolute path to be provisioned into a pod", what, ref.File)
 		}
-		p.tokenFile = ref.File
+		s.file = ref.File
 	case ref.Env != "":
-		p.tokenEnv = ref.Env
+		s.env = ref.Env
 	case ref.Credential != "":
-		p.tokenCred = ref.Credential
+		s.cred = ref.Credential
 	default:
-		return errors.New("bot token has no stated source and no credential name")
+		return podSecret{}, fmt.Errorf("%s has no stated source and no credential name", what)
 	}
-	return nil
+	return s, nil
 }
 
-// specFor completes a pod's spec with its token, resolved now. Create and
-// Recreate call it; nothing else sees the value.
+// specFor completes a pod's spec with its secrets, resolved now. Create and
+// Recreate call it; nothing else sees the values.
 func (i *Isolated) specFor(p *pod) (sandbox.Spec, error) {
-	token, err := p.token()
-	if err != nil {
-		return sandbox.Spec{}, fmt.Errorf("resolving bot token for pod %s: %w", p.name, err)
-	}
 	spec := p.base
-	env := make(map[string]string, len(p.base.Env)+2)
+	env := make(map[string]string, len(p.base.Env)+len(p.secrets)+1)
 	for k, v := range p.base.Env {
 		env[k] = v
 	}
 	spec.Env = env
 	spec.Files = append([]sandbox.File(nil), p.base.Files...)
 
-	switch {
-	case p.tokenFile != "":
-		spec.Files = append(spec.Files, sandbox.File{
-			Path: p.tokenFile,
-			Data: []byte(token.Value()),
-			Mode: 0o600,
-		})
-	case p.tokenCred != "":
-		spec.Env["CREDENTIALS_DIRECTORY"] = podCredentialsDir
-		spec.Files = append(spec.Files, sandbox.File{
-			Path: podCredentialsDir + "/" + p.tokenCred,
-			Data: []byte(token.Value()),
-			Mode: 0o600,
-		})
-	default:
-		spec.Env[p.tokenEnv] = token.Value()
+	for _, s := range p.secrets {
+		v, err := s.resolve()
+		if err != nil {
+			return sandbox.Spec{}, fmt.Errorf("resolving %s for pod %s: %w", s.what, p.name, err)
+		}
+		switch {
+		case s.file != "":
+			spec.Files = append(spec.Files, sandbox.File{
+				Path: s.file,
+				Data: []byte(v.Value()),
+				Mode: 0o600,
+				UID:  podSecretUID,
+				GID:  podSecretGID,
+			})
+		case s.cred != "":
+			spec.Env["CREDENTIALS_DIRECTORY"] = podCredentialsDir
+			spec.Files = append(spec.Files, sandbox.File{
+				Path: podCredentialsDir + "/" + s.cred,
+				Data: []byte(v.Value()),
+				Mode: 0o600,
+				UID:  podSecretUID,
+				GID:  podSecretGID,
+			})
+		default:
+			spec.Env[s.env] = v.Value()
+		}
 	}
 	return spec, nil
 }

@@ -36,7 +36,7 @@ func TestReadPassphrasePrecedence(t *testing.T) {
 			envCredentialsDirectory: dir,
 			envPassphrase:           "from-the-environment",
 		})}
-		p, err := readPassphrase(e)
+		p, err := readPassphrase(e, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -52,7 +52,7 @@ func TestReadPassphrasePrecedence(t *testing.T) {
 	t.Run("environment variable when there is no credential", func(t *testing.T) {
 		t.Parallel()
 		e := &env{lookupEnv: lookup(map[string]string{envPassphrase: "from-the-environment"})}
-		p, err := readPassphrase(e)
+		p, err := readPassphrase(e, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,7 +67,7 @@ func TestReadPassphrasePrecedence(t *testing.T) {
 			envCredentialsDirectory: t.TempDir(),
 			envPassphrase:           "from-the-environment",
 		})}
-		p, err := readPassphrase(e)
+		p, err := readPassphrase(e, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +82,7 @@ func TestReadPassphrasePrecedence(t *testing.T) {
 			stdin:     strings.NewReader("would-be-typed\n"),
 			lookupEnv: lookup(nil),
 		}
-		if _, err := readPassphrase(e); !errors.Is(err, errNoPassphrase) {
+		if _, err := readPassphrase(e, nil); !errors.Is(err, errNoPassphrase) {
 			t.Fatalf("err = %v, want errNoPassphrase: a pipe is not somebody standing there", err)
 		}
 	})
@@ -115,7 +115,7 @@ func TestNoOperatorAtACharacterDevice(t *testing.T) {
 		stderr:    &bytes.Buffer{},
 		lookupEnv: lookup(nil),
 	}
-	if _, err := readPassphrase(e); !errors.Is(err, errNoPassphrase) {
+	if _, err := readPassphrase(e, nil); !errors.Is(err, errNoPassphrase) {
 		t.Fatalf("err = %v, want errNoPassphrase: nothing was there to answer the prompt", err)
 	}
 }
@@ -327,16 +327,98 @@ func TestAPodProvisionsOnlyItsOwnMembersKey(t *testing.T) {
 // — the pod simply goes quiet.
 func TestMemberPodUnlocksBeforeStarting(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, isolatedYAML, fullEnvironment())
+	// Every secret this pod needs except the one under test.
+	vars := fullEnvironment()
+	delete(vars, "KENWARD_PASSPHRASE_DAVID")
+	h := newHarness(t, isolatedYAML, vars)
 	cfg := mustLoad(t, isolatedYAML)
 	logger := slog.New(slog.NewTextHandler(h.e.stderr, nil))
 
 	_, err := newSingleUnitSupervisor(h.e, cfg, runOptions{
 		selection: unitSelection{member: "david"},
 	}, logger)
-	if !errors.Is(err, errNoPassphrase) {
-		t.Fatalf("err = %v, want errNoPassphrase: a member's pod must unlock before it serves", err)
+	if err == nil {
+		t.Fatal("david's pod started with no passphrase; it would answer every private message with the locked notice")
 	}
+	// And it says which variable, rather than the three-mechanism sermon: the
+	// configuration named a source, so the fault is that source and nothing else.
+	if !strings.Contains(err.Error(), "KENWARD_PASSPHRASE_DAVID") {
+		t.Fatalf("err = %v, want it to name david's own passphrase variable", err)
+	}
+}
+
+// TestMemberPodTakesItsOwnMembersPassphrase is the defect isolated mode shipped with,
+// found the first time the mode was run against a real container runtime.
+//
+// Nothing could hand a supervisor-started pod a passphrase. `readPassphrase` knew a
+// systemd credential, KENWARD_PASSPHRASE and a terminal; a pod has no terminal, the
+// host provisioned neither of the other two, and kenward.yaml had nowhere to name one.
+// Every member's pod died at startup with "no session passphrase available".
+//
+// The fix is a passphrase named per member, so the two halves asserted here are the
+// whole of it: a pod resolves *its own member's* passphrase, and having one it gets
+// past the gate that used to stop it.
+func TestMemberPodTakesItsOwnMembersPassphrase(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoad(t, isolatedYAML)
+	david := mustMember(t, cfg, "david")
+
+	t.Run("the member's own passphrase beats the node's", func(t *testing.T) {
+		t.Parallel()
+		// Both are present. A pod that took the node-wide one would provision or
+		// unwrap under a passphrase every other pod also holds, which is simple
+		// mode's key custody wearing isolated mode's name.
+		vars := fullEnvironment()
+		vars[envPassphrase] = "the-node-wide-passphrase"
+		e := &env{lookupEnv: lookup(vars)}
+
+		ref := memberPassphraseRef(cfg, []domain.Member{david})
+		if ref == nil {
+			t.Fatal("a member's pod in isolated mode resolved no member passphrase reference")
+		}
+		p, err := readPassphrase(e, ref)
+		if err != nil {
+			t.Fatalf("readPassphrase: %v", err)
+		}
+		if p.reveal() != fakeDavidPassphrase {
+			t.Errorf("the pod unwrapped with the passphrase from %s, want david's own", p.source)
+		}
+		if !strings.Contains(p.source, "KENWARD_PASSPHRASE_DAVID") {
+			t.Errorf("source = %q, want it to name david's own variable", p.source)
+		}
+	})
+
+	t.Run("simple mode and the group pod use the node passphrase", func(t *testing.T) {
+		t.Parallel()
+		// Both are the same rule seen twice: only a pod serving exactly one member
+		// in isolated mode has a member passphrase to take.
+		if ref := memberPassphraseRef(cfg, nil); ref != nil {
+			t.Errorf("the group pod resolved a member passphrase reference: %+v", ref)
+		}
+		if ref := memberPassphraseRef(cfg, cfg.DomainMembers()); ref != nil {
+			t.Errorf("a whole-household process resolved one member's passphrase: %+v", ref)
+		}
+		simple := mustLoad(t, simpleYAML)
+		if ref := memberPassphraseRef(simple, []domain.Member{mustMember(t, simple, "david")}); ref != nil {
+			t.Errorf("simple mode resolved a per-member passphrase: %+v", ref)
+		}
+	})
+
+	t.Run("the pod gets past the session gate", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, isolatedYAML, fullEnvironment())
+		logger := slog.New(slog.NewTextHandler(h.e.stderr, nil))
+
+		_, err := newSingleUnitSupervisor(h.e, cfg, runOptions{
+			selection: unitSelection{member: "david"},
+		}, logger)
+		// It still fails: the next thing a pod does is call getMe with a bot token
+		// that is not a real one. What must not happen is failing for want of a
+		// passphrase, which is where it stopped before.
+		if errors.Is(err, errNoPassphrase) {
+			t.Fatal("david's pod was refused for want of a passphrase its own configuration names")
+		}
+	})
 }
 
 // TestEnrolMidRunProvisionsAndUnlocks.

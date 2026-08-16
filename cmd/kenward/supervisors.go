@@ -186,7 +186,7 @@ func isolatedOptions(e *env, opts runOptions, logger *slog.Logger) (supervisor.I
 // anything it protects here. The alternative is a household where onboarding ends in
 // a lock message.
 func startSessions(e *env, cfg *config.Config, logger *slog.Logger, members []domain.Member) (session.Sessions, supervisor.UnlockOnEnrol, error) {
-	pass, err := readPassphrase(e)
+	pass, err := readPassphrase(e, memberPassphraseRef(cfg, members))
 	if err != nil {
 		if errors.Is(err, errNoPassphrase) {
 			return nil, nil, errNoPassphrase
@@ -229,6 +229,28 @@ func startSessions(e *env, cfg *config.Config, logger *slog.Logger, members []do
 		return err
 	}
 	return mgr, onEnrol, nil
+}
+
+// memberPassphraseRef names the passphrase this process should unwrap with, or nil for
+// the node passphrase.
+//
+// It is derived here rather than passed in because the rule is exactly the shape of
+// what the two callers already differ by: isolated mode serving one member is a pod,
+// and a pod unwraps that member's key under that member's own passphrase. Simple mode
+// serves the household from one process under one node passphrase, and isolated mode's
+// group pod holds no key at all, so both get nil and the node mechanisms apply.
+func memberPassphraseRef(cfg *config.Config, members []domain.Member) *config.SecretRef {
+	if cfg.Mode != config.ModeIsolated || len(members) != 1 {
+		return nil
+	}
+	for _, mc := range cfg.Members {
+		if domain.MemberID(mc.ID) != members[0].ID {
+			continue
+		}
+		ref := mc.PassphraseRef()
+		return &ref
+	}
+	return nil
 }
 
 // newClaimer builds the enrolment claimer the running node uses to process claim

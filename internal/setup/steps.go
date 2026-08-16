@@ -229,6 +229,9 @@ func (w *Wizard) addMember(name string, taken map[string]bool) {
 		m.BotTokenEnv = envVarFor(MemberBotTokenPrefix, id)
 		w.recordEnv(m.BotTokenEnv, fmt.Sprintf("members[%d].bot_token_env", len(w.members)),
 			fmt.Sprintf("created when %s enrols", name), "")
+		m.PassphraseEnv = envVarFor(MemberPassphrasePrefix, id)
+		w.recordEnv(m.PassphraseEnv, fmt.Sprintf("members[%d].passphrase_env", len(w.members)),
+			fmt.Sprintf("chosen by whoever runs %s's pod; it wraps %s's key and nobody else's", name, name), "")
 	}
 	w.members = append(w.members, m)
 }

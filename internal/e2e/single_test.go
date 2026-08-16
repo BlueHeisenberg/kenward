@@ -35,6 +35,14 @@ const (
 	samBotTokenEnv   = "KENWARD_BOT_TOKEN_SAM"
 	patBotTokenEnv   = "KENWARD_BOT_TOKEN_PAT"
 
+	// And their own passphrase, for the same reason: in isolated mode a member's
+	// key is wrapped under their own, so no pod holds a secret that unwraps
+	// anybody else's memory.
+	davidPassphraseEnv = "KENWARD_PASSPHRASE_DAVID"
+	meiPassphraseEnv   = "KENWARD_PASSPHRASE_MEI"
+	samPassphraseEnv   = "KENWARD_PASSPHRASE_SAM"
+	patPassphraseEnv   = "KENWARD_PASSPHRASE_PAT"
+
 	samMemberID         = domain.MemberID("sam")
 	samSpace            = domain.SpaceID("sam-private")
 	samTelegramID int64 = 1003
@@ -58,6 +66,11 @@ func podEnvironment() map[string]string {
 		meiBotTokenEnv:   "123456:mei-token",
 		samBotTokenEnv:   "123456:sam-token",
 		patBotTokenEnv:   "123456:pat-token",
+
+		davidPassphraseEnv: passphrase + " david",
+		meiPassphraseEnv:   passphrase + " mei",
+		samPassphraseEnv:   passphrase + " sam",
+		patPassphraseEnv:   passphrase + " pat",
 	}
 }
 
@@ -76,15 +89,15 @@ func isolatedConfigYAML(dataDir, localURL string) string {
 	fmt.Fprintf(&b, "telegram:\n")
 	fmt.Fprintf(&b, "  bot_token_env: %s\n", botTokenEnv)
 	fmt.Fprintf(&b, "members:\n")
-	fmt.Fprintf(&b, "  - id: david\n    name: David\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n",
-		davidTelegramID, davidSpace, davidBotTokenEnv)
-	fmt.Fprintf(&b, "  - id: mei\n    name: Mei\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n",
-		meiTelegramID, meiSpace, meiBotTokenEnv)
+	fmt.Fprintf(&b, "  - id: david\n    name: David\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n    passphrase_env: %s\n",
+		davidTelegramID, davidSpace, davidBotTokenEnv, davidPassphraseEnv)
+	fmt.Fprintf(&b, "  - id: mei\n    name: Mei\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n    passphrase_env: %s\n",
+		meiTelegramID, meiSpace, meiBotTokenEnv, meiPassphraseEnv)
 	// No telegram_id: each has been given a bot and a code and has not used it.
-	fmt.Fprintf(&b, "  - id: %s\n    name: Sam\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n",
-		samMemberID, samSpace, samBotTokenEnv)
-	fmt.Fprintf(&b, "  - id: %s\n    name: Pat\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n",
-		patMemberID, patSpace, patBotTokenEnv)
+	fmt.Fprintf(&b, "  - id: %s\n    name: Sam\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n    passphrase_env: %s\n",
+		samMemberID, samSpace, samBotTokenEnv, samPassphraseEnv)
+	fmt.Fprintf(&b, "  - id: %s\n    name: Pat\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n    passphrase_env: %s\n",
+		patMemberID, patSpace, patBotTokenEnv, patPassphraseEnv)
 	fmt.Fprintf(&b, "endpoints:\n")
 	fmt.Fprintf(&b, "  - name: attic\n    base_url: '%s'\n    model: test-model\n    tags: [local]\n    timeout: 30s\n", localURL)
 	fmt.Fprintf(&b, "memory:\n  lore_command: [lore, mcp]\n  search_limit: 8\n")
@@ -757,12 +770,12 @@ func threeDoorConfigYAML(dataDir, localURL, meiTokenPath string) string {
 	fmt.Fprintf(&b, "telegram:\n")
 	fmt.Fprintf(&b, "  bot_token_env: %s\n", botTokenEnv)
 	fmt.Fprintf(&b, "members:\n")
-	fmt.Fprintf(&b, "  - id: david\n    name: David\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n",
-		davidTelegramID, davidSpace, davidBotTokenEnv)
-	fmt.Fprintf(&b, "  - id: mei\n    name: Mei\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_file: '%s'\n",
-		meiTelegramID, meiSpace, meiTokenPath)
-	fmt.Fprintf(&b, "  - id: %s\n    name: Sam\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n",
-		samMemberID, samTelegramID, samSpace)
+	fmt.Fprintf(&b, "  - id: david\n    name: David\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_env: %s\n    passphrase_env: %s\n",
+		davidTelegramID, davidSpace, davidBotTokenEnv, davidPassphraseEnv)
+	fmt.Fprintf(&b, "  - id: mei\n    name: Mei\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    bot_token_file: '%s'\n    passphrase_env: %s\n",
+		meiTelegramID, meiSpace, meiTokenPath, meiPassphraseEnv)
+	fmt.Fprintf(&b, "  - id: %s\n    name: Sam\n    telegram_id: %d\n    private_space: %s\n    tiers: [local]\n    passphrase_env: %s\n",
+		samMemberID, samTelegramID, samSpace, samPassphraseEnv)
 	fmt.Fprintf(&b, "endpoints:\n")
 	fmt.Fprintf(&b, "  - name: attic\n    base_url: '%s'\n    model: test-model\n    tags: [local]\n    timeout: 30s\n", localURL)
 	fmt.Fprintf(&b, "memory:\n  lore_command: [lore, mcp]\n  search_limit: 8\n")

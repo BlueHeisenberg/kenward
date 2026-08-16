@@ -44,8 +44,8 @@ func isolatedTestConfig() *config.Config {
 		},
 		Telegram: config.TelegramConfig{BotTokenEnv: "TOK_GROUP"},
 		Members: []config.MemberConfig{
-			{ID: "david", Name: "David", TelegramID: 1, PrivateSpace: "d", Tiers: []string{"local"}, BotTokenEnv: "TOK_DAVID"},
-			{ID: "eve", Name: "Eve", TelegramID: 2, PrivateSpace: "e", Tiers: []string{"local"}, BotTokenEnv: "TOK_EVE"},
+			{ID: "david", Name: "David", TelegramID: 1, PrivateSpace: "d", Tiers: []string{"local"}, BotTokenEnv: "TOK_DAVID", PassphraseEnv: "PASS_DAVID"},
+			{ID: "eve", Name: "Eve", TelegramID: 2, PrivateSpace: "e", Tiers: []string{"local"}, BotTokenEnv: "TOK_EVE", PassphraseEnv: "PASS_EVE"},
 			{ID: "ana", Name: "Ana", PrivateSpace: "a", Tiers: []string{"local"}},
 		},
 	}
@@ -533,7 +533,8 @@ func fiveUnitConfig() *config.Config {
 		cfg.Members = append(cfg.Members, config.MemberConfig{
 			ID: id, Name: id, TelegramID: int64(i),
 			PrivateSpace: id + "-private", Tiers: []string{"local"},
-			BotTokenEnv: "TOK_" + id,
+			BotTokenEnv:   "TOK_" + id,
+			PassphraseEnv: "PASS_" + id,
 		})
 	}
 	return cfg
@@ -876,10 +877,11 @@ func TestIsolatedPodConfigProvisioning(t *testing.T) {
 }
 
 func TestIsolatedPodTokenFromFileAndCredential(t *testing.T) {
-	// david's token comes from a file, eve's from a systemd credential; no
-	// environment variable exists anywhere. Each pod receives its token in the
-	// shape its own resolver will look for: the file at the same path, 0600;
-	// the credential as a file under a synthetic CREDENTIALS_DIRECTORY.
+	// david's secrets come from files, eve's from systemd credentials; no
+	// environment variable exists anywhere. Each pod receives both of them — its
+	// bot token and the passphrase that unwraps its own member's key — in the
+	// shape its own resolver will look for: the file at the same path, 0600; the
+	// credential as a file under a synthetic CREDENTIALS_DIRECTORY.
 	cfg := &config.Config{
 		Mode: config.ModeIsolated,
 		Household: config.HouseholdConfig{
@@ -887,14 +889,20 @@ func TestIsolatedPodTokenFromFileAndCredential(t *testing.T) {
 		},
 		Members: []config.MemberConfig{
 			{ID: "david", Name: "David", TelegramID: 1, PrivateSpace: "d",
-				Tiers: []string{"local"}, BotTokenFile: "/etc/kenward/tokens/david"},
+				Tiers: []string{"local"}, BotTokenFile: "/etc/kenward/tokens/david",
+				PassphraseFile: "/etc/kenward/pass/david"},
 			{ID: "eve", Name: "Eve", TelegramID: 2, PrivateSpace: "e",
 				Tiers: []string{"local"}},
 		},
 	}
 	secrets := config.NewSecrets(config.SecretOptions{
-		LookupEnv:      func(string) (string, bool) { return "", false },
-		FS:             fakeSecretFS{"/etc/kenward/tokens/david": "tok-david-file", "/creds/bot_token.eve": "tok-eve-cred"},
+		LookupEnv: func(string) (string, bool) { return "", false },
+		FS: fakeSecretFS{
+			"/etc/kenward/tokens/david": "tok-david-file",
+			"/etc/kenward/pass/david":   "pass-david-file",
+			"/creds/bot_token.eve":      "tok-eve-cred",
+			"/creds/passphrase.eve":     "pass-eve-cred",
+		},
 		CredentialsDir: "/creds",
 	})
 	opts := isolatedTestOptions(newFakeBackend())
@@ -911,25 +919,105 @@ func TestIsolatedPodTokenFromFileAndCredential(t *testing.T) {
 		}
 		switch string(p.key.member) {
 		case "david":
-			if len(spec.Files) != 1 || spec.Files[0].Path != "/etc/kenward/tokens/david" ||
-				string(spec.Files[0].Data) != "tok-david-file" || spec.Files[0].Mode != 0o600 {
-				t.Fatalf("david's token delivery = %+v, want a 0600 file at the configured path", spec.Files)
-			}
+			assertProvisioned(t, spec, "/etc/kenward/tokens/david", "tok-david-file")
+			assertProvisioned(t, spec, "/etc/kenward/pass/david", "pass-david-file")
 			for k := range spec.Env {
-				if strings.Contains(strings.ToLower(k), "token") {
-					t.Fatalf("david's token leaked into the environment as %s", k)
+				lower := strings.ToLower(k)
+				if strings.Contains(lower, "token") || strings.Contains(lower, "pass") {
+					t.Fatalf("david's secret leaked into the environment as %s", k)
 				}
 			}
 		case "eve":
 			if spec.Env["CREDENTIALS_DIRECTORY"] != podCredentialsDir {
 				t.Fatalf("eve's pod has no synthetic credentials directory: %v", spec.Env)
 			}
-			wantPath := podCredentialsDir + "/bot_token.eve"
-			if len(spec.Files) != 1 || spec.Files[0].Path != wantPath ||
-				string(spec.Files[0].Data) != "tok-eve-cred" || spec.Files[0].Mode != 0o600 {
-				t.Fatalf("eve's token delivery = %+v, want the credential at %s", spec.Files, wantPath)
+			assertProvisioned(t, spec, podCredentialsDir+"/bot_token.eve", "tok-eve-cred")
+			assertProvisioned(t, spec, podCredentialsDir+"/passphrase.eve", "pass-eve-cred")
+		}
+	}
+}
+
+// TestIsolatedGivesEachPodItsOwnPassphraseAndTheGroupNone is the third defect the
+// first real-podman run of isolated mode found, and the one that blocked the mode
+// outright: nothing provisioned a passphrase, so every member's pod exited at startup
+// with "no session passphrase available, so no member's key can be unwrapped".
+//
+// A pod has no terminal to be asked at, and the host set neither of the two mechanisms
+// `readPassphrase` accepts. The passphrase is now named per member in the household
+// configuration and provisioned exactly the way the bot token is — which makes the
+// assertions here the shape of the mode itself: each member's pod holds its own
+// passphrase, no member's pod holds another's, and the group's pod holds none at all,
+// because it serves the shared space and there is no key there to unwrap.
+func TestIsolatedGivesEachPodItsOwnPassphraseAndTheGroupNone(t *testing.T) {
+	sup, err := newIsolated(isolatedTestConfig(), isolatedTestOptions(newFakeBackend()), "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+
+	seen := 0
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		seen++
+		if p.key.group {
+			for k := range spec.Env {
+				if strings.HasPrefix(k, "PASS_") {
+					t.Errorf("the group's pod was given %s; it holds no member key, so a passphrase there unwraps nothing and is one more thing to lose", k)
+				}
+			}
+			continue
+		}
+
+		own := "PASS_" + strings.ToUpper(string(p.key.member))
+		if got := spec.Env[own]; got != testLookupEnvValue(own) {
+			t.Errorf("%s's pod does not carry its own passphrase in %s (env %v)", p.key.member, own, spec.Env)
+		}
+		for k := range spec.Env {
+			if strings.HasPrefix(k, "PASS_") && k != own {
+				t.Errorf("%s's pod carries %s, which wraps another member's key; that is the whole of what isolated mode sells", p.key.member, k)
 			}
 		}
+	}
+	if seen != 3 {
+		t.Fatalf("inspected %d pods, want two members and the group", seen)
+	}
+}
+
+// testLookupEnvValue is what testLookupEnv answers for a name.
+func testLookupEnvValue(name string) string {
+	v, _ := testLookupEnv(name)
+	return v
+}
+
+// assertProvisioned requires exactly one 0600 file at path holding want. Mode is
+// asserted because a secret provisioned world-readable inside the pod is the same
+// finding config.Secrets refuses on the host.
+func assertProvisioned(t *testing.T, spec sandbox.Spec, path, want string) {
+	t.Helper()
+	found := 0
+	for _, f := range spec.Files {
+		if f.Path != path {
+			continue
+		}
+		found++
+		if string(f.Data) != want {
+			t.Errorf("%s holds the wrong value", path)
+		}
+		if f.Mode != 0o600 {
+			t.Errorf("%s has mode %04o, want 0600", path, f.Mode)
+		}
+		// Owned by the identity the image runs as. Root-owned and 0600 is a file
+		// the pod's own non-root process cannot open, which broke the file and
+		// credential sources in this deployment path entirely — see podSecretUID.
+		if f.UID != podSecretUID || f.GID != podSecretGID {
+			t.Errorf("%s is owned by %d:%d, want the pod's own %d:%d — root-owned and 0600 is unreadable inside the pod",
+				path, f.UID, f.GID, podSecretUID, podSecretGID)
+		}
+	}
+	if found != 1 {
+		t.Errorf("%s provisioned %d times, want once (files: %+v)", path, found, spec.Files)
 	}
 }
 
@@ -952,8 +1040,8 @@ func TestIsolatedRefusesCollidingPodNames(t *testing.T) {
 
 	cfg := isolatedTestConfig()
 	cfg.Members = []config.MemberConfig{
-		{ID: "ana.smith", Name: "Ana", TelegramID: 1, PrivateSpace: "a", Tiers: []string{"local"}, BotTokenEnv: "TOK_A"},
-		{ID: "ana-smith", Name: "Anna", TelegramID: 2, PrivateSpace: "b", Tiers: []string{"local"}, BotTokenEnv: "TOK_B"},
+		{ID: "ana.smith", Name: "Ana", TelegramID: 1, PrivateSpace: "a", Tiers: []string{"local"}, BotTokenEnv: "TOK_A", PassphraseEnv: "PASS_A"},
+		{ID: "ana-smith", Name: "Anna", TelegramID: 2, PrivateSpace: "b", Tiers: []string{"local"}, BotTokenEnv: "TOK_B", PassphraseEnv: "PASS_B"},
 	}
 	backend := newFakeBackend()
 

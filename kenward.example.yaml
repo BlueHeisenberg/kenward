@@ -130,6 +130,20 @@ members:
     # in here anyway so the field is documented and so this file is ready to be adapted
     # for isolated mode without hunting for what belongs in it.
     bot_token_env: KENWARD_BOT_TOKEN_DAVID
+    # passphrase_env names the variable holding the passphrase that wraps THIS MEMBER'S
+    # session key. Required in isolated mode, ignored in simple mode (this file), and it
+    # must be unique per member for the same reason bot_token_env is: in isolated mode
+    # each key is wrapped under its own passphrase, so two members sharing one variable
+    # share one wrapping secret — simple mode's key custody with isolated mode's name on
+    # it. There is no household-wide passphrase in isolated mode and there is no default;
+    # a pod handed none can unwrap nothing and would answer every private message with
+    # the locked notice.
+    #
+    # passphrase_file: /run/secrets/david-passphrase is the alternative, and the better
+    # one for a pod: an environment value is readable by every process in the container
+    # and is inherited by the `lore` subprocess. Naming both is an error, not a
+    # precedence. With neither, the systemd credential `passphrase.david` is used.
+    passphrase_env: KENWARD_PASSPHRASE_DAVID
   - id: jordan
     name: Jordan
     telegram_id: 100200302
@@ -141,6 +155,7 @@ members:
     # than left to default.
     tiers: [local, cloud]
     bot_token_env: KENWARD_BOT_TOKEN_JORDAN
+    passphrase_env: KENWARD_PASSPHRASE_JORDAN
 
 # endpoints lists every OpenAI-compatible backend kenward may route to, and the tier
 # tags each one answers for. A tier named in a tiers: chain above but not present as a

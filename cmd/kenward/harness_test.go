@@ -73,12 +73,14 @@ members:
     private_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
     tiers: [local]
     bot_token_env: KENWARD_BOT_TOKEN_DAVID
+    passphrase_env: KENWARD_PASSPHRASE_DAVID
   - id: jordan
     name: Jordan
     telegram_id: 87654321
     private_space: 5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19
     tiers: [local, cloud]
     bot_token_env: KENWARD_BOT_TOKEN_JORDAN
+    passphrase_env: KENWARD_PASSPHRASE_JORDAN
 endpoints:
   - name: monster
     base_url: http://monster.tail:8000/v1
@@ -98,11 +100,15 @@ memory:
 // never appear in the output; docs/CLI.md's conventions forbid a command printing a
 // bot token or an API key, and the only way to keep that true is to check it.
 const (
-	fakeBotToken     = "1234567890:AAH-thisIsNotARealBotTokenXXXXXXXXXXXXX"
-	fakeAPIKey       = "sk-or-v1-thisIsNotARealApiKeyYYYYYYYYYYYYYYYYYY"
-	fakeDavidToken   = "1111111111:AAH-davidsOwnBotTokenZZZZZZZZZZZZZZZZZZ"
-	fakeJordanToken  = "2222222222:AAH-jordansOwnBotTokenWWWWWWWWWWWWWWWW"
-	fakeGroupToken   = "3333333333:AAH-householdGroupBotTokenVVVVVVVVVVVV"
+	fakeBotToken    = "1234567890:AAH-thisIsNotARealBotTokenXXXXXXXXXXXXX"
+	fakeAPIKey      = "sk-or-v1-thisIsNotARealApiKeyYYYYYYYYYYYYYYYYYY"
+	fakeDavidToken  = "1111111111:AAH-davidsOwnBotTokenZZZZZZZZZZZZZZZZZZ"
+	fakeJordanToken = "2222222222:AAH-jordansOwnBotTokenWWWWWWWWWWWWWWWW"
+	fakeGroupToken  = "3333333333:AAH-householdGroupBotTokenVVVVVVVVVVVV"
+
+	fakeDavidPassphrase  = "correct horse battery staple david"
+	fakeJordanPassphrase = "correct horse battery staple jordan"
+
 	versionPlacehold = "<VERSION>"
 )
 
@@ -113,12 +119,19 @@ func fullEnvironment() map[string]string {
 		"KENWARD_BOT_TOKEN_DAVID":     fakeDavidToken,
 		"KENWARD_BOT_TOKEN_JORDAN":    fakeJordanToken,
 		"KENWARD_BOT_TOKEN_HOUSEHOLD": fakeGroupToken,
+		// Isolated mode's second per-member secret: the passphrase that wraps that
+		// member's key and nobody else's.
+		"KENWARD_PASSPHRASE_DAVID":  fakeDavidPassphrase,
+		"KENWARD_PASSPHRASE_JORDAN": fakeJordanPassphrase,
 	}
 }
 
 // allSecrets is every value a command must never print.
 func allSecrets() []string {
-	return []string{fakeBotToken, fakeAPIKey, fakeDavidToken, fakeJordanToken, fakeGroupToken}
+	return []string{
+		fakeBotToken, fakeAPIKey, fakeDavidToken, fakeJordanToken, fakeGroupToken,
+		fakeDavidPassphrase, fakeJordanPassphrase,
+	}
 }
 
 func lookup(vars map[string]string) config.LookupEnvFunc {

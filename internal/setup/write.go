@@ -123,6 +123,10 @@ type memberDoc struct {
 	PrivateSpace string   `yaml:"private_space"`
 	Tiers        []string `yaml:"tiers,flow"`
 	BotTokenEnv  string   `yaml:"bot_token_env,omitempty"`
+	// PassphraseEnv is written beside the token because in isolated mode a pod
+	// needs both to serve anybody: the bot nobody else speaks on, and the
+	// passphrase that unwraps that member's key and no other member's.
+	PassphraseEnv string `yaml:"passphrase_env,omitempty"`
 }
 
 type endpointDoc struct {
@@ -184,12 +188,13 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 	}
 	for _, m := range cfg.Members {
 		doc.Members = append(doc.Members, memberDoc{
-			ID:           m.ID,
-			Name:         m.Name,
-			TelegramID:   m.TelegramID,
-			PrivateSpace: m.PrivateSpace,
-			Tiers:        m.Tiers,
-			BotTokenEnv:  m.BotTokenEnv,
+			ID:            m.ID,
+			Name:          m.Name,
+			TelegramID:    m.TelegramID,
+			PrivateSpace:  m.PrivateSpace,
+			Tiers:         m.Tiers,
+			BotTokenEnv:   m.BotTokenEnv,
+			PassphraseEnv: m.PassphraseEnv,
 		})
 	}
 	for _, e := range cfg.Endpoints {

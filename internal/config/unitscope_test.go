@@ -16,8 +16,8 @@ mode: isolated
 household: {name: Casa, shared_space: household, group_chat_id: -1001234567890, tiers: [local]}
 telegram: {bot_token_env: TOK_HOUSEHOLD}
 members:
-  - {id: david, name: David, private_space: david-private, tiers: [local], bot_token_env: TOK_DAVID}
-  - {id: jordan, name: Jordan, private_space: jordan-private, tiers: [local], bot_token_env: TOK_JORDAN}
+  - {id: david, name: David, private_space: david-private, tiers: [local], bot_token_env: TOK_DAVID, passphrase_env: PASS_DAVID}
+  - {id: jordan, name: Jordan, private_space: jordan-private, tiers: [local], bot_token_env: TOK_JORDAN, passphrase_env: PASS_JORDAN}
 endpoints:
   - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
 `
@@ -54,22 +54,34 @@ func TestValidateForUnitScopesSecretsToTheUnit(t *testing.T) {
 		// validate.
 		wantNames []string
 	}{{
-		name:  "david's pod holds david's token and nothing else",
+		name:  "david's pod holds david's token and passphrase and nothing else",
 		scope: config.UnitScope{Member: "david"},
-		have:  map[string]string{"TOK_DAVID": "t"},
+		have:  map[string]string{"TOK_DAVID": "t", "PASS_DAVID": "p"},
 	}, {
-		name:  "jordan's pod holds jordan's token and nothing else",
+		name:  "jordan's pod holds jordan's token and passphrase and nothing else",
 		scope: config.UnitScope{Member: "jordan"},
-		have:  map[string]string{"TOK_JORDAN": "t"},
+		have:  map[string]string{"TOK_JORDAN": "t", "PASS_JORDAN": "p"},
 	}, {
-		name:  "the group's pod holds the household token and no member's",
+		// The group pod serves the shared space and holds no member's key, so a
+		// passphrase there would be a secret that unwraps nothing — and a member's
+		// passphrase in the one pod everybody talks to is the isolation loss the
+		// mode exists to prevent.
+		name:  "the group's pod holds the household token and no member's anything",
 		scope: config.UnitScope{Group: true},
 		have:  map[string]string{"TOK_HOUSEHOLD": "t"},
 	}, {
 		name:      "a member's pod still needs its own token",
 		scope:     config.UnitScope{Member: "david"},
-		have:      map[string]string{"TOK_JORDAN": "t", "TOK_HOUSEHOLD": "t"},
+		have:      map[string]string{"TOK_JORDAN": "t", "TOK_HOUSEHOLD": "t", "PASS_DAVID": "p"},
 		wantNames: []string{"members[0].bot_token"},
+	}, {
+		// Without this, the pod starts and answers every private message with the
+		// locked notice: the failure isolated mode shipped with until it was found
+		// against a real container runtime.
+		name:      "a member's pod still needs its own passphrase",
+		scope:     config.UnitScope{Member: "david"},
+		have:      map[string]string{"TOK_DAVID": "t", "PASS_JORDAN": "p"},
+		wantNames: []string{"members[0].passphrase"},
 	}, {
 		name:      "the group's pod still needs the household token",
 		scope:     config.UnitScope{Group: true},
@@ -81,12 +93,15 @@ func TestValidateForUnitScopesSecretsToTheUnit(t *testing.T) {
 		// token is a member silently unserved.
 		name:      "the household node needs every token",
 		scope:     config.UnitScope{},
-		have:      map[string]string{"TOK_DAVID": "t"},
+		have:      map[string]string{"TOK_DAVID": "t", "PASS_DAVID": "p", "PASS_JORDAN": "p"},
 		wantNames: []string{"telegram.bot_token", "members[1].bot_token"},
 	}, {
 		name:  "the household node with every token",
 		scope: config.UnitScope{},
-		have:  map[string]string{"TOK_DAVID": "t", "TOK_JORDAN": "t", "TOK_HOUSEHOLD": "t"},
+		have: map[string]string{
+			"TOK_DAVID": "t", "TOK_JORDAN": "t", "TOK_HOUSEHOLD": "t",
+			"PASS_DAVID": "p", "PASS_JORDAN": "p",
+		},
 	}}
 
 	for _, tc := range cases {
@@ -133,8 +148,8 @@ mode: isolated
 household: {shared_space: household, group_chat_id: -1, tiers: [local]}
 telegram: {bot_token_env: TOK_HOUSEHOLD}
 members:
-  - {id: david, private_space: dp, tiers: [local], bot_token_env: TOK_DAVID}
-  - {id: jordan, private_space: jp, tiers: [local, cloud], bot_token_env: TOK_JORDAN}
+  - {id: david, private_space: dp, tiers: [local], bot_token_env: TOK_DAVID, passphrase_env: PASS_DAVID}
+  - {id: jordan, private_space: jp, tiers: [local, cloud], bot_token_env: TOK_JORDAN, passphrase_env: PASS_JORDAN}
 endpoints:
   - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
   - {name: openrouter, base_url: https://openrouter.ai/api/v1, model: c, api_key_env: OPENROUTER_API_KEY, tags: [cloud]}
@@ -151,18 +166,18 @@ endpoints:
 	}{{
 		name:          "a local-only member's pod needs no provider key",
 		scope:         config.UnitScope{Member: "david"},
-		have:          map[string]string{"TOK_DAVID": "t"},
+		have:          map[string]string{"TOK_DAVID": "t", "PASS_DAVID": "p"},
 		wantEndpoints: []string{"monster"},
 	}, {
 		name:          "a member whose chain reaches cloud needs that key",
 		scope:         config.UnitScope{Member: "jordan"},
-		have:          map[string]string{"TOK_JORDAN": "t"},
+		have:          map[string]string{"TOK_JORDAN": "t", "PASS_JORDAN": "p"},
 		wantErr:       true,
 		wantEndpoints: []string{"monster", "openrouter"},
 	}, {
 		name:          "and starts once it has it",
 		scope:         config.UnitScope{Member: "jordan"},
-		have:          map[string]string{"TOK_JORDAN": "t", "OPENROUTER_API_KEY": "k"},
+		have:          map[string]string{"TOK_JORDAN": "t", "PASS_JORDAN": "p", "OPENROUTER_API_KEY": "k"},
 		wantEndpoints: []string{"monster", "openrouter"},
 	}, {
 		name:          "the group's pod follows household.tiers",
@@ -172,7 +187,7 @@ endpoints:
 	}, {
 		name:          "the household node reaches everything and needs everything",
 		scope:         config.UnitScope{},
-		have:          map[string]string{"TOK_HOUSEHOLD": "t", "TOK_DAVID": "t", "TOK_JORDAN": "t"},
+		have:          map[string]string{"TOK_HOUSEHOLD": "t", "TOK_DAVID": "t", "TOK_JORDAN": "t", "PASS_DAVID": "p", "PASS_JORDAN": "p"},
 		wantErr:       true,
 		wantEndpoints: []string{"monster", "openrouter"},
 	}}

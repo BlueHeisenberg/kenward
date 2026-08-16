@@ -62,6 +62,16 @@ ExecStart=/usr/local/bin/kenward run --config /etc/kenward/kenward.yaml --data-d
 LoadCredential=bot_token:/etc/kenward/credentials/bot_token
 LoadCredential=bot_token.david:/etc/kenward/credentials/bot_token.david
 LoadCredential=api_key.openrouter:/etc/kenward/credentials/api_key.openrouter
+# The session passphrase, without which no member's key can be unwrapped and
+# every private message is answered with the locked notice. Which line you want
+# depends on the mode, and they are not interchangeable:
+#   simple   — one node passphrase wraps every member's key:
+LoadCredential=kenward-passphrase:/etc/kenward/credentials/kenward-passphrase
+#   isolated — one per member, wrapping that member's key and nobody else's.
+#              This unit is then the host supervisor, which provisions each
+#              pod's own into that pod. Add one line per member and drop the
+#              node passphrase above:
+# LoadCredential=passphrase.david:/etc/kenward/credentials/passphrase.david
 
 Restart=on-failure
 RestartSec=5s

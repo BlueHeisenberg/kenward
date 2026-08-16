@@ -10,10 +10,15 @@ import (
 )
 
 // davidsPodEnvironment is what a member's container actually holds: that member's own
-// bot token and nothing else. No sibling's, and not the household's — deploy's compose
-// file goes to some length to keep it that way, and D-007 is the reason.
+// bot token, that member's own passphrase, and nothing else. No sibling's, and not the
+// household's — deploy's compose file goes to some length to keep it that way, and
+// D-007 is the reason for the token, the mode's key custody the reason for the
+// passphrase.
 func davidsPodEnvironment() map[string]string {
-	return map[string]string{"KENWARD_BOT_TOKEN_DAVID": fakeDavidToken}
+	return map[string]string{
+		"KENWARD_BOT_TOKEN_DAVID":  fakeDavidToken,
+		"KENWARD_PASSPHRASE_DAVID": fakeDavidPassphrase,
+	}
 }
 
 // TestRunStartsAMemberPodHoldingOnlyItsOwnToken is the defect this scoping fixes.
@@ -37,8 +42,9 @@ func TestRunStartsAMemberPodHoldingOnlyItsOwnToken(t *testing.T) {
 		name: "the supervisor path, member selected by environment",
 		args: []string{"run"},
 		vars: map[string]string{
-			"KENWARD_BOT_TOKEN_DAVID": fakeDavidToken,
-			supervisor.EnvMember:      "david",
+			"KENWARD_BOT_TOKEN_DAVID":  fakeDavidToken,
+			"KENWARD_PASSPHRASE_DAVID": fakeDavidPassphrase,
+			supervisor.EnvMember:       "david",
 		},
 	}, {
 		name: "the group's pod, which holds the household token and no member's",
@@ -120,8 +126,12 @@ func TestDoctorInAPodIsHealthy(t *testing.T) {
 		// member's name, or their private space.
 		absent []string
 	}{{
-		name:   "david's pod, unit from the environment as the healthcheck sees it",
-		vars:   map[string]string{"KENWARD_BOT_TOKEN_DAVID": fakeDavidToken, supervisor.EnvMember: "david"},
+		name: "david's pod, unit from the environment as the healthcheck sees it",
+		vars: map[string]string{
+			"KENWARD_BOT_TOKEN_DAVID":  fakeDavidToken,
+			"KENWARD_PASSPHRASE_DAVID": fakeDavidPassphrase,
+			supervisor.EnvMember:       "david",
+		},
 		args:   []string{"doctor"},
 		absent: []string{"Jordan", "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19"},
 	}, {

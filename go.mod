@@ -3,7 +3,7 @@ module github.com/BlueHeisenberg/kenward
 go 1.25.0
 
 require (
-	github.com/BlueHeisenberg/keel v0.5.1
+	github.com/BlueHeisenberg/keel v0.5.2
 	github.com/go-telegram/bot v1.23.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	golang.org/x/sys v0.47.0

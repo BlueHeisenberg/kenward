@@ -73,18 +73,40 @@ func (p *passphrase) zero() {
 // errNoPassphrase is what `run` refuses to start with.
 var errNoPassphrase = errors.New("no session passphrase available")
 
-// readPassphrase finds the node's passphrase.
+// readPassphrase finds the passphrase this process unwraps keys with.
 //
-// The precedence is deliberate. A systemd credential is a file only this service can
-// read; an environment variable is visible in /proc and is inherited by the `lore`
-// subprocess; a terminal prompt needs somebody standing there. The mechanism with the
-// smallest blast radius is tried first.
+// ref, when non-nil, is the passphrase of the one member this process serves —
+// `members[].passphrase_env` / `_file`, or the systemd credential `passphrase.<id>`.
+// It comes first because in isolated mode it is the only right answer: each member's
+// key is wrapped under their own passphrase, so a pod that fell back to a node-wide
+// one would unwrap nothing, or worse, would provision a first key under a passphrase
+// every other pod also holds. Its absence is not a failure here — the node mechanisms
+// below still apply to a pod started by hand — but in a supervisor-started pod it is
+// what arrives, mirrored from whichever source the household configuration names.
+//
+// The rest of the precedence is deliberate too. A systemd credential is a file only
+// this service can read; an environment variable is visible in /proc and is inherited
+// by the `lore` subprocess; a terminal prompt needs somebody standing there. The
+// mechanism with the smallest blast radius is tried first.
 //
 // It never travels over Telegram, in either direction and in either mode. Asking for
 // it in a chat message would hand it to Telegram's servers and leave it in the
 // member's own message history, which is worse than the problem it would solve — see
 // internal/privacy's isolated-mode statement, which says so to the member.
-func readPassphrase(e *env) (*passphrase, error) {
+func readPassphrase(e *env, ref *config.SecretRef) (*passphrase, error) {
+	if ref != nil {
+		sec, err := e.secrets().Resolve(*ref)
+		var se *config.SecretError
+		switch {
+		case err == nil:
+			return &passphrase{b: []byte(sec.Value()), source: sec.Source()}, nil
+		case errors.As(err, &se) && se.NotFound:
+			// Nothing named it and no credential was there. The node mechanisms
+			// below are still legitimate for a pod somebody started by hand.
+		default:
+			return nil, err
+		}
+	}
 	if dir, ok := e.env()(envCredentialsDirectory); ok && dir != "" {
 		path := filepath.Join(dir, credentialName)
 		b, err := os.ReadFile(path)
@@ -162,7 +184,17 @@ func noPassphraseHelp() string {
 		"kenward will not start without one. A node that started anyway would answer every\n" +
 		"private message with the locked notice — forever, and only in private chats, so the\n" +
 		"household group would look fine and nobody would know where to look.\n\n" +
-		"Supply it in one of these, in order of preference:\n" +
+		"In isolated mode each member's key is wrapped under that member's own passphrase, so\n" +
+		"it is named per member in kenward.yaml, beside their bot token:\n\n" +
+		"  members:\n" +
+		"    - id: david\n" +
+		"      bot_token_env: KENWARD_BOT_TOKEN_DAVID\n" +
+		"      passphrase_env: KENWARD_PASSPHRASE_DAVID   # or passphrase_file: /run/secrets/…\n\n" +
+		"The host supervisor reads that on the host and provisions it into david's pod alone,\n" +
+		"in the same form; a compose deployment sets the same variable on david's service and\n" +
+		"nowhere else. With neither field, the systemd credential passphrase.david is used.\n\n" +
+		"In simple mode one node passphrase wraps every member's key. Supply it in one of\n" +
+		"these, in order of preference:\n" +
 		"  1. a systemd credential: LoadCredential=" + credentialName + ":/path/to/file in the\n" +
 		"     unit, which kenward reads from $" + envCredentialsDirectory + "/" + credentialName + "\n" +
 		"  2. the " + envPassphrase + " environment variable\n" +

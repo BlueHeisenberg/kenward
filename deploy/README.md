@@ -22,7 +22,11 @@ differently depending on the path:
 
 - **Compose (`compose.simple.yml`, `compose.isolated.yml`)**: a `.env` file
   next to the compose file, holding bot token(s) and any provider API key
-  kenward.yaml's `bot_token_env` / `api_key_env` fields name.
+  kenward.yaml's `bot_token_env` / `api_key_env` fields name — and, for
+  isolated mode, one session passphrase per member, named by that member's
+  `passphrase_env`. One per member and never one shared: in isolated mode each
+  member's key is wrapped under their own, which is what stops one container's
+  compromise opening another member's memory.
 - **systemd (`kenward.service`)**: individual files under
   `/etc/kenward/credentials/`, one per secret, loaded via `LoadCredential=`
   — see that file's comments for the exact names.

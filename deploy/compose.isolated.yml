@@ -20,8 +20,10 @@
 #
 # Before running:
 #   1. Write kenward.yaml next to this file (mode: isolated), with one
-#      `bot_token_env` per member plus one for the household group — see
-#      docs/IMPLEMENTATION.md §4. Do NOT commit it.
+#      `bot_token_env` AND one `passphrase_env` per member, plus one
+#      `bot_token_env` for the household group — see docs/IMPLEMENTATION.md §4.
+#      Do NOT commit it. The group needs no passphrase: it serves the shared
+#      space and holds no member's key.
 #   2. Create a `.env` file next to this compose file (NOT committed — see
 #      deploy/README.md) defining every bot token and provider key below.
 #   3. Supply a `lore` binary per service (see ../Dockerfile's note) — each
@@ -40,6 +42,16 @@
 # which is exactly the failure this file's header warns about. The same
 # applies to provider API keys below: each service is given only the keys its
 # own tier chain in kenward.yaml can actually reach, never the full set.
+#
+# AND IT APPLIES HARDEST TO THE PASSPHRASES. In isolated mode each member's key
+# is wrapped under that member's OWN passphrase — that is what session custody
+# means here, and it is why a compromise of one container cannot open another
+# member's memory even with the disk in hand. One passphrase shared across the
+# services would be simple mode's key custody with isolated mode's name on it,
+# and nothing would ever report it: every container would unlock, every member
+# would be served, and the property the mode was chosen for would be gone. One
+# variable per member, one member per container, and never the same value in
+# two of them.
 #
 # Even scoped this way, a member's own token still sits in that member's own
 # container's environment — visible to anything with access to that specific
@@ -63,6 +75,17 @@ services:
       # from .env reaches this container — see the note at the top of this
       # file on why `env_file:` is not used here.
       KENWARD_BOT_TOKEN_DAVID: ${KENWARD_BOT_TOKEN_DAVID}
+      # The passphrase that wraps DAVID'S key and nobody else's. Must match this
+      # member's `passphrase_env` in kenward.yaml, and must be a different
+      # variable holding a different value from every other service here — see
+      # the note at the top of this file. Without it this container starts,
+      # unwraps nothing, and answers every message david sends with the locked
+      # notice; kenward refuses to start instead and says which variable.
+      #
+      # There is no `KENWARD_PASSPHRASE` here and there must not be: that is the
+      # node-wide passphrase simple mode uses, and one node passphrase across
+      # these containers is one wrapping secret for every member's key.
+      KENWARD_PASSPHRASE_DAVID: ${KENWARD_PASSPHRASE_DAVID}
       # Which unit this container is, stated to the container rather than only
       # to the `run` process below. `--member=david` in `command:` is what
       # `run` reads; the image's HEALTHCHECK is a *separate* process with no
@@ -111,6 +134,10 @@ services:
       # As with david, above: only this member's own token, nothing else
       # from .env.
       KENWARD_BOT_TOKEN_JORDAN: ${KENWARD_BOT_TOKEN_JORDAN}
+      # Jordan's own passphrase, a different variable holding a different value
+      # from david's. See david's block above for why that is not a style
+      # preference.
+      KENWARD_PASSPHRASE_JORDAN: ${KENWARD_PASSPHRASE_JORDAN}
       # As with david: the unit, for the HEALTHCHECK's benefit. Must match
       # --member=jordan below.
       KENWARD_MEMBER: jordan
@@ -144,7 +171,11 @@ services:
     container_name: kenward-household
     restart: unless-stopped
     environment:
-      # The group's own token, nothing else from .env.
+      # The group's own token, nothing else from .env. Note what is NOT here: no
+      # passphrase of any kind. This pod serves the shared space and holds no
+      # member's key, so a passphrase here would unwrap nothing — and a secret
+      # that opens a member's memory, sitting in the one container every member
+      # talks to, is precisely what isolated mode exists to keep out of it.
       KENWARD_BOT_TOKEN_HOUSEHOLD: ${KENWARD_BOT_TOKEN_HOUSEHOLD}
       # The group pod's unit, for the HEALTHCHECK. "1" is the only true value;
       # must match the `--group` in command: below.
@@ -181,6 +212,11 @@ services:
   #    members[].bot_token_env and to .env — never reuse another member's token
   #    variable). If the two disagree, kenward refuses to start and says so
   #    rather than quietly serving the wrong member.
+  # 3b. Do the same for the passphrase: KENWARD_PASSPHRASE_SAM here, sam's
+  #    `passphrase_env` in kenward.yaml, and a value of its own in .env. Never
+  #    reuse david's or jordan's — kenward refuses a file where two members name
+  #    one passphrase source, but it cannot see two variables set to the same
+  #    string, and that is the same loss wearing a disguise.
   # 4. Add a `kenward-sam-data:` entry under `volumes:` below.
   # 5. Do NOT point sam's LORE_HOME or data volume at david's or jordan's —
   #    each member's lore instance must be exclusive to their own container.

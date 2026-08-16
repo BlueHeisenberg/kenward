@@ -388,12 +388,15 @@ func memberSummary(members []config.MemberConfig) string {
 func memberTokenNote(members []config.MemberConfig) string {
 	var b strings.Builder
 	b.WriteString("  Each member also needs a bot of their own. They make it themselves when\n")
-	b.WriteString("  they enrol, and kenward reads each token from its own variable:\n\n")
+	b.WriteString("  they enrol, and kenward reads each token from its own variable — and a\n")
+	b.WriteString("  passphrase of their own, which wraps their key and nobody else's:\n\n")
 	for _, m := range members {
 		fmt.Fprintf(&b, "      %s\n", m.BotTokenEnv)
+		fmt.Fprintf(&b, "      %s\n", m.PassphraseEnv)
 	}
 	b.WriteString("\n  kenward will not start until those exist. That is the point of the mode: an\n")
-	b.WriteString("  isolated household missing a token does not quietly become a shared one.")
+	b.WriteString("  isolated household missing a token does not quietly become a shared one,\n")
+	b.WriteString("  and one passphrase across two members is one wrapping secret for both.")
 	return b.String()
 }
 

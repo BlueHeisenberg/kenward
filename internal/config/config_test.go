@@ -760,11 +760,11 @@ mode: isolated
 household: {shared_space: household, group_chat_id: -1001234567890, tiers: [local]}
 telegram: {bot_token_env: T_HOUSE}
 members:
-  - {id: david, private_space: dp, tiers: [local], bot_token_env: T_DAVID}
+  - {id: david, private_space: dp, tiers: [local], bot_token_env: T_DAVID, passphrase_env: P_DAVID}
 endpoints:
   - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
 `,
-			env:  map[string]string{"T_HOUSE": "t", "T_DAVID": "t"},
+			env:  map[string]string{"T_HOUSE": "t", "T_DAVID": "t", "P_DAVID": "p"},
 			want: nil, wantNone: true,
 		},
 		{
@@ -773,11 +773,11 @@ endpoints:
 mode: isolated
 household: {shared_space: household, tiers: [local]}
 members:
-  - {id: david, private_space: dp, tiers: [local], bot_token_env: T_DAVID}
+  - {id: david, private_space: dp, tiers: [local], bot_token_env: T_DAVID, passphrase_env: P_DAVID}
 endpoints:
   - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
 `,
-			env:  map[string]string{"T_DAVID": "t"},
+			env:  map[string]string{"T_DAVID": "t", "P_DAVID": "p"},
 			want: nil, wantNone: true,
 		},
 		{
