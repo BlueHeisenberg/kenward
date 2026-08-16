@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ValidationError reports every problem found in one configuration, together.
@@ -350,7 +351,40 @@ func (c *Config) validateHousehold(p *problems, tags map[string]bool) {
 	if strings.TrimSpace(c.Household.SharedSpace) == "" {
 		p.addf("household.shared_space: required; the group conversation has nowhere to read or write without it")
 	}
+	switch c.Household.Agents {
+	case "", AgentsShared, AgentsPerMember:
+	default:
+		p.addf("household.agents: %q is not one of shared or per_member; shared is one assistant for everybody, per_member gives each person their own and keeps kenward for the group", c.Household.Agents)
+	}
+	if strings.TrimSpace(c.Household.Persona.AgentName) != "" {
+		p.addf("household.persona.agent_name: kenward's name is not configurable; it is the name its documentation, its logs and `kenward doctor` all use. A member renames their own agent with members[].persona.agent_name, under household.agents: per_member")
+	}
+	validatePersona(p, "household.persona", c.Household.Persona)
 	c.validateTiers(p, "household.tiers", c.Household.Tiers, tags)
+}
+
+// validatePersona bounds the four persona fields.
+//
+// The lengths are the only rule here, and they are a trust boundary rather than
+// tidiness: this text is written by a member, it reaches a system prompt, and the
+// budget loop that trims retrieved entries never trims it. A character long enough to
+// crowd out the scope disclosure on a small endpoint would be a way to countermand it
+// without ever instructing the model to ignore anything.
+func validatePersona(p *problems, where string, persona PersonaConfig) {
+	for _, f := range []struct {
+		key   string
+		value string
+		max   int
+	}{
+		{"agent_name", persona.AgentName, MaxPersonaLine},
+		{"language", persona.Language, MaxPersonaLine},
+		{"tone", persona.Tone, MaxPersonaLine},
+		{"character", persona.Character, MaxPersonaCharacter},
+	} {
+		if n := utf8.RuneCountInString(f.value); n > f.max {
+			p.addf("%s.%s: %d characters, and the limit is %d; persona text rides in every prompt and is never trimmed to fit, so a long one costs the memory that would otherwise have been retrieved", where, f.key, n, f.max)
+		}
+	}
 }
 
 // validateTiers checks that a tier chain is stated and that every tier in it is served
@@ -450,6 +484,8 @@ func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 				sanitized[key] = id
 			}
 		}
+
+		validatePersona(p, where+".persona", m.Persona)
 
 		space := strings.TrimSpace(m.PrivateSpace)
 		shared := strings.TrimSpace(c.Household.SharedSpace)

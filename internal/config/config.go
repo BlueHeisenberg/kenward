@@ -44,6 +44,27 @@ const (
 	ModeIsolated Mode = "isolated"
 )
 
+// Agents selects how many assistants a household has: one for everybody, or one per
+// member alongside the household's own.
+//
+// It is not Mode and must never be described as though it were. Mode is a security
+// question — can the operator read a member's private plaintext — and it is answered by
+// topology. This is a presentation question, it costs nothing, it needs no container
+// runtime, and all four combinations of the two are coherent. Conflating them is the
+// one mistake this pair of settings exists to prevent: a member's own bot is a separate
+// contact, not a separate secret, and internal/privacy says so in those words.
+type Agents string
+
+const (
+	// AgentsShared is today's behaviour and the default: there is kenward and
+	// nothing else. Everyone talks to it, in private chats and in the group, and the
+	// household persona is therefore everyone's persona.
+	AgentsShared Agents = "shared"
+	// AgentsPerMember gives every member their own named agent, and kenward remains
+	// the family agent in the group chat.
+	AgentsPerMember Agents = "per_member"
+)
+
 // UpdateChannel selects which releases the node will apply, if any.
 type UpdateChannel string
 
@@ -92,6 +113,10 @@ const (
 	// is written, then shown to them with an undo button. A household wanting the
 	// old question back sets capture.private_writes: ask.
 	DefaultPrivateWrites = PrivateWriteSave
+	// DefaultAgents is one assistant for the whole household, which is what kenward
+	// has always done and what every configuration written before household.agents
+	// existed means.
+	DefaultAgents        = AgentsShared
 	DefaultUpdateChannel = UpdateStable
 	DefaultCheckInterval = 6 * time.Hour
 	// DefaultRemindersMaxPerDay is how many unprompted messages one conversation may
@@ -186,9 +211,144 @@ type Config struct {
 	Dashboard DashboardConfig `yaml:"dashboard"`
 }
 
+// AgentName is what the household's own assistant calls itself, everywhere and
+// always. It is not configurable: kenward is the product, a household that renames it
+// has renamed the thing its documentation, its logs and its `kenward doctor` output all
+// talk about, and the name a member actually wants to change is their own agent's —
+// which is members[].persona.agent_name and exists for exactly that.
+const AgentName = "kenward"
+
+// Persona field limits. Member-written text reaches a system prompt, so its size is a
+// trust boundary rather than a matter of taste: the budget loop trims retrieved entries
+// and never trims the persona, so an unbounded character would push the scope
+// disclosure and the capture rules out of a small endpoint's window — which is the one
+// way persona text could countermand them without the model ever being asked to.
+//
+// Counted in runes, so a household writing in Greek or Japanese gets the same room as
+// one writing in English.
+const (
+	// MaxPersonaLine bounds agent_name, language and tone, each of which is one
+	// short phrase.
+	MaxPersonaLine = 80
+	// MaxPersonaCharacter bounds character, which is prose.
+	MaxPersonaCharacter = 1000
+)
+
+// PersonaConfig is how one agent writes: the four settings a household or a member
+// chooses. Every field's zero value reproduces kenward's behaviour before this section
+// existed — English, the flat register, no character, and the name kenward — so a
+// configuration that says nothing about persona is unchanged by it.
+//
+// The same shape serves both layers on purpose. A member's onboarding writes the fields
+// under members[].persona and the admin's wizard writes them under household.persona,
+// and the two must not drift into different vocabularies for the same four questions.
+type PersonaConfig struct {
+	// AgentName is what this member's agent calls itself. Empty means AgentName.
+	//
+	// It is meaningful only under household.agents: per_member, and is otherwise
+	// carried and ignored rather than refused — a household that tries one-each and
+	// goes back should not lose the names its members chose, and should not have to
+	// delete them by hand before the file will load.
+	//
+	// It is not the Telegram bot's display name, which is global and set in
+	// BotFather. This is what the agent calls itself in conversation, which is why
+	// per-member names work however many bots exist.
+	AgentName string `yaml:"agent_name,omitempty"`
+	// Language is the language this agent writes in, named the way a person names one
+	// — "Spanish", "español", "Brazilian Portuguese". It is free text and not a code,
+	// because it is passed to the model rather than looked up in a table, and a
+	// household is entitled to ask for a register of a language kenward has never
+	// heard of.
+	//
+	// Empty means English. It reaches the model and nothing else: the node's own
+	// strings — onboarding, capture announcements, refusals, the retrieval line, the
+	// locked notice — are still English constants, and this setting does not move
+	// them. See docs/PROMPT.md.
+	Language string `yaml:"language,omitempty"`
+	// Tone is the register, in a phrase: "warm", "very terse", "formal usted".
+	// Empty means the flat register docs/PROMPT.md specifies, which is the default
+	// and remains the default.
+	Tone string `yaml:"tone,omitempty"`
+	// Character is free prose about who this agent is. Empty — the default — means
+	// there is no character, and the prompt then says so in the words it always did.
+	//
+	// It is the one field of the four that is really an invitation to write anything,
+	// so it is the one that carries the risk: it enters a system prompt, and text
+	// arriving unmarked in a system prompt reads as instruction. It is rendered
+	// delimited and indented, exactly as a retrieved entry's body is, and the prompt
+	// states that it governs wording and cannot countermand anything else.
+	Character string `yaml:"character,omitempty"`
+}
+
+// IsZero reports whether this persona asks for nothing, which is the default and is
+// today's behaviour exactly.
+func (p PersonaConfig) IsZero() bool {
+	return p.AgentName == "" && p.Language == "" && p.Tone == "" && p.Character == ""
+}
+
+// HouseholdPersona is kenward's own persona, as the group conversation gets it: the
+// household's three fields, and the name kenward, which is not a setting.
+func (c *Config) HouseholdPersona() PersonaConfig {
+	p := c.Household.Persona
+	p.AgentName = AgentName
+	return p
+}
+
+// PersonaFor resolves the persona a member's private conversation is served with.
+//
+// Under AgentsShared there is no personal layer, so it is the household's — that is
+// what "one assistant for the household" means, and it is why the wizard has to say
+// that kenward's persona is everyone's persona at the point of asking.
+//
+// Under AgentsPerMember the member's own fields win, one field at a time, and an empty
+// field falls back to the household's. Per field rather than all-or-nothing because the
+// alternative makes a member who wrote a character lose the household's language, which
+// is a thing nobody would ask for and nobody would notice they had done.
+//
+// An unknown member id resolves to the household persona rather than to nothing: a
+// caller with an id no member owns is asking about a conversation that should not be
+// served at all, and answering with kenward's own voice is the reading that cannot
+// leak somebody else's.
+func (c *Config) PersonaFor(memberID string) PersonaConfig {
+	household := c.HouseholdPersona()
+	if c.Household.Agents != AgentsPerMember {
+		return household
+	}
+	for _, m := range c.Members {
+		if m.ID != memberID {
+			continue
+		}
+		return PersonaConfig{
+			AgentName: orElse(m.Persona.AgentName, household.AgentName),
+			Language:  orElse(m.Persona.Language, household.Language),
+			Tone:      orElse(m.Persona.Tone, household.Tone),
+			Character: orElse(m.Persona.Character, household.Character),
+		}
+	}
+	return household
+}
+
+func orElse(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
+}
+
 // HouseholdConfig describes the group itself.
 type HouseholdConfig struct {
 	Name string `yaml:"name"`
+	// Agents is the identity question: one assistant for the household, or one each.
+	// Empty means AgentsShared, which is what every configuration written before this
+	// key existed means.
+	Agents Agents `yaml:"agents"`
+	// Persona is kenward's own: the language, tone and character it writes the group
+	// chat in. It is household configuration rather than a private choice because
+	// kenward is visible to everyone who uses the group chat.
+	//
+	// Under AgentsShared it is also every member's persona, because there is no
+	// personal layer to override it. Both wizards say so at the point of asking.
+	Persona PersonaConfig `yaml:"persona"`
 	// SharedSpace is the lore space every member can read and the group chat writes
 	// to. It may never coincide with a member's private space.
 	SharedSpace string `yaml:"shared_space"`
@@ -223,6 +383,15 @@ type MemberConfig struct {
 	TelegramID int64 `yaml:"telegram_id"`
 	// PrivateSpace is the member's two-member lore space: them and the node.
 	PrivateSpace string `yaml:"private_space"`
+	// Persona is this member's own: their agent's name, and the language, tone and
+	// character it writes their private conversation in. It is written by the member
+	// in the Telegram tutorial rather than by the admin in the wizard, which is the
+	// same split every other per-member setting already follows.
+	//
+	// A field left empty falls back to the household's, per field, rather than to a
+	// constant: a member who chose a character and said nothing about language keeps
+	// the household's language. See PersonaFor.
+	Persona PersonaConfig `yaml:"persona"`
 	// Tiers is the ordered tier chain this member's private conversations may use. A
 	// chain naming only local tiers is what makes "this never leaves the house" true:
 	// when nothing in it is reachable, kenward refuses instead of widening.
@@ -620,6 +789,14 @@ func (c *Config) ApplyDefaults() {
 	// session.idle_timeout is not: its default is true and its zero value is false,
 	// so the absence has to survive as an absence. MemoryConfig.AnnouncesReads reads
 	// it; rewriting nil to a pointer-to-true here would only move the branch.
+	if c.Household.Agents == "" {
+		c.Household.Agents = DefaultAgents
+	}
+	// household.persona and members[].persona are deliberately not defaulted. Every
+	// field's empty value is a meaning — English, the flat register, no character,
+	// the name kenward — and writing those meanings in as strings would put "English"
+	// in the prompt of a household that never chose it, and freeze the flat register
+	// as text rather than as the absence of an instruction.
 	if c.Update.Channel == "" {
 		c.Update.Channel = DefaultUpdateChannel
 	}

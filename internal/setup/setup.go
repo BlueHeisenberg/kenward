@@ -178,6 +178,20 @@ type Answers struct {
 	// BotTokenEnv names the variable the token is read from. Empty means
 	// DefaultBotTokenEnv.
 	BotTokenEnv string
+	// Agents is the identity question: one assistant for the household, or one each.
+	// Empty means config.DefaultAgents, which is one — today's behaviour, and the
+	// answer a scripted install that has not thought about it should get.
+	Agents config.Agents
+	// Persona is kenward's own: the language, tone and character the household's
+	// assistant writes in. Every field's zero value is what kenward has always done,
+	// so a scripted install that says nothing gets English, the flat register and no
+	// character.
+	//
+	// There is deliberately no per-member persona here. A member's persona is theirs
+	// to write in the Telegram tutorial, and an install script filling one in on
+	// somebody's behalf would be the one part of this design that is nobody else's
+	// to decide.
+	Persona config.PersonaConfig
 	// MemberNames are the people in the household, in the order they will appear
 	// in the file. Member ids are derived from them.
 	MemberNames []string
@@ -244,6 +258,12 @@ type Wizard struct {
 
 	mode      config.Mode
 	household config.HouseholdConfig
+	// agents and persona are the identity step's answers: how many assistants this
+	// household has, and what kenward's own writing is like. Both are household
+	// configuration; a member's own persona is written by the member in Telegram and
+	// this wizard never touches one.
+	agents    config.Agents
+	persona   config.PersonaConfig
 	telegram  config.TelegramConfig
 	members   []config.MemberConfig
 	endpoints []config.EndpointConfig
@@ -318,6 +338,7 @@ func (w *Wizard) Run(ctx context.Context) (*config.Config, error) {
 		w.askHousehold,
 		w.askTelegram,
 		w.askMembers,
+		w.askIdentity,
 		w.askEndpoints,
 		w.askTiers,
 		w.askHistory,
@@ -335,10 +356,13 @@ func (w *Wizard) Run(ctx context.Context) (*config.Config, error) {
 
 // build assembles the configuration from what has been collected.
 func (w *Wizard) build() *config.Config {
+	household := w.household
+	household.Agents = w.agents
+	household.Persona = w.persona
 	cfg := &config.Config{
 		Mode:      w.mode,
 		DataDir:   w.opts.DataDir,
-		Household: w.household,
+		Household: household,
 		Telegram:  w.telegram,
 		Members:   w.members,
 		Endpoints: w.endpoints,
@@ -389,7 +413,7 @@ func (w *Wizard) finish() (*config.Config, error) {
 	}
 
 	w.blank()
-	w.io.Print(privacyBlock(cfg.Mode))
+	w.io.Print(privacyBlock(cfg.Mode, cfg.Household.Agents))
 	w.blank()
 	w.io.Print(w.tierSummary())
 	w.blank()

@@ -233,6 +233,13 @@ func runDoctor(e *env, path, dataDir string, sel unitSelection) doctorReport {
 	rep.Transport = append(rep.Transport, doctorEndpointKeys(cfg, secrets, scope, &rep)...)
 	rep.Endpoints = doctorEndpoints(ctx, e, cfg)
 	rep.Statement = privacy.Statement(privacyModeFor(cfg.Mode))
+	// Appended to the statement rather than reported beside it, so that a household
+	// under one agent each cannot read the mode's claim without also reading what
+	// their own bot did and did not buy. It is the paragraph most likely to be needed
+	// long after setup, by somebody checking a belief they formed months ago.
+	if cfg.Household.Agents == config.AgentsPerMember {
+		rep.Statement += "\n\n" + privacy.OwnBotNote(privacyModeFor(cfg.Mode))
+	}
 	rep.Exposure = privacy.DashboardNote(dashboard.ReachFor(cfg.Dashboard), dashboard.URLFor(cfg.Dashboard), cfg.Dashboard.TLS())
 	rep.TierNotes = tierNotes(cfg, scope)
 	return rep

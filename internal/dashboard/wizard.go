@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/setup"
@@ -92,6 +93,17 @@ type wizardState struct {
 
 	Mode config.Mode
 
+	// Agents is the identity question — one assistant for the household, or one
+	// each — and Persona is kenward's own writing. They live on the advanced step
+	// beside the other household choices and deliberately nowhere near the trust
+	// step: one is a security question answered by topology and the other is a
+	// presentation question that costs nothing, and putting them on one screen is
+	// how a household comes to believe a bot of their own sealed their memory.
+	Agents config.Agents
+	// Persona is the household's, never a member's. A member's own is written by the
+	// member in Telegram, and there is no form here that could ask on their behalf.
+	Persona config.PersonaConfig
+
 	// Advanced, all with defaults that are what the file would have said anyway.
 	SearchLimit  int
 	MaxProposals int
@@ -122,6 +134,7 @@ func newWizardState() *wizardState {
 		IdleTimeout:   config.Duration(config.DefaultIdleTimeout).String(),
 		UpdateChannel: string(config.DefaultUpdateChannel),
 		Mode:          config.ModeSimple,
+		Agents:        config.DefaultAgents,
 		// One empty row, so the endpoints step opens on a form rather than on a
 		// page whose only control is "add another".
 		Endpoints: []wizardEndpoint{{}},
@@ -182,6 +195,8 @@ func parseEndpointRows(r *http.Request) []wizardEndpoint {
 func (st *wizardState) answers(spaces map[string]string) *setup.Answers {
 	a := &setup.Answers{
 		Mode:          st.Mode,
+		Agents:        st.Agents,
+		Persona:       st.Persona,
 		HouseholdName: st.HouseholdName,
 		SharedSpace:   spaces[householdSpaceKey],
 		BotToken:      st.BotToken,
@@ -353,6 +368,26 @@ func describeModels(list []setup.ModelInfo) string {
 		parts = append(parts, m.ID+" (does not publish a window)")
 	}
 	return "it serves " + strings.Join(parts, ", ") + "."
+}
+
+// checkPersonaLengths reports an over-long persona field in the words of somebody
+// looking at a text box. config.Validate refuses the same values and would name a field
+// path instead; this runs first so the page can answer where the typing happened.
+func checkPersonaLengths(p config.PersonaConfig) error {
+	for _, f := range []struct {
+		label string
+		value string
+		max   int
+	}{
+		{"The language", p.Language, config.MaxPersonaLine},
+		{"The tone", p.Tone, config.MaxPersonaLine},
+		{"The character", p.Character, config.MaxPersonaCharacter},
+	} {
+		if utf8.RuneCountInString(f.value) > f.max {
+			return fmt.Errorf("%s is longer than %d characters. Persona text rides in every prompt and is never trimmed to fit, so a long one costs the memory kenward would otherwise have retrieved to answer with", f.label, f.max)
+		}
+	}
+	return nil
 }
 
 // splitList turns a comma-separated field into a list, dropping blanks and repeats.

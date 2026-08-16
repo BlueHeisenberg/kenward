@@ -136,6 +136,11 @@ const (
 type Options struct {
 	// HouseholdName is rendered into the prompt's identity and scope disclosure.
 	HouseholdName string
+	// Persona is how this unit's agent writes, already resolved: the household's
+	// under one agent and in the group chat, the member's own under one each. The
+	// zero value is kenward's flat register, in English, which is the default and
+	// renders exactly the prompt this package rendered before personas existed.
+	Persona Persona
 	// SearchLimit is the per-space retrieval budget for one turn. Defaults to
 	// DefaultSearchLimit.
 	SearchLimit int

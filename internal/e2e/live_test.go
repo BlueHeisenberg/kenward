@@ -357,6 +357,10 @@ type liveOptions struct {
 	// the household machine being asleep. The proxy is still built, so a test can
 	// prove nothing reached the real model.
 	endpointDown bool
+	// persona is the household's, written into the configuration as an admin
+	// would have written it in the wizard. Empty is the default and renders the
+	// prompt this suite has always sent.
+	persona config.PersonaConfig
 }
 
 type liveHarness struct {
@@ -513,6 +517,21 @@ func liveConfigYAML(l live, dataDir, url string, opts liveOptions) string {
 	fmt.Fprintf(&b, "  shared_space: %s\n", l.shared)
 	fmt.Fprintf(&b, "  group_chat_id: %d\n", groupChatID)
 	fmt.Fprintf(&b, "  tiers: [%s]\n", tiers)
+	if !opts.persona.IsZero() {
+		// Written as YAML rather than set on the decoded configuration, so the
+		// persona takes the same path an admin's answers do: through the file,
+		// through config.Load, through validation.
+		b.WriteString("  persona:\n")
+		if opts.persona.Language != "" {
+			fmt.Fprintf(&b, "    language: %q\n", opts.persona.Language)
+		}
+		if opts.persona.Tone != "" {
+			fmt.Fprintf(&b, "    tone: %q\n", opts.persona.Tone)
+		}
+		if opts.persona.Character != "" {
+			fmt.Fprintf(&b, "    character: %q\n", opts.persona.Character)
+		}
+	}
 	fmt.Fprintf(&b, "telegram:\n  bot_token_env: %s\n", botTokenEnv)
 	fmt.Fprintf(&b, "members:\n  - id: david\n    name: David\n")
 	fmt.Fprintf(&b, "    telegram_id: %d\n", davidTelegramID)
@@ -523,6 +542,30 @@ func liveConfigYAML(l live, dataDir, url string, opts liveOptions) string {
 	fmt.Fprintf(&b, "capture:\n  max_proposals_per_turn: 1\n")
 	fmt.Fprintf(&b, "update:\n  channel: stable\n  check_interval: 6h\n")
 	return b.String()
+}
+
+// looksSpanish is a deliberately crude check, and crude is the right shape for it.
+//
+// The question it has to answer is "did the household get their own language", not
+// "is this grammatical Spanish", and the second question cannot be asked of a
+// quantised model without the test becoming a test of the endpoint. So it looks for
+// the marks and function words that separate Spanish from English at a glance —
+// accents, inverted punctuation, and the handful of words every Spanish sentence has
+// — and accepts anything with a couple of them.
+func looksSpanish(s string) bool {
+	lower := strings.ToLower(s)
+	hits := 0
+	for _, mark := range []string{"á", "é", "í", "ó", "ú", "ñ", "¿", "¡"} {
+		if strings.Contains(lower, mark) {
+			hits++
+		}
+	}
+	for _, word := range []string{" el ", " la ", " los ", " las ", " de ", " que ", " es ", " no ", " se ", " para "} {
+		if strings.Contains(" "+lower+" ", word) {
+			hits++
+		}
+	}
+	return hits >= 2
 }
 
 // loreCLI runs the lore command-line tool against the same store, in a fresh
@@ -611,6 +654,71 @@ func TestLive(t *testing.T) {
 		}
 		if got := h.proxy.last(t).Model; got != l.model {
 			t.Errorf("endpoint was asked for model %q, want %q", got, l.model)
+		}
+	})
+
+	// 1b. A household that chose Spanish gets a conversation in Spanish, from a
+	// real model, over two turns, with the memory boundary intact.
+	//
+	// This is the one scenario in the suite where the assertion has to be about
+	// the reply rather than about the wire, because "the persona reached the
+	// model" is already proved by a unit test and is not what anybody doubts. What
+	// is doubted is whether a household can actually hold a conversation in their
+	// own language, and only a real model can answer that.
+	//
+	// It is deliberately tolerant about *how* Spanish the answer is and strict
+	// about what surrounds it. A quantised 27B will occasionally drop an English
+	// word; that is a fact about the model and not a defect in kenward, and a test
+	// that failed on it would be a test of the endpoint. What is not tolerated is
+	// the persona having moved anything it may not move: the scope disclosure and
+	// the capture rules are checked on the wire, in English, unchanged.
+	t.Run("SpanishPersonaHoldsAConversation", func(t *testing.T) {
+		h := newLiveHarness(t, l, liveOptions{persona: config.PersonaConfig{
+			Language: "Spanish",
+			Tone:     "cálido pero breve",
+		}})
+		h.start()
+
+		h.tr.InjectText(davidChatID, davidTelegramID, "¿Qué día sacamos la basura?", false)
+		first := h.waitForReply(davidChatID, 1)
+		t.Logf("turn 1 (¿Qué día sacamos la basura?): %q", first[0].Text)
+
+		system := h.proxy.last(t).System()
+		if !strings.Contains(system, "Language:\n  Spanish") {
+			t.Errorf("the household's language never reached the prompt:\n%s", system)
+		}
+		// The persona is rendered, so the anti-persona paragraph is not; and the
+		// rules the persona may not touch are still there, in English, verbatim.
+		if strings.Contains(system, "not a personality") {
+			t.Error("the prompt asks for a tone and denies having one in the same breath")
+		}
+		if !strings.Contains(system, "This is a private conversation with David.") {
+			t.Error("a persona displaced the scope disclosure")
+		}
+		if !strings.Contains(system, "propose storing it by calling the remember tool") {
+			t.Error("a persona displaced the capture instructions")
+		}
+
+		// Second turn, so this is a conversation rather than a single completion:
+		// the history ring carries the first exchange back into the prompt.
+		h.tr.InjectText(davidChatID, davidTelegramID, "¿Y el reciclaje?", false)
+		second := h.waitForReply(davidChatID, 2)
+		t.Logf("turn 2 (¿Y el reciclaje?): %q", second[1].Text)
+
+		if strings.TrimSpace(second[1].Text) == "" {
+			t.Fatal("the second turn came back empty")
+		}
+		carried := false
+		for _, m := range h.proxy.last(t).Messages {
+			if strings.Contains(m.Content, "¿Qué día sacamos la basura?") {
+				carried = true
+			}
+		}
+		if !carried {
+			t.Error("the second turn did not carry the first one; this was two completions, not a conversation")
+		}
+		if !looksSpanish(second[1].Text) {
+			t.Errorf("the second reply does not look like Spanish, and the household asked for Spanish: %q", second[1].Text)
 		}
 	})
 
