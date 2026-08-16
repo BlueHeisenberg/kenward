@@ -289,7 +289,13 @@ func newClaimer(cfg *config.Config) (*enrol.Claimer, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := enrol.New(inviteStore(cfg), binder)
+	// The onboarding's third message describes the buttons this household will
+	// actually show, so it has to know which policy is in force.
+	var opts []enrol.Option
+	if cfg.Capture.PrivateWrites == config.PrivateWriteAsk {
+		opts = append(opts, enrol.WithAskPrivateWrites())
+	}
+	c, err := enrol.New(inviteStore(cfg), binder, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building the enrolment claimer: %w", err)
 	}

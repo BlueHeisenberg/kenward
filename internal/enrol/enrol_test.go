@@ -686,36 +686,73 @@ func TestDefaultWorkFactor(t *testing.T) {
 }
 
 func TestOnboardingCopy(t *testing.T) {
-	msgs := Onboarding(500, "David")
-	if len(msgs) != 3 {
-		t.Fatalf("onboarding is %d messages, want 3", len(msgs))
+	// The third message describes the buttons the member is about to be shown, so
+	// it has to differ with capture.private_writes. Under the default a private
+	// note is written and then announced with Undo; under "ask" it is a question
+	// first. Promising the wrong one is the failure this test exists to catch — it
+	// went out over real Telegram once.
+	cases := []struct {
+		name       string
+		askPrivate bool
+		want       []string
+		reject     []string
+	}{
+		{
+			name: "default writes then offers Undo",
+			want: []string{
+				"I write it down and then show you exactly what I wrote",
+				"Undo button",
+				"shared memory I ask about first",
+			},
+			reject: []string{"I never save anything by myself"},
+		},
+		{
+			name:       "ask puts it as a question first",
+			askPrivate: true,
+			want: []string{
+				"I never save anything by myself",
+				"If you don't answer, I don't save it.",
+			},
+			reject: []string{"Undo button"},
+		},
 	}
-	all := ""
-	for _, m := range msgs {
-		if m.ChatID != 500 {
-			t.Errorf("message addressed to chat %d", m.ChatID)
-		}
-		if m.ReplyTo != 0 {
-			t.Errorf("onboarding should not reply to a message id")
-		}
-		all += m.Text + "\n"
-	}
-	// The three things the copy has to land, in the order they are met.
-	for _, want := range []string{
-		"David",
-		"your private memory",
-		"household group chat is the shared memory",
-		"I never save anything by myself",
-		"If you don't answer, I don't save it.",
-	} {
-		if !strings.Contains(all, want) {
-			t.Errorf("onboarding does not say %q:\n%s", want, all)
-		}
-	}
-	// It must not promise anything kenward does not do.
-	for _, bad := range []string{"encrypt", "delete everything", "anytime", "AI-powered"} {
-		if strings.Contains(strings.ToLower(all), strings.ToLower(bad)) {
-			t.Errorf("onboarding claims %q, which nothing downstream implements", bad)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msgs := Onboarding(500, "David", tc.askPrivate)
+			if len(msgs) != 3 {
+				t.Fatalf("onboarding is %d messages, want 3", len(msgs))
+			}
+			all := ""
+			for _, m := range msgs {
+				if m.ChatID != 500 {
+					t.Errorf("message addressed to chat %d", m.ChatID)
+				}
+				if m.ReplyTo != 0 {
+					t.Errorf("onboarding should not reply to a message id")
+				}
+				all += m.Text + "\n"
+			}
+			want := append([]string{
+				"David",
+				"your private memory",
+				"household group chat is the shared memory",
+			}, tc.want...)
+			for _, w := range want {
+				if !strings.Contains(all, w) {
+					t.Errorf("onboarding does not say %q:\n%s", w, all)
+				}
+			}
+			for _, r := range tc.reject {
+				if strings.Contains(all, r) {
+					t.Errorf("onboarding says %q, which is the other policy's promise:\n%s", r, all)
+				}
+			}
+			// It must not promise anything kenward does not do.
+			for _, bad := range []string{"encrypt", "delete everything", "anytime", "AI-powered"} {
+				if strings.Contains(strings.ToLower(all), strings.ToLower(bad)) {
+					t.Errorf("onboarding claims %q, which nothing downstream implements", bad)
+				}
+			}
+		})
 	}
 }
