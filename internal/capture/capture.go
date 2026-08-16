@@ -87,6 +87,26 @@ type Proposal struct {
 	Draft memory.Draft
 	// Target is the model's suggestion, never a decision.
 	Target Target
+	// Aliases are the member's own words for the thing this entry is about, in the
+	// language the conversation is held in. They are folded into the stored body as
+	// one line — see aliasLine — and they are the whole of what makes an entry
+	// retrievable by the person who said it.
+	//
+	// Titles and bodies stay in English, deliberately. lore's search is a
+	// conjunctive lexical match over title, body and domain with no stemming and no
+	// translation, so an entry is found only by words it literally contains: a
+	// Spanish household's question retrieves nothing from an English entry, which
+	// is the defect this field exists for. Writing the entry in the member's
+	// language instead would fix one household and break the shared space of any
+	// household with two, because the group scope has no member's language to write
+	// in and a shared memory in two languages is half-invisible to each of them. So
+	// English stays the one language every entry is guaranteed to hold — which is
+	// also what keeps a household's existing entries findable on the day they
+	// switch languages — and the member's own words ride alongside it.
+	//
+	// Empty is the ordinary case for an English conversation, and an alias whose
+	// every word is already in the entry is dropped rather than repeated.
+	Aliases []string
 }
 
 // OutcomeKind enumerates every way a capture can end. Callers switch on it rather than
@@ -426,6 +446,12 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	if title == "" {
 		return Outcome{}, ErrEmptyDraft
 	}
+	// Before anything else reads the draft, so that what is stored, what is put to
+	// the member as a question and what is announced back to them are one string.
+	// A member shown a body that is not the body that was written would make
+	// "kenward tells you what it wrote" false in the small way that is hardest to
+	// notice.
+	p.Draft.Body = withAliases(e.cat, title, p.Draft.Body, p.Aliases)
 
 	// Duplicate suppression comes before the budget check on purpose: a proposal the
 	// member already refused must not consume the one question this turn is allowed.
@@ -907,6 +933,79 @@ func entryBlock(title, body string) string {
 		out += "\n" + transport.Quote(body)
 	}
 	return out
+}
+
+// Bounds on the alias line. Both exist because Proposal.Aliases is model-written
+// text arriving from a member's conversation: a model asked for a few words can
+// return a paragraph, and the line is stored and shown.
+const (
+	// maxAliases is how many the line carries. Retrieval searches one content word
+	// at a time and unions the hits, so the fourth phrasing of the same thing buys
+	// almost nothing and costs a longer entry on every read of it.
+	maxAliases = 6
+	// maxAliasRunes is how long one alias may be. Anything longer is a sentence,
+	// not a name for something, and a sentence belongs in the body.
+	maxAliasRunes = 64
+)
+
+// withAliases returns the body to store: the draft's own body, with the member's
+// words for the same thing appended as one line, in their language.
+//
+// The line goes in the body because that is where lore's index can reach it. lore
+// matches over title, body and domain; markers are a filter and are not searched, so
+// there is nowhere else to put a word and have it retrieve anything.
+//
+// An empty alias set — the ordinary case for a household reading English — returns
+// the body unchanged, so nothing about an English conversation changes shape.
+func withAliases(cat lang.Catalogue, title, body string, aliases []string) string {
+	kept := usefulAliases(title, body, aliases)
+	if len(kept) == 0 {
+		return body
+	}
+	return strings.TrimRight(body, "\n") + "\n\n" + cat.AlsoKnownAs(kept)
+}
+
+// usefulAliases reduces what the model proposed to what is worth storing: trimmed,
+// bounded, without repeats, and without anything the entry already says.
+//
+// The last of those is the load-bearing one. A model told to supply the member's own
+// words will supply them in an English conversation too, where they are the words
+// already in the title; storing them would put a line of duplication on the end of
+// every entry in every English household for no retrieval gain at all. "Already says"
+// is measured in lore's own tokens (memory.Terms), because those are the units a
+// search matches in — an alias adds something exactly when it adds a word that can
+// be searched for.
+func usefulAliases(title, body string, aliases []string) []string {
+	have := make(map[string]bool)
+	for _, w := range memory.Terms(title + " " + body) {
+		have[w] = true
+	}
+	var kept []string
+	for _, a := range aliases {
+		a = strings.Join(strings.Fields(a), " ")
+		if a == "" || len([]rune(a)) > maxAliasRunes {
+			continue
+		}
+		terms := memory.Terms(a)
+		novel := false
+		for _, t := range terms {
+			if !have[t] {
+				novel = true
+			}
+		}
+		if !novel {
+			continue
+		}
+		// Recorded before the next alias is judged, so two phrasings that differ
+		// only in a word the first one already contributed do not both survive.
+		for _, t := range terms {
+			have[t] = true
+		}
+		if kept = append(kept, a); len(kept) == maxAliases {
+			break
+		}
+	}
+	return kept
 }
 
 // dest is which memory a question is about, when it is about one at all. An unsure

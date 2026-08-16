@@ -195,6 +195,8 @@ var italian = Catalogue{
 		return "Ho pubblicato " + transport.Bold(title) + " nella memoria di casa. Adesso è visibile a tutti in casa."
 	},
 
+	OnlyOneProposal: "Chiedo di una cosa per volta; non è stato salvato nient'altro di quel messaggio.",
+
 	ProposalOpener: "Posso annotare questo:",
 	ProposalNoDest: "Dove lo salvo?",
 	ProposalWithDest: func(private bool) string {
@@ -213,6 +215,7 @@ var italian = Catalogue{
 	WrittenHint:     "Il pulsante Rimuovi lo cancella.",
 	PromotionOpener: "Questo verrebbe pubblicato nella memoria di casa esattamente com'è, e non potrà più essere ritirato:",
 	PromotionCloser: "Pubblicare?",
+	AlsoKnownAs:     func(words []string) string { return "Anche: " + latinList(words) },
 
 	// Rimuovi, not Annulla. Italian uses Annulla for both Undo and Cancel and both
 	// buttons exist here. Rimuovi is also the truthful word — the button deletes

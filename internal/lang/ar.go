@@ -305,6 +305,8 @@ var arabic = Catalogue{
 		return "نشرت " + arAny(transport.Bold(title)) + " في ذاكرة المنزل. يمكن للجميع في المنزل رؤيته الآن."
 	},
 
+	OnlyOneProposal: "أسأل عن شيء واحد في كل مرة؛ ولم يُحفظ شيء آخر من تلك الرسالة.",
+
 	ProposalOpener: "يمكنني أن أدوّن هذا:",
 	ProposalNoDest: "أين أحفظه؟",
 	ProposalWithDest: func(private bool) string {
@@ -325,6 +327,7 @@ var arabic = Catalogue{
 	WrittenHint:     "زر التراجع يزيله.",
 	PromotionOpener: "سيُنشر هذا للمنزل كما هو تمامًا، ولا يمكن التراجع عن نشره:",
 	PromotionCloser: "هل أنشره؟",
+	AlsoKnownAs:     func(words []string) string { return "أيضًا: " + strings.Join(words, "، ") },
 
 	BtnUndo:             "تراجع",
 	BtnPublishHousehold: "نشر للمنزل",

@@ -177,6 +177,8 @@ var dutch = Catalogue{
 		return "Ik heb " + transport.Bold(title) + " gepubliceerd in het huishoudgeheugen. Iedereen in het huishouden kan het nu zien."
 	},
 
+	OnlyOneProposal: "Ik vraag maar naar één ding tegelijk; er is verder niets uit dat bericht opgeslagen.",
+
 	ProposalOpener: "Dit kan ik opschrijven:",
 	ProposalNoDest: "Waar moet ik het opslaan?",
 	ProposalWithDest: func(private bool) string {
@@ -195,6 +197,7 @@ var dutch = Catalogue{
 	WrittenHint:     "De knop Ongedaan maken verwijdert het.",
 	PromotionOpener: "Dit zou precies zo in het huishoudgeheugen gepubliceerd worden, en kan daarna niet meer ingetrokken worden:",
 	PromotionCloser: "Publiceren?",
+	AlsoKnownAs:     func(words []string) string { return "Ook: " + latinList(words) },
 
 	// Dutch has no Undo / Cancel collision, so both keep their standard labels.
 	// Ongedaan maken is the longest label in the whole set and is the one to watch

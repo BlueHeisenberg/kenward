@@ -186,6 +186,8 @@ var chinese = Catalogue{
 		return "已把" + transport.Bold(title) + "发布到家庭记忆。现在家里所有人都能看到它。"
 	},
 
+	OnlyOneProposal: "我一次只问一件事；那条消息里的其他内容都没有保存。",
+
 	ProposalOpener: "这件事我可以记下来：",
 	ProposalNoDest: "我该把它保存到哪里？",
 	ProposalWithDest: func(private bool) string {
@@ -204,6 +206,7 @@ var chinese = Catalogue{
 	WrittenHint:     "撤销按钮会把它移除。",
 	PromotionOpener: "这条内容会原样发布给整个家庭，并且无法撤回：",
 	PromotionCloser: "要发布吗？",
+	AlsoKnownAs:     func(words []string) string { return "也称：" + strings.Join(words, "、") },
 
 	BtnUndo:             "撤销",
 	BtnPublishHousehold: "发布给家庭",

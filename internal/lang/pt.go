@@ -171,6 +171,8 @@ var portuguese = Catalogue{
 		return "Publiquei " + transport.Bold(title) + " na memória da casa. Agora toda a gente pode ver."
 	},
 
+	OnlyOneProposal: "Só pergunto por uma coisa de cada vez; não foi guardado mais nada dessa mensagem.",
+
 	ProposalOpener: "Posso apontar isto:",
 	ProposalNoDest: "Onde guardo isto?",
 	ProposalWithDest: func(private bool) string {
@@ -189,6 +191,7 @@ var portuguese = Catalogue{
 	WrittenHint:     "O botão Anular retira isto.",
 	PromotionOpener: "Isto seria publicado na casa exatamente como está, e não pode ser despublicado:",
 	PromotionCloser: "Publico isto?",
+	AlsoKnownAs:     func(words []string) string { return "Também: " + latinList(words) },
 
 	// Anular is the pt-PT platform convention for Undo, on both Microsoft and
 	// Google. Desfazer is the pt-BR form and reads as an editor's undo rather than

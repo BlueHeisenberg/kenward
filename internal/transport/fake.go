@@ -38,6 +38,8 @@ type Fake struct {
 	// retired is every keyboard RetireKeyboard was asked to strip, as chat and
 	// message id. A test asserting that a restart cleaned up after itself reads it.
 	retired []Retired
+	// typing counts the indicators sent, per chat.
+	typing map[int64]int
 
 	scripted  []Answer
 	answerFn  func(Question) Answer
@@ -53,6 +55,7 @@ func NewFake() *Fake {
 		closedCh:  make(chan struct{}),
 		queue:     newQueue(defaultQueueCap),
 		updateBuf: defaultUpdateBuffer,
+		typing:    map[int64]int{},
 	}
 }
 
@@ -205,6 +208,7 @@ func (f *Fake) Reset() {
 	f.asked = nil
 	f.ignored = 0
 	f.retired = nil
+	f.typing = map[int64]int{}
 }
 
 // --- Transport -------------------------------------------------------------
@@ -328,6 +332,29 @@ func (f *Fake) Ask(ctx context.Context, q Question) (Answer, error) {
 		}
 	}
 	return ans, nil
+}
+
+// SendTyping records the indicator. It is counted rather than stored as a list of
+// one repeated value, because what a test asserts about it is that it happened, that
+// it happened in the right chat, and that it stopped.
+func (f *Fake) SendTyping(ctx context.Context, chatID int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return ErrClosed
+	}
+	f.typing[chatID]++
+	return nil
+}
+
+// TypingCount returns how many typing indicators were sent to one chat.
+func (f *Fake) TypingCount(chatID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.typing[chatID]
 }
 
 // Retired is one keyboard RetireKeyboard was asked to strip.

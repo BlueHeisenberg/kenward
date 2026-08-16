@@ -185,6 +185,8 @@ var french = Catalogue{
 		return "J'ai publié " + transport.Bold(title) + " dans la mémoire du foyer. Tout le foyer y a accès maintenant."
 	},
 
+	OnlyOneProposal: "Je ne pose la question que pour une chose à la fois" + nbsp + "; rien d'autre de ce message n'a été enregistré.",
+
 	ProposalOpener: "Je peux noter ceci" + nbsp + ":",
 	ProposalNoDest: "Où faut-il l'enregistrer" + nbsp + "?",
 	ProposalWithDest: func(private bool) string {
@@ -203,6 +205,7 @@ var french = Catalogue{
 	WrittenHint:     "Le bouton Retirer l'efface de la mémoire.",
 	PromotionOpener: "Ceci serait publié dans la mémoire du foyer exactement tel quel, et ne pourra plus être retiré" + nbsp + ":",
 	PromotionCloser: "Publier" + nbsp + "?",
+	AlsoKnownAs:     func(words []string) string { return "Aussi" + nbsp + ": " + latinList(words) },
 
 	// Retirer, not Annuler. French uses Annuler for both Undo and Cancel and both
 	// buttons exist in this product. Retirer is also the truthful word: the button

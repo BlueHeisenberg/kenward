@@ -66,6 +66,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -322,6 +323,45 @@ type result struct {
 	// correct decision with a useless title is still a bad capture, and the only
 	// way to see that is to look at them.
 	titles []string
+	// claimed are replies that said something had been saved. The tool call is a
+	// request and the model is never told what became of it, so any such sentence
+	// is false at the moment it is written — see claimsASave.
+	claimed []string
+	// markdown are replies containing Markdown emphasis or fences. Telegram is sent
+	// HTML, so these reach the member as the characters the model typed.
+	markdown []string
+}
+
+// claimsASave reports whether a reply tells the member something has been stored.
+//
+// A crude phrase list, and it is the right shape for the job: it runs over thirteen
+// fixed cases where nobody asked about memory, so a sentence in this vocabulary is a
+// claim about a write and not a discussion of one. Nothing like it belongs in
+// production — a lie detector over free text would be a worse defect than the one it
+// chased — which is exactly why the fix is in the prompt and the measurement is here.
+func claimsASave(text string) bool {
+	t := strings.ToLower(text)
+	for _, p := range []string{
+		"i've saved", "i have saved", "i saved", "saved it", "saved to your",
+		"saved to the household", "i've stored", "i have stored", "i've recorded",
+		"i have recorded", "i've noted", "i've added it", "i've written it",
+		"has been saved", "have been saved", "both saved", "is now in your",
+		"is now in the household", "added to your private memory",
+		"added to the household",
+	} {
+		if strings.Contains(t, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasMarkdown reports whether a reply carries Markdown the member will read as
+// punctuation. Bold and fences only: a single asterisk or underscore appears in
+// ordinary prose and in member text often enough that counting it would measure
+// nothing.
+func hasMarkdown(text string) bool {
+	return strings.Contains(text, "**") || strings.Contains(text, "```")
 }
 
 func (r result) correct() int {
@@ -369,6 +409,12 @@ func TestCaptureJudgement(t *testing.T) {
 				// turn an outage into a prompt regression.
 				t.Fatalf("%s sample %d: completing against %s (%s): %v", c.name, i+1, ep.BaseURL, ep.Model, err)
 			}
+			if claimsASave(comp.Text) {
+				r.claimed = append(r.claimed, comp.Text)
+			}
+			if hasMarkdown(comp.Text) {
+				r.markdown = append(r.markdown, comp.Text)
+			}
 			p, warn := extractProposal(comp.ToolCalls)
 			switch {
 			case p != nil:
@@ -404,11 +450,14 @@ func report(t *testing.T, ep routing.Endpoint, repeats int, results []result) {
 		posCorrect, posTotal int
 		negCorrect, negTotal int
 		malformed, empty     int
+		claimed, markdown    []string
 		anyProposed          bool
 		allProposed          = true
 	)
 	for _, r := range results {
 		empty += r.empty
+		claimed = append(claimed, r.claimed...)
+		markdown = append(markdown, r.markdown...)
 		if r.c.want {
 			posCorrect += r.correct()
 			posTotal += r.samples
@@ -448,6 +497,30 @@ func report(t *testing.T, ep routing.Endpoint, repeats int, results []result) {
 	for _, r := range results {
 		for _, title := range r.titles {
 			t.Logf("    [%s] %q", r.c.name, title)
+		}
+	}
+
+	if len(markdown) > 0 {
+		t.Logf("\n  replies carrying Markdown: %d/%d — Telegram is sent HTML, so a fence or a pair of asterisks reaches the member as characters:",
+			len(markdown), posTotal+negTotal)
+		for _, s := range markdown {
+			t.Logf("    %q", s)
+		}
+	}
+
+	// The one thing here that is a verdict and not a rate.
+	//
+	// Everything else in this file reports a number because a model asked to judge
+	// gives an answer that depends on the sampler and the weather. A reply saying
+	// something has been saved is not that kind of question. The tool call is a
+	// request, the model is never told what became of it, and the member is told
+	// separately and only when it is true — so the sentence is false when it is
+	// written, every time, and the product's whole claim is that you always know what
+	// it wrote. One is too many, and one is what a live run produced.
+	if len(claimed) > 0 {
+		t.Errorf("%d repl(ies) claimed a save that had not happened. The prompt tells the model that calling the tool is a request, not a write; this model is not honouring it, and a member reading one of these has been told something untrue about their own memory:", len(claimed))
+		for _, s := range claimed {
+			t.Errorf("    %q", s)
 		}
 	}
 

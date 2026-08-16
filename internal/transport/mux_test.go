@@ -335,6 +335,7 @@ func (g *gatedTransport) Updates(context.Context) (<-chan Inbound, error) {
 }
 func (g *gatedTransport) Send(context.Context, Outbound) error          { return nil }
 func (g *gatedTransport) Ask(context.Context, Question) (Answer, error) { return Answer{}, nil }
+func (g *gatedTransport) SendTyping(context.Context, int64) error       { return nil }
 func (g *gatedTransport) Close() error                                  { return nil }
 
 // A Close racing Start must not strand the stream: once Start has consumed the

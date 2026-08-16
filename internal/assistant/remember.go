@@ -38,6 +38,7 @@ const rememberSchema = `{
     "domain":     {"type": "string", "description": "A coarse category, e.g. household/logistics."},
     "confidence": {"type": "string", "enum": ["experimental", "provisional", "validated", "hardened"]},
     "markers":    {"type": "array", "items": {"type": "string"}},
+    "aliases":    {"type": "array", "items": {"type": "string"}, "description": "The member's own words for what this is about, in the language they are speaking, when that is not English."},
     "target":     {"type": "string", "enum": ["personal", "shared", "unsure"]}
   }
 }`
@@ -90,7 +91,11 @@ type rememberCall struct {
 	Domain     string   `json:"domain"`
 	Confidence string   `json:"confidence"`
 	Markers    []string `json:"markers"`
-	Target     string   `json:"target"`
+	// Aliases are the member's own words. The entry itself stays English — see
+	// capture.Proposal.Aliases for why — and these are what make it findable by the
+	// person who said it. An English conversation leaves them empty.
+	Aliases []string `json:"aliases"`
+	Target  string   `json:"target"`
 }
 
 // extractProposal reads the completion's tool calls and returns the proposal, if the
@@ -168,8 +173,28 @@ func extractProposal(calls []routing.ToolCall) (p *capture.Proposal, warn string
 			Confidence: confidence,
 			Markers:    call.Markers,
 		},
-		Target: target,
+		Target:  target,
+		Aliases: call.Aliases,
 	}, warn
+}
+
+// rememberCalls counts how many remember calls the completion made.
+//
+// extractProposal keeps the first and logs the rest, which is the right thing to do
+// with them and the wrong place to stop. A member who mentioned two things and had one
+// silently dropped has no way to know it happened: the turn looks, from the chat, like
+// a turn about one thing. The count is what the reply's notice is rendered off — see
+// Unit.turn — and it is gathered here rather than threaded out of extractProposal
+// because a second pass over at most a handful of tool calls is cheaper than a third
+// return value in four call sites.
+func rememberCalls(calls []routing.ToolCall) int {
+	n := 0
+	for _, c := range calls {
+		if c.Name == rememberToolName {
+			n++
+		}
+	}
+	return n
 }
 
 // parseRemember decodes one call's arguments, tolerating trailing junk after the

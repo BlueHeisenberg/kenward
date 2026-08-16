@@ -145,5 +145,46 @@ type Transport interface {
 	// Ask sends a question with buttons and blocks until the allowed user answers or
 	// the question times out.
 	Ask(ctx context.Context, q Question) (Answer, error)
+	// SendTyping shows that a reply is being worked on. It expires on its own after
+	// a few seconds and must be repeated to cover a longer wait; KeepTyping does
+	// that. A failure is not worth failing a turn over — the member loses an
+	// indicator, not an answer — so callers log it and carry on.
+	SendTyping(ctx context.Context, chatID int64) error
 	Close() error
+}
+
+// TypingInterval is how often the indicator is refreshed.
+//
+// Telegram's typing action lasts five seconds and there is no way to extend or cancel
+// one; the only control a caller has is whether it sends another. Four seconds leaves
+// a second of slack for the round trip, so the indicator never blinks out mid-wait,
+// and it costs one cheap API call every four seconds for as long as a member is
+// waiting — which, against a local 27B, is fifteen to twenty seconds a turn.
+const TypingInterval = 4 * time.Second
+
+// KeepTyping shows the typing indicator in chat until ctx is done.
+//
+// It sends the first action immediately, because the whole point is the first second
+// of the wait: a member who sees nothing for fifteen seconds has already decided the
+// assistant is broken. It returns when ctx is done, so a caller that waits for it has
+// a guarantee the indicator has stopped rather than a hope — which is what makes "it
+// stops when the reply lands" testable rather than a matter of timing.
+//
+// Failures are dropped. A transport that cannot show an indicator still has a reply to
+// deliver, and a turn that failed because a decoration failed would be a worse product
+// than one that quietly goes without it.
+func KeepTyping(ctx context.Context, t Transport, chatID int64, every time.Duration) {
+	if every <= 0 {
+		every = TypingInterval
+	}
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		_ = t.SendTyping(ctx, chatID)
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
 }

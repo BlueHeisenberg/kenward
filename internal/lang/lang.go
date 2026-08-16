@@ -173,6 +173,17 @@ type Catalogue struct {
 	PublishWrongSpace func(title string) string
 	Published         func(title string) string
 
+	// OnlyOneProposal is the node saying it dropped a second proposal from one
+	// turn. It rides on the reply, italic, like the retrieval line: it is the node
+	// accounting for what it did, not the assistant talking.
+	//
+	// It must not be written as an apology or an offer, because the member is being
+	// told about something that did not happen and the sentence has to survive being
+	// read quickly. What it has to carry is both halves — one at a time, and the rest
+	// was not saved — since half of it invites exactly the belief this line exists to
+	// prevent.
+	OnlyOneProposal string
+
 	ProposalOpener   string
 	ProposalNoDest   string
 	ProposalWithDest func(private bool) string
@@ -181,6 +192,19 @@ type Catalogue struct {
 	WrittenHint      string
 	PromotionOpener  string
 	PromotionCloser  string
+
+	// AlsoKnownAs labels the member's own words for what an entry is about, on the
+	// line capture appends to a stored body so that the entry can be retrieved in
+	// the language it was said in.
+	//
+	// It is the one entry in this table that is not markup and must not become
+	// markup: the line is written into lore and read back by the model as well as
+	// shown to the member, so a <b> in it would be stored, indexed and eventually
+	// read aloud. It is also the one entry that is joined by the table rather than
+	// by the caller, because a list separator is a language's own — Chinese uses 、
+	// and Arabic ، — and because Arabic's isolates are deliberately absent here:
+	// they are invisible control characters and this string is stored.
+	AlsoKnownAs func(words []string) string
 
 	// --- BTN: button labels. The ids are constants; only labels translate. ---
 
@@ -418,3 +442,10 @@ func codeAll(names []string) []string {
 
 // identity is Notice for every language that reads left to right.
 func identity(s string) string { return s }
+
+// latinList is the plain comma list every Latin-script table in here uses for
+// AlsoKnownAs. It is shared rather than repeated because there is no grammar in it —
+// no conjunction, no agreement, no contraction — which is precisely what makes it
+// unlike Chain and Tried, where each language joins its own way and Chinese and
+// Arabic do not use a comma at all.
+func latinList(words []string) string { return strings.Join(words, ", ") }

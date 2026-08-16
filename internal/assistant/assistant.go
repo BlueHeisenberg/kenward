@@ -497,6 +497,27 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		}
 	}
 
+	// From here on the member is waiting on the node, so say so. A turn against a
+	// real model measured fifteen to twenty seconds end to end, and in a family group
+	// chat a silence that long reads as "it's broken" — which is a product failure
+	// whatever the logs say. The indicator starts after the session check, so a locked
+	// conversation still gets its notice and nothing else, and it never runs for a
+	// stranger: Handle refuses an unresolved scope long before this line.
+	//
+	// The goroutine is waited for rather than abandoned. It means the indicator has
+	// provably stopped by the time this function returns — with the reply sent, or
+	// with the turn failed — instead of racing the next thing the member sees.
+	typingCtx, stopTyping := context.WithCancel(ctx)
+	typingDone := make(chan struct{})
+	go func() {
+		defer close(typingDone)
+		transport.KeepTyping(typingCtx, u.deps.Transport, sc.ChatID, transport.TypingInterval)
+	}()
+	defer func() {
+		stopTyping()
+		<-typingDone
+	}()
+
 	// The capture engine ages its decline window per turn whether or not this turn
 	// proposes anything. The sequence number makes the token unique even when the
 	// transport repeats a message id, because a repeated token would read as the
@@ -549,6 +570,17 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	}
 
 	proposal, warn := extractProposal(comp.ToolCalls)
+	// A second remember call in one turn is dropped, because one question per turn
+	// reaches the member — and until this line the member was the one person not told.
+	// A live run had somebody name two facts in one message, get one question, and read
+	// a reply claiming both were stored; the claim is fixed in the prompt, and the
+	// silence is fixed here. It is the node accounting for itself, so it goes out
+	// italic beside the retrieval line rather than as prose the model could have
+	// written.
+	dropped := ""
+	if rememberCalls(comp.ToolCalls) > 1 {
+		dropped = u.cat.Notice(transport.Italic(u.cat.OnlyOneProposal))
+	}
 	if warn != "" {
 		// A malformed tool call is dropped with a log line, never a crashed turn
 		// and never a write. That matters more than it did when every write waited
@@ -591,7 +623,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if reply != "" || remindNotice != "" {
+	if reply != "" || remindNotice != "" || dropped != "" {
 		// The retrieval line rides on the reply rather than arriving as a message of
 		// its own. A turn already costs a reply and may cost a write announcement,
 		// and a third message on every single turn — most of them saying nothing was
@@ -607,10 +639,13 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// in the other direction: text from outside the node does not get to forge
 		// the structure it sits in.
 		//
-		// Nothing is lost by it. Without a parse mode a model writing **bold** put
-		// literal asterisks on the member's screen, and with one it still does; the
-		// register the model is asked for is flat prose either way
-		// (docs/PROMPT.md).
+		// Escaping is not a formatting policy for the model, and reading it as one
+		// is what let Markdown reach members: a reply written as **bold** survives
+		// escaping unchanged and lands as asterisks, with or without a parse mode.
+		// That is dealt with where it belongs — the prompt asks for plain prose in
+		// so many words (prompt.go's formattingText, docs/PROMPT.md) — rather than
+		// by a converter here, which would be a second markup parser reading text
+		// that quotes members and their entries.
 		//
 		// The parts of one outbound message, in a fixed order: what was read, the
 		// reply itself, then what the node did about reminders. Each is omitted when
@@ -626,6 +661,9 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		}
 		if remindNotice != "" {
 			parts = append(parts, remindNotice)
+		}
+		if dropped != "" {
+			parts = append(parts, dropped)
 		}
 		if err := u.send(ctx, sc, in, strings.Join(parts, "\n\n")); err != nil {
 			return nil, fmt.Errorf("assistant: sending reply: %w", err)

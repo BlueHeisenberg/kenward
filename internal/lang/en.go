@@ -189,6 +189,8 @@ var english = Catalogue{
 		return "I've published " + transport.Bold(title) + " to the household memory. Everyone in the household can see it now."
 	},
 
+	OnlyOneProposal: "I only ask about one thing at a time; nothing else from that message was saved.",
+
 	// "write down", not "remember", for the same reason as AskFailed. It is also
 	// sharper about what actually happens: a specific entry, in a specific space.
 	ProposalOpener: "I can write this down:",
@@ -214,6 +216,7 @@ var english = Catalogue{
 	WrittenHint:     "The Undo button removes it.",
 	PromotionOpener: "This would be published to the household exactly as it stands, and cannot be unpublished:",
 	PromotionCloser: "Publish it?",
+	AlsoKnownAs:     func(words []string) string { return "Also known as: " + latinList(words) },
 
 	BtnUndo:             "Undo",
 	BtnPublishHousehold: "Publish to household",
