@@ -327,6 +327,12 @@ jobs:
       - name: Package .deb and .rpm
         env:
           NFPM: github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.47.0
+          # nfpm builds the packages; it is not in them. It requires a newer Go
+          # than the one this job pins, so it — and only it — is allowed to fetch
+          # a toolchain. The binaries being packaged were already compiled above
+          # under GOTOOLCHAIN=local, so what ships is still built by the pinned
+          # toolchain and nothing here changes that.
+          GOTOOLCHAIN: auto
         run: |
           mkdir -p dist/nfpm
           for arch in amd64 arm64; do
