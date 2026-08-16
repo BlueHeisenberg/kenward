@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
 	"github.com/BlueHeisenberg/kenward/internal/session"
 	"github.com/BlueHeisenberg/kenward/internal/version"
@@ -24,7 +27,7 @@ import (
 const simpleYAML = `mode: simple
 household:
   name: Casa
-  shared_space: household
+  shared_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8
   group_chat_id: -1001234567890
   tiers: [local, cloud]
 telegram:
@@ -33,12 +36,12 @@ members:
   - id: david
     name: David
     telegram_id: 12345678
-    private_space: david-private
+    private_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
     tiers: [local]
   - id: jordan
     name: Jordan
     telegram_id: 87654321
-    private_space: jordan-private
+    private_space: 5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19
     tiers: [local, cloud]
 endpoints:
   - name: monster
@@ -58,7 +61,7 @@ memory:
 const isolatedYAML = `mode: isolated
 household:
   name: Casa
-  shared_space: household
+  shared_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8
   group_chat_id: -1001234567890
   tiers: [local]
 telegram:
@@ -67,13 +70,13 @@ members:
   - id: david
     name: David
     telegram_id: 12345678
-    private_space: david-private
+    private_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
     tiers: [local]
     bot_token_env: KENWARD_BOT_TOKEN_DAVID
   - id: jordan
     name: Jordan
     telegram_id: 87654321
-    private_space: jordan-private
+    private_space: 5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19
     tiers: [local, cloud]
     bot_token_env: KENWARD_BOT_TOKEN_JORDAN
 endpoints:
@@ -226,6 +229,25 @@ func (h *harness) assertNoSecrets(t *testing.T) {
 	}
 }
 
+// spaceIDPattern is the shape of a lore space id.
+//
+// The real client resolves a configured space against lore's own listing and refuses
+// anything that is not an id it holds, so a display name fails every read while writes
+// keep working. A fake holds no listing, so it refuses by shape instead — which is
+// enough for the thing that matters here: a fixture written with display names is a
+// failing test in this package rather than a defect only a real lore can find. That is
+// how the wizard's name-shaped configurations survived as long as they did.
+var spaceIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func looksLikeSpaceID(s string) bool { return spaceIDPattern.MatchString(s) }
+
+// unknownSpaceErr is what internal/memory returns for a space lore does not hold,
+// wrapped the way its client wraps it, so tests exercise the text doctor surfaces.
+func unknownSpaceErr(space domain.SpaceID) error {
+	return fmt.Errorf("memory: lore holds no space %s (spaces are named by id here, not by display name): %w",
+		space, memory.ErrUnknownSpace)
+}
+
 // healthyProbes is a world where lore answers, Telegram authorises and every machine
 // is awake.
 func healthyProbes() probes {
@@ -233,7 +255,11 @@ func healthyProbes() probes {
 		lore: func(_ context.Context, cfg *config.Config) loreResult {
 			var res loreResult
 			for _, s := range configuredSpaces(cfg) {
-				res.Spaces = append(res.Spaces, spaceResult{Space: s})
+				r := spaceResult{Space: s}
+				if !looksLikeSpaceID(string(s)) {
+					r.Err = unknownSpaceErr(s)
+				}
+				res.Spaces = append(res.Spaces, r)
 			}
 			return res
 		},

@@ -124,7 +124,7 @@ func TestInviteFindsADeclaredMemberSeveralWays(t *testing.T) {
 	yaml := strings.Replace(simpleYAML,
 		"  - id: jordan\n    name: Jordan\n    telegram_id: 87654321\n",
 		"  - id: jose\n    name: José\n", 1)
-	yaml = strings.Replace(yaml, "jordan-private", "jose-private", 1)
+	yaml = strings.Replace(yaml, "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19", "b1c8d42f-3a56-4e09-8f77-2d9e6a10b345", 1)
 
 	for _, name := range []string{"jose", "José", "josé"} {
 		t.Run(name, func(t *testing.T) {
@@ -165,7 +165,7 @@ func TestRevokeStatesTheKeyRotationCaveat(t *testing.T) {
 		t.Fatalf("exit = %d, want 0\n%s", code, h.both())
 	}
 	out := h.stdout()
-	if !strings.Contains(out, "david-private") {
+	if !strings.Contains(out, "7d5047bb-d939-4539-b3db-8b6221a2e245") {
 		t.Errorf("the revocation does not name the space whose key must be rotated:\n%s", out)
 	}
 	lower := strings.ToLower(out)
@@ -175,7 +175,7 @@ func TestRevokeStatesTheKeyRotationCaveat(t *testing.T) {
 	// The canonical wording lives in internal/enrol, not here.
 	if !strings.Contains(out, enrol.Revocation{
 		Member: mustMember(t, mustLoad(t, simpleYAML), "david"),
-		Space:  "david-private",
+		Space:  "7d5047bb-d939-4539-b3db-8b6221a2e245",
 	}.Warning()) {
 		t.Errorf("the revocation does not print enrol.Revocation.Warning verbatim:\n%s", out)
 	}

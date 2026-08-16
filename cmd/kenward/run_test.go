@@ -240,9 +240,9 @@ func TestStartupSummaryNamesEverySpace(t *testing.T) {
 	joined := renderAttrs(lines)
 	for _, want := range []string{
 		"mode=simple",
-		"space=david-private",
-		"space=jordan-private",
-		"space=household",
+		"space=7d5047bb-d939-4539-b3db-8b6221a2e245",
+		"space=5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19",
+		"space=dac31e70-72e4-4b10-9cef-a6276c4a87b8",
 		"members_served=david,jordan",
 		"tiers=[local]",
 		"tiers=[local, cloud]",
@@ -254,7 +254,7 @@ func TestStartupSummaryNamesEverySpace(t *testing.T) {
 
 	// The point of the line: david's chain is local-only and reaches no provider;
 	// jordan's does. Both facts have to be readable off the line itself.
-	if !strings.Contains(joined, "space=david-private") || !strings.Contains(joined, "reaches_provider=false") {
+	if !strings.Contains(joined, "space=7d5047bb-d939-4539-b3db-8b6221a2e245") || !strings.Contains(joined, "reaches_provider=false") {
 		t.Errorf("david's space does not report reaches_provider=false:\n%s", joined)
 	}
 	if !strings.Contains(joined, "reaches_provider=true") {
@@ -268,22 +268,22 @@ func TestStartupSummaryInAPodNamesOnlyThatUnit(t *testing.T) {
 	cfg := mustLoad(t, isolatedYAML)
 
 	member := renderAttrs(startupSummary(cfg, unitSelection{member: "david"}))
-	if !strings.Contains(member, "space=david-private") {
+	if !strings.Contains(member, "space=7d5047bb-d939-4539-b3db-8b6221a2e245") {
 		t.Errorf("david's pod does not name david's space:\n%s", member)
 	}
-	for _, unwanted := range []string{"space=jordan-private", "space=household"} {
+	for _, unwanted := range []string{"space=5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19", "space=dac31e70-72e4-4b10-9cef-a6276c4a87b8"} {
 		if strings.Contains(member, unwanted) {
 			t.Errorf("david's pod names %q, which it does not serve:\n%s", unwanted, member)
 		}
 	}
 
 	group := renderAttrs(startupSummary(cfg, unitSelection{group: true}))
-	if !strings.Contains(group, "space=household") {
+	if !strings.Contains(group, "space=dac31e70-72e4-4b10-9cef-a6276c4a87b8") {
 		t.Errorf("the group pod does not name the shared space:\n%s", group)
 	}
 	// A group scope may never name a private space, and the line an operator reads
 	// must not suggest otherwise.
-	for _, unwanted := range []string{"david-private", "jordan-private"} {
+	for _, unwanted := range []string{"7d5047bb-d939-4539-b3db-8b6221a2e245", "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19"} {
 		if strings.Contains(group, unwanted) {
 			t.Errorf("the group pod's summary names %q:\n%s", unwanted, group)
 		}

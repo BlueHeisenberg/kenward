@@ -277,7 +277,7 @@ func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 		var res loreResult
 		for _, s := range configuredSpaces(cfg) {
 			r := spaceResult{Space: s}
-			if s == "jordan-private" {
+			if s == "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19" {
 				// The error internal/memory returns for exactly this, wrapped the
 				// way the client wraps it — doctor surfaces its text rather than
 				// writing a second explanation.
@@ -292,12 +292,15 @@ func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 		t.Fatalf("exit = %d, want %d: a space lore does not hold is a fault only an edit fixes\n%s", code, exitUsage, h.both())
 	}
 	out := h.stdout()
+	// Compared with the line breaks collapsed: doctor wraps its detail lines, and a
+	// space id is long enough to move where the wrap falls.
+	flat := strings.Join(strings.Fields(out), " ")
 	for _, want := range []string{
 		"is not a space this lore store holds",
-		"spaces are named by id here",
-		"lore spaces",
+		"spaces are named by id here, not by display name",
+		"run `lore spaces` and configure the id column",
 	} {
-		if !strings.Contains(out, want) {
+		if !strings.Contains(flat, want) {
 			t.Errorf("output does not say %q:\n%s", want, out)
 		}
 	}

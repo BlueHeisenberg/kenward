@@ -14,7 +14,7 @@ import (
 const fileTokenYAML = `mode: simple
 household:
   name: Casa
-  shared_space: household
+  shared_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8
   group_chat_id: -1001234567890
   tiers: [local]
 telegram:
@@ -23,7 +23,7 @@ members:
   - id: david
     name: David
     telegram_id: 12345678
-    private_space: david-private
+    private_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
     tiers: [local]
 endpoints:
   - name: monster

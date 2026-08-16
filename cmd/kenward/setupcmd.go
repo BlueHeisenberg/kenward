@@ -28,10 +28,17 @@ func cmdSetup(e *env, args []string) int {
 
 	mode := fs.String("mode", string(config.ModeSimple), "simple | isolated")
 	household := fs.String("household-name", setup.DefaultHouseholdName, "what this household is called")
-	sharedSpace := fs.String("shared-space", setup.DefaultSharedSpace, "the lore space the group chat reads and writes")
+	// No default. A space is the id of something that already exists in lore, so
+	// there is nothing to guess: the old default was a display name, and a name
+	// configured here writes memory happily and returns nothing on the first read.
+	// The backquoted word is the placeholder the flag package prints, so it goes on
+	// the value's shape and nowhere else.
+	sharedSpace := fs.String("shared-space", "", "`SPACE_ID` of the shared lore space the group chat reads and writes; `lore spaces` prints the ids")
 	botTokenEnv := fs.String("bot-token-env", setup.DefaultBotTokenEnv, "the variable the household bot's token is read from")
 	var members stringList
 	fs.Var(&members, "member", "a member's name; repeat for each person (ids are derived)")
+	var memberSpaces stringList
+	fs.Var(&memberSpaces, "member-space", "`ID=SPACE_ID` for the shared lore space holding that member's private memory; repeat for each member, and run `lore spaces` for the ids")
 	var endpoints stringList
 	fs.Var(&endpoints, "endpoint", "name=NAME,url=BASE_URL,model=MODEL[,key-env=VAR][,tiers=a|b]; repeat")
 	var memberTiers stringList
@@ -55,7 +62,7 @@ func cmdSetup(e *env, args []string) int {
 	}
 	if *nonInteractive {
 		answers, err := buildAnswers(*mode, *household, *sharedSpace, *botTokenEnv,
-			members, endpoints, memberTiers, *groupTiers, *writeEnvFile)
+			members, memberSpaces, endpoints, memberTiers, *groupTiers, *writeEnvFile)
 		if err != nil {
 			e.errorf("%v", err)
 			return exitUsage
@@ -95,8 +102,14 @@ func cmdSetup(e *env, args []string) int {
 }
 
 // buildAnswers turns the --non-interactive flags into setup.Answers.
+//
+// Spaces are passed through rather than checked here. internal/setup validates them
+// against lore's real listing and refuses a display name or a personal space by
+// message, and a scripted install must not be able to write a configuration the
+// interactive wizard would have refused — which is exactly what a second, weaker check
+// in this package would allow.
 func buildAnswers(mode, household, shared, botTokenEnv string,
-	members, endpoints, memberTiers stringList, groupTiers string, writeEnv bool) (*setup.Answers, error) {
+	members, memberSpaces, endpoints, memberTiers stringList, groupTiers string, writeEnv bool) (*setup.Answers, error) {
 
 	m := config.Mode(mode)
 	if m != config.ModeSimple && m != config.ModeIsolated {
@@ -123,6 +136,16 @@ func buildAnswers(mode, household, shared, botTokenEnv string,
 			return nil, err
 		}
 		a.Endpoints = append(a.Endpoints, ep)
+	}
+	for _, spec := range memberSpaces {
+		id, space, ok := strings.Cut(spec, "=")
+		if !ok || id == "" || strings.TrimSpace(space) == "" {
+			return nil, fmt.Errorf("--member-space wants ID=SPACE_ID, got %q; `lore spaces` prints the ids", spec)
+		}
+		if a.MemberSpaces == nil {
+			a.MemberSpaces = map[string]string{}
+		}
+		a.MemberSpaces[id] = strings.TrimSpace(space)
 	}
 	for _, spec := range memberTiers {
 		id, tiers, ok := strings.Cut(spec, "=")

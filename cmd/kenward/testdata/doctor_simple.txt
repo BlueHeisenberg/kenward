@@ -7,9 +7,9 @@ Configuration
 
 Memory
   ✓ lore mcp responds
-  ✓ space "household" reachable
-  ✓ space "david-private" reachable
-  ✓ space "jordan-private" reachable
+  ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
+  ✓ space "7d5047bb-d939-4539-b3db-8b6221a2e245" reachable
+  ✓ space "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19" reachable
   ! `lore mcp` does not sync on its own
       run `lore serve` on the same LORE_HOME if this store should reach another
       machine
