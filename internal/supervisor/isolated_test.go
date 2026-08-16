@@ -1242,3 +1242,132 @@ func TestIsolatedNoGoroutineLeaksAfterStop(t *testing.T) {
 		return runtime.NumGoroutine() <= before
 	})
 }
+
+// TestIsolatedProvisionsEachMemberTheirOwnInvitesAndTheGroupNone is D-023's last mile,
+// and the gap it closes was found by running the mode against real podman.
+//
+// `kenward invite` mints on the host, into the host's own invite store. The claim is
+// redeemed inside the member's pod, against the invite store on that pod's own volume,
+// and nothing crossed between the two: the operator handed over a code the pod had
+// never heard of, the claimer refused it, and — correctly, because enrolment owes a
+// stranger silence — said nothing to anybody. The whole of D-023 ended one step short.
+//
+// The seed is what crosses, and what it is matters as much as that it exists. It is
+// this member's file and no other member's; the records in it are PBKDF2 digests, so
+// nothing redeemable travels; and it goes into the container's own filesystem rather
+// than the pod's work volume, which the host neither reads nor writes.
+func TestIsolatedProvisionsEachMemberTheirOwnInvitesAndTheGroupNone(t *testing.T) {
+	dir := t.TempDir()
+	// One file per member, as `kenward invite` writes them. eve has none: not every
+	// member has an invite outstanding, and that is not a failure.
+	for name, body := range map[string]string{
+		"david.json": `{"version":1,"codes":[{"hash":"david-digest"}]}`,
+		"ana.json":   `{"version":1,"codes":[{"hash":"ana-digest"}]}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("writing seed: %v", err)
+		}
+	}
+
+	opts := isolatedTestOptions(newFakeBackend())
+	opts.InviteSeedDir = dir
+	sup, err := newIsolated(isolatedTestConfig(), opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+
+	seen := 0
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		seen++
+		var got []string
+		for _, f := range spec.Files {
+			if f.Path == PodInvitesPath {
+				got = append(got, string(f.Data))
+			}
+		}
+		switch string(p.key.member) {
+		case "david":
+			assertProvisioned(t, spec, PodInvitesPath, `{"version":1,"codes":[{"hash":"david-digest"}]}`)
+			// And nobody else's. The host's own store holds every member's digests;
+			// a member's pod may hold exactly its own.
+			for _, body := range got {
+				if strings.Contains(body, "ana-digest") {
+					t.Errorf("david's pod was handed ana's claim codes: %s", body)
+				}
+			}
+		case "eve":
+			if len(got) != 0 {
+				t.Errorf("eve has no invite outstanding but her pod was given %v", got)
+			}
+		case "ana":
+			assertProvisioned(t, spec, PodInvitesPath, `{"version":1,"codes":[{"hash":"ana-digest"}]}`)
+		default:
+			// The household group. It has no claimer — D-023 puts the claim
+			// conversation on the member's own bot — so a file of codes there would
+			// be one more thing in the one pod every member talks to.
+			if len(got) != 0 {
+				t.Errorf("the group's pod was given claim codes: %v", got)
+			}
+			if slices.Contains(spec.Command, "--invites="+PodInvitesPath) {
+				t.Errorf("the group's pod is told to import invites it has no claimer for: %v", spec.Command)
+			}
+		}
+		// Nothing on the pod's own volume is named, written or read on this path.
+		for _, f := range spec.Files {
+			if strings.HasPrefix(f.Path, "/work") {
+				t.Errorf("pod %s: the host provisioned %s, which is the member's own volume", p.name, f.Path)
+			}
+		}
+	}
+	if seen != 4 {
+		t.Fatalf("inspected %d pods, want three members and the group", seen)
+	}
+}
+
+// TestIsolatedMemberPodIsToldWhereItsInvitesAre pins the argv half. Provisioning the
+// file is useless if the pod is never told to read it, and the two are decided in
+// different functions.
+func TestIsolatedMemberPodIsToldWhereItsInvitesAre(t *testing.T) {
+	want := "--invites=" + PodInvitesPath
+	if got := PodCommand("--member=david"); !slices.Contains(got, want) {
+		t.Errorf("a member's pod command %v does not carry %s", got, want)
+	}
+	if got := PodCommand(PodGroupFlag); slices.Contains(got, want) {
+		t.Errorf("the group's pod command %v carries %s and has no claimer to use it", got, want)
+	}
+}
+
+// TestIsolatedUnreadableInvitesRefuseTheSpec.
+//
+// A seed that is absent means no invite is outstanding, which is the ordinary case. A
+// seed that is present and unreadable means the operator minted a code that will not
+// arrive, and starting the pod anyway produces the one enrolment failure nobody can
+// diagnose: the member presents a real code to their own bot and is answered with the
+// silence a stranger gets.
+func TestIsolatedUnreadableInvitesRefuseTheSpec(t *testing.T) {
+	dir := t.TempDir()
+	// A directory where the file should be. It is what a container runtime creates
+	// when asked to bind-mount a source that does not exist, and it is unreadable in
+	// exactly the way that matters.
+	if err := os.MkdirAll(filepath.Join(dir, "david.json"), 0o700); err != nil {
+		t.Fatalf("preparing the seed: %v", err)
+	}
+	opts := isolatedTestOptions(newFakeBackend())
+	opts.InviteSeedDir = dir
+	sup, err := newIsolated(isolatedTestConfig(), opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+	for _, p := range sup.pods {
+		if string(p.key.member) != "david" {
+			continue
+		}
+		if _, err := sup.specFor(p); err == nil {
+			t.Fatal("specFor accepted an unreadable seed; david's pod would start and refuse his code in silence")
+		}
+	}
+}

@@ -1,11 +1,19 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/enrol"
+	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
 func mustDuration(t *testing.T, s string) time.Duration {
@@ -225,5 +233,147 @@ func TestHumanDuration(t *testing.T) {
 		if got := humanDuration(d); got != tc.want {
 			t.Errorf("humanDuration(%s) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// TestIsolatedInviteReachesThePodThatRedeemsIt is the journey the operator actually
+// makes, end to end, and it is the check on the last gap D-023 had.
+//
+// `kenward invite` mints into this node's own store. In isolated mode the process that
+// has to redeem the code is not this one: it is the member's pod, reading its own
+// invite store on its own volume, on a filesystem this machine's store is not part of.
+// Nothing bridged them. The operator ran `kenward invite --name Jordan`, handed the
+// code over, and jordan's pod — which by then exists and is waiting, claim-only —
+// refused it and said nothing, because silence is what enrolment owes a sender it does
+// not recognise. Every step reported success and the member was never enrolled.
+//
+// The bridge is a per-member seed file the deployment carries into the pod, and this
+// walks all three legs: mint on the host, carry the file, redeem in the pod.
+func TestIsolatedInviteReachesThePodThatRedeemsIt(t *testing.T) {
+	t.Parallel()
+	// jordan is declared and has not claimed — the state D-023 is about.
+	yaml := strings.Replace(isolatedYAML,
+		"    telegram_id: 87654321\n", "", 1)
+	h := newHarness(t, yaml, fullEnvironment())
+
+	if code := h.run("invite", "--name", "Jordan"); code != exitOK {
+		t.Fatalf("invite exit = %d, want 0\n%s", code, h.both())
+	}
+	plaintext, _ := splitClaimCode(t, h.stdout())
+
+	// Leg two: the file the deployment carries. It is jordan's, it is where both
+	// deployment paths look for it, and it holds no plaintext.
+	dataDir := filepath.Join(h.dir, "data")
+	seed := filepath.Join(dataDir, inviteSeedDirName, "jordan.json")
+	raw, err := os.ReadFile(seed)
+	if err != nil {
+		t.Fatalf("`kenward invite` wrote no seed for jordan's pod, so the code cannot reach it: %v", err)
+	}
+	if strings.Contains(string(raw), strings.ReplaceAll(plaintext, "-", "")) {
+		t.Fatalf("the seed carries the code in the clear:\n%s", raw)
+	}
+	// Digests only, and one member's. The host's own store holds every member's.
+	if strings.Contains(string(raw), "David") {
+		t.Errorf("jordan's seed carries david's invites:\n%s", raw)
+	}
+
+	// Leg three: the pod. A different data directory on a different filesystem —
+	// which is the whole point — with the seed provisioned in as the deployment does
+	// it, and `run --member=jordan --invites=…` importing it on the way up.
+	podDir := t.TempDir()
+	podCfg := &config.Config{DataDir: podDir}
+	if err := importInvites(h.e, podCfg, seed, nil); err != nil {
+		t.Fatalf("the pod could not import its invites: %v", err)
+	}
+
+	pod := inviteStore(podCfg)
+	binder := &recordingBinder{}
+	claimer, err := enrol.New(pod, binder, enrol.WithClock(h.e.now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := transport.Inbound{ChatID: 99, UserID: 99, Text: plaintext, At: h.e.now()}
+	res, err := claimer.Handle(context.Background(), msg)
+	if err != nil || !res.Enrolled {
+		t.Fatalf("jordan's pod refuses the code the operator handed jordan: enrolled=%v err=%v", res.Enrolled, err)
+	}
+	if binder.id != "jordan" {
+		t.Errorf("the code bound %q, not jordan", binder.id)
+	}
+
+	// And it is single-use across the crossing, not just within one store. The seed
+	// on the host never learns the code was spent — consumption happens in the pod —
+	// so a second import must not restore it. A pod is recreated on every rolling
+	// update, and if it did, one code would enrol somebody twice.
+	if _, err := copyInvites(context.Background(), pod, enrol.NewFileStore(seed), nil); err != nil {
+		t.Fatalf("re-importing the seed: %v", err)
+	}
+	if _, err := claimer.Handle(context.Background(), msg); !errors.Is(err, enrol.ErrCodeConsumed) {
+		t.Fatalf("after re-importing the seed the spent code is redeemable again (err = %v); a pod is recreated on every rolling update", err)
+	}
+}
+
+// recordingBinder is the member set enrolment binds into, reduced to what this test
+// asks of it: which member the code named.
+type recordingBinder struct{ id domain.MemberID }
+
+func (b *recordingBinder) Bind(_ context.Context, id domain.MemberID, name string, telegramID int64, _ time.Time) (domain.Member, error) {
+	b.id = id
+	return domain.Member{ID: id, Name: name, TelegramID: telegramID}, nil
+}
+
+func (b *recordingBinder) Unbind(context.Context, domain.MemberID) (domain.Member, error) {
+	return domain.Member{}, enrol.ErrUnknownMember
+}
+
+// TestSimpleInviteWritesNoSeed. The seed exists for the crossing between a host and a
+// pod, and simple mode has no crossing: one process mints and redeems against one
+// file. Writing a second copy of every household digest there would be a second file
+// to lose for nothing.
+func TestSimpleInviteWritesNoSeed(t *testing.T) {
+	t.Parallel()
+	yaml := strings.Replace(simpleYAML,
+		"  - id: jordan\n    name: Jordan\n    telegram_id: 87654321\n",
+		"  - id: jordan\n    name: Jordan\n", 1)
+	h := newHarness(t, yaml, fullEnvironment())
+
+	if code := h.run("invite", "--name", "Jordan"); code != exitOK {
+		t.Fatalf("invite exit = %d, want 0\n%s", code, h.both())
+	}
+	if _, err := os.Stat(filepath.Join(h.dir, "data", inviteSeedDirName)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("simple mode wrote a pod seed directory (%v); there is no pod to carry it to", err)
+	}
+	if strings.Contains(h.stdout(), "isolated") {
+		t.Errorf("simple mode printed isolated mode's delivery note:\n%s", h.stdout())
+	}
+}
+
+// TestIsolatedInviteSeedSurvivesAnIdThatIsNotTheName.
+//
+// `kenward invite` finds a member by id, by name, or by the slug of their name, and
+// mints the code against the *name* — so a household whose `id: dave` carries `name:
+// David` produces a code recorded under "david" and a member the deployment looks up
+// as "dave". A seed filtered on one of those two would be written, be empty, and
+// report success, which is this file's own failure mode one layer down.
+func TestIsolatedInviteSeedSurvivesAnIdThatIsNotTheName(t *testing.T) {
+	t.Parallel()
+	yaml := strings.NewReplacer(
+		"  - id: jordan\n", "  - id: jordy\n",
+		"    telegram_id: 87654321\n", "",
+		"KENWARD_BOT_TOKEN_JORDAN", "KENWARD_BOT_TOKEN_JORDAN",
+	).Replace(isolatedYAML)
+	h := newHarness(t, yaml, fullEnvironment())
+
+	if code := h.run("invite", "--name", "Jordan"); code != exitOK {
+		t.Fatalf("invite exit = %d, want 0\n%s", code, h.both())
+	}
+	// Named for the configured id, because that is what the deployment looks up.
+	seed := filepath.Join(h.dir, "data", inviteSeedDirName, "jordy.json")
+	codes, err := enrol.NewFileStore(seed).All(context.Background())
+	if err != nil {
+		t.Fatalf("reading %s: %v", seed, err)
+	}
+	if len(codes) != 1 {
+		t.Fatalf("jordy's seed holds %d codes, want the one just minted: %+v", len(codes), codes)
 	}
 }

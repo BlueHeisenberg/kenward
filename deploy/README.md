@@ -50,6 +50,16 @@ For the container paths you also need a `lore` binary on the host to
 bind-mount in — see the Dockerfile's note on why it isn't baked into the
 image.
 
+`compose.isolated.yml` additionally needs one file per member holding that
+member's outstanding claim codes: run `kenward invite --name NAME` on the host
+*before* bringing that member's service up, and it writes
+`<data_dir>/invites/<id>.json` for the service to mount read-only. This is the
+only route a code minted on the host takes to the container that has to redeem
+it — the claim happens against the member's own bot, in that container, against
+the invite store on that container's own volume. Bring the service up first and
+your container runtime will create a *directory* where the file should be, and
+kenward will refuse to start and say so.
+
 Neither compose file uses `env_file:` — each service's `environment:` block
 names exactly the variables it needs, interpolated from `.env` at parse time
 rather than the whole file being injected. In `compose.isolated.yml` this is
@@ -90,7 +100,8 @@ node itself.
 
 ## The one warning that matters
 
-**`kenward.yaml`, `.env`, and the files under `/etc/kenward/credentials/`
+**`kenward.yaml`, `.env`, the files under `invites/`, and the files under
+`/etc/kenward/credentials/`
 hold real secrets — Telegram bot tokens, provider API keys, and (in
 kenward.yaml) the shape of a real household's private/shared space split.
 Never commit any of them, anywhere, under any name.** `.gitignore` and

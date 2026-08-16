@@ -114,11 +114,20 @@ func isolatedOptions(e *env, opts runOptions, logger *slog.Logger) (supervisor.I
 	// it is running, rather than what the operator configured. Empty only if there is
 	// no data directory at all, which config.ApplyDefaults does not permit.
 	imageState := ""
+	seeds := ""
 	if opts.dataDir != "" {
 		imageState = filepath.Join(opts.dataDir, podImageFileName)
+		seeds = filepath.Join(opts.dataDir, inviteSeedDirName)
 	}
 	return supervisor.IsolatedOptions{
 		Image: image,
+		// D-023's last mile. `kenward invite` writes each member's outstanding codes
+		// to their own file under here; this is what carries that file into that
+		// member's pod, where the claim is actually redeemed. Without it the operator
+		// mints a code on this machine, hands it over, and the member's pod — which
+		// reads its own store on its own volume and has never seen this one — refuses
+		// it in the silence enrolment owes a stranger.
+		InviteSeedDir: seeds,
 		// Without this the pods never move. `ensureRunning` starts a pod that exists
 		// and creates one that does not; nothing in the restart path replaces a
 		// running container, so after this host self-updated and came back on the new

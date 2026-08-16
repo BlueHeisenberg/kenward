@@ -511,6 +511,12 @@ decides how the directory is backed up, mounted and permissioned:
 | `state.json` | the enrolment bindings: which Telegram account is which member | no |
 | `sessions.json` | each member's **wrapped key** | yes |
 | `invites.json` | the **hashed** claim codes not yet redeemed | yes |
+| `invites/<id>.json` | isolated mode only: one member's outstanding codes, for their pod | yes |
+
+The per-member files under `invites/` are derived from `invites.json` by `kenward invite`,
+and exist because the process that redeems a code in isolated mode is not the process that
+minted it — see §8, "How a supervisor-started pod gets a claim code". One file per member,
+never the whole store, because a member's pod may hold nothing of anybody else's.
 
 Neither sensitive file holds a plaintext secret: a wrapped key needs the passphrase and a
 claim code is stored only as a digest. But a wrapped key is worth exactly one offline
@@ -936,7 +942,9 @@ either way.
 Telegram bot usernames are publicly discoverable and anyone may `/start`. Therefore:
 
 1. Operator runs `kenward invite --name "David"` → prints a single-use claim code with
-   an expiry (default 24h). Codes are stored hashed.
+   an expiry (default 24h). Codes are stored hashed. In isolated mode the digest is also
+   written to that member's own file for their pod to be given, because the process that
+   redeems it is not this one — §8, "How a supervisor-started pod gets a claim code".
 2. A stranger messaging the bot gets **no reply at all** until a valid code is
    presented. Not an error, not a prompt — silence.
 3. On a valid code: bind `telegram_id` → member, mark the code consumed, provision and
@@ -1026,7 +1034,9 @@ start both reported `StateNotEnrolled` with a nil error, because the not-enrolle
 was virtual and `fail` skipped it. What the host still cannot see is a claim that lands
 *after* it started — the code is redeemed inside the pod against the pod's own invite
 store on its own volume, so the host goes on reporting "awaiting enrolment" for a member
-who is by then being served, until the next `kenward run` re-reads the configuration.
+who is by then being served, until the next `kenward run` re-reads the configuration. That
+volume is also why the code has to be *carried* into the pod rather than looked up there;
+see the next-but-two heading.
 
 ### How a supervisor-started pod gets lore
 
@@ -1154,6 +1164,76 @@ sentence as two members naming the same bot token.
 **The group's pod gets none.** It serves the shared space and holds no member's key, so a
 passphrase there would unwrap nothing — and a secret that opens a member's memory, sitting
 in the one pod every member talks to, is exactly what the mode exists to keep out of it.
+
+### How a supervisor-started pod gets a claim code
+
+This is the last step of D-023 and it did not work, found the same way the passphrase was:
+by running the mode against a real container runtime. `kenward invite` mints into
+`<data_dir>/invites.json` **on the host**. The pod's claimer reads its own store under its
+own `--data-dir`, which is `/work/kenward` — the pod's named volume — and nothing crossed
+between the two. So the operator ran `kenward invite --name Jordan`, was handed a code,
+handed it on, and jordan's pod, which by then exists and is waiting claim-only, had no
+record of it and refused it. Correctly and in silence, because that is what enrolment owes
+a sender it does not recognise (§7), which is exactly why nothing anywhere reported it:
+every command succeeded and the member was simply never enrolled.
+
+Four shapes of fix were weighed, and the choice turns on what the host is thereby able to
+do to a member's volume, because keeping the host out of that volume is the whole of what
+this mode sells.
+
+- **Provision the code into the pod at create time**, the way the configuration, the bot
+  token and the passphrase already travel. Chosen.
+- **`kenward invite` writes through into the running pod's store.** Fresher, and rejected.
+  It needs the host to write inside a running member's container, and every mechanism that
+  can do that (`podman cp`, `WriteFile`, an exec) is one small edit from reading the same
+  volume back out. A member's volume holds their wrapped key and their lore instance, and
+  isolated mode exists so the host does not reach into it. Rejected on that, not on cost.
+- **The pod mints its own code and the host reads it back.** Cleaner ownership and worse
+  in both other respects: it needs `Exec` into a member's container, which is a strictly
+  larger capability than placing one file into a fresh one, and it does not map onto the
+  compose path at all, where there is no host process to ask.
+- **Share one invite file between host and pods.** A non-starter: `enrol.FileStore` is
+  atomic against other operations in its own process and explicitly not against a second
+  process on the same path, and here there would be one writer per pod.
+
+So: `kenward invite` derives a per-member file, `<data_dir>/invites/<id>.json`, and both
+deployment paths deliver it to `/etc/kenward/invites.json` inside that member's pod —
+`Isolated` provisions it through `Spec.Files` at create time, compose bind-mounts it
+read-only. The pod is told where it is with `--invites` and **imports** it into its own
+store on the way up.
+
+What crosses, stated exactly, because a mechanism that moves enrolment material between
+trust domains is worth being precise about:
+
+- **Hashed, never plaintext.** A record is a PBKDF2-HMAC-SHA256 digest of an 80-bit
+  `crypto/rand` code at 210,000 iterations. The plaintext exists once, in the operator's
+  terminal (§7).
+- **One member's, never the household's.** `invites.json` holds every member's digests;
+  the file a pod is given holds one member's. Digests, so the exposure would have been
+  theoretical — the rule is not.
+- **Into the container, never into the volume.** `/etc/kenward` is the container's own
+  filesystem, replaced on every recreation. `/work` is the member's, and nothing on this
+  path writes there or reads from it. The host gains no new access to a member's memory
+  and the direction is one-way.
+- **The pod's consumed marks are never overwritten.** Redemption happens in the pod and
+  the host's copy never learns of it, so the import skips digests the pod already holds
+  rather than replacing them. Overwriting would restore a spent single-use code to
+  redeemable on the next rolling update.
+- **The group's pod gets none, and is not even told to look.** D-023 puts the claim on the
+  member's own bot, so the household's pod has no claimer; `PodCommand` omits `--invites`
+  for it.
+
+**The cost, which is real: the seed is a snapshot taken when the pod is created.** A code
+minted while that member's container is already running does not reach it until the
+container is next created — the same staleness §8 already documents for the host's view of
+enrolment, and for the same reason: `Isolated` reads the configuration once and pods are
+recreated from that snapshot. It costs nothing in the flow D-023 actually describes, since
+adding a member means editing `kenward.yaml` and its secrets and therefore restarting the
+node anyway, and a claim-only pod is serving nobody, so recreating it interrupts nothing.
+It does cost something when re-minting for a member whose pod is already up, so `kenward
+invite` says so in isolated mode rather than leaving it to be discovered. The alternative —
+the host pushing into a running member's container — is the option rejected above, and this
+staleness is the price of not having it.
 
 ---
 

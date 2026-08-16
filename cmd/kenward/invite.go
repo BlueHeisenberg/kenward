@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/enrol"
 )
 
@@ -65,8 +67,55 @@ func cmdInvite(e *env, args []string) int {
 		return exitFailure
 	}
 
+	// And now the digest has to reach the process that will be asked to redeem it. In
+	// simple mode that is this machine's own store, already written. In isolated mode
+	// it is the member's pod, which reads its own store on its own volume and has no
+	// sight of this one, so the digest is exported to that member's seed file for the
+	// deployment to carry in — see inviteSeedDirName. Without it the operator hands
+	// over a code the pod has never heard of and the claim is refused in silence,
+	// which is the one failure mode enrolment cannot explain to the person hitting it.
+	if cfg.Mode == config.ModeIsolated {
+		seed := inviteSeedStore(inviteSeedDir(cfg), member.ID)
+		now := e.now()
+		// Two ids for one person, because Mint derives one from the name while the
+		// pod is found by the id the configuration gave them, and a household whose
+		// `id: dave` carries `name: David` has both. Matching only one of them would
+		// write an empty seed and report success — the exact failure this whole file
+		// exists to stop, arriving one layer down. The file itself is named for the
+		// configured id: that is what the supervisor and the compose file look up.
+		minted := enrol.MemberIDFor(member.Name)
+		_, err := copyInvites(e.context(), seed, inviteStore(cfg), func(c enrol.Code) bool {
+			return c.Live(now) && (c.MemberID == member.ID || c.MemberID == minted)
+		})
+		if err != nil {
+			// The code exists in this node's store and will not reach the pod, so it
+			// is useless. Say so rather than printing it: an unusable code handed to a
+			// person fails in their chat, where nobody can see why.
+			e.errorf("the code was minted but could not be written to %s, so %s's pod will\n"+
+				"never see it: %v\n\n"+
+				"Fix the path and run this again. The unusable code expires on its own.",
+				seed.Path(), member.Name, err)
+			return exitFailure
+		}
+	}
+
 	fmt.Fprint(e.stdout, renderInvite(member.Name, code, *ttl))
+	if cfg.Mode == config.ModeIsolated {
+		fmt.Fprint(e.stdout, renderIsolatedDelivery(member.ID))
+	}
 	return exitOK
+}
+
+// renderIsolatedDelivery is the extra line isolated mode needs.
+//
+// A pod is handed its member's invites when the container is created, so a code minted
+// while that container is already running is on the host and nowhere else until it is
+// recreated. That is the same staleness the host's own view of enrolment has, and it is
+// the operator's to act on, so it is said here rather than discovered when the member
+// reports that nothing happened.
+func renderIsolatedDelivery(id domain.MemberID) string {
+	return fmt.Sprintf("\nThis household is isolated, so the code travels to %s's pod when that pod is\n"+
+		"next created. If it is already running, restart kenward before handing the code over.\n", id)
 }
 
 // renderInvite is docs/CLI.md's invite output.

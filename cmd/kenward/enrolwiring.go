@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -19,8 +21,78 @@ import (
 // writes it 0600.
 const inviteStoreFileName = "invites.json"
 
+// inviteSeedDirName holds one file per member: the invites that member's pod is to be
+// given, and no other member's.
+//
+// It exists because in isolated mode the store `kenward invite` mints into and the
+// store a claim is redeemed against are two different files on two different
+// filesystems — the host's data directory and the pod's own volume — and nothing
+// crosses between them by itself. A member's file is what crosses: provisioned into
+// their pod at create time by the host supervisor, or bind-mounted by the compose
+// deployment, and imported there into the pod's own store.
+//
+// One file per member rather than the whole store, because the store holds every
+// member's digests and a pod may hold nothing of anybody else's. They are digests, so
+// the exposure would be theoretical; the rule is not.
+const inviteSeedDirName = "invites"
+
 func inviteStore(cfg *config.Config) *enrol.FileStore {
 	return enrol.NewFileStore(filepath.Join(cfg.DataDir, inviteStoreFileName))
+}
+
+// inviteSeedDir is the directory of per-member seed files under the data directory.
+func inviteSeedDir(cfg *config.Config) string {
+	return filepath.Join(cfg.DataDir, inviteSeedDirName)
+}
+
+// inviteSeedStore is the seed file for one member. It is an ordinary invite store, so
+// the same reader and writer serve both ends of the journey.
+//
+// Readable, and that is the compose deployment's requirement rather than a relaxation
+// of anything. That deployment bind-mounts this exact file into the member's container,
+// where the process runs as the image's fixed non-root account and not as whoever ran
+// `kenward invite`; a 0600 file carries its owner across the mount and cannot be opened
+// on the far side. Found on real podman, where jordan's container refused to start:
+//
+//	kenward: importing outstanding invites from /etc/kenward/invites.json:
+//	  enrol: read /etc/kenward/invites.json: open /etc/kenward/invites.json: permission denied
+//
+// The directory it sits in is 0700, so no account on the host gains anything; see
+// enrol.FileStore.Readable for the full reasoning and for why chowning is not the
+// answer. The supervisor path is unaffected either way — it reads these bytes on the
+// host and provisions its own 0600 copy owned by the pod's own uid.
+func inviteSeedStore(dir string, id domain.MemberID) *enrol.FileStore {
+	return enrol.NewFileStore(filepath.Join(dir, string(id)+".json")).Readable()
+}
+
+// copyInvites copies the records src holds and keep accepts into dst, and reports how
+// many were new. It is both halves of the journey: the host exporting a member's
+// invites to their seed file, and the pod importing that seed into its own store.
+//
+// A record dst already holds is skipped rather than overwritten, and that is the whole
+// reason this is a copy rather than a file move. The pod's store is the one that marks
+// a code consumed; the seed never learns of it, because the seed is written on the host
+// and consumption happens in the pod. Overwriting would restore a spent code to
+// redeemable on the next pod recreation, which is a single-use code used twice.
+func copyInvites(ctx context.Context, dst, src *enrol.FileStore, keep func(enrol.Code) bool) (int, error) {
+	codes, err := src.All(ctx)
+	if err != nil {
+		return 0, err
+	}
+	added := 0
+	for _, c := range codes {
+		if keep != nil && !keep(c) {
+			continue
+		}
+		switch err := dst.Save(ctx, c); {
+		case errors.Is(err, enrol.ErrDuplicateCode):
+		case err != nil:
+			return added, err
+		default:
+			added++
+		}
+	}
+	return added, nil
 }
 
 // newBinder builds the Binder that a claim's binding goes through.

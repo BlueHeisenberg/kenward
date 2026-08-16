@@ -88,7 +88,7 @@ file that no longer exists. The refusal is a usage error, so a script notices.
 
 ---
 
-## `kenward run [--config PATH] [--data-dir PATH] [--member ID | --group] [--image REF]`
+## `kenward run [--config PATH] [--data-dir PATH] [--member ID | --group] [--image REF] [--invites PATH]`
 
 Runs the node. This is what the container entrypoint and the systemd unit call.
 
@@ -110,6 +110,17 @@ the host and its pods run the same code by default rather than by an operator re
 to keep two strings in step. A development build has no published tag to fall back to, so
 it refuses to start and says to pass `--image REF` — guessing a tag there would start pods
 from somebody else's build of kenward.
+
+`--invites PATH` names a file of outstanding claim codes to import into this unit's own
+invite store on the way up. It exists for **isolated mode** and for one reason: `kenward
+invite` mints into the host's store, and the claim is redeemed inside the member's pod,
+against the store on that pod's own volume — two files on two filesystems, with nothing
+crossing between them by itself. The file is what crosses. Both deployment paths put it
+at `/etc/kenward/invites.json`: the host supervisor provisions it there at pod-create
+time, the compose deployment bind-mounts it read-only. A path that names no file means no
+invite is outstanding, which is the ordinary case; a path that exists and cannot be read
+is a refusal, because the alternative is a pod that comes up, is handed a real code, and
+refuses it in the silence enrolment owes a stranger.
 
 - Loads and validates the config; refuses to start on any validation error, printing all
   of them at once.
@@ -169,6 +180,22 @@ hours. Until they use it, the bot will not reply to them at all.
 
 The code is stored hashed. Nothing else is printed — no QR, no link, no deep link that
 would leak the code into a chat log.
+
+**In isolated mode it also writes the digest where the member's pod will find it**, and
+says so:
+
+```
+This household is isolated, so the code travels to jordan's pod when that pod is
+next created. If it is already running, restart kenward before handing the code over.
+```
+
+The file is `<data_dir>/invites/<member-id>.json`: that member's outstanding codes and no
+other member's, which matters because the store this is derived from holds every
+member's. The deployment carries it into the pod (`run --invites`, above). It is a
+snapshot, so a code minted while that member's container is already running reaches it on
+the next pod creation rather than immediately — the same staleness the host's own view of
+enrolment has, and the reason that line is printed rather than left to be discovered when
+the member reports that nothing happened.
 
 ---
 

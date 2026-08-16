@@ -27,7 +27,9 @@ type codeFile struct {
 //
 // The file holds digests and expiry times, nothing secret in itself, but it is
 // written 0600 anyway: knowing which invites are still outstanding is knowing where
-// to aim. Every write goes to a temp file in the same directory, is fsynced, and is
+// to aim; see Readable for the one copy that is not, and why.
+//
+// Every write goes to a temp file in the same directory, is fsynced, and is
 // then renamed over the target, so a crash mid-write leaves the previous file
 // intact rather than a truncated one. There is no partially written state a reader
 // can observe.
@@ -41,15 +43,54 @@ type codeFile struct {
 type FileStore struct {
 	mu   sync.Mutex
 	path string
+	mode fs.FileMode
 }
 
 // NewFileStore returns a store backed by the file at path. The file and its parent
 // directory are created on first write; a path that does not exist yet reads as an
 // empty store rather than an error.
-func NewFileStore(path string) *FileStore { return &FileStore{path: path} }
+func NewFileStore(path string) *FileStore { return &FileStore{path: path, mode: 0o600} }
+
+// Readable makes the store's file 0644 instead of 0600, and returns it so the change
+// reads as part of the construction.
+//
+// It exists for one case and should not be used for another: a copy of some records
+// written on one side of a container boundary to be read on the other. A bind-mounted
+// 0600 file carries its owner across the mount, and the process on the far side runs
+// as a different user id — the image's fixed non-root account — so it cannot open the
+// file at all. Chowning instead is not an answer that holds: this file is rewritten on
+// every mint, so the ownership would have to be restored each time, and under a
+// rootless runtime the id it would have to be set to is not the id the container sees.
+//
+// What it costs is bounded by where these files live. The parent directory is created
+// 0700, so on the host the set of accounts that can reach the file is unchanged; what
+// changes is only that a process inside the container it was written for can read it.
+// It must never be used for the session store or for a store that holds anything
+// redeemable — see the package documentation on what a record is.
+func (s *FileStore) Readable() *FileStore { s.mode = 0o644; return s }
 
 // Path reports the file the store is backed by.
 func (s *FileStore) Path() string { return s.path }
+
+// All returns every record the store holds, consumed and expired ones included.
+//
+// It exists for one caller: moving a member's outstanding invites from the store the
+// operator minted into onto the store their pod will redeem against, which are two
+// files on two filesystems in isolated mode. Every record is a digest, so what
+// travels is unredeemable in itself — see the package documentation and Code.
+//
+// It is deliberately not on Store. Reading the whole file is not something enrolment
+// needs; it is something a deployment needs, and putting it on the interface would
+// invite a caller to scan for a code rather than Consume one, which is the timing
+// leak EqualHash exists to close.
+func (s *FileStore) All(ctx context.Context) ([]Code, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.load()
+}
 
 // Save records a newly minted code.
 func (s *FileStore) Save(ctx context.Context, c Code) error {
@@ -156,7 +197,11 @@ func (s *FileStore) store(codes []Code) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName) // no-op once the rename has succeeded
 
-	if err := tmp.Chmod(0o600); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+	mode := s.mode
+	if mode == 0 {
+		mode = 0o600
+	}
+	if err := tmp.Chmod(mode); err != nil && !errors.Is(err, errors.ErrUnsupported) {
 		tmp.Close()
 		return fmt.Errorf("enrol: chmod %s: %w", tmpName, err)
 	}

@@ -59,6 +59,17 @@ const (
 	// PodConfigPath is where the household configuration is provisioned inside a
 	// pod — the same path the compose deployment mounts it at.
 	PodConfigPath = "/etc/kenward/kenward.yaml"
+	// PodInvitesPath is where a member's outstanding claim codes are provisioned
+	// inside their pod, and the same path the compose deployment mounts them at.
+	//
+	// It is beside the configuration and deliberately not under /work. /work is the
+	// pod's own volume, where the pod keeps the invite store it actually redeems
+	// against and marks consumed; writing here instead means the host delivers a
+	// seed and never touches what the pod has recorded. The pod imports it on the
+	// way up — see PodCommand's --invites and cmd/kenward.
+	PodInvitesPath = "/etc/kenward/invites.json"
+	// PodGroupFlag selects the household group's unit on a pod's command line.
+	PodGroupFlag = "--group"
 	// podCredentialsDir is the synthetic CREDENTIALS_DIRECTORY a pod is given
 	// when one of its secrets' sources is a systemd credential: the credential is
 	// provisioned as a 0600 file there, mirroring on the inside exactly what
@@ -130,6 +141,26 @@ type IsolatedOptions struct {
 	EgressProxyAddr string
 	// LoreHome is the in-pod LORE_HOME. Defaults to DefaultLoreHome.
 	LoreHome string
+	// InviteSeedDir is the host directory holding one file of outstanding claim
+	// codes per member, written by `kenward invite`. When set, a member's own file
+	// is provisioned into that member's pod at PodInvitesPath at create time, and
+	// the pod imports it into the invite store on its own volume.
+	//
+	// This is the only thing that makes D-023 reachable through this deployment
+	// path. `kenward invite` mints on the host; the claim is redeemed inside the
+	// pod, against a store on the pod's volume that the host cannot see and must
+	// not write. Without the seed the operator hands over a code the pod has never
+	// heard of, and enrolment answers a stranger with the silence it owes one.
+	//
+	// What travels is hashed and this member's alone. A record is a PBKDF2 digest
+	// of an 80-bit code (see internal/enrol), so it is not redeemable in itself,
+	// and the file holds no other member's records. Nothing travels the other way:
+	// this supervisor reads a host file and writes into a fresh container, and no
+	// path here reads anything out of a member's volume.
+	//
+	// Empty provisions nothing, which is what a household that mints no invites
+	// wants and what every already-enrolled member gets.
+	InviteSeedDir string
 	// ConfigFile is the path to the household's kenward.yaml on the host. When
 	// set, its contents are provisioned into every pod at PodConfigPath and the
 	// pod is started with the compose-identical argv
@@ -223,6 +254,12 @@ type pod struct {
 	// for a member's pod the passphrase that unwraps that member's key. Nobody
 	// else's, ever — that is the mode.
 	secrets []podSecret
+	// inviteSeed is the host file of this member's outstanding claim codes, or
+	// empty. It is read at Create and Recreate time and never held, the same way
+	// a secret is, so a code minted after this supervisor started still reaches a
+	// pod that is recreated afterwards. The group's pod never has one: D-023 puts
+	// the claim on the member's own bot, so the household's has no claimer.
+	inviteSeed string
 	// enrolled records whether this pod's member had claimed their invite when the
 	// supervisor read the configuration. It changes nothing about the pod — a
 	// claim-only pod is started from the same spec, because the process inside
@@ -441,10 +478,11 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			return nil, err
 		}
 		p := &pod{
-			key:      k,
-			name:     name,
-			enrolled: m.Enrolled(),
-			secrets:  []podSecret{token, pass},
+			key:        k,
+			name:       name,
+			enrolled:   m.Enrolled(),
+			secrets:    []podSecret{token, pass},
+			inviteSeed: inviteSeedPath(opts.InviteSeedDir, m.ID),
 			base: i.podSpec(name, map[string]string{
 				EnvMember:   string(m.ID),
 				EnvLoreHome: opts.LoreHome,
@@ -481,7 +519,7 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 					EnvGroup:    "1",
 					EnvLoreHome: opts.LoreHome,
 					EnvDataDir:  DefaultPodDataDir,
-				}, "--group", configYAML),
+				}, PodGroupFlag, configYAML),
 			})
 			i.tracker.add(k)
 		}
@@ -517,13 +555,59 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 // TestPodCommandIsSomethingThisBinaryRuns in cmd/kenward puts this list through
 // the real dispatcher, because that is the layer that decides whether it is a
 // command at all.
+// A member's pod also gets --invites, naming the claim codes provisioned into it, and
+// the group's deliberately does not: D-023 puts the claim conversation on the member's
+// own bot, so the household's pod has no claimer and there is nothing there to import.
+// A member's pod whose seed was never provisioned finds no file, which reads as no
+// invites outstanding rather than as a failure.
 func PodCommand(unitFlag string) []string {
-	return []string{
+	argv := []string{
 		"run",
 		"--config=" + PodConfigPath,
 		"--data-dir=" + DefaultPodDataDir,
-		unitFlag,
 	}
+	if unitFlag != PodGroupFlag {
+		argv = append(argv, "--invites="+PodInvitesPath)
+	}
+	return append(argv, unitFlag)
+}
+
+// inviteSeedPath names a member's seed file under dir. It must agree with what
+// `kenward invite` writes; cmd/kenward owns that name and TestInviteSeedPathMatches
+// there is what holds the two together.
+func inviteSeedPath(dir string, id domain.MemberID) string {
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, string(id)+".json")
+}
+
+// inviteSeedFile reads a pod's seed and turns it into the file to provision.
+//
+// A missing seed is not an error: most members have no invite outstanding, and a
+// household that has never minted one has no directory at all. An unreadable one is,
+// because the alternative is a pod that starts and silently cannot be claimed.
+func inviteSeedFile(path string) (sandbox.File, bool, error) {
+	if path == "" {
+		return sandbox.File{}, false, nil
+	}
+	data, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return sandbox.File{}, false, nil
+	case err != nil:
+		return sandbox.File{}, false, fmt.Errorf("reading outstanding invites from %s: %w", path, err)
+	}
+	// 0600 and this pod's own uid, like a secret, though it is not one. The digests
+	// are unredeemable; knowing which invites are outstanding is still knowing where
+	// to aim, and the file has exactly one reader.
+	return sandbox.File{
+		Path: PodInvitesPath,
+		Data: data,
+		Mode: 0o600,
+		UID:  podSecretUID,
+		GID:  podSecretGID,
+	}, true, nil
 }
 
 // podSpec builds one pod's complete description. When the household
@@ -603,6 +687,17 @@ func (i *Isolated) specFor(p *pod) (sandbox.Spec, error) {
 	}
 	spec.Env = env
 	spec.Files = append([]sandbox.File(nil), p.base.Files...)
+
+	// Read now, not at construction, so a code minted while the household is running
+	// reaches this member the next time their pod is created — which for a member who
+	// has not claimed is every restart and every rolling update, and costs nothing,
+	// because a claim-only pod is by definition serving nobody.
+	switch seed, ok, err := inviteSeedFile(p.inviteSeed); {
+	case err != nil:
+		return sandbox.Spec{}, fmt.Errorf("preparing pod %s: %w", p.name, err)
+	case ok:
+		spec.Files = append(spec.Files, seed)
+	}
 
 	for _, s := range p.secrets {
 		v, err := s.resolve()

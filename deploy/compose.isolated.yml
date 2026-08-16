@@ -29,6 +29,20 @@
 #   3. Supply a `lore` binary per service (see ../Dockerfile's note) — each
 #      service gets its OWN copy/mount, never a shared one, since sharing the
 #      binary is fine but sharing the *instance* (same LORE_HOME) is not.
+#   4. Mint each member's claim code BEFORE bringing their service up:
+#      `kenward invite --name Jordan`. That writes `<data_dir>/invites/jordan.json`
+#      on the host — the digests of jordan's outstanding codes, and nobody
+#      else's — which the service below mounts read-only. This is the whole of
+#      how a code minted on the host reaches the container that has to redeem
+#      it: the claim happens in a conversation with the member's OWN bot
+#      (D-023), against the invite store on that container's OWN data volume,
+#      and nothing else crosses between the two. Skip it and the member is
+#      handed a code their bot has never heard of, and enrolment answers with
+#      the silence it owes a stranger.
+#      Order matters for the same reason it does for kenward.yaml above: a
+#      container runtime asked to bind-mount a source file that does not exist
+#      creates a DIRECTORY in its place, and the container then refuses to
+#      start and says so.
 #
 # NO `env_file:` ANYWHERE IN THIS FILE — do not add it back. `env_file:`
 # injects the *entire* referenced file into that one container's process
@@ -107,6 +121,17 @@ services:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
       - kenward-david-data:/var/lib/kenward
       - ./bin/lore:/usr/local/bin/lore:ro
+      # DAVID'S outstanding claim codes and nobody else's, written by
+      # `kenward invite --name David` (see step 4 in the header). Hashed —
+      # a record is a PBKDF2 digest of an 80-bit code, not the code — so this
+      # is not a redeemable secret; it is still one member's file mounted into
+      # one member's container, and never the whole `invites.json`, which holds
+      # every member's. Read-only: this container imports it into the invite
+      # store on its own data volume and marks codes consumed THERE. The host's
+      # copy is never rewritten, which is why the import skips digests already
+      # present rather than overwriting them — otherwise a spent single-use code
+      # would come back redeemable on the next `up`.
+      - ./invites/david.json:/etc/kenward/invites.json:ro
     # `run` first, and it is not optional: the image's ENTRYPOINT is the bare
     # binary and `run` lives in its CMD, so a `command:` here REPLACES `run`
     # rather than adding to it. Without it the container exits 2 on startup with
@@ -116,6 +141,12 @@ services:
       - "run"
       - "--config=/etc/kenward/kenward.yaml"
       - "--data-dir=/var/lib/kenward"
+      # Where this container finds the codes mounted above. It imports them into
+      # the invite store on its own volume on the way up; a path that holds no
+      # file simply means no invite is outstanding. The household group's service
+      # below deliberately has no such flag: D-023 puts the claim conversation on
+      # the member's own bot, so the group's pod has no claimer at all.
+      - "--invites=/etc/kenward/invites.json"
       - "--member=david"
     security_opt:
       - no-new-privileges:true
@@ -152,10 +183,13 @@ services:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
       - kenward-jordan-data:/var/lib/kenward
       - ./bin/lore:/usr/local/bin/lore:ro
+      # As with david, above: jordan's own file, never the shared invites.json.
+      - ./invites/jordan.json:/etc/kenward/invites.json:ro
     command:
       - "run"
       - "--config=/etc/kenward/kenward.yaml"
       - "--data-dir=/var/lib/kenward"
+      - "--invites=/etc/kenward/invites.json"
       - "--member=jordan"
     security_opt:
       - no-new-privileges:true
@@ -212,6 +246,12 @@ services:
   #    members[].bot_token_env and to .env — never reuse another member's token
   #    variable). If the two disagree, kenward refuses to start and says so
   #    rather than quietly serving the wrong member.
+  # 3c. Run `kenward invite --name Sam` on the host BEFORE `up`, and mount the
+  #    file it writes: `./invites/sam.json:/etc/kenward/invites.json:ro`. Sam's
+  #    own file — never david's, never the shared `invites.json`. Without it
+  #    sam's container comes up claim-only and refuses the code sam was handed,
+  #    in silence, which is the one enrolment failure nobody can diagnose from
+  #    the chat.
   # 3b. Do the same for the passphrase: KENWARD_PASSPHRASE_SAM here, sam's
   #    `passphrase_env` in kenward.yaml, and a value of its own in .env. Never
   #    reuse david's or jordan's — kenward refuses a file where two members name

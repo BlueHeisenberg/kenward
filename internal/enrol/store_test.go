@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -282,5 +283,63 @@ func TestCodeStateHelpers(t *testing.T) {
 	c.ConsumedAt = epoch
 	if !c.Consumed() || c.Live(epoch) {
 		t.Error("consumed code reports Live")
+	}
+}
+
+// TestFileStoreModes pins both of them, because the difference is the difference
+// between a file the household's own account can read and a file a container can.
+func TestFileStoreModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bits do not mean the same thing here")
+	}
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name  string
+		store *FileStore
+		want  fs.FileMode
+	}{
+		{"default", NewFileStore(filepath.Join(dir, "a", "codes.json")), 0o600},
+		{"readable", NewFileStore(filepath.Join(dir, "b", "codes.json")).Readable(), 0o644},
+	} {
+		now := time.Now()
+		code := Code{Hash: strings.Repeat("a", hashLen*2), Name: "David", MemberID: "david", IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+		if err := tc.store.Save(context.Background(), code); err != nil {
+			t.Fatalf("%s: save: %v", tc.name, err)
+		}
+		info, err := os.Stat(tc.store.Path())
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := info.Mode().Perm(); got != tc.want {
+			t.Errorf("%s: mode %04o, want %04o", tc.name, got, tc.want)
+		}
+		// Whichever the file is, the directory holding it is not.
+		d, err := os.Stat(filepath.Dir(tc.store.Path()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := d.Mode().Perm(); got != 0o700 {
+			t.Errorf("%s: directory mode %04o, want 0700 — that is what bounds what 0644 costs", tc.name, got)
+		}
+	}
+}
+
+// TestFileStoreAllReadsWhatWasSaved. A missing file is an empty store, not an error,
+// so a pod with no invite outstanding starts rather than refusing.
+func TestFileStoreAllReadsWhatWasSaved(t *testing.T) {
+	dir := t.TempDir()
+	s := NewFileStore(filepath.Join(dir, "codes.json"))
+	got, err := s.All(context.Background())
+	if err != nil || len(got) != 0 {
+		t.Fatalf("All on a missing file = %v, %v; want none and no error", got, err)
+	}
+	now := time.Now()
+	code := Code{Hash: strings.Repeat("b", hashLen*2), Name: "Jordan", MemberID: "jordan", IssuedAt: now, ExpiresAt: now.Add(time.Hour)}
+	if err := s.Save(context.Background(), code); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.All(context.Background())
+	if err != nil || len(got) != 1 || got[0].Hash != code.Hash {
+		t.Fatalf("All = %v, %v", got, err)
 	}
 }

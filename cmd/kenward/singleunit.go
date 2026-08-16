@@ -1,11 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/enrol"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 )
 
@@ -80,6 +84,17 @@ func singleUnitOptions(e *env, cfg *config.Config, opts runOptions, logger *slog
 		// for pods. NewSingle ignores it for a member who has already claimed, and
 		// a claim for anybody else that lands on this bot is bound and left keyless
 		// and unitless here, for their own pod to serve.
+		//
+		// And the store it redeems against is this process's own, on this pod's own
+		// volume — never the host's, which is a different file on a different
+		// filesystem that nothing here can see. The codes the operator minted arrive
+		// as the seed file --invites names, provisioned into this pod at create time
+		// (supervisor.PodInvitesPath) or mounted there by the compose deployment, and
+		// are imported here. Import rather than read: the mark that says a code is
+		// spent is written to this pod's store, and the seed will never carry it.
+		if err := importInvites(e, cfg, opts.invites, logger); err != nil {
+			return supervisor.SingleOptions{}, err
+		}
 		claimer, err := newClaimer(cfg)
 		if err != nil {
 			return supervisor.SingleOptions{}, err
@@ -94,6 +109,45 @@ func singleUnitOptions(e *env, cfg *config.Config, opts runOptions, logger *slog
 	// relationship isolated mode exists to keep off it.
 
 	return single, nil
+}
+
+// importInvites merges the seed file at path into this unit's own invite store.
+//
+// A path that does not exist is no invites and not a failure: most pods have none
+// outstanding, and a household that has never minted a code has no seed directory at
+// all. A path that exists and cannot be read is a failure, because the alternative is
+// a pod that comes up claim-only, waits for a code it will refuse, and says nothing —
+// which is indistinguishable, from the member's side, from a bot that is ignoring them.
+func importInvites(e *env, cfg *config.Config, path string, logger *slog.Logger) error {
+	if path == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err == nil && info.IsDir():
+		// Named on its own because of how it happens. A compose deployment bind-mounts
+		// this path from the host, and a container runtime asked to mount a source
+		// file that does not exist yet creates a directory there instead. The operator
+		// brought the member's service up before minting their code; the fix is to
+		// remove the directory and run `kenward invite` first.
+		return fmt.Errorf("%s is a directory, not a file of outstanding invites: nothing has written one there\n"+
+			"yet, and a container runtime asked to mount a file that does not exist creates a\n"+
+			"directory in its place. Mint this member's code with `kenward invite` before starting\n"+
+			"their container, and remove the directory", path)
+	}
+	n, err := copyInvites(e.context(), inviteStore(cfg), enrol.NewFileStore(path), nil)
+	if err != nil {
+		return fmt.Errorf("importing outstanding invites from %s: %w", path, err)
+	}
+	if n > 0 && logger != nil {
+		// The count and nothing else. Which codes are outstanding is the fact the
+		// digests are kept 0600 to withhold, and a log line is the least private
+		// place in a household.
+		logger.Info("kenward", "event", "enrolment", "detail", "outstanding claim codes imported", "count", n)
+	}
+	return nil
 }
 
 // tierWindows would name the smallest context window, in the assistant's estimated

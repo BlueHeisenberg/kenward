@@ -28,6 +28,11 @@ type runOptions struct {
 	// default, on the grounds that there is no sensible default for the artifact a
 	// household's private conversations run inside.
 	image string
+	// invites is a file of outstanding claim codes to import into this unit's own
+	// invite store on the way up. It is how a code minted on the host reaches the
+	// pod that has to redeem it, in both isolated deployment paths; empty
+	// everywhere else, and a path that does not exist is simply no invites.
+	invites string
 }
 
 // supervisorFactory builds the thing `run` runs. It is a seam so that argument
@@ -36,12 +41,13 @@ type runOptions struct {
 type supervisorFactory func(e *env, cfg *config.Config, opts runOptions, logger *slog.Logger) (supervisor.Supervisor, error)
 
 func cmdRun(e *env, args []string) int {
-	fs := newFlagSet(e, "run", "kenward run [--config PATH] [--data-dir PATH] [--member ID | --group]")
+	fs := newFlagSet(e, "run", "kenward run [--config PATH] [--data-dir PATH] [--member ID | --group] [--invites PATH]")
 	configPath := fs.String("config", "", "path to kenward.yaml (default: $KENWARD_CONFIG, then ./kenward.yaml, then the per-OS config location)")
 	dataDir := fs.String("data-dir", "", "override the data directory (default: $KENWARD_DATA_DIR, then data_dir in the configuration)")
 	member := fs.String("member", "", "isolated mode only: run this member's unit and nothing else")
 	group := fs.Bool("group", false, "isolated mode only: run the household group's unit and nothing else")
 	image := fs.String("image", "", "isolated mode only: the pod image the host supervisor starts pods from")
+	invites := fs.String("invites", "", "isolated mode only: a file of outstanding claim codes to import into this unit's invite store")
 	if code, ok := parseFlags(e, fs, args); !ok {
 		return code
 	}
@@ -104,6 +110,7 @@ func cmdRun(e *env, args []string) int {
 		dataDir:    cfg.DataDir,
 		selection:  sel,
 		image:      *image,
+		invites:    *invites,
 	}, logger)
 	if buildErr != nil {
 		err := buildErr
