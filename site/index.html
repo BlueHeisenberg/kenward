@@ -55,7 +55,10 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font: 400 1.0625rem/1.65 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Type grows with the viewport so a wide display gets bigger text rather than a
+     longer line: the measure below is set in ch, so it stays the same number of
+     characters at every size and only the pixels change. */
+  font: 400 clamp(1.0625rem, 0.92rem + 0.32vw, 1.3125rem)/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-synthesis-weight: none;
 }
 
@@ -67,9 +70,9 @@ h1, h2, h3 {
   margin: 0 0 0.5em;
   text-wrap: balance;
 }
-h1 { font-size: clamp(2.4rem, 9vw, 3.6rem); letter-spacing: -0.03em; }
-h2 { font-size: clamp(1.5rem, 4.5vw, 1.9rem); }
-h3 { font-size: 1.0625rem; font-family: inherit; font-weight: 650; letter-spacing: 0; }
+h1 { font-size: clamp(2.4rem, 8vw, 4.5rem); letter-spacing: -0.03em; }
+h2 { font-size: clamp(1.5rem, 3vw, 2.5rem); }
+h3 { font-size: 1em; font-family: inherit; font-weight: 650; letter-spacing: 0; }
 p  { margin: 0 0 1rem; }
 p:last-child { margin-bottom: 0; }
 
@@ -84,17 +87,25 @@ a:hover { text-decoration-thickness: 2px; }
 
 code, pre, .mono {
   font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
-  font-size: 0.875em;
+  /* Monospace runs optically larger than the body face at the same pixel size;
+     0.94em is the match, not a smaller step in the scale. */
+  font-size: 0.94em;
 }
 code { background: var(--bg-sunk); padding: 0.12em 0.35em; border-radius: 4px; }
 pre {
   background: var(--bg-sunk);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 0.9rem 1rem;
+  padding: 0.9rem 1.1rem;
   overflow-x: auto;
   margin: 0 0 1rem;
   line-height: 1.55;
+  /* Hug the command rather than stretching a one-word block across the container,
+     but take the whole width when the line needs it instead of scrolling. The
+     max-width is what keeps a long command scrolling inside the block rather than
+     widening the page. */
+  width: fit-content;
+  max-width: 100%;
 }
 pre code { background: none; padding: 0; }
 
@@ -114,7 +125,47 @@ pre code { background: none; padding: 0; }
    is a scroll destination rather than an operable control. */
 main:focus { outline: none; }
 
-.wrap { width: min(100% - 2.5rem, 46rem); margin-inline: auto; }
+/* Two tracks. The container is wide, so tables, cards, code and the diagram get a
+   widescreen's worth of room. Prose inside it is capped by a character count, not a
+   pixel width, so it stays readable while the type grows. */
+.wrap { width: min(100% - clamp(2.5rem, 8vw, 10rem), 92rem); margin-inline: auto; }
+
+section > .wrap > *,
+.hero .wrap > *,
+footer.site .wrap > * { max-width: 74ch; }
+
+section > .wrap > .scroller,
+section > .wrap > .cards,
+section > .wrap > figure.diagram { max-width: none; }
+section > .wrap > pre { max-width: 100%; }
+
+/* Once there is room for it, the section label moves into a left rail and everything
+   else sits beside it, so a wide display gets a two-column page instead of a column
+   of text against an empty half. Widening the measure instead would only make lines
+   longer: at the size above, 74ch is already about 86 characters.
+   Only short things go in the rail — a heading stacked into a narrow column inflates
+   its grid row and opens a hole under it. */
+@media (min-width: 82rem) {
+  section > .wrap,
+  .hero .wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 19rem) minmax(0, 1fr);
+    column-gap: clamp(3rem, 4vw, 5.5rem);
+    align-items: start;
+  }
+  section > .wrap > *,
+  .hero .wrap > * { grid-column: 2; }
+
+  section > .wrap > .eyebrow { grid-column: 1; margin-bottom: 0; }
+  /* The wordmark is one word, so it can hold the rail for the whole hero. */
+  .hero .wrap > h1 { grid-column: 1; grid-row: 1 / span 20; margin-bottom: 0; }
+
+  /* The figures are the part that genuinely wants a widescreen. Code blocks stay in
+     the content column: they belong between the heading above them and the sentence
+     below, and a two-word command stranded out in the rail breaks that thread. */
+  section > .wrap > .cards,
+  section > .wrap > figure.diagram { grid-column: 1 / -1; }
+}
 
 /* ---------- header ---------- */
 header.site {
@@ -126,27 +177,27 @@ header.site .wrap {
   gap: 0.5rem 1.25rem;
 }
 .brand {
-  font: 650 1.15rem/1 ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
+  font: 650 1.15em/1 ui-monospace, "SFMono-Regular", "Cascadia Mono", Menlo, Consolas, monospace;
   color: var(--ink); text-decoration: none; letter-spacing: -0.02em;
 }
 header.site nav { margin-left: auto; }
 header.site nav ul {
   list-style: none; display: flex; flex-wrap: wrap;
-  gap: 0.4rem 1.1rem; margin: 0; padding: 0;
-  font-size: 0.9375rem;
+  gap: 0.4rem 1.4rem; margin: 0; padding: 0;
 }
 header.site nav a { color: var(--ink-muted); text-decoration: none; }
 header.site nav a:hover, header.site nav a:focus-visible { color: var(--accent); text-decoration: underline; }
 
 /* ---------- hero ---------- */
-.hero { padding: 3.5rem 0 2.5rem; }
+.hero { padding: clamp(3.5rem, 6vw, 6rem) 0 clamp(2.5rem, 4vw, 4rem); }
 .hero .lede {
-  font-size: clamp(1.15rem, 3.6vw, 1.4rem);
-  line-height: 1.45;
+  font-size: 1.35em;
+  line-height: 1.4;
   color: var(--ink);
-  margin-bottom: 1.25rem;
+  margin-bottom: 1.5rem;
   text-wrap: pretty;
 }
+.hero .wrap > .lede { max-width: 44ch; }
 .hero p.body { color: var(--ink-muted); }
 
 .status {
@@ -155,21 +206,19 @@ header.site nav a:hover, header.site nav a:focus-visible { color: var(--accent);
   border: 1px solid var(--warn-line);
   border-left-width: 4px;
   border-radius: 0 8px 8px 0;
-  padding: 0.8rem 1rem;
-  margin: 1.75rem 0;
-  font-size: 0.9375rem;
+  padding: 0.9rem 1.2rem;
+  margin: 2rem 0;
   color: var(--ink);
 }
 .status strong { font-weight: 650; }
 
-.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1.75rem; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
 .btn {
   display: inline-block;
-  padding: 0.6rem 1.1rem;
+  padding: 0.65rem 1.2rem;
   border-radius: 8px;
   border: 1px solid var(--line-firm);
   text-decoration: none;
-  font-size: 0.9375rem;
   font-weight: 550;
   color: var(--ink);
   background: var(--surface);
@@ -183,11 +232,10 @@ header.site nav a:hover, header.site nav a:focus-visible { color: var(--accent);
 .btn-primary:hover { background: var(--ink); border-color: var(--ink); color: var(--bg); }
 
 /* ---------- sections ---------- */
-section { padding: 2.75rem 0; border-top: 1px solid var(--line); }
-section > .wrap > p, section > .wrap > ul, section > .wrap > ol { max-width: 40rem; }
+section { padding: clamp(2.75rem, 4vw, 4.5rem) 0; border-top: 1px solid var(--line); }
 
 .eyebrow {
-  font: 600 0.75rem/1 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  font: 600 0.72em/1 ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   letter-spacing: 0.12em; text-transform: uppercase;
   color: var(--ink-muted);
   margin: 0 0 0.75rem;
@@ -203,25 +251,27 @@ ul.plain > li::before {
 }
 
 /* ---------- tables ---------- */
-.scroller { overflow-x: auto; margin: 1.5rem 0; }
+.scroller { overflow-x: auto; margin: 2rem 0; }
 .scroller:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-table { border-collapse: collapse; width: 100%; min-width: 30rem; font-size: 0.9375rem; }
-caption { text-align: left; color: var(--ink-muted); font-size: 0.875rem; padding-bottom: 0.6rem; }
-th, td { text-align: left; padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+/* Wider than the prose measure, but capped: three short columns stretched across a
+   1400px container reads as a spreadsheet, not a table. */
+table { border-collapse: collapse; width: 100%; min-width: 32rem; max-width: 62rem; }
+caption { text-align: left; color: var(--ink-muted); padding-bottom: 0.6rem; }
+th, td { text-align: left; padding: 0.7rem 1rem; border-bottom: 1px solid var(--line); vertical-align: top; }
 thead th { border-bottom: 2px solid var(--line-firm); font-weight: 650; }
 tbody th { font-weight: 550; color: var(--ink); }
 tbody tr:last-child th, tbody tr:last-child td { border-bottom: none; }
 
 /* ---------- diagram ---------- */
-figure.diagram { margin: 2rem 0; }
-figure.diagram > svg { display: block; width: 100%; max-width: 27rem; height: auto; margin-inline: auto; }
+figure.diagram { margin: 2.5rem 0; }
+figure.diagram > svg { display: block; width: 100%; max-width: 40rem; height: auto; margin-inline: auto; }
 figure.diagram figcaption {
-  font-size: 0.9375rem; color: var(--ink-muted);
-  max-width: 34rem; margin: 1rem auto 0; text-align: left;
+  color: var(--ink-muted);
+  max-width: 60ch; margin: 1.25rem auto 0; text-align: left;
 }
-.legend { list-style: none; display: flex; flex-wrap: wrap; gap: 0.4rem 1.5rem; padding: 0; margin: 1rem auto 0; max-width: 27rem; font-size: 0.875rem; color: var(--ink-muted); }
+.legend { list-style: none; display: flex; flex-wrap: wrap; gap: 0.4rem 1.75rem; padding: 0; margin: 1.25rem auto 0; max-width: 40rem; color: var(--ink-muted); }
 .legend li { display: flex; align-items: center; gap: 0.5rem; }
-.legend svg { width: 2.25rem; height: 0.6rem; flex: none; }
+.legend svg { width: 2.4em; height: 0.6em; flex: none; }
 
 .svg-box   { fill: var(--surface); stroke: var(--line-firm); stroke-width: 1.25; }
 .svg-box-a { fill: var(--bg-sunk); stroke: var(--line-firm); stroke-width: 1.25; }
@@ -235,29 +285,27 @@ figure.diagram figcaption {
   background: var(--bg-sunk);
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 1.1rem 1.25rem;
-  margin: 1.5rem 0;
+  padding: 1.25rem 1.5rem;
+  margin: 2rem 0;
 }
 .callout > :first-child { margin-top: 0; }
 
 /* ---------- cards ---------- */
-.cards { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin: 1.5rem 0; padding: 0; list-style: none; }
+.cards { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); margin: 2rem 0; padding: 0; list-style: none; }
 .cards > li {
   border: 1px solid var(--line); border-radius: 10px;
-  padding: 1rem 1.15rem; background: var(--surface);
+  padding: 1.25rem 1.4rem; background: var(--surface);
 }
 .cards h3 { margin-bottom: 0.35rem; }
-.cards p { font-size: 0.9375rem; color: var(--ink-muted); }
+.cards p { color: var(--ink-muted); }
 
 /* ---------- footer ---------- */
 footer.site {
   border-top: 1px solid var(--line);
-  padding: 2.5rem 0 3.5rem;
-  font-size: 0.9375rem;
+  padding: clamp(2.5rem, 4vw, 4rem) 0 4rem;
   color: var(--ink-muted);
 }
-footer.site ul { list-style: none; padding: 0; margin: 0 0 1.5rem; display: grid; gap: 0.6rem; }
-footer.site .note { max-width: 38rem; }
+footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: grid; gap: 0.7rem; }
 
 @media (prefers-reduced-motion: no-preference) {
   html { scroll-behavior: smooth; }
