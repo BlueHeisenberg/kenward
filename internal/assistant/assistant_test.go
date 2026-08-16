@@ -1357,7 +1357,7 @@ func TestReplyCarriesTheRetrievalLine(t *testing.T) {
 	if len(texts) != 1 {
 		t.Fatalf("sent %v, want one message carrying both the line and the reply", texts)
 	}
-	want := "[searched your private memory (1 entry), the household memory (2 entries)]\n\nIt was serviced in March."
+	want := "<i>🔍 searched your private memory (1 entry), the household memory (2 entries)</i>\n\nIt was serviced in March."
 	if texts[0] != want {
 		t.Errorf("sent\n  %q\nwant\n  %q", texts[0], want)
 	}
@@ -1479,7 +1479,7 @@ func TestRetrievalLineNamesOnlyTheSpacesInScope(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 	line, _, _ := strings.Cut(rig.tr.sentTextsRaw()[0], "\n")
-	if want := "[searched the household memory (1 entry)]"; line != want {
+	if want := "<i>🔍 searched the household memory (1 entry)</i>"; line != want {
 		t.Errorf("group retrieval line = %q, want %q", line, want)
 	}
 	if strings.Contains(line, "private") {
@@ -1546,7 +1546,7 @@ func TestRetrievalLineStaysOutOfHistory(t *testing.T) {
 		t.Fatal("no request reached the router")
 	}
 	for _, m := range req.Messages {
-		if strings.Contains(m.Content, "[searched ") {
+		if strings.Contains(m.Content, "🔍 searched ") {
 			t.Fatalf("the retrieval line reached the model as a %s message: %q", m.Role, m.Content)
 		}
 	}

@@ -217,6 +217,11 @@ func (o Options) normalized() Options {
 
 // Notices the Unit sends around a turn rather than as part of one. They are product
 // surface like the refusals and are golden-tested.
+//
+// Every one of them carries the problem glyph, because every one of them is a
+// message the member gets instead of the answer they asked for. That is the whole
+// job the glyph does: a member scrolling back can see which turns produced
+// nothing without reading them.
 const (
 	// lockedText is sent when a direct conversation arrives while the member's key
 	// is not unwrapped. The turn stops there: retrieval without a session would be
@@ -229,24 +234,24 @@ const (
 	// supplied to the process when it starts and never travel in a message, so a
 	// prompt that hinted otherwise would train exactly the habit the design
 	// refuses to support.
-	lockedText = "Your assistant is locked. It needs to be unlocked on the machine it runs on."
+	lockedText = transport.GlyphProblem + " Your assistant is locked. It needs to be unlocked on the machine it runs on."
 	// contentFilterText is sent when the model declined the turn. It reports what
 	// happened and stops: the assistant neither apologises for the model nor
 	// explains a policy it cannot see.
-	contentFilterText = "The model declined to answer this."
+	contentFilterText = transport.GlyphProblem + " The model declined to answer this."
 	// queuedText is sent when a message has waited behind a long-running turn for
 	// more than Options.QueueNoticeAfter.
-	queuedText = "Still working on your last message — this one is queued and I'll take it next."
+	queuedText = transport.GlyphProblem + " Still working on your last message — this one is queued and I'll take it next."
 	// droppedText is sent when the queue behind a running turn is full. Dropping
 	// with a notice is honest; dropping silently would read as being ignored.
-	droppedText = "I'm backed up and had to drop that message. Send it again in a moment."
+	droppedText = transport.GlyphProblem + " I'm backed up and had to drop that message. Send it again in a moment."
 	// noAnswerText is sent when the turn ran to the end and produced nothing the
 	// member could see: the model returned no text and no tool call, or it returned
 	// only a tool call whose proposal the capture engine suppressed without asking.
 	// Neither is a failure the node can classify further, and neither is a reason to
 	// go quiet — a turn that ends in silence teaches a household the assistant is
 	// broken (IMPLEMENTATION.md sections 5 and 10).
-	noAnswerText = "I didn't get a usable answer to that. Try asking again."
+	noAnswerText = transport.GlyphProblem + " I didn't get a usable answer to that. Try asking again."
 )
 
 // Unit is one conversation's assistant: a member's direct chat, or the household
@@ -506,9 +511,21 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// with the reply and is not recorded in history: it is the node reporting on
 		// itself, not the assistant's words, and feeding it back into the next prompt
 		// would teach the model to write those lines itself.
-		outbound := reply
+		// The model's words are escaped, never passed through as markup. A reply
+		// is generated text with a member's message and their stored entries in
+		// its context, so treating it as markup would let anything upstream of it
+		// — an entry body, a message from another member of the household — decide
+		// how this message renders. It is the same rule prompt.go's oneLine keeps
+		// in the other direction: text from outside the node does not get to forge
+		// the structure it sits in.
+		//
+		// Nothing is lost by it. Without a parse mode a model writing **bold** put
+		// literal asterisks on the member's screen, and with one it still does; the
+		// register the model is asked for is flat prose either way
+		// (docs/PROMPT.md).
+		outbound := transport.Esc(reply)
 		if notice := u.readNotice(shown, searched); notice != "" {
-			outbound = notice + "\n\n" + reply
+			outbound = notice + "\n\n" + outbound
 		}
 		if err := u.send(ctx, sc, in, outbound); err != nil {
 			return nil, fmt.Errorf("assistant: sending reply: %w", err)
@@ -693,9 +710,16 @@ func (u *Unit) readNotice(inp promptInput, searched bool) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	// Bracketed, so it reads as the node accounting for itself rather than as the
-	// assistant opening its reply with a status report.
-	return "[searched " + strings.Join(parts, ", ") + "]"
+	// Italic and glyph-marked, so it reads as the node accounting for itself
+	// rather than as the assistant opening its reply with a status report.
+	//
+	// This line used to be wrapped in square brackets, which were doing the work
+	// of italics with punctuation because there was no parse mode to do it
+	// properly: "[searched your private memory (nothing)]" sat at the same weight
+	// as the answer below it and competed with it. It rides on the reply rather
+	// than arriving as its own message (see the call site), so being visually
+	// subordinate is the only thing keeping it from being noise.
+	return transport.Italic(transport.GlyphRead + " searched " + strings.Join(parts, ", "))
 }
 
 // readCount renders one space's contribution. A space that could not be read says so

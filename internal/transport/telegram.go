@@ -589,15 +589,25 @@ func (t *Telegram) retire(ctx context.Context, chatID int64, msgID int, text str
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 		defer cancel()
 	}
-	err := t.call(ctx, func(ctx context.Context) error {
-		_, err := t.api.EditMessageText(ctx, &bot.EditMessageTextParams{
-			ChatID:      chatID,
-			MessageID:   msgID,
-			Text:        text,
-			ReplyMarkup: emptyKeyboard(),
+	edit := func(text string, mode models.ParseMode) error {
+		return t.call(ctx, func(ctx context.Context) error {
+			_, err := t.api.EditMessageText(ctx, &bot.EditMessageTextParams{
+				ChatID:      chatID,
+				MessageID:   msgID,
+				Text:        text,
+				ParseMode:   mode,
+				ReplyMarkup: emptyKeyboard(),
+			})
+			return err
 		})
-		return err
-	})
+	}
+	err := edit(text, parseMode)
+	if err != nil && t.sendDegraded(ctx, "question outcome", err) {
+		// Losing the edit loses the keyboard removal too, and a keyboard that
+		// still looks tappable on a decision already made is the one thing
+		// retiring exists to prevent. Unstyled is fine; not retired is not.
+		err = edit(PlainText(text), "")
+	}
 	if err != nil {
 		t.log(slog.LevelWarn, "could not retire question keyboard", "chat_id", chatID, "err", redactToken(err, t.token))
 	}
@@ -655,11 +665,18 @@ func labelFor(choices []Choice, id string) string {
 	return id
 }
 
-func answeredText(question, label string) string { return question + "\n\n— " + label }
-func declinedText(question string) string {
-	return question + "\n\n— no answer, treated as declined"
+// The outcome line appended to a spent question. Italic, because it is the node
+// reporting on a button rather than more of what the question said — the same
+// mark the retrieval line carries, for the same reason.
+func answeredText(question, label string) string {
+	return question + "\n\n" + Italic("— "+label)
 }
-func withdrawnText(question string) string { return question + "\n\n— question withdrawn" }
+func declinedText(question string) string {
+	return question + "\n\n" + Italic("— no answer, treated as declined")
+}
+func withdrawnText(question string) string {
+	return question + "\n\n" + Italic("— question withdrawn")
+}
 
 // retiredText is the outcome line for a question that ended without a tap. def
 // supplies the default wording for this particular ending, and Question.
@@ -697,10 +714,17 @@ func retireReserve(q Question) int {
 
 // --- api plumbing ----------------------------------------------------------
 
+// sendText delivers one already-formatted piece.
+//
+// Text is Telegram HTML — see format.go — and is sent with the parse mode set.
+// If Telegram rejects it as malformed the same words go out again as plain text,
+// because a member losing a memory confirmation to a stray angle bracket is a far
+// worse failure than one reading it unstyled. See sendDegraded.
 func (t *Telegram) sendText(ctx context.Context, chatID int64, text string, replyTo int, kb *models.InlineKeyboardMarkup) (*models.Message, error) {
 	params := &bot.SendMessageParams{
-		ChatID: chatID,
-		Text:   text,
+		ChatID:    chatID,
+		Text:      text,
+		ParseMode: parseMode,
 	}
 	if replyTo != 0 {
 		params.ReplyParameters = &models.ReplyParameters{
@@ -712,15 +736,31 @@ func (t *Telegram) sendText(ctx context.Context, chatID int64, text string, repl
 		params.ReplyMarkup = kb
 	}
 
-	var msg *models.Message
-	err := t.call(ctx, func(ctx context.Context) error {
-		m, err := t.api.SendMessage(ctx, params)
+	send := func(ctx context.Context) (*models.Message, error) {
+		var msg *models.Message
+		err := t.call(ctx, func(ctx context.Context) error {
+			m, err := t.api.SendMessage(ctx, params)
+			if err != nil {
+				return err
+			}
+			msg = m
+			return nil
+		})
+		return msg, err
+	}
+
+	msg, err := send(ctx)
+	if err != nil && t.sendDegraded(ctx, "message", err) {
+		params.Text = PlainText(text)
+		params.ParseMode = ""
+		msg, err = send(ctx)
 		if err != nil {
-			return err
+			// Report the formatting failure, not the second one: the first is
+			// what went wrong, and the retry only failed because the send was
+			// never going to work.
+			return nil, redactToken(err, t.token)
 		}
-		msg = m
-		return nil
-	})
+	}
 	if err != nil {
 		return nil, redactToken(err, t.token)
 	}
@@ -728,6 +768,23 @@ func (t *Telegram) sendText(ctx context.Context, chatID int64, text string, repl
 		msg = &models.Message{}
 	}
 	return msg, nil
+}
+
+// sendDegraded reports whether err is worth retrying without formatting, and
+// logs it when it is.
+//
+// Any 400 qualifies. Telegram signals a formatting fault in prose — "can't parse
+// entities: Unsupported start tag" — and matching on that prose would make
+// kenward's delivery guarantee depend on Telegram's choice of words. A 400 for
+// some other reason costs one wasted call on a path that was failing anyway, and
+// the error the caller sees is still the real one.
+func (t *Telegram) sendDegraded(ctx context.Context, what string, err error) bool {
+	if ctx.Err() != nil || !errors.Is(err, bot.ErrorBadRequest) {
+		return false
+	}
+	t.log(slog.LevelWarn, "telegram rejected a formatted "+what+", resending it unformatted",
+		"err", redactToken(err, t.token))
+	return true
 }
 
 // call runs an API call, honouring Telegram's 429 back-pressure: it waits exactly

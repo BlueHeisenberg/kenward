@@ -14,6 +14,7 @@ import (
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
+	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
 // refusalText renders a *routing.NoBackendError as the member sees it: the tiers that
@@ -22,7 +23,7 @@ import (
 // that hid it would read as a malfunction rather than a promise kept.
 func refusalText(sc domain.Scope, e *routing.NoBackendError) string {
 	if len(e.Chain) == 0 {
-		return "No machine is allowed to answer this conversation — its tier chain is empty. Ask whoever runs this node to configure one."
+		return transport.GlyphProblem + " No machine is allowed to answer this conversation — its tier chain is empty. Ask whoever runs this node to configure one."
 	}
 
 	whose := "your allowed tiers"
@@ -37,19 +38,19 @@ func refusalText(sc domain.Scope, e *routing.NoBackendError) string {
 	// attempted and endpoints skipped for cooldown or a failed probe, and claiming
 	// an attempt that never happened is a small untruth in a message whose whole
 	// value is being accurate.
-	tried := naturalJoin(backtickAll(e.Tried)) + " were unavailable."
+	tried := naturalJoin(codeAll(e.Tried)) + " were unavailable."
 	switch len(e.Tried) {
 	case 0:
 		tried = "I found no endpoints to try."
 	case 1:
-		tried = backtickAll(e.Tried)[0] + " was unavailable."
+		tried = codeAll(e.Tried)[0] + " was unavailable."
 	}
 
 	var b strings.Builder
-	b.WriteString("No machine in ")
+	b.WriteString(transport.GlyphProblem + " No machine in ")
 	b.WriteString(whose)
 	b.WriteString(" (")
-	b.WriteString(strings.Join(backtickAll(e.Chain), ", "))
+	b.WriteString(strings.Join(codeAll(e.Chain), ", "))
 	b.WriteString(") is reachable right now — ")
 	b.WriteString(tried)
 	b.WriteString(" This conversation is limited to ")
@@ -65,15 +66,15 @@ func refusalText(sc domain.Scope, e *routing.NoBackendError) string {
 const (
 	// modelBusyText covers rate limiting: transient, and retrying is genuinely the
 	// right advice.
-	modelBusyText = "The model is busy right now. Try again in a moment."
+	modelBusyText = transport.GlyphProblem + " The model is busy right now. Try again in a moment."
 	// misconfiguredText covers failures no retry will fix — a rejected key, an
 	// unknown model, a request the endpoint refuses to parse (400 and
 	// llm.ErrInvalidRequest are both that request, rejected on either side of the
 	// wire). The member cannot repair any of these; the operator can.
-	misconfiguredText = "Something is wrong with this household's setup — tell whoever runs it."
+	misconfiguredText = transport.GlyphProblem + " Something is wrong with this household's setup — tell whoever runs it."
 	// turnFailedText covers everything else. It promises nothing it does not know:
 	// the message arrived, no answer was produced.
-	turnFailedText = "Something went wrong reaching the model, and your message wasn't answered. Try again in a moment."
+	turnFailedText = transport.GlyphProblem + " Something went wrong reaching the model, and your message wasn't answered. Try again in a moment."
 	// reasoningOnlyText covers a turn the model spent thinking and never finished:
 	// it produced a reasoning trace and no answer. Nothing is broken — the machine
 	// answered, the model ran — so this deliberately does not read as an outage,
@@ -81,7 +82,7 @@ const (
 	// can actually do is give the model less to chew on; more room to answer in is
 	// the operator's knob, not theirs, so it is not offered as advice they cannot
 	// take.
-	reasoningOnlyText = "The model spent the whole turn thinking and didn't get to an answer. Nothing is broken — try asking again, or in smaller pieces."
+	reasoningOnlyText = transport.GlyphProblem + " The model spent the whole turn thinking and didn't get to an answer. Nothing is broken — try asking again, or in smaller pieces."
 )
 
 // completionFailureText classifies a router failure that is not a *NoBackendError
@@ -128,12 +129,19 @@ func completionFailureText(err error) string {
 	return turnFailedText
 }
 
-// backtickAll wraps each name in backticks so tier and machine names read as names,
-// not as prose.
-func backtickAll(names []string) []string {
+// codeAll marks each name as code so tier and machine names read as names, not as
+// prose.
+//
+// These used to be wrapped in literal backticks, which is what a refusal looks
+// like when its author expects a Markdown renderer and the transport sets no parse
+// mode: the member read "`workshop` was unavailable", backticks and all. The
+// intent was right and the mechanism was missing. transport.Code escapes the name
+// as well, which matters here because a tier or machine name comes from the
+// household's own configuration file.
+func codeAll(names []string) []string {
 	out := make([]string, len(names))
 	for i, n := range names {
-		out[i] = "`" + n + "`"
+		out[i] = transport.Code(n)
 	}
 	return out
 }

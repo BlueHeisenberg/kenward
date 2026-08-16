@@ -457,7 +457,7 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		// The member may have seen a question that will never resolve; the one
 		// thing they must not be left believing is that something was stored.
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I meant to ask about remembering %q, but the question didn't go through. Nothing was written.", title),
+			fmt.Sprintf("I meant to ask about remembering %s, but the question didn't go through. Nothing was written.", transport.Bold(title)),
 			fmt.Errorf("capture: asking the member to confirm a proposal: %w", err))
 	}
 
@@ -501,7 +501,7 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	// it, so the outcome is returned alongside the error.
 	if err := e.tr.Send(ctx, transport.Outbound{
 		ChatID: sc.ChatID,
-		Text:   fmt.Sprintf("Saved %q to %s (%s).", title, destinationPhrase(sc, out.Space), out.Space),
+		Text:   fmt.Sprintf("%s Saved %s to %s.", transport.GlyphMemory, transport.Bold(title), destinationPhrase(sc, out.Space)),
 	}); err != nil {
 		// The notice the member needed was this confirmation, and it has already been
 		// attempted; there is nothing useful left to say to a transport that just
@@ -541,7 +541,7 @@ func (e *Engine) writeAndAnnounce(ctx context.Context, sc domain.Scope, p Propos
 
 	ans, err := e.tr.Ask(ctx, transport.Question{
 		ChatID:        sc.ChatID,
-		Text:          writtenText(p, title, destinationPhrase(sc, out.Space), out.Space),
+		Text:          writtenText(p, title, destinationPhrase(sc, out.Space)),
 		Choices:       []transport.Choice{{ID: ChoiceUndo, Label: "Undo"}},
 		AllowedUserID: askUserID,
 		Timeout:       e.opts.AskTimeout,
@@ -555,8 +555,8 @@ func (e *Engine) writeAndAnnounce(ctx context.Context, sc domain.Scope, p Propos
 		// that the affordance is missing, because a member who has been told they
 		// can undo something and cannot is worse off than one who was never told.
 		return out, e.told(ctx, sc,
-			fmt.Sprintf("Saved %q to %s (%s). The undo button didn't go through, so I can't take it back from here.",
-				title, destinationPhrase(sc, out.Space), out.Space),
+			fmt.Sprintf("Saved %s to %s, but the undo button didn't go through, so I can't take it back from here.",
+				transport.Bold(title), destinationPhrase(sc, out.Space)),
 			fmt.Errorf("capture: announcing entry %s written to %s: %w", out.EntryID, out.Space, err))
 	}
 
@@ -604,8 +604,8 @@ func (e *Engine) undo(ctx context.Context, sc domain.Scope, out Outcome, speaker
 		// promises and only the second one is kept.
 		if serr := e.tr.Send(ctx, transport.Outbound{
 			ChatID: sc.ChatID,
-			Text: fmt.Sprintf("Removed %q from %s (%s). It won't come back in an answer, here or on any other device in the household.",
-				out.Title, where, out.Space),
+			Text: fmt.Sprintf("%s Removed %s from %s. It won't come back in an answer, here or on any other device in the household.",
+				transport.GlyphGone, transport.Bold(out.Title), where),
 		}); serr != nil {
 			// As with the confirmation in Offer: the news has been attempted and
 			// there is nothing useful left to say to a transport that just failed.
@@ -620,7 +620,7 @@ func (e *Engine) undo(ctx context.Context, sc domain.Scope, out Outcome, speaker
 		// the reply and leave both of us guessing — which is what the
 		// ErrWriteUncertain branch this replaces had to say out loud.
 		return out, e.told(ctx, sc,
-			fmt.Sprintf("I couldn't take that back: %q is still in %s (%s).", out.Title, where, out.Space),
+			fmt.Sprintf("I couldn't take that back: %s is still in %s.", transport.Bold(out.Title), where),
 			fmt.Errorf("capture: undoing entry %s in %s: %w", out.EntryID, out.Space, err))
 	}
 }
@@ -648,7 +648,7 @@ func (e *Engine) store(ctx context.Context, sc domain.Scope, p Proposal, title s
 		// next turn, and re-proposing it is noise rather than a second chance.
 		e.recordDecline(sc, speaker, title, turn)
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I couldn't save %q — the memory store refused the write, so nothing was stored.", title),
+			fmt.Sprintf("I couldn't save %s — the memory store refused the write, so nothing was stored.", transport.Bold(title)),
 			fmt.Errorf("capture: storing an entry in %s: %w", space, err))
 	}
 
@@ -662,7 +662,7 @@ func (e *Engine) store(ctx context.Context, sc domain.Scope, p Proposal, title s
 	if entry.Space != space {
 		e.recordDecline(sc, speaker, title, turn)
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("Something went wrong: %q was not stored where it should have been. Tell whoever runs this node before saving it again.", title),
+			fmt.Sprintf("Something went wrong: %s was not stored where it should have been. Tell whoever runs this node before saving it again.", transport.Bold(title)),
 			fmt.Errorf("capture: store reported space %s for a write to %s", entry.Space, space))
 	}
 
@@ -717,7 +717,7 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 		// resolve, and the one thing they must not be left believing is that their
 		// private entry is now public.
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I meant to ask about publishing %q, but the question didn't go through. Nothing was published.", entry.Title),
+			fmt.Sprintf("I meant to ask about publishing %s, but the question didn't go through. Nothing was published.", transport.Bold(entry.Title)),
 			fmt.Errorf("capture: asking about publishing %s: %w", entryID, err))
 	}
 
@@ -736,7 +736,7 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 		// could have left a private entry sitting in the household's memory with
 		// nobody able to name it. It cannot now.
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I couldn't publish %q — the memory store refused the copy, so nothing reached the household memory.", entry.Title),
+			fmt.Sprintf("I couldn't publish %s — the memory store refused the copy, so nothing reached the household memory.", transport.Bold(entry.Title)),
 			fmt.Errorf("capture: publishing %s to %s: %w", entryID, to, err))
 	}
 
@@ -745,14 +745,14 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 	// failure, not something to confirm.
 	if shared.Space != to {
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("Something went wrong: %q was not published where you chose. Tell whoever runs this node.", entry.Title),
+			fmt.Sprintf("Something went wrong: %s was not published where you chose. Tell whoever runs this node.", transport.Bold(entry.Title)),
 			fmt.Errorf("capture: store reported space %s for a publication confirmed to %s", shared.Space, to))
 	}
 
 	out := Outcome{Kind: OutcomeSaved, Space: shared.Space, EntryID: shared.ID, Title: entry.Title}
 	if err := e.tr.Send(ctx, transport.Outbound{
 		ChatID: sc.ChatID,
-		Text:   fmt.Sprintf("Published %q to the household memory (%s). Everyone can see it now.", entry.Title, shared.Space),
+		Text:   fmt.Sprintf("%s Published %s to the household memory. Everyone can see it now.", transport.GlyphHousehold, transport.Bold(entry.Title)),
 	}); err != nil {
 		// As in Offer, and worse: the publication happened and cannot be taken back,
 		// so an unmarked error here would put "try asking again" in front of a member
@@ -851,6 +851,16 @@ func (e *Engine) sharedSpace(sc domain.Scope) (domain.SpaceID, error) {
 }
 
 // destinationPhrase names a space the way it is spoken about in the chat.
+//
+// This phrase is the only name a member is given for a space, and that is
+// deliberate. Every message here used to append lore's space id as well — "Saved
+// … to your private memory (a3a02466-c412-4da1-b931-74380179e69d)" — on the
+// reasoning that the phrase is what a member reads and the id is what they can
+// check. They cannot check it: there is nowhere for a member to type a space id,
+// nothing to compare it against, and a household never has two private memories
+// or two shared ones to tell apart. It cost a UUID's width on every confirmation
+// and bought nothing. The id is still on every log line, where whoever runs the
+// node can use it.
 func destinationPhrase(sc domain.Scope, space domain.SpaceID) string {
 	if sc.AllowsPrivateCapture() && space == sc.Write {
 		return "your private memory"
@@ -858,14 +868,24 @@ func destinationPhrase(sc domain.Scope, space domain.SpaceID) string {
 	return "the household memory"
 }
 
+// entryBlock renders a draft or an entry as the member sees it: the title in
+// bold because it is the thing the message is about, the body quoted because it
+// is stored words being shown back rather than kenward's own sentence.
+//
+// Both are member-written and both are escaped. A note titled "<b>" is a note
+// titled "<b>", not a message whose remainder is bold.
+func entryBlock(title, body string) string {
+	out := transport.Bold(title)
+	if body = strings.TrimSpace(body); body != "" {
+		out += "\n" + transport.Quote(body)
+	}
+	return out
+}
+
 func proposalText(p Proposal, title, destination string) string {
 	var b strings.Builder
-	b.WriteString("I can remember this:\n\n")
-	b.WriteString(title)
-	if body := strings.TrimSpace(p.Draft.Body); body != "" {
-		b.WriteString("\n")
-		b.WriteString(body)
-	}
+	b.WriteString(transport.GlyphAsk + " I can remember this:\n\n")
+	b.WriteString(entryBlock(title, p.Draft.Body))
 	if destination == "" {
 		b.WriteString("\n\nWhere should it go?")
 	} else {
@@ -889,33 +909,28 @@ const undoExpiredNote = "the undo window has closed; this is still in memory"
 //
 // It shows the whole draft, title and body, because the member did not see it before
 // it was stored and "kenward tells you what it wrote" means the words, not a
-// reassurance that some words exist. It names the space twice over — in plain language
-// and as the id — for the same reason the confirmation on the asked path does: the
-// plain phrase is what a member reads and the id is what they can check.
-func writtenText(p Proposal, title, destination string, space domain.SpaceID) string {
+// reassurance that some words exist.
+//
+// It opens with the memory glyph rather than the question glyph, and that is the
+// load-bearing difference between this message and proposalText: one reports, one
+// asks, and they are otherwise the same shape on the screen. The closing hint is
+// set apart in italics because it is the button being explained, not part of what
+// was written.
+func writtenText(p Proposal, title, destination string) string {
 	var b strings.Builder
-	b.WriteString("I've written this to ")
+	b.WriteString(transport.GlyphMemory + " I've written this to ")
 	b.WriteString(destination)
-	b.WriteString(" (")
-	b.WriteString(string(space))
-	b.WriteString("):\n\n")
-	b.WriteString(title)
-	if body := strings.TrimSpace(p.Draft.Body); body != "" {
-		b.WriteString("\n")
-		b.WriteString(body)
-	}
-	b.WriteString("\n\nUndo removes it.")
+	b.WriteString(":\n\n")
+	b.WriteString(entryBlock(title, p.Draft.Body))
+	b.WriteString("\n\n")
+	b.WriteString(transport.Italic("Undo removes it."))
 	return b.String()
 }
 
 func promotionText(entry memory.Entry) string {
 	var b strings.Builder
-	b.WriteString("This would be published to the household exactly as it stands, and cannot be unpublished:\n\n")
-	b.WriteString(entry.Title)
-	if body := strings.TrimSpace(entry.Body); body != "" {
-		b.WriteString("\n")
-		b.WriteString(body)
-	}
+	b.WriteString(transport.GlyphAsk + " This would be published to the household exactly as it stands, and cannot be unpublished:\n\n")
+	b.WriteString(entryBlock(entry.Title, entry.Body))
 	b.WriteString("\n\nPublish it?")
 	return b.String()
 }
@@ -940,8 +955,13 @@ func (e *Engine) refundOffer(sc domain.Scope, speaker int64, turn int) {
 //
 // Delivery failure is swallowed deliberately: every caller is already returning the
 // error that matters, and a transport that cannot send will report the same fault there.
+//
+// The problem glyph is prepended here rather than by each caller. Everything that
+// reaches this function is, by the definition above, a turn that did not do what
+// it set out to do, and a mark applied at the one funnel cannot be forgotten by
+// the tenth caller the way a mark copied into ten format strings can.
 func (e *Engine) told(ctx context.Context, sc domain.Scope, text string, err error) error {
-	_ = e.tr.Send(ctx, transport.Outbound{ChatID: sc.ChatID, Text: text})
+	_ = e.tr.Send(ctx, transport.Outbound{ChatID: sc.ChatID, Text: transport.GlyphProblem + " " + text})
 	return marked(err)
 }
 

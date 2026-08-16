@@ -147,7 +147,7 @@ func podHealth(t *testing.T, sup supervisor.Supervisor) map[string]supervisor.St
 // are about which pod answered over which chain; what that pod read is
 // internal/assistant's business and has its own assertions there.
 func replyBody(text string) string {
-	if _, rest, ok := strings.Cut(text, "]\n\n"); ok && strings.HasPrefix(text, "[searched ") {
+	if _, rest, ok := strings.Cut(text, "</i>\n\n"); ok && strings.HasPrefix(text, "<i>🔍 searched ") {
 		return rest
 	}
 	return text

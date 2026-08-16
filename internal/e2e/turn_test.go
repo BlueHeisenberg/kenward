@@ -170,7 +170,7 @@ func TestLocalOnlyChainRefusesInsteadOfReachingCloud(t *testing.T) {
 	sent := h.waitForReply(davidChatID, 1)
 
 	text := sent[0].Text
-	for _, want := range []string{"`local`", "`attic`", "won't send it anywhere else"} {
+	for _, want := range []string{"<code>local</code>", "<code>attic</code>", "won't send it anywhere else"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("refusal %q does not contain %q", text, want)
 		}
@@ -410,10 +410,13 @@ func TestPrivateProposalIsWrittenAndAnnouncedEndToEnd(t *testing.T) {
 	}
 
 	q, _ := h.tr.LastAsked()
-	for _, want := range []string{"Boiler serviced", "The boiler was serviced in March.", string(davidSpace)} {
+	for _, want := range []string{"Boiler serviced", "The boiler was serviced in March.", "your private memory"} {
 		if !strings.Contains(q.Text, want) {
 			t.Errorf("announcement %q does not carry %q", q.Text, want)
 		}
+	}
+	if strings.Contains(q.Text, "("+string(davidSpace)+")") {
+		t.Errorf("announcement %q shows the raw space id", q.Text)
 	}
 	if len(q.Choices) != 1 || q.Choices[0].ID != capture.ChoiceUndo {
 		t.Errorf("announcement offers %+v, want a single undo button", q.Choices)
@@ -515,7 +518,7 @@ func TestRetrievalLineReachesTheMemberEndToEnd(t *testing.T) {
 	h.tr.InjectText(davidChatID, davidTelegramID, "when do the bins go out?", false)
 	sent := h.waitForReply(davidChatID, 1)
 
-	want := "[searched your private memory (1 entry), the household memory (nothing)]\n\nTuesday night."
+	want := "<i>🔍 searched your private memory (1 entry), the household memory (nothing)</i>\n\nTuesday night."
 	if sent[0].Text != want {
 		t.Errorf("sent\n  %q\nwant\n  %q", sent[0].Text, want)
 	}

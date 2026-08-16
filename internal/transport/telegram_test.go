@@ -970,3 +970,112 @@ func TestRetireReserveCountsTheRetiredNote(t *testing.T) {
 		t.Errorf("reserve %d is smaller than the note itself (%d)", withNote, utf16Len(note))
 	}
 }
+
+// --- parse mode and its failure mode ---------------------------------------
+
+// Every message goes out with the parse mode set. Nothing did before this, which
+// is why refusals shipped literal backticks and every announcement was a wall of
+// flat text.
+func TestSendSetsTheParseMode(t *testing.T) {
+	api := telegramtest.New(t, testToken)
+	tg := newTestTelegram(t, api)
+
+	text := Bold("Bin day") + "\n" + Quote("Thursday.")
+	if err := tg.Send(context.Background(), Outbound{ChatID: 100, Text: text}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	calls := api.CallsFor("sendMessage")
+	if len(calls) != 1 {
+		t.Fatalf("sendMessage calls = %d, want 1", len(calls))
+	}
+	if got := calls[0].Form.Get("parse_mode"); got != "HTML" {
+		t.Errorf("parse_mode = %q, want HTML", got)
+	}
+	if got := calls[0].Form.Get("text"); got != text {
+		t.Errorf("text = %q, want the formatted text %q", got, text)
+	}
+}
+
+// A question and the edit that retires it are formatted too — the outcome line is
+// italic, and losing that edit would leave a live keyboard on a settled decision.
+func TestAskAndRetireSetTheParseMode(t *testing.T) {
+	api := telegramtest.New(t, testToken)
+	tg := newTestTelegram(t, api, WithQuestionTimeout(50*time.Millisecond))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if _, err := tg.Updates(ctx); err != nil {
+		t.Fatalf("Updates: %v", err)
+	}
+
+	ans, err := tg.Ask(ctx, Question{
+		ChatID:  100,
+		Text:    Bold("Bins go out Tuesday"),
+		Choices: []Choice{{ID: "save", Label: "Save"}},
+	})
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if !ans.TimedOut {
+		t.Fatalf("Ask = %+v, want a timeout", ans)
+	}
+	for _, method := range []string{"sendMessage", "editMessageText"} {
+		calls := api.CallsFor(method)
+		if len(calls) == 0 {
+			t.Fatalf("no %s call", method)
+		}
+		if got := calls[0].Form.Get("parse_mode"); got != "HTML" {
+			t.Errorf("%s parse_mode = %q, want HTML", method, got)
+		}
+	}
+	if got := api.CallsFor("editMessageText")[0].Form.Get("text"); !strings.Contains(got, "<i>— no answer") {
+		t.Errorf("retired text = %q, want the outcome line in italics", got)
+	}
+}
+
+// Telegram rejecting a formatted message must cost the member their styling and
+// never their message. A 400 that swallowed a memory confirmation would be far
+// worse than an unstyled one.
+func TestRejectedFormattingIsResentAsPlainText(t *testing.T) {
+	api := telegramtest.New(t, testToken)
+	tg := newTestTelegram(t, api)
+
+	api.ScriptStatus("sendMessage", http.StatusBadRequest,
+		`{"ok":false,"error_code":400,"description":"Bad Request: can't parse entities: Unsupported start tag \"b\" at byte offset 0"}`)
+
+	text := Bold("Bin day") + " — " + Quote("Thursday & Friday.")
+	if err := tg.Send(context.Background(), Outbound{ChatID: 100, Text: text}); err != nil {
+		t.Fatalf("Send: %v, want the plain-text resend to succeed", err)
+	}
+
+	calls := api.CallsFor("sendMessage")
+	if len(calls) != 2 {
+		t.Fatalf("sendMessage calls = %d, want the rejected one and the resend", len(calls))
+	}
+	if got := calls[1].Form.Get("parse_mode"); got != "" {
+		t.Errorf("resend parse_mode = %q, want it unset", got)
+	}
+	want := "Bin day — Thursday & Friday."
+	if got := calls[1].Form.Get("text"); got != want {
+		t.Errorf("resend text = %q, want the words with the markup stripped: %q", got, want)
+	}
+}
+
+// A 400 that is not about formatting still gets one plain-text attempt, and when
+// that fails too the caller hears about it rather than believing the send worked.
+func TestASendThatFailsBothWaysIsStillAnError(t *testing.T) {
+	api := telegramtest.New(t, testToken)
+	tg := newTestTelegram(t, api)
+
+	for i := 0; i < 2; i++ {
+		api.ScriptStatus("sendMessage", http.StatusBadRequest,
+			`{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}`)
+	}
+	err := tg.Send(context.Background(), Outbound{ChatID: 100, Text: Bold("Bin day")})
+	if err == nil {
+		t.Fatal("Send returned nil; a message that never arrived must not look delivered")
+	}
+	if !strings.Contains(err.Error(), "chat not found") {
+		t.Errorf("error = %v, want it to name the real fault", err)
+	}
+}
