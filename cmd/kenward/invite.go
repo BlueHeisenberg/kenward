@@ -59,9 +59,11 @@ func cmdInvite(e *env, args []string) int {
 		e.errorf("%v", err)
 		return exitFailure
 	}
-	// The code is minted against the declared member's own name, so that the id
-	// enrol derives from it is the id the configuration already uses.
-	code, err := claimer.Mint(e.context(), member.Name, *ttl)
+	// Against the declared member's own id, not one derived from the name that found
+	// them. `--name Jordan` may find `id: jordy`, and a code recorded as "jordan" is a
+	// code the Binder refuses to redeem because no such member is declared. See
+	// enrol.MintFor.
+	code, err := claimer.MintFor(e.context(), member.ID, member.Name, *ttl)
 	if err != nil {
 		e.errorf("minting a claim code: %v", err)
 		return exitFailure
@@ -77,15 +79,12 @@ func cmdInvite(e *env, args []string) int {
 	if cfg.Mode == config.ModeIsolated {
 		seed := inviteSeedStore(inviteSeedDir(cfg), member.ID)
 		now := e.now()
-		// Two ids for one person, because Mint derives one from the name while the
-		// pod is found by the id the configuration gave them, and a household whose
-		// `id: dave` carries `name: David` has both. Matching only one of them would
-		// write an empty seed and report success — the exact failure this whole file
-		// exists to stop, arriving one layer down. The file itself is named for the
-		// configured id: that is what the supervisor and the compose file look up.
-		minted := enrol.MemberIDFor(member.Name)
+		// One id for one person: MintFor recorded the configured id above, and that is
+		// also what the file is named for and what the supervisor and the compose file
+		// look up. It was briefly two — Mint derived a second from the name — and
+		// filtering on either one alone wrote an empty seed and reported success.
 		_, err := copyInvites(e.context(), seed, inviteStore(cfg), func(c enrol.Code) bool {
-			return c.Live(now) && (c.MemberID == member.ID || c.MemberID == minted)
+			return c.Live(now) && c.MemberID == member.ID
 		})
 		if err != nil {
 			// The code exists in this node's store and will not reach the pod, so it

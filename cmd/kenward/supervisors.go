@@ -115,9 +115,11 @@ func isolatedOptions(e *env, opts runOptions, logger *slog.Logger) (supervisor.I
 	// no data directory at all, which config.ApplyDefaults does not permit.
 	imageState := ""
 	seeds := ""
+	revocations := ""
 	if opts.dataDir != "" {
 		imageState = filepath.Join(opts.dataDir, podImageFileName)
 		seeds = filepath.Join(opts.dataDir, inviteSeedDirName)
+		revocations = filepath.Join(opts.dataDir, revocationDirName)
 	}
 	return supervisor.IsolatedOptions{
 		Image: image,
@@ -128,6 +130,14 @@ func isolatedOptions(e *env, opts runOptions, logger *slog.Logger) (supervisor.I
 		// reads its own store on its own volume and has never seen this one — refuses
 		// it in the silence enrolment owes a stranger.
 		InviteSeedDir: seeds,
+		// The same last mile in the other direction, and the only one revocation has.
+		// `kenward revoke` records a member's revocation here because the binding it
+		// has to clear was written inside that member's pod, on a volume this host
+		// must not write; this is what carries the record in, and the pod clears its
+		// own binding on the way up. Without it `kenward revoke` empties a host record
+		// no pod has ever read, reports success, and the pod goes on serving the
+		// account the operator believes they have just cut off.
+		RevocationDir: revocations,
 		// Without this the pods never move. `ensureRunning` starts a pod that exists
 		// and creates one that does not; nothing in the restart path replaces a
 		// running container, so after this host self-updated and came back on the new

@@ -68,6 +68,14 @@ const (
 	// seed and never touches what the pod has recorded. The pod imports it on the
 	// way up — see PodCommand's --invites and cmd/kenward.
 	PodInvitesPath = "/etc/kenward/invites.json"
+	// PodRevokedPath is where a member's revocation record is provisioned inside
+	// their pod, and the same path the compose deployment mounts it at.
+	//
+	// Beside the invites and, like them, deliberately not under /work: the host
+	// delivers a fact and never touches what the pod has recorded. The pod reads it
+	// on the way up and applies it to its own state file — see PodCommand's
+	// --revoked and cmd/kenward.
+	PodRevokedPath = "/etc/kenward/revoked.json"
 	// PodGroupFlag selects the household group's unit on a pod's command line.
 	PodGroupFlag = "--group"
 	// podCredentialsDir is the synthetic CREDENTIALS_DIRECTORY a pod is given
@@ -161,6 +169,22 @@ type IsolatedOptions struct {
 	// Empty provisions nothing, which is what a household that mints no invites
 	// wants and what every already-enrolled member gets.
 	InviteSeedDir string
+	// RevocationDir is the host directory holding one record per revoked member,
+	// written by `kenward revoke`. When set, a member's own record is provisioned
+	// into that member's pod at PodRevokedPath at create time, and the pod clears
+	// the matching binding from the state file on its own volume on the way up.
+	//
+	// It is InviteSeedDir's other direction and exists for the harder half of the
+	// same crossing. A claim is redeemed inside the pod and the binding is written
+	// there, so `kenward revoke` on the host has nothing to clear and used to report
+	// success while the pod went on serving the revoked account. The host cannot
+	// reach into that volume to fix it — that is the property this mode is for — so
+	// the fact travels the one way anything travels here, and lands when the pod is
+	// next created. That delay is real and `kenward revoke` says so.
+	//
+	// Empty provisions nothing, which is what a household that has revoked nobody
+	// has.
+	RevocationDir string
 	// ConfigFile is the path to the household's kenward.yaml on the host. When
 	// set, its contents are provisioned into every pod at PodConfigPath and the
 	// pod is started with the compose-identical argv
@@ -260,6 +284,11 @@ type pod struct {
 	// pod that is recreated afterwards. The group's pod never has one: D-023 puts
 	// the claim on the member's own bot, so the household's has no claimer.
 	inviteSeed string
+	// revocation is the host file recording that this pod's member has been
+	// revoked, or empty. Read at Create and Recreate time exactly like inviteSeed,
+	// which is what makes a revocation recorded while the household runs reach the
+	// pod on its next creation — the only moment the host can tell it anything.
+	revocation string
 	// enrolled records whether this pod's member had claimed their invite when the
 	// supervisor read the configuration. It changes nothing about the pod — a
 	// claim-only pod is started from the same spec, because the process inside
@@ -482,7 +511,8 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			name:       name,
 			enrolled:   m.Enrolled(),
 			secrets:    []podSecret{token, pass},
-			inviteSeed: inviteSeedPath(opts.InviteSeedDir, m.ID),
+			inviteSeed: perMemberPath(opts.InviteSeedDir, m.ID),
+			revocation: perMemberPath(opts.RevocationDir, m.ID),
 			base: i.podSpec(name, map[string]string{
 				EnvMember:   string(m.ID),
 				EnvLoreHome: opts.LoreHome,
@@ -556,10 +586,11 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 // the real dispatcher, because that is the layer that decides whether it is a
 // command at all.
 // A member's pod also gets --invites, naming the claim codes provisioned into it, and
-// the group's deliberately does not: D-023 puts the claim conversation on the member's
-// own bot, so the household's pod has no claimer and there is nothing there to import.
-// A member's pod whose seed was never provisioned finds no file, which reads as no
-// invites outstanding rather than as a failure.
+// --revoked, naming the revocation record, and the group's deliberately gets neither:
+// D-023 puts the claim conversation on the member's own bot, so the household's pod has
+// no claimer, nothing to import and no binding of its own to clear. A member's pod whose
+// seed or record was never provisioned finds no file, which reads as no invites
+// outstanding and no revocation rather than as a failure.
 func PodCommand(unitFlag string) []string {
 	argv := []string{
 		"run",
@@ -567,42 +598,50 @@ func PodCommand(unitFlag string) []string {
 		"--data-dir=" + DefaultPodDataDir,
 	}
 	if unitFlag != PodGroupFlag {
-		argv = append(argv, "--invites="+PodInvitesPath)
+		argv = append(argv, "--invites="+PodInvitesPath, "--revoked="+PodRevokedPath)
 	}
 	return append(argv, unitFlag)
 }
 
-// inviteSeedPath names a member's seed file under dir. It must agree with what
-// `kenward invite` writes; cmd/kenward owns that name and TestInviteSeedPathMatches
-// there is what holds the two together.
-func inviteSeedPath(dir string, id domain.MemberID) string {
+// perMemberPath names one member's file under dir, for the two host directories that
+// hold one file per member: outstanding invites and revocations. It must agree with
+// what `kenward invite` and `kenward revoke` write — cmd/kenward owns those directory
+// names and writes `<id>.json` into them — and with what the compose deployment mounts
+// by hand.
+func perMemberPath(dir string, id domain.MemberID) string {
 	if dir == "" {
 		return ""
 	}
 	return filepath.Join(dir, string(id)+".json")
 }
 
-// inviteSeedFile reads a pod's seed and turns it into the file to provision.
+// podFile reads one of a pod's per-member host files and turns it into the file to
+// provision at podPath.
 //
-// A missing seed is not an error: most members have no invite outstanding, and a
-// household that has never minted one has no directory at all. An unreadable one is,
-// because the alternative is a pod that starts and silently cannot be claimed.
-func inviteSeedFile(path string) (sandbox.File, bool, error) {
-	if path == "" {
+// A missing file is not an error: most members have no invite outstanding and almost
+// none have been revoked, and a household that has done neither has no directory at
+// all. An unreadable one is, because the alternatives are a pod that starts and
+// silently cannot be claimed, and a pod that starts and silently goes on serving a
+// revoked account.
+//
+// what names the file in that error and nowhere else.
+func podFile(what, hostPath, podPath string) (sandbox.File, bool, error) {
+	if hostPath == "" {
 		return sandbox.File{}, false, nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(hostPath)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return sandbox.File{}, false, nil
 	case err != nil:
-		return sandbox.File{}, false, fmt.Errorf("reading outstanding invites from %s: %w", path, err)
+		return sandbox.File{}, false, fmt.Errorf("reading %s from %s: %w", what, hostPath, err)
 	}
-	// 0600 and this pod's own uid, like a secret, though it is not one. The digests
-	// are unredeemable; knowing which invites are outstanding is still knowing where
-	// to aim, and the file has exactly one reader.
+	// 0600 and this pod's own uid, like a secret, though neither of these is one.
+	// Invite digests are unredeemable and a revocation is a name and a time; knowing
+	// which invites are outstanding is still knowing where to aim, and each of these
+	// files has exactly one reader.
 	return sandbox.File{
-		Path: PodInvitesPath,
+		Path: podPath,
 		Data: data,
 		Mode: 0o600,
 		UID:  podSecretUID,
@@ -688,15 +727,22 @@ func (i *Isolated) specFor(p *pod) (sandbox.Spec, error) {
 	spec.Env = env
 	spec.Files = append([]sandbox.File(nil), p.base.Files...)
 
-	// Read now, not at construction, so a code minted while the household is running
-	// reaches this member the next time their pod is created — which for a member who
-	// has not claimed is every restart and every rolling update, and costs nothing,
-	// because a claim-only pod is by definition serving nobody.
-	switch seed, ok, err := inviteSeedFile(p.inviteSeed); {
-	case err != nil:
-		return sandbox.Spec{}, fmt.Errorf("preparing pod %s: %w", p.name, err)
-	case ok:
-		spec.Files = append(spec.Files, seed)
+	// Read now, not at construction, so a code minted or a revocation recorded while
+	// the household is running reaches this member the next time their pod is created
+	// — which for a member who has not claimed is every restart and every rolling
+	// update, and costs nothing, because a claim-only pod is by definition serving
+	// nobody. For a revocation it is the only delivery there is, which is why
+	// `kenward revoke` tells the operator to restart.
+	for _, f := range []struct{ what, host, pod string }{
+		{"outstanding invites", p.inviteSeed, PodInvitesPath},
+		{"the revocation record", p.revocation, PodRevokedPath},
+	} {
+		switch file, ok, err := podFile(f.what, f.host, f.pod); {
+		case err != nil:
+			return sandbox.Spec{}, fmt.Errorf("preparing pod %s: %w", p.name, err)
+		case ok:
+			spec.Files = append(spec.Files, file)
+		}
 	}
 
 	for _, s := range p.secrets {
@@ -758,7 +804,9 @@ func podName(prefix, suffix string) string {
 //
 // Before the monitors run it rolls the household onto the current image when the
 // image has changed since the last start — see rollIfImageChanged, which is where
-// the host's own self-update finally reaches the pods.
+// the host's own self-update finally reaches the pods — and recreates the pods
+// whose provisioned invites or revocations they may not have; see
+// recreateStalePods, which is what makes "restart kenward" true.
 func (i *Isolated) Start(ctx context.Context) error {
 	i.mu.Lock()
 	if i.started {
@@ -776,6 +824,7 @@ func (i *Isolated) Start(ctx context.Context) error {
 
 	i.logStartup()
 	i.rollIfImageChanged(ctx)
+	i.recreateStalePods(ctx)
 
 	for _, p := range i.pods {
 		i.wg.Add(1)
@@ -837,6 +886,121 @@ func (i *Isolated) logStartup() {
 // recording a state the household is not in. The household serves throughout, on
 // whichever mixture of images it ended up with — §9's rule that nothing in the
 // update path may stop kenward serving outranks arriving at one version.
+// recreateStalePods replaces, once at Start and before the monitors run, the member
+// pods whose provisioned per-member files they may not be holding.
+//
+// It is what makes `kenward invite` and `kenward revoke` telling the operator to
+// restart kenward a true instruction rather than a comforting one. Both write a file
+// on the host that reaches a pod only when the pod is created, and a restart does not
+// create anything: ensureRunning starts a container that exists — deliberately, see
+// rollIfImageChanged for why it must not do more — so before this, an operator who
+// revoked a member, was told to restart, and restarted, got a household in which that
+// member's pod came back up on the container-layer `/etc/kenward` it was built with,
+// never saw the revocation, and went on serving the account. Found by running the mode
+// against real podman; nothing in the module could see it, because a fake backend has
+// no container layer to be stale.
+//
+// Which pods, and why only those. A pod with a revocation record on the host is
+// recreated because that record is the entire delivery mechanism for an action whose
+// point is to take effect. An unenrolled member's pod with a seed is recreated for the
+// same reason and at the same price D-023 already pays: it is serving nobody, so
+// replacing it interrupts nothing. Every other pod is started, not replaced.
+//
+// The cost, stated: a revoked member's record is never deleted — nothing can know when
+// the pod has consumed it — so that member's pod is recreated at every start for as long
+// as the record exists. For a member who stays revoked their pod serves nobody and this
+// is free; for one who is invited again and claims again it is one container rebuild per
+// host restart, inside a restart that was stopping every pod anyway.
+//
+// Unlike Roll this does not wait for the replacement to come up. A rolling update waits
+// because it is proving a new image one unit at a time; here the image is unchanged and
+// the pods are independent, so waiting would only hold every other member's monitor
+// behind one crash-looping pod's timeout. The pod's own monitor takes it from here.
+// Failures are logged and never fatal, for the same reason they are not in Roll.
+//
+// It runs after a roll rather than instead of one, and will recreate a pod the roll
+// has just recreated. That is deliberate: a roll stops at its first failure and leaves
+// every later pod untouched, so treating "a roll happened" as "every pod is current"
+// would skip exactly the pods a failed roll did not reach.
+func (i *Isolated) recreateStalePods(ctx context.Context) {
+	for _, p := range i.pods {
+		if !p.stale() {
+			continue
+		}
+		if err := i.recreateOne(ctx, p); err != nil {
+			if errors.Is(err, errPodAbsent) {
+				// Never created, so it will be created from the current files.
+				continue
+			}
+			i.logger.Warn("supervisor: could not recreate pod to give it the current invites and revocations; it may be serving a revoked account",
+				"pod", p.name, "error", err)
+			continue
+		}
+		i.logger.Info("supervisor: pod recreated so it reads the current invites and revocations", "pod", p.name)
+	}
+}
+
+// stale reports whether this pod may not be holding the current contents of the
+// per-member files the host provisions into it. See recreateStalePods.
+func (p *pod) stale() bool {
+	if p.key.group {
+		// The group's pod is given neither: it has no claimer and holds no member's
+		// binding.
+		return false
+	}
+	if fileExists(p.revocation) {
+		return true
+	}
+	return !p.enrolled && fileExists(p.inviteSeed)
+}
+
+func fileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// recreateOne replaces one pod that already exists, and does not wait for it.
+func (i *Isolated) recreateOne(ctx context.Context, p *pod) error {
+	p.opMu.Lock()
+	defer p.opMu.Unlock()
+	if _, err := i.inspect(ctx, p.name); errors.Is(err, sandbox.ErrSandboxNotFound) {
+		return errPodAbsent
+	}
+	return i.replace(ctx, p)
+}
+
+// replace stops a pod and recreates it from its current spec, which is what picks up
+// the files read at Create and Recreate time. The caller holds the pod's operation
+// lock.
+//
+// The stop is the drain: the pod's runtime answers SIGTERM by finishing its in-flight
+// turn, locking its sessions and exiting. Recreation goes through
+// sandbox.Backend.Recreate, which preserves the pod's work volume structurally — no
+// path through it can delete the member's lore.
+func (i *Isolated) replace(ctx context.Context, p *pod) error {
+	{
+		sctx, cancel := i.callContext(ctx)
+		err := i.backend.Stop(sctx, p.name)
+		cancel()
+		if err != nil && !errors.Is(err, sandbox.ErrSandboxNotFound) {
+			return fmt.Errorf("stopping pod %s for recreation: %w", p.name, err)
+		}
+	}
+	spec, err := i.specFor(p)
+	if err != nil {
+		return err
+	}
+	cctx, cancel := i.callContext(ctx)
+	defer cancel()
+	if _, err := i.backend.Recreate(cctx, spec); err != nil {
+		return fmt.Errorf("recreating pod %s: %w", p.name, err)
+	}
+	return nil
+}
+
 func (i *Isolated) rollIfImageChanged(ctx context.Context) {
 	path := i.opts.ImageStatePath
 	if path == "" {
@@ -1203,33 +1367,10 @@ func (i *Isolated) rollOne(ctx context.Context, p *pod) error {
 
 	i.tracker.set(p.key, StateStarting)
 
-	// Graceful stop is the drain: the pod's runtime answers SIGTERM by finishing
-	// its in-flight turn, locking its sessions and exiting.
-	{
-		sctx, cancel := i.callContext(ctx)
-		err := i.backend.Stop(sctx, p.name)
-		cancel()
-		if err != nil && !errors.Is(err, sandbox.ErrSandboxNotFound) {
-			err = fmt.Errorf("stopping pod %s for recreation: %w", p.name, err)
-			i.tracker.fail(p.key, err)
-			return err
-		}
-	}
-
-	{
-		spec, err := i.specFor(p)
-		if err != nil {
-			i.tracker.fail(p.key, err)
-			return err
-		}
-		cctx, cancel := i.callContext(ctx)
-		_, err = i.backend.Recreate(cctx, spec)
-		cancel()
-		if err != nil {
-			err = fmt.Errorf("recreating pod %s: %w", p.name, err)
-			i.tracker.fail(p.key, err)
-			return err
-		}
+	// The stop-and-recreate is replace; what a roll adds is the wait below.
+	if err := i.replace(ctx, p); err != nil {
+		i.tracker.fail(p.key, err)
+		return err
 	}
 
 	if err := i.awaitRunning(ctx, p); err != nil {

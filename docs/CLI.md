@@ -88,7 +88,7 @@ file that no longer exists. The refusal is a usage error, so a script notices.
 
 ---
 
-## `kenward run [--config PATH] [--data-dir PATH] [--member ID | --group] [--image REF] [--invites PATH]`
+## `kenward run [--config PATH] [--data-dir PATH] [--member ID | --group] [--image REF] [--invites PATH] [--revoked PATH]`
 
 Runs the node. This is what the container entrypoint and the systemd unit call.
 
@@ -121,6 +121,20 @@ time, the compose deployment bind-mounts it read-only. A path that names no file
 invite is outstanding, which is the ordinary case; a path that exists and cannot be read
 is a refusal, because the alternative is a pod that comes up, is handed a real code, and
 refuses it in the silence enrolment owes a stranger.
+
+`--revoked PATH` is the same crossing in the other direction, and the only one revocation
+has. It names a record written by `kenward revoke` — a member id and a time — which this
+unit applies to the enrolment state on its own volume before it serves anybody, clearing
+the binding it names. It exists because the binding lives here rather than on the host:
+the claim was redeemed in this pod, and a host that could reach into a running member's
+volume to clear it could read that volume too. Both deployment paths put the record at
+`/etc/kenward/revoked.json`. A path that names no file is no revocation, which is the
+ordinary case; a path that exists and cannot be read is a refusal, because the
+alternative is a pod that starts and goes on serving an account somebody revoked. A
+record naming a different member is refused outright rather than applied to whoever this
+pod serves, and a binding made *after* the recorded time is kept — a member who was
+revoked, invited again and claimed again must not be unbound by the old record on every
+rolling update.
 
 - Loads and validates the config; refuses to start on any validation error, printing all
   of them at once.
@@ -201,9 +215,66 @@ the member reports that nothing happened.
 
 ## `kenward revoke MEMBER`
 
-Unbinds a member's Telegram account. Prints plainly that this stops kenward serving
-them, and that **the lore space key must be rotated separately** — kenward cannot do
-that itself, and implying otherwise would be a false security claim.
+Unbinds a member's Telegram account. Prints plainly what it has done, what it has not,
+and that **the lore space key must be rotated separately** — kenward cannot do that
+itself, and implying otherwise would be a false security claim.
+
+**It refuses while `kenward.yaml` declares that member's `telegram_id`.** A hand-written
+`telegram_id` is not in the enrolment record kenward owns, so clearing that record around
+it revokes nothing: the next start reads the line and serves the account again. kenward
+does not rewrite your configuration, so it names the line and stops before anything has
+been cleared:
+
+```
+kenward: /etc/kenward/kenward.yaml declares telegram_id: 12345678 for member david, and
+kenward does not rewrite your configuration. Clearing the enrolment record around it
+would revoke nothing: the next start would read that line and serve the account again.
+
+Delete this line from members[david]:
+
+      telegram_id: 12345678
+
+then run this command again.
+```
+
+**A revocation takes effect at the next start, in both modes.** A running node decided
+who it serves when it started and does not re-read this while it runs, so the output says
+to restart.
+
+**In isolated mode the binding is not here at all**, and the command says so rather than
+reporting a revocation it did not perform:
+
+```
+Jordan is NOT unbound yet: the binding lives in their own pod, and this command
+has recorded the revocation rather than performed it.
+Their lore space "5f2a9c14-…" has NOT been re-keyed — kenward cannot rotate a lore key.
+…
+
+This household is isolated, so jordan's binding lives in jordan's own pod and this command
+cannot reach it. The revocation is recorded at
+
+    /var/lib/kenward/revocations/jordan.json
+
+and that pod applies it the next time it is created. Restart kenward now — until
+you do, that pod is still serving them.
+```
+
+The restart is what creates the pod again: the host supervisor recreates, at start and
+before the monitors run, any member pod that could be holding a stale copy of these files
+— a revoked member's, and an unclaimed member's with a code outstanding. Every other pod
+is started rather than replaced. The member's work volume, and therefore their lore, is
+preserved by the recreation.
+
+The claim was redeemed inside that member's pod, against the enrolment state on that
+pod's own volume, and the host must not write there — every mechanism that could is one
+edit from reading it back, and that volume holds the member's wrapped key and their lore.
+So the record crosses the same one-way, create-time channel a claim code takes
+(`run --revoked`, above), and the pod clears its own binding on the way up. The delay is
+real and is the price of the boundary; what it replaced was a command that reported
+success while the pod carried on serving the account.
+
+The compose deployment mounts the record itself — see the header of
+`deploy/compose.isolated.yml`.
 
 ---
 

@@ -167,7 +167,11 @@ func TestInviteRefusesAnAlreadyEnrolledMember(t *testing.T) {
 // revocation that reads as complete when it is not is a false security claim.
 func TestRevokeStatesTheKeyRotationCaveat(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, simpleYAML, fullEnvironment())
+	// david claimed, which is what puts a binding in the state file. A telegram_id
+	// written into the configuration by hand is a different thing and revoke refuses
+	// it — see TestRevokeRefusesWhileTheConfigurationDeclaresTheTelegramID.
+	h := newHarness(t, claimedYAML, fullEnvironment())
+	h.claimedInState(t, "david", 12345678)
 
 	if code := h.run("revoke", "david"); code != exitOK {
 		t.Fatalf("exit = %d, want 0\n%s", code, h.both())
@@ -207,7 +211,8 @@ func TestRevokeUnknownMemberIsAUsageError(t *testing.T) {
 // problem is a bad way to meet somebody.
 func TestFlagsAfterAPositionalArgument(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, simpleYAML, fullEnvironment())
+	h := newHarness(t, claimedYAML, fullEnvironment())
+	h.claimedInState(t, "david", 12345678)
 	if code := dispatch(h.e, []string{"revoke", "david", "--config", h.config}); code != exitOK {
 		t.Fatalf("exit = %d, want 0\n%s", code, h.both())
 	}
@@ -348,13 +353,62 @@ func TestSimpleInviteWritesNoSeed(t *testing.T) {
 	}
 }
 
-// TestIsolatedInviteSeedSurvivesAnIdThatIsNotTheName.
+// TestInviteMintsAgainstTheConfiguredMemberID.
 //
 // `kenward invite` finds a member by id, by name, or by the slug of their name, and
-// mints the code against the *name* — so a household whose `id: dave` carries `name:
-// David` produces a code recorded under "david" and a member the deployment looks up
-// as "dave". A seed filtered on one of those two would be written, be empty, and
-// report success, which is this file's own failure mode one layer down.
+// used to mint the code against the *name* — so a household whose `id: jordy` carries
+// `name: Jordan` got a code recorded for a member nobody declares. The Binder that
+// redeems it will not create one, and refuses:
+//
+//	enrol: bind "jordan": config: no provisioning; a member the configuration
+//	  does not declare cannot be created: member "jordan"
+//
+// which the person holding the code experiences as the silence enrolment owes a
+// stranger. The id the configuration gave them travels with the mint instead.
+func TestInviteMintsAgainstTheConfiguredMemberID(t *testing.T) {
+	t.Parallel()
+	yaml := strings.NewReplacer(
+		"  - id: jordan\n", "  - id: jordy\n",
+		"    telegram_id: 87654321\n", "",
+	).Replace(isolatedYAML)
+	h := newHarness(t, yaml, fullEnvironment())
+
+	if code := h.run("invite", "--name", "Jordan"); code != exitOK {
+		t.Fatalf("invite exit = %d, want 0\n%s", code, h.both())
+	}
+	plaintext, _ := splitClaimCode(t, h.stdout())
+
+	// Redeem it the way jordy's pod does: their own seed imported into a store of
+	// their own, and the real Binder over the same configuration — the one that
+	// refuses to invent a member.
+	seed := filepath.Join(h.dir, "data", inviteSeedDirName, "jordy.json")
+	podCfg := mustLoad(t, yaml)
+	if err := importInvites(h.e, podCfg, seed, nil); err != nil {
+		t.Fatalf("the pod could not import its invites: %v", err)
+	}
+	binder, err := newBinder(podCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimer, err := enrol.New(inviteStore(podCfg), binder, enrol.WithClock(h.e.now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := claimer.Handle(context.Background(), transport.Inbound{
+		ChatID: 99, UserID: 99, Text: plaintext, At: h.e.now(),
+	})
+	if err != nil {
+		t.Fatalf("the code minted for the declared member does not bind: %v", err)
+	}
+	if res.Member.ID != "jordy" {
+		t.Errorf("the code bound %q, not the configured id jordy", res.Member.ID)
+	}
+}
+
+// TestIsolatedInviteSeedSurvivesAnIdThatIsNotTheName is the same household seen from
+// the file the deployment carries: the seed is named for the configured id and holds
+// the code minted for it. It was written empty while the mint recorded a second id
+// derived from the name, and reported success doing it.
 func TestIsolatedInviteSeedSurvivesAnIdThatIsNotTheName(t *testing.T) {
 	t.Parallel()
 	yaml := strings.NewReplacer(

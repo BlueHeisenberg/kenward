@@ -44,6 +44,20 @@
 #      creates a DIRECTORY in its place, and the container then refuses to
 #      start and says so.
 #
+# TO REVOKE A MEMBER LATER: run `kenward revoke jordan` on the host, which writes
+# `<data_dir>/revocations/jordan.json`, then ADD the mount to that member's
+# service — `./revocations/jordan.json:/etc/kenward/revoked.json:ro` — and
+# `docker compose up -d kenward-jordan`. The `--revoked=` flag is already in every
+# member's `command:` below; only the mount is added, and only once there is a
+# record to mount, for the missing-source-becomes-a-directory reason just above.
+# This step is not optional bookkeeping: the binding is not on the host. The claim
+# was redeemed inside that member's container, against the enrolment state on that
+# container's own data volume, which is the same reason a claim code has to be
+# carried in. Skip it and `kenward revoke` clears a host record nothing reads,
+# reports a revocation, and the container carries on serving the account. Rotating
+# that member's lore space key is separate and still yours: kenward has no
+# authority over one and says so.
+#
 # NO `env_file:` ANYWHERE IN THIS FILE — do not add it back. `env_file:`
 # injects the *entire* referenced file into that one container's process
 # environment. A top-level `.env` next to this compose file is different: Compose
@@ -147,6 +161,21 @@ services:
       # below deliberately has no such flag: D-023 puts the claim conversation on
       # the member's own bot, so the group's pod has no claimer at all.
       - "--invites=/etc/kenward/invites.json"
+      # Where this container finds a revocation recorded for david. `kenward
+      # revoke david` writes `<data_dir>/revocations/david.json` on the host; add
+      # the matching read-only mount above when you revoke somebody and bring
+      # this service back up. It is not mounted by default deliberately: almost
+      # nobody is revoked, and a bind-mount of a file that does not exist yet
+      # creates a DIRECTORY in its place, which this container then refuses to
+      # start over. A path with no file is simply no revocation.
+      #
+      # This is the whole of how a revocation performed on the host reaches the
+      # container that actually holds the binding. The claim was redeemed HERE,
+      # against the enrolment state on this container's own data volume, and the
+      # host can neither see nor write that file. Skip this and `kenward revoke`
+      # empties a record on the host that nothing reads, reports a revocation,
+      # and this container carries on serving the account.
+      - "--revoked=/etc/kenward/revoked.json"
       - "--member=david"
     security_opt:
       - no-new-privileges:true
@@ -190,6 +219,9 @@ services:
       - "--config=/etc/kenward/kenward.yaml"
       - "--data-dir=/var/lib/kenward"
       - "--invites=/etc/kenward/invites.json"
+      # As with david, above: where a revocation recorded on the host is read
+      # from, with the mount added only when there is one.
+      - "--revoked=/etc/kenward/revoked.json"
       - "--member=jordan"
     security_opt:
       - no-new-privileges:true
@@ -251,7 +283,9 @@ services:
   #    own file — never david's, never the shared `invites.json`. Without it
   #    sam's container comes up claim-only and refuses the code sam was handed,
   #    in silence, which is the one enrolment failure nobody can diagnose from
-  #    the chat.
+  #    the chat. Keep `--revoked=/etc/kenward/revoked.json` in the copied
+  #    `command:` too; its mount is added later and only if sam is ever revoked
+  #    (see "TO REVOKE A MEMBER LATER" in the header).
   # 3b. Do the same for the passphrase: KENWARD_PASSPHRASE_SAM here, sam's
   #    `passphrase_env` in kenward.yaml, and a value of its own in .env. Never
   #    reuse david's or jordan's — kenward refuses a file where two members name

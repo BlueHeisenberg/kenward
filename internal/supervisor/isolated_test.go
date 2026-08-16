@@ -1341,6 +1341,155 @@ func TestIsolatedMemberPodIsToldWhereItsInvitesAre(t *testing.T) {
 	}
 }
 
+// TestIsolatedRecreatesOnlyThePodsWhoseProvisionedFilesMayBeStale.
+//
+// `kenward invite` and `kenward revoke` both tell the operator to restart kenward, and
+// a restart on its own delivers neither: ensureRunning starts a container that already
+// exists, so it comes back on the `/etc/kenward` it was built with. Against real podman
+// that meant an operator could revoke a member, restart exactly as instructed, and watch
+// the pod come up still serving the revoked account:
+//
+//	--- record inside the pod? ---
+//	>>> NOT IN THE POD <<<
+//	... enrolled=true
+//
+// So Start replaces the pods that may be holding stale copies, and only those: a
+// revoked member's, and an unclaimed member's with a code outstanding. A pod serving
+// somebody is started, not replaced.
+func TestIsolatedRecreatesOnlyThePodsWhoseProvisionedFilesMayBeStale(t *testing.T) {
+	revDir, seedDir := t.TempDir(), t.TempDir()
+	// david was revoked. ana has a code outstanding and has not claimed. eve has a
+	// seed too but has claimed, so her pod is serving somebody.
+	write := func(dir, name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(revDir, "david.json", `{"member_id":"david","revoked_at":"2026-08-15T12:00:00Z"}`)
+	write(seedDir, "ana.json", `{"version":1,"codes":[]}`)
+	write(seedDir, "eve.json", `{"version":1,"codes":[]}`)
+
+	b := newFakeBackend()
+	opts := isolatedTestOptions(b)
+	opts.RevocationDir, opts.InviteSeedDir = revDir, seedDir
+	sup, err := newIsolated(isolatedTestConfig(), opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+
+	// Every pod already exists, which is what a restart finds.
+	vols := make(map[string]int, len(sup.pods))
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		if _, err := b.Create(context.Background(), spec); err != nil {
+			t.Fatalf("create %s: %v", p.name, err)
+		}
+		id, _ := b.volumeID(p.name)
+		vols[p.name] = id
+	}
+
+	sup.recreateStalePods(context.Background())
+
+	for _, tc := range []struct {
+		pod  string
+		want int
+		why  string
+	}{
+		{podName(DefaultNamePrefix, "member-david"), 1, "david was revoked and his pod would otherwise never see the record"},
+		{podName(DefaultNamePrefix, "member-ana"), 1, "ana has a code outstanding and her pod is serving nobody"},
+		{podName(DefaultNamePrefix, "member-eve"), 0, "eve has claimed; her pod is serving her and must not be replaced"},
+		{podName(DefaultNamePrefix, "group"), 0, "the group's pod is given neither file"},
+	} {
+		if got := b.recreated(tc.pod); got != tc.want {
+			t.Errorf("%s recreated %d times, want %d — %s", tc.pod, got, tc.want, tc.why)
+		}
+	}
+	// And no member's lore was taken with it. Recreate preserves the work volume;
+	// nothing on this path may reach Purge.
+	for name, want := range vols {
+		if got, ok := b.volumeID(name); !ok || got != want {
+			t.Errorf("%s's work volume changed from %d to %d (present=%v); the member's lore lives there", name, want, got, ok)
+		}
+	}
+	if b.destroyed() != 0 {
+		t.Errorf("%d volumes were destroyed", b.destroyed())
+	}
+}
+
+// TestIsolatedProvisionsEachMemberTheirOwnRevocationAndTheGroupNone.
+//
+// The other direction of the same crossing, and the only delivery a revocation has in
+// this mode: `kenward revoke` cannot clear a binding that lives on a member's volume,
+// so it records the fact and this is what carries it in. One member's record reaches
+// that member's pod and nobody else's — a record applied in the wrong pod unbinds
+// whoever that pod serves — and the group's pod, which holds no member's binding, gets
+// none at all.
+func TestIsolatedProvisionsEachMemberTheirOwnRevocationAndTheGroupNone(t *testing.T) {
+	dir := t.TempDir()
+	// One file per revoked member, as `kenward revoke` writes them. Almost nobody has
+	// one, which is why an absent file is not a failure.
+	const davidRecord = `{"member_id":"david","revoked_at":"2026-08-15T12:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "david.json"), []byte(davidRecord), 0o644); err != nil {
+		t.Fatalf("writing the record: %v", err)
+	}
+
+	opts := isolatedTestOptions(newFakeBackend())
+	opts.RevocationDir = dir
+	sup, err := newIsolated(isolatedTestConfig(), opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		var got []string
+		for _, f := range spec.Files {
+			if f.Path == PodRevokedPath {
+				got = append(got, string(f.Data))
+			}
+		}
+		if string(p.key.member) == "david" {
+			assertProvisioned(t, spec, PodRevokedPath, davidRecord)
+			continue
+		}
+		if len(got) > 0 {
+			t.Errorf("pod %s was handed david's revocation record: %v", p.name, got)
+		}
+	}
+}
+
+// TestIsolatedUnreadableRevocationRefusesTheSpec.
+//
+// An absent record is no revocation, which is the ordinary case. A record that is
+// present and unreadable is the operator having revoked somebody; starting the pod
+// anyway serves the account they revoked, and reports the pod healthy doing it.
+func TestIsolatedUnreadableRevocationRefusesTheSpec(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "david.json"), 0o700); err != nil {
+		t.Fatalf("preparing the record: %v", err)
+	}
+	opts := isolatedTestOptions(newFakeBackend())
+	opts.RevocationDir = dir
+	sup, err := newIsolated(isolatedTestConfig(), opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+	for _, p := range sup.pods {
+		if string(p.key.member) != "david" {
+			continue
+		}
+		if _, err := sup.specFor(p); err == nil {
+			t.Fatal("specFor accepted an unreadable revocation; david's pod would start and serve the revoked account")
+		}
+	}
+}
+
 // TestIsolatedUnreadableInvitesRefuseTheSpec.
 //
 // A seed that is absent means no invite is outstanding, which is the ordinary case. A

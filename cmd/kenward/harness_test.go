@@ -58,6 +58,14 @@ memory:
   lore_command: [lore, mcp]
 `
 
+// claimedYAML is simpleYAML with nobody's telegram_id written down: the shape a
+// household has when its members claimed their invites rather than being declared
+// enrolled by hand. Pair it with harness.claimedInState.
+var claimedYAML = strings.NewReplacer(
+	"    telegram_id: 12345678\n", "",
+	"    telegram_id: 87654321\n", "",
+).Replace(simpleYAML)
+
 const isolatedYAML = `mode: isolated
 household:
   name: Casa
@@ -228,6 +236,24 @@ func (h *harness) run(args ...string) int {
 	}
 	full := append([]string{args[0], "--config", h.config}, args[1:]...)
 	return dispatch(h.e, full)
+}
+
+// claimedInState records a binding the way a claim does — in the state file under the
+// data directory — and returns the configuration with the hand-written telegram_id
+// removed, since the two are alternatives rather than a pair.
+//
+// Which of the two a binding came from decides what `kenward revoke` can do about it.
+// The state file is kenward's own record and the command clears it; a telegram_id
+// written into kenward.yaml is the operator's line in the operator's file, and kenward
+// refuses rather than emptying the record around it and reporting a revocation that the
+// next start undoes.
+func (h *harness) claimedInState(t *testing.T, id domain.MemberID, telegramID int64) {
+	t.Helper()
+	st := config.NewState()
+	st.Bind(id, telegramID, h.e.now())
+	if err := st.Save(filepath.Join(h.dir, "data", config.StateFileName)); err != nil {
+		t.Fatalf("recording a claim for %s: %v", id, err)
+	}
 }
 
 func (h *harness) stdout() string { return h.out.String() }

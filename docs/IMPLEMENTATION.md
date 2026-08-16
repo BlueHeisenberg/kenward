@@ -503,8 +503,8 @@ data. Left empty it resolves to the per-OS state location; the `--data-dir` flag
 `$KENWARD_DATA_DIR` override it in that order, which is how the container image runs with
 no arguments. See `CLI.md`.
 
-Three files live there, and **two of them are secret material** — which is the fact that
-decides how the directory is backed up, mounted and permissioned:
+A handful of files live there, and **two of them are secret material** — which is the fact
+that decides how the directory is backed up, mounted and permissioned:
 
 | File | Contents | Sensitive |
 | --- | --- | --- |
@@ -512,11 +512,19 @@ decides how the directory is backed up, mounted and permissioned:
 | `sessions.json` | each member's **wrapped key** | yes |
 | `invites.json` | the **hashed** claim codes not yet redeemed | yes |
 | `invites/<id>.json` | isolated mode only: one member's outstanding codes, for their pod | yes |
+| `revocations/<id>.json` | isolated mode only: that one member was revoked, and when | no |
 
 The per-member files under `invites/` are derived from `invites.json` by `kenward invite`,
 and exist because the process that redeems a code in isolated mode is not the process that
 minted it — see §8, "How a supervisor-started pod gets a claim code". One file per member,
 never the whole store, because a member's pod may hold nothing of anybody else's.
+
+`revocations/` is the same arrangement for the same reason in the other direction, written
+by `kenward revoke`: the process holding a binding in isolated mode is not the one asked to
+clear it. A record is a member id and a timestamp — nothing to withhold, which is why it
+is the one file here that is world-readable, so the compose deployment can mount it into a
+container that runs as a different account. See §8, "How a revocation reaches the pod that
+holds the binding".
 
 Neither sensitive file holds a plaintext secret: a wrapped key needs the passphrase and a
 claim code is stored only as a digest. But a wrapped key is worth exactly one offline
@@ -974,7 +982,12 @@ member's key provisioned inside another member's pod would be wrapped under the 
 passphrase, which is the one thing isolated mode exists to prevent.
 
 Removal is `kenward revoke <member>`; it unbinds the Telegram id and reports that the
-space key must be rotated in lore.
+space key must be rotated in lore. It takes effect at the next start in either mode — a
+running node decided who it serves when it started — and in isolated mode it cannot
+perform the unbinding at all, only record it for the pod that holds the binding. Both are
+said in its output, and §8's "How a revocation reaches the pod that holds the binding" is
+why. It refuses outright while `kenward.yaml` declares that member's `telegram_id`, which
+is the operator's line to delete.
 
 ---
 
@@ -1225,7 +1238,10 @@ trust domains is worth being precise about:
 
 **The cost, which is real: the seed is a snapshot taken when the pod is created.** A code
 minted while that member's container is already running does not reach it until the
-container is next created — the same staleness §8 already documents for the host's view of
+container is next created — which `Start` now makes a restart do, for the pods that could
+be holding a stale copy; see "How a revocation reaches the pod that holds the binding"
+below, where the same instruction turned out to be false and both halves were fixed
+together — the same staleness §8 already documents for the host's view of
 enrolment, and for the same reason: `Isolated` reads the configuration once and pods are
 recreated from that snapshot. It costs nothing in the flow D-023 actually describes, since
 adding a member means editing `kenward.yaml` and its secrets and therefore restarting the
@@ -1234,6 +1250,81 @@ It does cost something when re-minting for a member whose pod is already up, so 
 invite` says so in isolated mode rather than leaving it to be discovered. The alternative —
 the host pushing into a running member's container — is the option rejected above, and this
 staleness is the price of not having it.
+
+### How a revocation reaches the pod that holds the binding
+
+The same crossing, and the harder half of it, found immediately after the one above and
+initially left alone. `kenward revoke` unbinds in the **host's** `state.json`. In isolated
+mode the binding is not there: it was written by the pod when the claim was redeemed, into
+the state file on that pod's own volume. So revoking a member emptied a record no pod ever
+reads, printed *"messages from that Telegram account are ignored from now on"*, exited 0,
+and the pod carried on serving them. That is worse than the invite defect it mirrors —
+that one failed where somebody could see it, and this succeeded while doing nothing.
+
+The constraint that shaped the invite fix is sharper here: a create-time snapshot is a
+poor fit for an action whose whole point is to take effect *now*. Three shapes were
+weighed.
+
+- **Refuse in isolated mode and tell the operator what to do instead.** A clear refusal
+  beats a silent no-op, and it was rejected only because the advice does not exist. The
+  effective manual route is to remove the member from `kenward.yaml` and restart, which
+  stops their pod being created but leaves the binding in the volume — and pods are never
+  purged, so re-adding that member later resumes service for the revoked account with no
+  new claim. The alternative advice, deleting the pod's volume, destroys the member's lore
+  to clear one line of JSON.
+- **Stop or recreate the member's pod from `kenward revoke`.** `Recreate` preserves the
+  volume and is reachable, but not from this process: `revoke` is a CLI invocation and the
+  supervisor is a different process that would see the container die and rescue it within
+  one poll. Two processes owning one container is a worse failure than the one being
+  fixed.
+- **Record the revocation on the host and have the pod apply it to its own state on the
+  way up.** Chosen. It rides the channel the claim code already uses, one-way and
+  create-time, and the pod — the process that owns that file — is the one that writes it.
+
+So `kenward revoke` writes `<data_dir>/revocations/<id>.json`, holding the member id and
+the time and nothing else. `Isolated` provisions it to `/etc/kenward/revoked.json` in that
+member's pod at create time; compose mounts it read-only. `run --revoked` applies it before
+the pod decides whether it has a member to serve, clearing the binding from the state file
+on its own volume.
+
+Three things it does deliberately:
+
+- **The id in the record is checked against the pod's own member.** The compose path
+  mounts this by hand, and a path pointing at the wrong file would otherwise unbind
+  whoever that pod serves. Same refusal as a pod started for a member it does not serve.
+- **A binding newer than the record is kept.** A member who is revoked, invited again and
+  claims again holds one, and their pod is recreated on every rolling update; unbinding on
+  sight would make re-enrolment impossible for exactly the people who have been through
+  this once.
+- **The record stays after it is applied.** It is a fact about what the operator did, not
+  a queue, and the timestamp is what stops it acting twice.
+
+**The cost, which is real and is a security cost rather than a convenience one: the
+revocation lands when the pod is next created, and until then that pod is still serving
+the account.** There is no channel from a CLI invocation to a running supervisor, so the
+restart is the operator's, and `kenward revoke` says so in its own output rather than
+leaving it to be discovered — leading with *"is NOT unbound yet"* rather than the
+opposite. A deferred revocation an operator knows about is a gap they can close in one
+command; a completed-looking one they cannot is the defect this replaced.
+
+**And "restart kenward" had to be made true before it could be said.** A restart does not
+create anything: `ensureRunning` starts a container that already exists, so a pod came
+back on the container-layer `/etc/kenward` it was built with and never saw the record —
+`>>> NOT IN THE POD <<<`, and `enrolled=true` in its own log. Found by running the mode
+against real podman, and invisible to every test in the module, because a fake backend
+has no container layer to be stale. So `Start` now recreates the pods that could be
+holding a stale copy — a revoked member's, and an unclaimed member's with a code
+outstanding — before the monitors run (`recreateStalePods`). Recreation preserves the
+work volume, so no member's lore moves; it does not wait for the replacement, because the
+image is unchanged and holding every other member's monitor behind one crash-looping pod
+would be a worse trade than a rolling update makes. The same gap made `kenward invite`'s
+own "restart kenward before handing the code over" false, and it is the same fix.
+
+**And in both modes it refuses while `kenward.yaml` declares that member's
+`telegram_id`.** That is the same silent success arriving by a different route: a
+hand-written `telegram_id` is not in the enrolment record, so clearing the record around it
+changes nothing the next start reads. kenward does not rewrite the configuration (§4), so
+it names the line to delete and stops before anything has been cleared.
 
 ---
 

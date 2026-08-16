@@ -165,6 +165,16 @@ type Revocation struct {
 	Space domain.SpaceID
 	// At is when the binding was cleared.
 	At time.Time
+	// Deferred says the binding this revocation clears does not live where this
+	// process can reach it, so what happened here is a record rather than the act.
+	//
+	// It is isolated mode, where a member's binding is written by that member's own
+	// pod into that member's own volume. The host must not write there — every
+	// mechanism that could is one edit from reading it back, and that volume holds
+	// the member's wrapped key and their lore — so the revocation is recorded on the
+	// host and applied by the pod when it is next created. Until then the pod carries
+	// on serving them, and Warning says so instead of saying the opposite.
+	Deferred bool
 }
 
 // KeyRotationRequired always reports true.
@@ -179,12 +189,21 @@ func (r Revocation) KeyRotationRequired() bool { return true }
 // done and what was not, because a revocation that reads as complete when it is not
 // is a false security claim, and those are worse than no claim.
 func (r Revocation) Warning() string {
+	unbound := fmt.Sprintf("%s is unbound: messages from that Telegram account are ignored from now on.",
+		r.Member.Name)
+	if r.Deferred {
+		// The opposite fact, said first, because an operator who reads one line of
+		// this reads the first one and a revocation that has not happened yet must
+		// not be mistaken for one that has. See Deferred.
+		unbound = fmt.Sprintf("%s is NOT unbound yet: the binding lives in their own pod, and this command\n"+
+			"has recorded the revocation rather than performed it.", r.Member.Name)
+	}
 	return fmt.Sprintf(
-		"%s is unbound: messages from that Telegram account are ignored from now on.\n"+
+		"%s\n"+
 			"Their lore space %q has NOT been re-keyed — kenward cannot rotate a lore key.\n"+
 			"Anyone still holding the old key can read everything written to that space,\n"+
 			"including anything written after this point. Rotate it in lore now.",
-		r.Member.Name, string(r.Space))
+		unbound, string(r.Space))
 }
 
 // Option configures a Claimer.
@@ -260,6 +279,10 @@ func New(store Store, binder Binder, opts ...Option) (*Claimer, error) {
 // Mint generates a single-use claim code for the named person, stores its digest
 // and returns the plaintext, formatted for printing.
 //
+// The member it enrols is MemberIDFor(name), which is the right answer only for a
+// household that has not chosen an id of its own. A caller holding a declared member
+// must use MintFor and say which member it means; see that method.
+//
 // This is the only moment the code exists in the clear. Nothing keeps a copy: if
 // the operator loses it before it reaches the person, the only recovery is minting
 // another and letting the first one expire.
@@ -269,9 +292,26 @@ func New(store Store, binder Binder, opts ...Option) (*Claimer, error) {
 // The signature carries a context because Save can block on a filesystem, which the
 // module's ground rules say makes it a context-taking call.
 func (c *Claimer) Mint(ctx context.Context, name string, ttl time.Duration) (string, error) {
+	return c.MintFor(ctx, MemberIDFor(strings.TrimSpace(name)), name, ttl)
+}
+
+// MintFor is Mint for a member the configuration already declares, recording the id
+// that configuration gave them rather than one derived from their name.
+//
+// The two are not the same and the difference is not cosmetic. A household whose
+// `id: dave` carries `name: David` produces MemberIDFor("David") == "dave" only by
+// luck; when it does not, the code is stored against a member nobody declares, and
+// the Binder that redeems it refuses to create one — `enrol: bind "david": config: no
+// provisioning`. The operator sees a code minted successfully and the person holding
+// it sees the silence enrolment owes a stranger. So the id travels with the mint, and
+// an id that is empty is refused here rather than by Code.validate one layer down.
+func (c *Claimer) MintFor(ctx context.Context, id domain.MemberID, name string, ttl time.Duration) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", ErrNoName
+	}
+	if id == "" {
+		return "", fmt.Errorf("%w: no member id for %q", ErrNoName, name)
 	}
 	if ttl <= 0 {
 		ttl = c.ttl
@@ -288,7 +328,7 @@ func (c *Claimer) Mint(ctx context.Context, name string, ttl time.Duration) (str
 	if err := c.store.Save(ctx, Code{
 		Hash:      digest,
 		Name:      name,
-		MemberID:  MemberIDFor(name),
+		MemberID:  id,
 		IssuedAt:  now,
 		ExpiresAt: now.Add(ttl),
 	}); err != nil {

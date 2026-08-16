@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
@@ -146,6 +147,67 @@ func importInvites(e *env, cfg *config.Config, path string, logger *slog.Logger)
 		// digests are kept 0600 to withhold, and a log line is the least private
 		// place in a household.
 		logger.Info("kenward", "event", "enrolment", "detail", "outstanding claim codes imported", "count", n)
+	}
+	return nil
+}
+
+// applyRevocation clears this unit's own binding when the host has recorded that its
+// member was revoked, and reports nothing to do otherwise.
+//
+// This is the far end of the only channel a revocation has in isolated mode. The claim
+// was redeemed here, in this pod, and the binding was written to the state file on this
+// pod's own volume; `kenward revoke` on the host cannot reach that file and must not try,
+// because a host that can write into a running member's volume is one edit from reading
+// it back and that volume holds the member's wrapped key and their lore. So the host
+// records the fact, the supervisor or the compose mount carries it in, and the clearing
+// happens here — by the process that owns the file, in the one moment it is safe: before
+// it starts serving anybody.
+//
+// The timestamp is what keeps it from being a standing order. A member revoked, invited
+// again and claimed again holds a binding newer than the record, and this pod is
+// recreated on every rolling update; undoing that second claim every time would make
+// re-enrolment impossible for exactly the people who have been through this once.
+//
+// The configuration is corrected in memory as well as on disk, because it was loaded
+// with the state file already merged into it and the caller is about to decide from it
+// whether this pod has a member to serve.
+func applyRevocation(e *env, cfg *config.Config, sel unitSelection, path string) error {
+	if path == "" || sel.group || sel.member == "" {
+		return nil
+	}
+	rec, ok, err := readRevocation(path)
+	if err != nil {
+		return fmt.Errorf("reading the revocation record at %s: %w", path, err)
+	}
+	if !ok {
+		return nil
+	}
+	id := domain.MemberID(sel.member)
+	if rec.MemberID != id {
+		// The same refusal a pod makes when its configuration names a member it does
+		// not serve, for the same reason: acting on this would unbind whoever this pod
+		// is actually for, on the strength of a mount pointing at the wrong file.
+		return fmt.Errorf("%s revokes member %q and this pod serves member %q; refusing to unbind\n"+
+			"somebody the record does not name", path, rec.MemberID, id)
+	}
+
+	m, held := cfg.MemberByID(id)
+	if !held || !m.Enrolled() || m.EnrolledAt.After(rec.RevokedAt) {
+		// Nothing bound, or bound by a claim made after the revocation was recorded.
+		return nil
+	}
+	binder, err := newBinder(cfg)
+	if err != nil {
+		return err
+	}
+	if _, err := binder.Unbind(e.context(), id); err != nil {
+		return fmt.Errorf("applying the revocation recorded at %s: %w", path, err)
+	}
+	for i := range cfg.Members {
+		if domain.MemberID(cfg.Members[i].ID) == id {
+			cfg.Members[i].TelegramID = 0
+			cfg.Members[i].EnrolledAt = time.Time{}
+		}
 	}
 	return nil
 }

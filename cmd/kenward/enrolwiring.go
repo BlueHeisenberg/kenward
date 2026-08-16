@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
@@ -36,8 +40,96 @@ const inviteStoreFileName = "invites.json"
 // the exposure would be theoretical; the rule is not.
 const inviteSeedDirName = "invites"
 
+// revocationDirName holds one file per revoked member: when that member's binding was
+// revoked, for that member's pod and no other.
+//
+// It is the other direction of the same crossing inviteSeedDirName exists for, and it
+// exists for the harder half. In isolated mode a claim is redeemed inside the member's
+// pod and the binding is written to that pod's own volume, so `kenward revoke` on the
+// host has nothing to clear: it unbound a host record the pod has never read, reported
+// success, and the pod carried on serving the revoked account. The host cannot go and
+// fix that itself — writing into a running member's volume is the one thing this mode
+// forbids, because every mechanism that could is one edit from reading it back and that
+// volume holds the member's wrapped key and their lore.
+//
+// So the fact travels the only way anything travels here: one-way, host to pod, read at
+// create time. The pod applies it to its own state file on the way up, which is why a
+// revocation in this mode takes effect when the pod is next created and not before —
+// stated in the command's own output rather than left to be discovered.
+const revocationDirName = "revocations"
+
 func inviteStore(cfg *config.Config) *enrol.FileStore {
 	return enrol.NewFileStore(filepath.Join(cfg.DataDir, inviteStoreFileName))
+}
+
+// revocation is what the host records for a pod to apply.
+//
+// It carries the member id as well as the time because the file is provisioned into
+// exactly one pod, and a compose file with the wrong path in it would otherwise unbind
+// whoever that pod serves. The pod checks the name before acting on it, the same way it
+// refuses to be started for a member it does not serve.
+//
+// The time is what stops it being a standing order. A member who is revoked, invited
+// again and claims again has a binding newer than the revocation, and their pod is
+// recreated on every rolling update; without the comparison the second claim would be
+// undone by the first revocation, forever.
+type revocation struct {
+	MemberID  domain.MemberID `json:"member_id"`
+	RevokedAt time.Time       `json:"revoked_at"`
+}
+
+// revocationDir is the directory of per-member revocation records under the data
+// directory.
+func revocationDir(cfg *config.Config) string {
+	return filepath.Join(cfg.DataDir, revocationDirName)
+}
+
+// revocationPath names one member's record under dir. It must agree with what
+// internal/supervisor looks up (perMemberPath) and what the compose deployment mounts;
+// TestTheTwoDeploymentPathsAgreeOnWhereARevocationIsRead is what holds them together.
+func revocationPath(dir string, id domain.MemberID) string {
+	return filepath.Join(dir, string(id)+".json")
+}
+
+// writeRevocation records a revocation where the member's pod will be given it.
+//
+// 0644 in a 0700 directory, for the reason enrol.FileStore.Readable exists: the compose
+// deployment bind-mounts this exact file into a container that runs as the image's fixed
+// non-root account, and a 0600 file carries its owner across the mount. There is nothing
+// in it to withhold — a member id and a timestamp — and the directory keeps every other
+// account on the host out.
+func writeRevocation(dir string, id domain.MemberID, at time.Time) (string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	data, err := json.MarshalIndent(revocation{MemberID: id, RevokedAt: at}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	path := revocationPath(dir, id)
+	return path, os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+// readRevocation reads a record. A path that names no file is no revocation and not a
+// failure: most pods have never had one, and a household that has revoked nobody has no
+// directory at all. A file that exists and cannot be read or parsed is a failure — a pod
+// that shrugged at it would go on serving an account somebody revoked.
+func readRevocation(path string) (revocation, bool, error) {
+	data, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return revocation{}, false, nil
+	case err != nil:
+		return revocation{}, false, err
+	}
+	var rec revocation
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return revocation{}, false, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if rec.MemberID == "" || rec.RevokedAt.IsZero() {
+		return revocation{}, false, fmt.Errorf("%s names no member or no time", path)
+	}
+	return rec, true, nil
 }
 
 // inviteSeedDir is the directory of per-member seed files under the data directory.

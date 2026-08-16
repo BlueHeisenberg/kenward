@@ -33,6 +33,12 @@ type runOptions struct {
 	// pod that has to redeem it, in both isolated deployment paths; empty
 	// everywhere else, and a path that does not exist is simply no invites.
 	invites string
+	// revoked is a file recording that this unit's member has been revoked, applied
+	// to this pod's own enrolment state on the way up. It is how a revocation
+	// performed on the host reaches the pod that actually holds the binding, in both
+	// isolated deployment paths; empty everywhere else, and a path that does not
+	// exist is simply no revocation.
+	revoked string
 }
 
 // supervisorFactory builds the thing `run` runs. It is a seam so that argument
@@ -48,6 +54,7 @@ func cmdRun(e *env, args []string) int {
 	group := fs.Bool("group", false, "isolated mode only: run the household group's unit and nothing else")
 	image := fs.String("image", "", "isolated mode only: the pod image the host supervisor starts pods from")
 	invites := fs.String("invites", "", "isolated mode only: a file of outstanding claim codes to import into this unit's invite store")
+	revoked := fs.String("revoked", "", "isolated mode only: a file recording that this unit's member has been revoked")
 	if code, ok := parseFlags(e, fs, args); !ok {
 		return code
 	}
@@ -87,6 +94,15 @@ func cmdRun(e *env, args []string) int {
 	// has to know about it anyway: the scope decides which secrets are demanded, so a
 	// selector pointing at nobody would otherwise be a pod that demands none.
 
+	// Before anything reads who is enrolled — the startup summary below included —
+	// because a revocation recorded on the host is a fact about this pod's own
+	// enrolment state and applying it later would leave every reader between here and
+	// there believing a revoked member is still served. See applyRevocation.
+	if err := applyRevocation(e, cfg, sel, *revoked); err != nil {
+		e.errorf("%v", err)
+		return exitFailure
+	}
+
 	// Whether memory.lore_command is *shaped* like a command is internal/config's, and
 	// it deliberately stops there: whether the program exists is a property of this
 	// machine, not of the file, and a validation that failed on one host would make
@@ -111,6 +127,7 @@ func cmdRun(e *env, args []string) int {
 		selection:  sel,
 		image:      *image,
 		invites:    *invites,
+		revoked:    *revoked,
 	}, logger)
 	if buildErr != nil {
 		err := buildErr
