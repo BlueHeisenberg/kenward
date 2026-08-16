@@ -540,6 +540,9 @@ memory:
   search_limit: 8
   announce_reads: true        # prefix each reply with what was searched; default true
 
+history:
+  reset_every: 0s             # off, and the default; see §5 "The scheduled reset"
+
 session:
   idle_timeout: 0s            # off, and the default; see §"Idle expiry is off by default"
   # simple mode only, and optional: the one node passphrase that wraps every member's
@@ -906,7 +909,10 @@ another member's plaintext, and that one member's compromise reaches no one else
    a chat travels through Telegram, stays in the member's own history, and in simple mode
    is readable by whoever holds the bot token. Otherwise the session's idle clock is
    touched and the turn continues.
-3. **Retrieve.** The member's message is reduced to its content words — lore's own
+3. **Reset the history, if a boundary has passed.** `history.reset_every`, off by
+   default. See "The scheduled reset" below; when it drops anything the member is sent a
+   notice before the turn goes any further, and nothing in lore is touched.
+4. **Retrieve.** The member's message is reduced to its content words — lore's own
    tokens, minus a stopword list, capped at six — and each word is searched on its own
    in every space in `scope.Read`, concurrently. Each space's hits are unioned and
    ranked by what each word narrowed down — a word contributes `1/(entries it found)`
@@ -925,7 +931,7 @@ another member's plaintext, and that one member's compromise reaches no one else
    "what" is not in it — and the node then answers as though nothing had been stored.
    Searching word by word makes retrieval degrade instead of failing outright: one
    relevant word among six filler ones still finds the entry.
-4. **Assemble.** System prompt + retrieved entries (rendered with their markers and
+5. **Assemble.** System prompt + retrieved entries (rendered with their markers and
    confidence) + the last N turns from the unit-local history ring, trimmed to fit
    `Options.ContextBudget` with `Options.MaxTokens` reserved out of it for the completion.
    `MaxTokens >= ContextBudget` is a construction error, not a runtime surprise: it leaves
@@ -964,12 +970,12 @@ another member's plaintext, and that one member's compromise reaches no one else
    emitting any content, and a cap sized for a plain instruct model makes it return a full
    reasoning trace, no content, and `finish_reason: stop` — which reaches the member as the
    §10 "no usable answer" notice from a model that is working perfectly.
-5. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
+6. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
    explicit refusal naming the tiers tried — never a silent fallback. Any other router
    failure becomes one of the notices in §10; a turn never ends in silence.
-6. **Reply**, prefixed with the retrieval line.
-7. **Capture.** If the model proposed a memory write, run the capture state machine.
-8. **Record** the turn in the unit-local history ring — the reply alone, without the
+7. **Reply**, prefixed with the retrieval line.
+8. **Capture.** If the model proposed a memory write, run the capture state machine.
+9. **Record** the turn in the unit-local history ring — the reply alone, without the
    retrieval line.
 
 ### The member is told what was read
@@ -1015,6 +1021,59 @@ so a household that finds the line noisy loses nothing but the line.
 
 History is unit-local, in memory, bounded (default 20 turns), and is **not** written to
 lore. lore holds distilled knowledge, not transcripts.
+
+### The scheduled reset
+
+`history.reset_every` empties a conversation's recent turns on a schedule. It is a
+`Duration`, it is **off by default** (`config.DefaultHistoryReset` is zero), and 24h is
+the longest value that loads. `internal/assistant/reset.go` holds the whole of it.
+
+**It clears; it does not compress.** A summary of the dropped turns would be new text
+about the household, written by the model, kept without anyone agreeing to it, and read
+into every later prompt — a memory write in all but name, arriving down the one path §6
+exists to supervise. Hermes, the reference for this feature, draws the same line: its
+`ContextCompressor` summarises to survive a token limit, its `session_reset` wipes to an
+empty context, and they are separate mechanisms with separate triggers. The household's
+way to keep something from a conversation is the remember tool.
+
+**Boundaries are anchored to local midnight**, so `6h` means 00:00, 06:00, 12:00 and
+18:00 on every machine and every day, whatever time the process last started. An anchor
+at start-up would satisfy "every six hours" and be unpredictable — and predicting what
+the assistant saw is the rule the prompt is assembled under. It is also why anything over
+24h is refused rather than clamped: it would collapse to one reset per midnight while the
+file claimed otherwise.
+
+**It is evaluated on the first turn after a boundary, not by a timer.** A timer clearing
+a conversation nobody is having is unobservable; the same timer is also the only thing
+that could clear one somebody *is* having, between their question and its answer. A
+household asleep at 04:00 finds the reset already done at breakfast. Hermes evaluates its
+own daily reset the same way, lazily on the next inbound message.
+
+**The member is told, and that is not configurable.** The notice is a message of its own
+rather than a prefix on the reply, because a reset can land on a turn whose only output
+is a tool call and a prefixed notice would then be dropped — leaving the one turn in the
+design where the assistant quietly forgets an hour. It is sent before retrieval, so it
+arrives ahead of the answer it explains, it is golden-tested (`docs/PROMPT.md`), and it
+is not recorded in history, for the same reason the retrieval line is not. Where Hermes
+differs is instructive: its *compression* is silenced on chat platforms by default, and
+its *reset* is announced. kenward has only the second, so it is always announced.
+
+Two cases are deliberately silent. A boundary that passes over an empty ring drops
+nothing and says nothing — but it is still adopted, so a member who says nothing for
+three days is told once, on the turn after the next boundary, rather than three times
+about resets of nothing. And the first turn after a restart adopts the current boundary
+without announcing anything: a restart has already forgotten the conversation.
+
+**It is household-wide and applies to the group chat too.** How stale a conversation may
+get is not a privacy decision and has nothing per-member to say, which is what a
+per-member setting would exist to express. Each unit still holds its own ring and crosses
+the boundary on its own next message, so the units are cleared independently.
+
+**It is not `session.idle_timeout`,** and the two must never be described as one setting.
+That one expires a member's *key* and their assistant then refuses every message until
+somebody unlocks it at the machine (§7). This one costs the thread of a conversation,
+once, with a line saying so. They share no code, no key and no default beyond both being
+off.
 
 ### Turns are serialised
 

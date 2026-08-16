@@ -872,6 +872,41 @@ func TestSimpleConstructionErrors(t *testing.T) {
 	}
 }
 
+// TestConversationResetReachesTheUnits is the wiring assertion for
+// history.reset_every, and it is worth having for exactly the reason the read-line one
+// is: off is the zero value of the target field, so a wiring path that assigns nothing
+// at all looks perfect until a household sets the key.
+//
+// It also pins the scope decision. The setting is household-wide and reaches every
+// unit, the group's included: how stale a conversation may get is not a privacy
+// question and has nothing per-member to say.
+func TestConversationResetReachesTheUnits(t *testing.T) {
+	t.Run("off unless the household asks", func(t *testing.T) {
+		cfg := budgetTestConfig()
+		cfg.ApplyDefaults()
+		h := newSimpleHarness(t, cfg, func(o *SimpleOptions) {})
+		defer func() { _ = h.sup.Stop(context.Background()); _ = h.fake.Close() }()
+
+		if got := h.sup.run.unitOptions([]string{"local"}).HistoryReset; got != 0 {
+			t.Errorf("HistoryReset = %v, want off by default", got)
+		}
+	})
+
+	t.Run("a schedule reaches every unit", func(t *testing.T) {
+		cfg := budgetTestConfig()
+		cfg.History.ResetEvery = config.Duration(6 * time.Hour)
+		cfg.ApplyDefaults()
+		h := newSimpleHarness(t, cfg, func(o *SimpleOptions) {})
+		defer func() { _ = h.sup.Stop(context.Background()); _ = h.fake.Close() }()
+
+		for _, tiers := range [][]string{{"local"}, {"local", "cloud"}} {
+			if got, want := h.sup.run.unitOptions(tiers).HistoryReset, 6*time.Hour; got != want {
+				t.Errorf("HistoryReset = %v for chain %v, want %v", got, tiers, want)
+			}
+		}
+	})
+}
+
 // TestMemoryPolicyReachesTheUnits: the two new keys are not decoration in the schema.
 // Both are read straight off the configuration on the wiring path, so this asserts
 // them where they are actually consumed — the assistant options and the capture

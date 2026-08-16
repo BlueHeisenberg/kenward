@@ -21,7 +21,9 @@ because a member reading a transcript should be able to predict what the assista
 3. **Retrieved memory** — grouped by space, primary first, each entry rendered with its
    confidence and markers.
 4. **Capture instructions** — static, but the available destinations vary by scope.
-5. **Recent turns** — the unit-local history ring, oldest first.
+5. **Recent turns** — the unit-local history ring, oldest first. See *The scheduled
+   reset* below: the ring may be emptied on a boundary the household chose, and when it
+   is, the member is told.
 6. **The member's message.**
 
 ### Budget
@@ -313,6 +315,50 @@ against *this turn's own retrieval* in the space this scope writes to. A title m
 no retrieved entry, or more than one, is dropped with a log line exactly like a
 malformed `remember`: nothing is asked and nothing reaches memory, not even the read
 behind the preview.
+
+---
+
+## The scheduled reset
+
+`history.reset_every` empties the recent-turn ring on a boundary anchored to local
+midnight — `6h` is midnight, 06:00, noon and 18:00; `24h` is midnight. It is off by
+default. Nothing about the prompt's text or assembly changes; the ring is simply empty
+on the turn after a boundary, which the assembly order already allows for.
+
+Three decisions inside that are product, not plumbing.
+
+**It drops the turns, it does not summarise them.** A summary would be new text about
+the household, written by the model, kept without anyone agreeing to it, and read into
+every later prompt — a memory write in all but name, arriving down the one path the
+capture engine exists to supervise. Hermes, which is where this feature was borrowed
+from, keeps the two apart the same way: its `ContextCompressor` summarises to survive a
+token limit, and its `session_reset` wipes to an empty context, and they are different
+mechanisms with different triggers. kenward already has a way to keep something from a
+conversation, and it is the remember tool.
+
+**It fires on the first turn after the boundary, not on a timer.** A timer clearing a
+conversation nobody is having is unobservable, and the same timer is the only thing that
+could clear one somebody *is* having, between their question and its answer. Checked on
+the turn, a household asleep at 04:00 finds the reset already done at breakfast.
+
+**The member is told, and the notice is not configurable.** It is sent as a message of
+its own rather than prefixed to the reply, because a reset can land on a turn whose only
+output is a tool call, and a notice riding on reply text would be dropped exactly then.
+The text lives in `internal/assistant/reset.go` and is golden-tested:
+
+```
+Starting fresh — I've cleared the earlier part of this conversation. Nothing in your
+memory changed; this is the scheduled reset.
+```
+
+The second sentence is the load-bearing one. The failure it exists to prevent is a
+member reading the first and believing something was dropped from their memory. This is
+the same rule the empty-section and failed-retrieval texts are written to: the model, and
+the member, are told when they have been given less than the household holds.
+
+The notice is not recorded in history, for the same reason the retrieval line is not: it
+is the node accounting for itself, and a model that has seen itself announce a reset
+starts announcing them.
 
 ---
 

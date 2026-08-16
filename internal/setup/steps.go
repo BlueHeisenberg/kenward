@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 )
@@ -511,6 +512,53 @@ func (w *Wizard) askTiers(ctx context.Context) error {
 	return nil
 }
 
+// askHistory asks how often a conversation's recent messages are dropped.
+//
+// It is the last question, and it is the only one here that is not about the
+// household or its machines. It earns the slot anyway: it is the one setting whose
+// symptom — the assistant losing the thread — is indistinguishable from a fault, so
+// somebody who was never shown the question would have no reason to believe the
+// behaviour was theirs to choose.
+//
+// Off is the default and off is what pressing Enter gives, so the wizard's own answer
+// is the one that changes nothing about how kenward has always behaved.
+func (w *Wizard) askHistory(ctx context.Context) error {
+	w.blank()
+	w.io.Print(historyIntro)
+	for {
+		w.blank()
+		answer, err := w.io.Ask(historyQuestion, "off")
+		if err != nil {
+			return err
+		}
+		d, ok := parseHistoryReset(answer)
+		if !ok {
+			w.io.Print(badHistoryReset(answer))
+			continue
+		}
+		w.historyReset = config.Duration(d)
+		return nil
+	}
+}
+
+// parseHistoryReset reads the answer to historyQuestion, in either of the two forms
+// it may take: a word meaning off, or a duration up to config.MaxHistoryReset.
+//
+// "0s" is accepted alongside "off" and "none" because it is what the written file
+// says, and somebody rerunning setup with the old file open in front of them will
+// type what they can see.
+func parseHistoryReset(answer string) (time.Duration, bool) {
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "", "off", "no", "none", "never":
+		return 0, true
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(answer))
+	if err != nil || d < 0 || d > config.MaxHistoryReset {
+		return 0, false
+	}
+	return d, true
+}
+
 // collectScripted fills the wizard in from pre-supplied answers, for
 // `--non-interactive`.
 //
@@ -616,6 +664,12 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 		}
 		m.Tiers = defaultChain(plan)
 	}
+	// history.reset_every is deliberately absent from Answers, like search_limit and
+	// idle_timeout: it is a setting with a safe default, and a scripted install that
+	// says nothing about one gets the default. The wizard asks because a person at a
+	// terminal can read the question; a script that wants a schedule edits the file
+	// it just generated.
+
 	if len(a.GroupTiers) > 0 {
 		w.household.Tiers = append([]string(nil), a.GroupTiers...)
 	} else {

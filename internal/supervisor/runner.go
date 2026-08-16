@@ -390,6 +390,16 @@ func (r *runner) unitOptions(tiers []string) assistant.Options {
 	if !r.cfg.Memory.AnnouncesReads() {
 		o.ReadNotices = assistant.ReadNoticesOff
 	}
+	// Not guarded by a zero check either, and for the same reason: off is the zero
+	// value here too, so a seed that turned the schedule off would be
+	// indistinguishable from a seed that never mentioned it.
+	//
+	// It is household-wide and reaches every unit, the group's included. A member's
+	// tier chain is per member because it is that member's privacy policy; how stale
+	// a conversation may get is not a privacy decision and has nothing per-member to
+	// say. Each unit still keeps its own ring and crosses the boundary on its own
+	// next turn, so the group chat and a member's chat are cleared independently.
+	o.HistoryReset = r.cfg.History.ResetEvery.Duration()
 	return o
 }
 

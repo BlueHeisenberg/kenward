@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
@@ -82,8 +83,15 @@ func simpleAnswers() []string {
 		"n",                  // David: no cloud
 		"n",                  // María: no cloud
 		"n",                  // group: no cloud
+		"",                   // conversation reset: the offered default, which is off
 	}
 }
+
+// tierAnswerCount is how many answers at the end of simpleAnswers belong to the
+// cloud opt-ins and the question after them. Tests that replace the opt-ins trim
+// this many and supply their own, so adding a question after askTiers is one edit
+// here rather than one in each of them.
+const tierAnswerCount = 4
 
 func TestSimpleModeEndToEnd(t *testing.T) {
 	dir := t.TempDir()
@@ -157,6 +165,7 @@ func TestIsolatedModeEndToEnd(t *testing.T) {
 		"David", "María", "", "1", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3.6-27b-awq", "n", "local",
 		"n", // no more endpoints
+		"",  // conversation reset: the offered default, which is off
 	}
 	w, cfg, io, err := runWizard(t, "linux", Options{ConfigPath: path}, answers...)
 	if err != nil {
@@ -282,9 +291,9 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
 		},
-		"simple, cloud allowed everywhere": append(simpleAnswers()[:len(simpleAnswers())-3], "y", "y", "y"),
+		"simple, cloud allowed everywhere": append(simpleAnswers()[:len(simpleAnswers())-tierAnswerCount], "y", "y", "y", ""),
 		"simple, one member takes cloud and the other does not": append(
-			simpleAnswers()[:len(simpleAnswers())-3], "y", "n", "n"),
+			simpleAnswers()[:len(simpleAnswers())-tierAnswerCount], "y", "n", "n", ""),
 		"simple, several tiers on one endpoint": {
 			"1", "Home", "1", realToken, "n",
 			"David", "", "1",
@@ -332,6 +341,10 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 
 	for name, answers := range paths {
 		t.Run(name, func(t *testing.T) {
+			// Every path ends at the conversation-reset question, and every path
+			// takes its default: this test is about the paths above producing a
+			// loadable file, not about that answer.
+			answers := append(append([]string(nil), answers...), "")
 			probe := fixedProbe(Answered)
 			if strings.Contains(name, "did not answer") {
 				probe = fixedProbe(NoAnswer)
@@ -358,6 +371,7 @@ func TestIsolatedPathsAlsoLoad(t *testing.T) {
 		"David", "María", "Ana", "", "1", "1", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
+		"", // conversation reset: off
 	}
 	w, cfg, io, err := runWizard(t, "linux", Options{ConfigPath: path}, answers...)
 	if err != nil {
@@ -556,6 +570,7 @@ func TestTokenShapeIsQueriedNotEnforced(t *testing.T) {
 		"David", "", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
+		"", // conversation reset: off
 	}
 	_, cfg, io, err := runWizard(t, "linux", Options{}, answers...)
 	if err != nil {
@@ -576,6 +591,7 @@ func TestTokenShapeIsQueriedNotEnforced(t *testing.T) {
 		"David", "", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
+		"", // conversation reset: off
 	}
 	if _, _, io, err := runWizard(t, "linux", Options{}, insist...); err != nil {
 		t.Fatalf("insisting on an odd token failed: %v\n%s", err, io.Transcript())
@@ -592,6 +608,7 @@ func TestCloudIsNeverTheDefault(t *testing.T) {
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local", "y",
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud", "n",
 		"", "", "", // Enter at all three tier questions
+		"", // and at the conversation-reset question
 	}
 	_, cfg, io, err := runWizard(t, "linux", Options{}, answers...)
 	if err != nil {
@@ -612,7 +629,7 @@ func TestCloudIsNeverTheDefault(t *testing.T) {
 }
 
 func TestCloudOptInWidensOnlyWhoAskedForIt(t *testing.T) {
-	answers := append(simpleAnswers()[:len(simpleAnswers())-3], "y", "n", "n")
+	answers := append(simpleAnswers()[:len(simpleAnswers())-tierAnswerCount], "y", "n", "n", "")
 	_, cfg, io, err := runWizard(t, "linux", Options{}, answers...)
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, io.Transcript())
@@ -655,7 +672,7 @@ func TestNoLocalEndpointsIsAnExplicitDecision(t *testing.T) {
 
 	t.Run("saying yes is recorded", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), DefaultConfigFileName)
-		w, cfg, io, err := runWizard(t, "linux", Options{ConfigPath: path}, append(base, "y")...)
+		w, cfg, io, err := runWizard(t, "linux", Options{ConfigPath: path}, append(base, "y", "")...)
 		if err != nil {
 			t.Fatalf("run: %v\n%s", err, io.Transcript())
 		}
@@ -684,6 +701,7 @@ func TestAtLeastOneMemberAndOneEndpoint(t *testing.T) {
 		"", "David", "", "1", "1",
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
+		"", // conversation reset: off
 	}
 	_, cfg, io, err := runWizard(t, "linux", Options{}, answers...)
 	if err != nil {
@@ -697,6 +715,75 @@ func TestAtLeastOneMemberAndOneEndpoint(t *testing.T) {
 	}
 }
 
+// TestConversationResetIsAskedAndWritten covers the wizard's last question.
+//
+// Three things are asserted together, because any one of them alone would let the
+// question exist and do nothing: the offered default is off, a duration typed in
+// reaches the file, and a value the schedule cannot keep is refused with an
+// explanation rather than written and discovered by the loader.
+func TestConversationResetIsAskedAndWritten(t *testing.T) {
+	t.Run("pressing Enter leaves it off", func(t *testing.T) {
+		_, cfg, io, err := runWizard(t, "linux", Options{}, simpleAnswers()...)
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, io.Transcript())
+		}
+		if got := cfg.History.ResetEvery.Duration(); got != 0 {
+			t.Errorf("history.reset_every = %v after pressing Enter, want off", got)
+		}
+		// The question has to say what it is not, or somebody who came here for an
+		// assistant that remembers things will read "clear the conversation" and
+		// answer the question they think they were asked.
+		transcript := io.Transcript()
+		for _, want := range []string{
+			"not what kenward remembers about your household",
+			"counted from midnight",
+		} {
+			if !strings.Contains(transcript, want) {
+				t.Errorf("the question never says %q", want)
+			}
+		}
+	})
+
+	t.Run("a duration is written", func(t *testing.T) {
+		answers := append(simpleAnswers()[:len(simpleAnswers())-1], "6h")
+		path := filepath.Join(t.TempDir(), DefaultConfigFileName)
+		w, cfg, io, err := runWizard(t, "linux", Options{ConfigPath: path}, answers...)
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, io.Transcript())
+		}
+		if got, want := cfg.History.ResetEvery.Duration(), 6*time.Hour; got != want {
+			t.Errorf("history.reset_every = %v, want %v", got, want)
+		}
+		// And it is in the file, not merely in the configuration the wizard
+		// returned. The file is the thing that survives the process.
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "reset_every: 6h") {
+			t.Errorf("the written file does not state reset_every: 6h:\n%s", data)
+		}
+		assertLoadable(t, path, w)
+	})
+
+	t.Run("something the schedule cannot keep is refused and asked again", func(t *testing.T) {
+		answers := append(simpleAnswers()[:len(simpleAnswers())-1], "weekly", "48h", "12h")
+		_, cfg, io, err := runWizard(t, "linux", Options{}, answers...)
+		if err != nil {
+			t.Fatalf("run: %v\n%s", err, io.Transcript())
+		}
+		if got, want := cfg.History.ResetEvery.Duration(), 12*time.Hour; got != want {
+			t.Errorf("history.reset_every = %v, want %v", got, want)
+		}
+		if !strings.Contains(io.Transcript(), `"weekly" is neither`) {
+			t.Error("a value the parser cannot take was accepted silently")
+		}
+		if !strings.Contains(io.Transcript(), `"48h" is neither`) {
+			t.Error("48h was accepted, and it cannot be honoured: boundaries are counted from midnight")
+		}
+	})
+}
+
 // TestMistypedURLIsCaughtDuringTheQuestion is the whole point of probing as the
 // answer is given.
 func TestMistypedURLIsCaughtDuringTheQuestion(t *testing.T) {
@@ -708,6 +795,7 @@ func TestMistypedURLIsCaughtDuringTheQuestion(t *testing.T) {
 		"http://monster.tail:8000/v1",
 		"qwen3", "n", "local",
 		"n",
+		"", // conversation reset: off
 	}
 	_, cfg, io, err := runWizard(t, "linux", Options{}, answers...)
 	if err != nil {
@@ -736,6 +824,7 @@ func TestAMachineThatIsOffIsRecordedAnyway(t *testing.T) {
 			"David", "", "1",
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
+			"", // conversation reset: off
 		}
 		path := filepath.Join(t.TempDir(), DefaultConfigFileName)
 		w, cfg, io, err := runWizard(t, "linux",
@@ -1025,7 +1114,7 @@ func TestSystemdNoteAdviceActuallyWorks(t *testing.T) {
 // rendering `kenward doctor` uses, so that the claim made at setup and the claim
 // checked afterwards are the same sentence.
 func TestTierSummaryReadsThePolicyBack(t *testing.T) {
-	answers := append(simpleAnswers()[:len(simpleAnswers())-3], "y", "n", "n")
+	answers := append(simpleAnswers()[:len(simpleAnswers())-tierAnswerCount], "y", "n", "n", "")
 	_, cfg, io, err := runWizard(t, "linux", Options{}, answers...)
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, io.Transcript())

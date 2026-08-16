@@ -145,6 +145,7 @@ func TestExampleStatesEveryDefaultedKey(t *testing.T) {
 		"data_dir",
 		"memory.lore_command",
 		"memory.search_limit",
+		"history.reset_every",
 		"session.idle_timeout",
 		"capture.max_proposals_per_turn",
 		"update.channel",
@@ -233,6 +234,12 @@ var allowedZeroFields = map[string]string{
 	// household copies that stops a member's assistant answering with no in-band way
 	// back (D-019), which is exactly why the default moved to off.
 	"Session.IdleTimeout": "0s is the default and the correct value; the example states the key and explains the trade in a comment",
+
+	// history.reset_every is off by default for the same reason it is stated anyway:
+	// the example is where a household learns the key exists, and putting a live
+	// schedule in the file everybody copies would change what every new household's
+	// assistant appears to know mid-week without anyone having asked for it.
+	"History.ResetEvery": "0s is the default and the correct value; the example states the key and explains what it does and does not clear",
 
 	// api_key_env is documented in config.go as "Empty for endpoints that need no
 	// authentication, which is the usual case for a machine on the household's own

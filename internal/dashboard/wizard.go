@@ -93,8 +93,13 @@ type wizardState struct {
 	Mode config.Mode
 
 	// Advanced, all with defaults that are what the file would have said anyway.
-	SearchLimit   int
-	MaxProposals  int
+	SearchLimit  int
+	MaxProposals int
+	// HistoryReset is history.reset_every: how often a conversation's recent turns
+	// are dropped. "0s" is off and is the default. It is not IdleTimeout, which is
+	// about a member's key, and the two are deliberately in different fieldsets on
+	// the page for that reason.
+	HistoryReset  string
 	IdleTimeout   string
 	UpdateChannel string
 	// CloudEveryone widens every chain to include the tiers that leave the house.
@@ -113,6 +118,7 @@ func newWizardState() *wizardState {
 		WriteEnvile:   true,
 		SearchLimit:   config.DefaultSearchLimit,
 		MaxProposals:  config.DefaultMaxProposalsPerTurn,
+		HistoryReset:  config.Duration(config.DefaultHistoryReset).String(),
 		IdleTimeout:   config.Duration(config.DefaultIdleTimeout).String(),
 		UpdateChannel: string(config.DefaultUpdateChannel),
 		Mode:          config.ModeSimple,
@@ -225,6 +231,18 @@ func (st *wizardState) applyAdvanced(cfg *config.Config) error {
 	}
 	if st.MaxProposals > 0 {
 		cfg.Capture.MaxProposalsPerTurn = st.MaxProposals
+	}
+	if strings.TrimSpace(st.HistoryReset) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(st.HistoryReset))
+		if err != nil || d < 0 {
+			return fmt.Errorf("%q is not a length of time; write it as 0s, 6h or 24h", st.HistoryReset)
+		}
+		if d > config.MaxHistoryReset {
+			// Said here rather than left to config.Validate, which would answer a
+			// person looking at a text box with a field path.
+			return fmt.Errorf("%q is longer than %s; resets are counted from midnight, so a longer gap cannot be kept — use 0s for off", st.HistoryReset, config.MaxHistoryReset)
+		}
+		cfg.History.ResetEvery = config.Duration(d)
 	}
 	if strings.TrimSpace(st.IdleTimeout) != "" {
 		d, err := time.ParseDuration(strings.TrimSpace(st.IdleTimeout))

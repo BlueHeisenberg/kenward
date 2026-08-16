@@ -247,7 +247,10 @@ type Wizard struct {
 	telegram  config.TelegramConfig
 	members   []config.MemberConfig
 	endpoints []config.EndpointConfig
-	env       []EnvVar
+	// historyReset is history.reset_every: how often a conversation's recent turns
+	// are dropped. Zero is off and is what pressing Enter gives.
+	historyReset config.Duration
+	env          []EnvVar
 	// wantEnvFile records that the operator asked for the collected secrets to be
 	// written beside the configuration.
 	wantEnvFile bool
@@ -317,6 +320,7 @@ func (w *Wizard) Run(ctx context.Context) (*config.Config, error) {
 		w.askMembers,
 		w.askEndpoints,
 		w.askTiers,
+		w.askHistory,
 	}
 	for _, step := range steps {
 		if err := ctx.Err(); err != nil {
@@ -347,6 +351,10 @@ func (w *Wizard) build() *config.Config {
 	announceReads := true
 	cfg.Memory.AnnounceReads = &announceReads
 	cfg.Session.IdleTimeout = config.Duration(config.DefaultIdleTimeout)
+	// Whatever askHistory collected, which is zero unless somebody typed otherwise.
+	// Written out either way, for the same reason idle_timeout is: an off that is
+	// visible in the file is a knob the household knows it has.
+	cfg.History.ResetEvery = w.historyReset
 	cfg.Capture.MaxProposalsPerTurn = config.DefaultMaxProposalsPerTurn
 	cfg.Capture.PrivateWrites = config.DefaultPrivateWrites
 	cfg.Update.Channel = config.DefaultUpdateChannel

@@ -592,6 +592,17 @@ func (c *Config) validateLimits(p *problems) {
 	if c.Session.IdleTimeout < 0 {
 		p.addf("session.idle_timeout: %s is negative", c.Session.IdleTimeout)
 	}
+	if c.History.ResetEvery < 0 {
+		p.addf("history.reset_every: %s is negative", c.History.ResetEvery)
+	}
+	if c.History.ResetEvery.Duration() > MaxHistoryReset {
+		// Refused rather than clamped. Resets are anchored to local midnight, so
+		// anything longer than a day means one reset per midnight — and a file
+		// saying 48h while the node resets daily is worse than a file that would
+		// not load. A household wanting less often than daily wants it off.
+		p.addf("history.reset_every: %s is longer than %s; resets are anchored to local midnight, so a longer interval cannot be honoured — use a value up to %s, or 0s for off",
+			c.History.ResetEvery, MaxHistoryReset, MaxHistoryReset)
+	}
 }
 
 func (c *Config) validateUpdate(p *problems) {

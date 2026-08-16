@@ -386,6 +386,50 @@ func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 	}
 }
 
+// TestDoctorReportsTheConversationResetSchedule.
+//
+// The symptom of this setting — "it forgot what we were talking about" — is
+// indistinguishable from a broken assistant, so the effective value has to be readable
+// somewhere. This is that somewhere, and it is on the same screen as everything else
+// somebody checks when a household says kenward is behaving oddly.
+//
+// Both cases are ok lines rather than warnings. Unlike an idle key timeout there is
+// nothing here to recover from: the member is told, and their next message works.
+func TestDoctorReportsTheConversationResetSchedule(t *testing.T) {
+	t.Parallel()
+
+	t.Run("off", func(t *testing.T) {
+		t.Parallel()
+		h := newHarness(t, simpleYAML, fullEnvironment())
+		if code := h.run("doctor"); code != exitOK {
+			t.Fatalf("exit = %d, want 0\n%s", code, h.both())
+		}
+		if !strings.Contains(h.stdout(), "history.reset_every is off") {
+			t.Errorf("doctor does not say the conversation reset is off:\n%s", h.stdout())
+		}
+	})
+
+	t.Run("on", func(t *testing.T) {
+		t.Parallel()
+		on := simpleYAML + "history:\n  reset_every: 6h\n"
+		h := newHarness(t, on, fullEnvironment())
+		if code := h.run("doctor"); code != exitOK {
+			t.Fatalf("exit = %d, want 0: a scheduled reset is normal operation, not a fault\n%s", code, h.both())
+		}
+		out := h.stdout()
+		for _, want := range []string{
+			"drop their recent turns every 6h0m0s",
+			"anchored to local midnight",
+			// The distinction is the reason the line is worth printing at all.
+			"nothing in lore is touched",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("doctor does not report the conversation reset (%q missing):\n%s", want, out)
+			}
+		}
+	})
+}
+
 // TestDoctorSaysWhichWayIdleExpiryIsSet.
 //
 // The privacy statement names session.idle_timeout and is deliberately true whichever

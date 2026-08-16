@@ -188,6 +188,16 @@ func applySettingsForm(cfg *config.Config, r *http.Request) error {
 	if v := splitList(r.PostFormValue("lore_command")); len(v) > 0 {
 		cfg.Memory.LoreCommand = v
 	}
+	// Assigned unconditionally, exactly like idle_timeout below and for the same
+	// reason: zero is a meaning here, so an empty box has to be able to turn the
+	// schedule off.
+	if d, err := parseDuration(r.PostFormValue("history_reset")); err != nil {
+		return fmt.Errorf("conversation reset: %w", err)
+	} else if d > config.MaxHistoryReset {
+		return fmt.Errorf("conversation reset: %s is longer than %s; resets are counted from midnight, so a longer gap cannot be kept — use 0s for off", d, config.MaxHistoryReset)
+	} else {
+		cfg.History.ResetEvery = config.Duration(d)
+	}
 	if d, err := parseDuration(r.PostFormValue("idle_timeout")); err != nil {
 		return fmt.Errorf("session idle timeout: %w", err)
 	} else {

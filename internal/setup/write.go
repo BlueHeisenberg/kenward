@@ -100,6 +100,7 @@ type document struct {
 	Members   []memberDoc   `yaml:"members"`
 	Endpoints []endpointDoc `yaml:"endpoints"`
 	Memory    memoryDoc     `yaml:"memory"`
+	History   historyDoc    `yaml:"history"`
 	Session   sessionDoc    `yaml:"session"`
 	Capture   captureDoc    `yaml:"capture"`
 	Update    updateDoc     `yaml:"update"`
@@ -159,6 +160,13 @@ type memoryDoc struct {
 	AnnounceReads *bool    `yaml:"announce_reads,omitempty"`
 }
 
+// historyDoc is the conversation's own lifetime, written next to memory and
+// deliberately not inside it: one is lore and the other is the last few minutes of
+// chat, and this file is where that distinction is easiest to lose.
+type historyDoc struct {
+	ResetEvery config.Duration `yaml:"reset_every"`
+}
+
 type sessionDoc struct {
 	IdleTimeout config.Duration `yaml:"idle_timeout"`
 }
@@ -190,6 +198,7 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 			SearchLimit:   cfg.Memory.SearchLimit,
 			AnnounceReads: cfg.Memory.AnnounceReads,
 		},
+		History: historyDoc{ResetEvery: cfg.History.ResetEvery},
 		Session: sessionDoc{IdleTimeout: cfg.Session.IdleTimeout},
 		Capture: captureDoc{
 			MaxProposalsPerTurn: cfg.Capture.MaxProposalsPerTurn,
@@ -244,6 +253,7 @@ var sectionNotes = [][2]string{
 	{"members", "One entry per person. telegram_id appears once they claim an invite."},
 	{"endpoints", "The machines that run the model. tags are the tier names to route by."},
 	{"memory", "lore, which owns everything kenward remembers."},
+	{"history", "The last few turns of each conversation. Not memory; 0s never drops them."},
 	{"session", "How long an unlocked key stays in memory without use."},
 	{"capture", "How often the assistant may ask to remember something."},
 	{"update", "stable, edge or off. off is a supported way to run kenward forever."},

@@ -136,6 +136,20 @@ type Options struct {
 	// DefaultHistoryLimit. History is in memory only and is never written to lore:
 	// lore holds distilled knowledge, not transcripts.
 	HistoryLimit int
+	// HistoryReset is how often the history ring is dropped on a schedule, anchored
+	// to local midnight: 6h clears it at 00:00, 06:00, 12:00 and 18:00, and 24h at
+	// midnight. Zero — the default — never clears it on a schedule, which is what
+	// every household got before this existed. The ring is bounded by HistoryLimit
+	// and lost on restart either way.
+	//
+	// It is deliberately not normalized, because zero is a meaning rather than an
+	// absence, and the member is told whenever a reset actually drops something.
+	//
+	// This is not session.idle_timeout and the two must not be described as though
+	// they were. That one locks a member's *key* after quiet, and the assistant
+	// stops answering until somebody unlocks it at the machine; this one costs the
+	// thread of a conversation and nothing else. See reset.go.
+	HistoryReset time.Duration
 	// ContextBudget is the endpoint context window in estimated tokens. Defaults to
 	// DefaultContextBudget.
 	//
@@ -418,6 +432,25 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 			return nil, u.send(ctx, sc, in, lockedText)
 		}
 		u.deps.Sessions.Touch(sc.Member.ID)
+	}
+
+	// The scheduled history reset, before anything is retrieved or assembled, so the
+	// turn that crosses a boundary is answered on a clean conversation rather than
+	// half of an old one. It is checked here rather than fired by a timer: a timer
+	// would clear a conversation nobody is having, which is invisible and therefore
+	// pointless, and it is also the only way to clear one somebody *is* having,
+	// between their message and the answer to it.
+	//
+	// The member is told, and the notice is not optional. A conversation that
+	// quietly forgets the last hour is the same class of dishonesty as a retrieval
+	// error rendered as "nothing found": the member goes on believing the assistant
+	// still has something it does not. A failure to deliver the notice fails the
+	// turn for the same reason — having cleared the history, saying nothing is the
+	// one outcome that is not allowed.
+	if u.maybeReset(u.opts.Now()) {
+		if err := u.send(ctx, sc, in, resetNoticeText); err != nil {
+			return nil, fmt.Errorf("assistant: reporting the scheduled history reset: %w", err)
+		}
 	}
 
 	// The capture engine ages its decline window per turn whether or not this turn

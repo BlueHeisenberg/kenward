@@ -99,6 +99,15 @@ there also creates their lore space and mints their code.</p>
 <label for="max_proposals">Capture proposals per turn</label>
 <input type="number" id="max_proposals" name="max_proposals" value="{{$c.Capture.MaxProposalsPerTurn}}" min="0">
 
+<h2>Conversations</h2>
+<label for="history_reset">Drop each conversation's recent messages every
+  <span class="hint">0s is off. The last few messages of chat, not what kenward
+  remembers about your household — nothing here is ever dropped from that. Counted from
+  midnight, at most 24h, applied on the next message rather than mid-answer, and
+  announced when it drops anything.</span>
+</label>
+<input type="text" id="history_reset" name="history_reset" value="{{$c.History.ResetEvery}}">
+
 <h2>Keys</h2>
 <label for="idle_timeout">Unlocked keys expire after
   <span class="hint">0s is off. Turning it on stops that member's assistant answering

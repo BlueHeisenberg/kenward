@@ -213,6 +213,12 @@ func runDoctor(e *env, path, dataDir string, sel unitSelection) doctorReport {
 
 	rep.Access = doctorAccess(e, cfg)
 	rep.Memory = doctorMemory(ctx, e, cfg, scope, &rep)
+	// The one line in this report about what the node forgets on purpose. It goes
+	// under Memory because that is the section somebody reads to find out what this
+	// node retains, and the answer is incomplete without it — not because a
+	// conversation's recent turns are memory. They are the opposite, and the line
+	// says so.
+	rep.Memory = append(rep.Memory, historyResetCheck(cfg.History.ResetEvery.Duration()))
 	rep.Sessions = doctorSessions(ctx, e, cfg, scope)
 	rep.Transport = doctorTransport(ctx, e, cfg, secrets, scope, &rep)
 	rep.Transport = append(rep.Transport, doctorEndpointKeys(cfg, secrets, scope, &rep)...)
@@ -622,6 +628,34 @@ func idleExpiryCheck(d time.Duration) check {
 				"than a locked one",
 			"there is no way back from a chat: a passphrase never travels over Telegram, " +
 				"so someone has to start the process again at the machine",
+		},
+	}
+}
+
+// historyResetCheck says which way this household has history.reset_every set.
+//
+// Both outcomes are ok lines. Unlike an idle key timeout there is nothing to warn
+// about: a reset costs the thread of a conversation, the member is told when one drops
+// anything, and the next message works normally. It is here because it is the effective
+// value of a setting whose symptom — "it forgot what we were talking about" — is
+// otherwise indistinguishable from a bug, and because a member asking whether the
+// household lost anything deserves to be answered from the same screen.
+func historyResetCheck(d time.Duration) check {
+	if d <= 0 {
+		return check{
+			Status: statusOK,
+			Text:   "conversations keep their recent turns until the node restarts (history.reset_every is off)",
+		}
+	}
+	return check{
+		Status: statusOK,
+		Text:   fmt.Sprintf("conversations drop their recent turns every %s (history.reset_every)", d),
+		Detail: []string{
+			"anchored to local midnight, and applied on the first message after a " +
+				"boundary rather than on a timer, so nobody is interrupted mid-exchange " +
+				"by a clock",
+			"nothing in lore is touched: this is the last few turns of chat, not the " +
+				"household's memory, and the member is told whenever a reset drops any",
 		},
 	}
 }

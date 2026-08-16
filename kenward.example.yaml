@@ -271,6 +271,35 @@ memory:
   # key here for it — see capture.private_writes below.
   announce_reads: true
 
+# history is the other thing kenward holds, and it is the opposite of memory above.
+# lore is what the household decided to keep: permanent, written only when somebody
+# agrees to it. This is the last handful of turns of each conversation, kept in RAM so
+# the assistant can follow a thread, never written to lore, and already gone whenever
+# kenward restarts.
+history:
+  # reset_every drops those recent turns on a schedule, so a conversation does not
+  # carry last Tuesday's tangent into this morning. Kenward's default is 0s — off —
+  # and that is what is set here: an existing household's assistant keeps behaving
+  # exactly as it did until somebody asks for this.
+  #
+  # Times are anchored to local midnight, so 6h means midnight, 06:00, noon and 18:00,
+  # and 24h means midnight. 24h is the longest value accepted; anything longer would
+  # collapse to one reset per midnight, and a file claiming otherwise is refused
+  # rather than quietly reinterpreted.
+  #
+  # The reset happens on the first message after a boundary passes, not on a timer.
+  # Nobody is interrupted between their question and its answer by a clock, a
+  # conversation nobody is having is not "cleared" in a way no one could observe, and
+  # a household asleep at 04:00 finds it already done at breakfast. Whoever is talking
+  # is told, in one line, whenever a reset actually drops something — kenward does not
+  # quietly change what it appears to know.
+  #
+  # This is not session.idle_timeout below, though both are durations and both are off
+  # by default. That one expires a member's key and stops their assistant answering at
+  # all until somebody unlocks it at the machine. This one costs the thread of a
+  # conversation, and the next message works normally.
+  reset_every: 0s
+
 # session configures how long an unlocked key stays usable without activity.
 session:
   # idle_timeout is how long an unlocked session key stays in memory after the last

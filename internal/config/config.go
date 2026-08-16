@@ -62,7 +62,23 @@ const (
 	// claim that survives either way is the one that matters, that nothing is readable
 	// from a disk, a backup, or a process nobody has unlocked. Zero is not "unset" here
 	// and is not rewritten: see ApplyDefaults.
-	DefaultIdleTimeout         = time.Duration(0)
+	DefaultIdleTimeout = time.Duration(0)
+	// DefaultHistoryReset is zero: a conversation's recent turns are cleared when the
+	// node restarts and at no other time, unless a household asks for a schedule.
+	//
+	// Off rather than a sensible daily reset because turning it on changes what the
+	// assistant appears to know mid-week, and no household that has not asked for
+	// that should discover it. It is also the value every configuration written
+	// before this key existed means.
+	DefaultHistoryReset = time.Duration(0)
+	// MaxHistoryReset is the longest interval history.reset_every may state.
+	//
+	// Boundaries are anchored to local midnight (assistant.historyBoundary), so an
+	// interval longer than a day cannot be honoured: it would fall back to one reset
+	// per midnight while the file claimed something else. Refusing it is better than
+	// quietly meaning a different thing, and a household wanting less than daily is
+	// asking for off.
+	MaxHistoryReset            = 24 * time.Hour
 	DefaultMaxProposalsPerTurn = 1
 	// DefaultPrivateWrites is the decided behaviour: a note to a member's own space
 	// is written, then shown to them with an undo button. A household wanting the
@@ -134,6 +150,7 @@ type Config struct {
 	Members   []MemberConfig   `yaml:"members"`
 	Endpoints []EndpointConfig `yaml:"endpoints"`
 	Memory    MemoryConfig     `yaml:"memory"`
+	History   HistoryConfig    `yaml:"history"`
 	Session   SessionConfig    `yaml:"session"`
 	Capture   CaptureConfig    `yaml:"capture"`
 	Update    UpdateConfig     `yaml:"update"`
@@ -307,6 +324,29 @@ type MemoryConfig struct {
 
 // AnnouncesReads reports whether replies carry the retrieval line. Unset is on.
 func (m MemoryConfig) AnnouncesReads() bool { return m.AnnounceReads == nil || *m.AnnounceReads }
+
+// HistoryConfig governs the short-term conversation history: the handful of recent
+// turns that ride in the prompt so the assistant can follow a thread.
+//
+// It is a section of its own, next to `memory` rather than inside it, because the two
+// are opposites and being told them apart is the whole point. `memory` is lore — what
+// the household decided to keep, permanent by design, written only through the capture
+// flow. This is the transcript of the last few minutes, in RAM, never written to lore,
+// already lost on every restart.
+type HistoryConfig struct {
+	// ResetEvery is how often a conversation's recent turns are dropped, anchored to
+	// local midnight: "6h" clears at 00:00, 06:00, 12:00 and 18:00, and "24h" at
+	// midnight. Zero — the default — never drops them on a schedule.
+	//
+	// The reset happens on the first message after a boundary passes, not on a timer,
+	// and the member is told when it drops anything. Nothing in lore is touched.
+	//
+	// It is not session.idle_timeout, though both are durations in this file and both
+	// are off by default. That one expires a member's *key*, after which their
+	// assistant refuses every message until somebody unlocks it at the machine. This
+	// one costs the thread of a conversation, once, with a line saying so.
+	ResetEvery Duration `yaml:"reset_every"`
+}
 
 // SessionConfig configures key lifetime.
 type SessionConfig struct {
@@ -494,6 +534,9 @@ func (c *Config) ApplyDefaults() {
 	// is also what "idle_timeout: 0s" means, so there is nothing to rewrite: normalising
 	// an unset value to a duration here is what kept a 30-minute expiry on the run path
 	// after the session package had turned it off.
+	//
+	// history.reset_every is not defaulted either, for exactly the same reason: zero
+	// is off, off is the default, and "reset_every: 0s" says so on purpose.
 	if c.Capture.MaxProposalsPerTurn == 0 {
 		c.Capture.MaxProposalsPerTurn = DefaultMaxProposalsPerTurn
 	}

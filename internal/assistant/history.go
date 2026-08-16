@@ -4,7 +4,10 @@
 
 package assistant
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // turnRecord is one delivered turn: what the member said and what they were shown.
 type turnRecord struct {
@@ -19,6 +22,12 @@ type historyRing struct {
 	mu  sync.Mutex
 	buf []turnRecord
 	max int
+	// since is the scheduled boundary this ring has already been reset to. See
+	// reset.go. The zero value is before every boundary, so the first turn after a
+	// restart adopts the current one without clearing anything and without telling
+	// anybody — a restart has already forgotten the conversation, and announcing the
+	// reset of an empty ring would be a notice about an event that did not happen.
+	since time.Time
 }
 
 func newHistoryRing(max int) *historyRing {
@@ -33,6 +42,28 @@ func (h *historyRing) add(user, assistant string) {
 	if len(h.buf) > h.max {
 		h.buf = append(h.buf[:0], h.buf[len(h.buf)-h.max:]...)
 	}
+}
+
+// resetIfDue drops every turn when boundary is later than the last one this ring was
+// reset to, and reports whether anything was actually dropped.
+//
+// The boundary is adopted either way, and the two halves of that are deliberate. A
+// ring that was empty when a boundary passed has nothing to forget, so nothing is
+// said; but the boundary is still spent, so a member who says nothing for three days
+// is told once, on the turn that crosses the next boundary, rather than being told
+// three times about resets of nothing.
+func (h *historyRing) resetIfDue(boundary time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.since.Before(boundary) {
+		return false
+	}
+	h.since = boundary
+	if len(h.buf) == 0 {
+		return false
+	}
+	h.buf = h.buf[:0]
+	return true
 }
 
 // snapshot returns the turns oldest first. The slice is a copy: the budget loop
