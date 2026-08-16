@@ -76,7 +76,9 @@
 #      secrets: a code minted inside a service lands in THAT service's named
 #      volume, which no other service and no host path can mount, so it reaches
 #      nobody. `--data-dir .` on the host is what puts it where the mount below
-#      can find it.
+#      can find it. On an SELinux host there is a second reason, in the `z`/`Z`
+#      note further down: a `compose run` against this service inherits its
+#      mounts and relabels the `Z` files out from under the running container.
 #
 #      What that writes is the digests of jordan's outstanding codes, and nobody
 #      else's — which the service below mounts read-only. This is the whole of
@@ -95,7 +97,7 @@
 # same directory and same override as `invite` in step 5, for the same reason and
 # with the same failure if it is left out. That writes
 # `<data_dir>/revocations/jordan.json`, then ADD the mount to that member's
-# service — `./revocations/jordan.json:/etc/kenward/revoked.json:ro` — and
+# service — `./revocations/jordan.json:/etc/kenward/revoked.json:ro,Z` — and
 # `docker compose up -d kenward-jordan`. The `--revoked=` flag is already in every
 # member's `command:` below; only the mount is added, and only once there is a
 # record to mount, for the missing-source-becomes-a-directory reason just above.
@@ -106,6 +108,44 @@
 # reports a revocation, and the container carries on serving the account. Rotating
 # that member's lore space key is separate and still yours: kenward has no
 # authority over one and says so.
+#
+# EVERY BIND MOUNT BELOW CARRIES `z` OR `Z`, AND WHICH ONE IS NOT ARBITRARY.
+#
+# On a host running SELinux in enforcing mode — Fedora, RHEL, CentOS Stream,
+# which is where rootless podman is most at home — a bind-mounted host file
+# keeps its own SELinux label, and a container process (`container_t`) is not
+# permitted to read it. Every read-only mount here would be denied and the
+# container would exit on a permission error it could not explain. The two
+# options tell the runtime to relabel the source so the container may read it:
+#
+#   z  relabel SHARED. Any container may read it. Used for the two files every
+#      service below mounts — ./kenward.yaml and ./bin/lore.
+#   Z  relabel PRIVATE to the one container. Used for the per-member files —
+#      ./invites/<id>.json and ./revocations/<id>.json — which have exactly one
+#      reader by design.
+#
+# DO NOT swap them. `Z` on a file two services share relabels it with the
+# categories of whichever container was started last, and the others lose
+# access — so `Z` on ./kenward.yaml would break the household one service at a
+# time, in start order, with no error naming the cause. `z` on a per-member
+# invite or revocation would be the smaller mistake but still the wrong one: it
+# opens a file scoped to one member to every container on the host.
+#
+# Both are no-ops where SELinux is not enforcing — Docker Desktop, Ubuntu and
+# every other AppArmor host parse the option and skip the relabel — so nothing
+# here changes on those. Relabelling DOES modify the host file's SELinux label
+# where it applies, which is the intended effect and worth knowing before
+# pointing a mount at a file something else on the host also reads.
+#
+# The one trap `Z` brings, on an enforcing host: `docker compose run` against a
+# member's service inherits that service's volumes, so the throwaway container
+# relabels the `Z` files to ITS categories and the long-running service loses
+# access to its own invites at the next start. That is the sharper form of the
+# reason step 5 already gives for minting on the host instead — `kenward invite
+# --name Jordan --data-dir .`, never `compose run … kenward-jordan invite`.
+#
+# Named volumes (kenward-*-data) need nothing: the runtime creates and labels
+# those itself.
 #
 # NO `env_file:` ANYWHERE IN THIS FILE — do not add it back. `env_file:`
 # injects the *entire* referenced file into that one container's process
@@ -181,9 +221,9 @@ services:
       # your david's tiers ever include a cloud tier, add exactly that
       # endpoint's api_key_env here — never the whole provider-key set.
     volumes:
-      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
+      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
       - kenward-david-data:/var/lib/kenward
-      - ./bin/lore:/usr/local/bin/lore:ro
+      - ./bin/lore:/usr/local/bin/lore:ro,z
       # DAVID'S outstanding claim codes and nobody else's, written by
       # `kenward invite --name David` (see step 4 in the header). Hashed —
       # a record is a PBKDF2 digest of an 80-bit code, not the code — so this
@@ -194,7 +234,7 @@ services:
       # copy is never rewritten, which is why the import skips digests already
       # present rather than overwriting them — otherwise a spent single-use code
       # would come back redeemable on the next `up`.
-      - ./invites/david.json:/etc/kenward/invites.json:ro
+      - ./invites/david.json:/etc/kenward/invites.json:ro,Z
     # `run` first, and it is not optional: the image's ENTRYPOINT is the bare
     # binary and `run` lives in its CMD, so a `command:` here REPLACES `run`
     # rather than adding to it. Without it the container exits 2 on startup with
@@ -258,11 +298,11 @@ services:
       # the key:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
     volumes:
-      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
+      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
       - kenward-jordan-data:/var/lib/kenward
-      - ./bin/lore:/usr/local/bin/lore:ro
+      - ./bin/lore:/usr/local/bin/lore:ro,z
       # As with david, above: jordan's own file, never the shared invites.json.
-      - ./invites/jordan.json:/etc/kenward/invites.json:ro
+      - ./invites/jordan.json:/etc/kenward/invites.json:ro,Z
     command:
       - "run"
       - "--config=/etc/kenward/kenward.yaml"
@@ -301,9 +341,9 @@ services:
       # `cloud` the same way jordan's does above:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
     volumes:
-      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
+      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
       - kenward-household-data:/var/lib/kenward
-      - ./bin/lore:/usr/local/bin/lore:ro
+      - ./bin/lore:/usr/local/bin/lore:ro,z
     command:
       - "run"
       - "--config=/etc/kenward/kenward.yaml"
@@ -330,7 +370,8 @@ services:
   # 3c. Run `kenward invite --name Sam --data-dir .` on the host BEFORE `up` (the
   #    override is required — see step 5 in the header), initialise sam's own lore
   #    store the same way step 4 does, and mount the file invite writes:
-  #    `./invites/sam.json:/etc/kenward/invites.json:ro`. Sam's
+  #    `./invites/sam.json:/etc/kenward/invites.json:ro,Z` — `Z`, not `z`, for
+  #    the reason in the header: this file has exactly one reader. Sam's
   #    own file — never david's, never the shared `invites.json`. Without it
   #    sam's container comes up claim-only and refuses the code sam was handed,
   #    in silence, which is the one enrolment failure nobody can diagnose from

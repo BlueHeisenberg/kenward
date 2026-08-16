@@ -1378,7 +1378,8 @@ func TestIsolatedRecreatesOnlyThePodsWhoseProvisionedFilesMayBeStale(t *testing.
 		t.Fatalf("newIsolated: %v", err)
 	}
 
-	// Every pod already exists, which is what a restart finds.
+	// Every pod already exists and predates the files above, which is what a restart
+	// finds after an operator has revoked or invited somebody.
 	vols := make(map[string]int, len(sup.pods))
 	for _, p := range sup.pods {
 		spec, err := sup.specFor(p)
@@ -1388,6 +1389,7 @@ func TestIsolatedRecreatesOnlyThePodsWhoseProvisionedFilesMayBeStale(t *testing.
 		if _, err := b.Create(context.Background(), spec); err != nil {
 			t.Fatalf("create %s: %v", p.name, err)
 		}
+		b.setCreatedAt(p.name, time.Now().Add(-time.Hour))
 		id, _ := b.volumeID(p.name)
 		vols[p.name] = id
 	}
@@ -1414,6 +1416,125 @@ func TestIsolatedRecreatesOnlyThePodsWhoseProvisionedFilesMayBeStale(t *testing.
 		if got, ok := b.volumeID(name); !ok || got != want {
 			t.Errorf("%s's work volume changed from %d to %d (present=%v); the member's lore lives there", name, want, got, ok)
 		}
+	}
+	if b.destroyed() != 0 {
+		t.Errorf("%d volumes were destroyed", b.destroyed())
+	}
+}
+
+// backdate stamps a host file's modification time, so a test can put it on a chosen
+// side of a pod's creation time without sleeping.
+func backdate(t *testing.T, path string, when time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatalf("backdating %s: %v", path, err)
+	}
+}
+
+// revokedHousehold builds a household in which david has been revoked, with the record
+// stamped at recorded and every pod already created at created, and returns the
+// supervisor, the backend and david's pod name.
+func revokedHousehold(t *testing.T, recorded, created time.Time) (*Isolated, *fakeBackend, string) {
+	t.Helper()
+	dir := t.TempDir()
+	record := filepath.Join(dir, "david.json")
+	if err := os.WriteFile(record, []byte(`{"member_id":"david","revoked_at":"2026-08-15T12:00:00Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backdate(t, record, recorded)
+
+	b := newFakeBackend()
+	opts := isolatedTestOptions(b)
+	opts.RevocationDir = dir
+	sup, err := newIsolated(isolatedTestConfig(), opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		if _, err := b.Create(context.Background(), spec); err != nil {
+			t.Fatalf("create %s: %v", p.name, err)
+		}
+		b.setCreatedAt(p.name, created)
+	}
+	return sup, b, podName(DefaultNamePrefix, "member-david")
+}
+
+// TestIsolatedComparesAPodsAgeAgainstItsFilesRatherThanTheirExistence.
+//
+// A revocation record is never deleted — nothing can know when the pod has consumed it
+// — so its existence cannot be the question. keel reports when each sandbox's runtime
+// object was made (sandbox.Status.CreatedAt), and that is what separates "this pod was
+// built before the record and cannot be holding it" from "this pod was built after it
+// and demonstrably is".
+//
+// The third case is the one worth stating out loud: a zero CreatedAt means the backend
+// could not answer, not that the pod is new, and an unanswered question about a
+// revocation is answered by rebuilding. That costs one container and keeps the work
+// volume; the other way round costs a revoked member being served.
+func TestIsolatedComparesAPodsAgeAgainstItsFilesRatherThanTheirExistence(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name     string
+		recorded time.Time
+		created  time.Time
+		want     int
+		why      string
+	}{
+		{
+			name: "record newer than the pod", recorded: now.Add(-time.Hour), created: now.Add(-2 * time.Hour),
+			want: 1, why: "the pod was built before the revocation was recorded, so it cannot have been given it",
+		},
+		{
+			name: "pod newer than the record", recorded: now.Add(-2 * time.Hour), created: now.Add(-time.Hour),
+			want: 0, why: "the pod was built after the record and was given it at create time; rebuilding it here is what made a revoked member's pod rebuild on every start",
+		},
+		{
+			name: "creation time unknown", recorded: now.Add(-time.Hour), created: time.Time{},
+			want: 1, why: "zero means the backend cannot say, not that the pod is current",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sup, b, david := revokedHousehold(t, tc.recorded, tc.created)
+			sup.recreateStalePods(context.Background())
+			if got := b.recreated(david); got != tc.want {
+				t.Errorf("david's pod recreated %d times, want %d — %s", got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// TestIsolatedRecreatesARevokedMembersPodOnceAndNotOnEveryStart is what the comparison
+// is for, and the module-level shape of what was watched happen against real podman: the
+// first start rebuilds david's pod so it finally reads the record, and the second start
+// leaves it alone because it already has.
+//
+// Recreate advances the pod's creation time past the record — keel's contract, and the
+// reason one delivery is enough. Without it the record's existence is the only signal
+// available and the rebuild repeats for as long as the record does, which is forever.
+func TestIsolatedRecreatesARevokedMembersPodOnceAndNotOnEveryStart(t *testing.T) {
+	sup, b, david := revokedHousehold(t, time.Now().Add(-time.Hour), time.Now().Add(-2*time.Hour))
+	vol, _ := b.volumeID(david)
+
+	sup.recreateStalePods(context.Background())
+	if got := b.recreated(david); got != 1 {
+		t.Fatalf("first start recreated david's pod %d times, want 1", got)
+	}
+	if !b.podCreatedAt(david).After(time.Now().Add(-time.Minute)) {
+		t.Fatalf("recreation left the pod's creation time at %v; keel advances it, which is what makes one delivery enough", b.podCreatedAt(david))
+	}
+
+	sup.recreateStalePods(context.Background())
+	if got := b.recreated(david); got != 1 {
+		t.Errorf("david's pod was recreated %d times across two starts, want 1: the record is never deleted, so rebuilding on its existence rebuilds his pod on every start for as long as he stays revoked", got)
+	}
+
+	// And the delivery still preserved his lore, both times.
+	if got, ok := b.volumeID(david); !ok || got != vol {
+		t.Errorf("david's work volume changed from %d to %d (present=%v)", vol, got, ok)
 	}
 	if b.destroyed() != 0 {
 		t.Errorf("%d volumes were destroyed", b.destroyed())

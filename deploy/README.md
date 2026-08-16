@@ -124,6 +124,14 @@ it reaches nobody. Run them where `.env` already is, with `--data-dir` pointing
 at the directory the compose file bind-mounts from — see
 `compose.isolated.yml`'s header, step 5 and "TO REVOKE A MEMBER LATER".
 
+On an SELinux-enforcing host there is a second reason. Every bind mount in both
+compose files carries `z` or `Z`, without which a container may not read the
+host file at all; the per-member invite and revocation files use `Z`, which is
+private to one container, and a `compose run` against that member's service
+inherits those mounts and relabels them to the throwaway container — leaving the
+running one locked out of its own invites. `compose.isolated.yml`'s header sets
+out which option each mount gets and why.
+
 `run` here reuses that service's image, volumes and
 environment, so the claim code lands in the same data directory and store
 the running node reads from. Don't use `docker compose exec` instead unless

@@ -38,6 +38,23 @@
 # variable only, sourced from `.env`, exactly as kenward.yaml itself only ever
 # names an env var (`bot_token_env`, `api_key_env`) and never a literal value.
 #
+# BOTH BIND MOUNTS BELOW CARRY `z`, AND THAT IS AN SELINUX REQUIREMENT, NOT A
+# STYLE CHOICE. On a host running SELinux in enforcing mode — Fedora, RHEL,
+# CentOS Stream, where rootless podman is most at home — a bind-mounted host
+# file keeps its own label and a container process (`container_t`) may not read
+# it, so both mounts would be denied and this container would exit on a
+# permission error that names no cause. `z` relabels the source so the container
+# may read it. It is a no-op wherever SELinux is not enforcing (Docker Desktop,
+# Ubuntu and every other AppArmor host parse the option and skip the relabel).
+#
+# `z` (shared) rather than `Z` (private to one container) deliberately, for both:
+# neither file is one container's — the `docker compose run` steps above start a
+# second container against the same two paths, and compose.isolated.yml in this
+# directory mounts them into three more. `Z` would relabel them to whichever
+# container was started last and the others would lose access. Nothing is given
+# away by that: this configuration names secrets and holds none, and `lore` is a
+# binary. The named volume needs nothing — the runtime labels that itself.
+#
 # NO `env_file:` HERE either — do not add it back. Unlike compose.isolated.yml,
 # this is not a privacy boundary: Simple mode is one process behind one bot
 # token by design, so there is no second member's token for a stray `env_file:`
@@ -102,7 +119,7 @@ services:
       #        environment:
       #          CREDENTIALS_DIRECTORY: /run/secrets
       #        volumes:
-      #          - ./kenward-passphrase:/run/secrets/kenward-passphrase:ro
+      #          - ./kenward-passphrase:/run/secrets/kenward-passphrase:ro,Z
       #
       # kenward reports which one it used at startup — `source=…` on the
       # sessions line — which is how you check.
@@ -120,12 +137,12 @@ services:
       # OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
 
     volumes:
-      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro
+      - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
       - kenward-data:/var/lib/kenward
       # Supply lore — see ../Dockerfile's note. Replace the host path with
       # wherever you keep a `lore` binary built for linux/<arch matching the
       # image>.
-      - ./bin/lore:/usr/local/bin/lore:ro
+      - ./bin/lore:/usr/local/bin/lore:ro,z
 
     # --- hardening ---
     security_opt:

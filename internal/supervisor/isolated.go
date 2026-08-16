@@ -906,11 +906,19 @@ func (i *Isolated) logStartup() {
 // same reason and at the same price D-023 already pays: it is serving nobody, so
 // replacing it interrupts nothing. Every other pod is started, not replaced.
 //
-// The cost, stated: a revoked member's record is never deleted — nothing can know when
-// the pod has consumed it — so that member's pod is recreated at every start for as long
-// as the record exists. For a member who stays revoked their pod serves nobody and this
-// is free; for one who is invited again and claims again it is one container rebuild per
-// host restart, inside a restart that was stopping every pod anyway.
+// When one of those is actually rebuilt. A revoked member's record is never deleted —
+// nothing can know when the pod has consumed it — so the record's mere existence cannot
+// be the question, or that member's pod would be rebuilt on every start for as long as
+// the record exists. The question asked instead is whether the pod predates the file:
+// keel reports each sandbox's creation time (sandbox.Status.CreatedAt, unchanged by
+// Start and advanced by Recreate), and a pod created after the file's mtime is already
+// holding that file's current contents and is left alone. So the record is delivered
+// once and the rebuild happens once.
+//
+// Every uncertain answer recreates — an unknown creation time, an unreadable file, a
+// clock or a filesystem too coarse to separate the two. A needless rebuild costs one
+// container and preserves the work volume; a missed one leaves a revoked member served.
+// fileNewerThan states each of those cases and why.
 //
 // Unlike Roll this does not wait for the replacement to come up. A rolling update waits
 // because it is proving a new image one unit at a time; here the image is unchanged and
@@ -918,56 +926,124 @@ func (i *Isolated) logStartup() {
 // behind one crash-looping pod's timeout. The pod's own monitor takes it from here.
 // Failures are logged and never fatal, for the same reason they are not in Roll.
 //
-// It runs after a roll rather than instead of one, and will recreate a pod the roll
-// has just recreated. That is deliberate: a roll stops at its first failure and leaves
-// every later pod untouched, so treating "a roll happened" as "every pod is current"
-// would skip exactly the pods a failed roll did not reach.
+// It runs after a roll rather than instead of one, and asks each pod the same question
+// regardless of whether the roll reached it. That is deliberate and it is why the
+// question is per-pod: a roll stops at its first failure and leaves every later pod
+// untouched, so treating "a roll happened" as "every pod is current" would skip exactly
+// the pods a failed roll did not reach. A pod the roll did recreate now has a creation
+// time later than its files and is skipped on its own evidence, not on an assumption.
 func (i *Isolated) recreateStalePods(ctx context.Context) {
 	for _, p := range i.pods {
-		if !p.stale() {
+		// A first pass against an unknown creation time, which costs no Inspect:
+		// the group's pod is never given these files and most members have neither,
+		// and a pod that is not stale even when nothing is known about its age
+		// cannot become stale once something is. recreateOne asks the real question.
+		if !p.stale(time.Time{}) {
 			continue
 		}
-		if err := i.recreateOne(ctx, p); err != nil {
-			if errors.Is(err, errPodAbsent) {
-				// Never created, so it will be created from the current files.
-				continue
-			}
+		switch err := i.recreateOne(ctx, p); {
+		case errors.Is(err, errPodAbsent):
+			// Never created, so it will be created from the current files.
+		case errors.Is(err, errPodCurrent):
+			// Created after every file it would be given: it already holds them.
+		case err != nil:
 			i.logger.Warn("supervisor: could not recreate pod to give it the current invites and revocations; it may be serving a revoked account",
 				"pod", p.name, "error", err)
-			continue
+		default:
+			i.logger.Info("supervisor: pod recreated so it reads the current invites and revocations", "pod", p.name)
 		}
-		i.logger.Info("supervisor: pod recreated so it reads the current invites and revocations", "pod", p.name)
 	}
 }
 
-// stale reports whether this pod may not be holding the current contents of the
-// per-member files the host provisions into it. See recreateStalePods.
-func (p *pod) stale() bool {
+// stale reports whether this pod, created at createdAt, may not be holding the
+// current contents of the per-member files the host provisions into it.
+// createdAt is the pod's sandbox.Status.CreatedAt. See recreateStalePods.
+func (p *pod) stale(createdAt time.Time) bool {
 	if p.key.group {
 		// The group's pod is given neither: it has no claimer and holds no member's
 		// binding.
 		return false
 	}
-	if fileExists(p.revocation) {
+	if fileNewerThan(p.revocation, createdAt) {
 		return true
 	}
-	return !p.enrolled && fileExists(p.inviteSeed)
+	return !p.enrolled && fileNewerThan(p.inviteSeed, createdAt)
 }
 
-func fileExists(path string) bool {
+// createdAtSkew is how much older than a host file a pod may be observed to be
+// and still be treated as possibly predating it.
+//
+// It exists because the two timestamps being compared are recorded by different
+// machinery and only one of them is exact. keel parses the pod's creation time
+// verbatim from podman's `Created`, which is RFC3339Nano; the host file's is
+// whatever its filesystem could store. ext4 keeps nanoseconds, ext3 keeps whole
+// seconds and FAT/exFAT keeps two, and every one of those truncates *downwards*
+// — a record written at 10.9 on a two-second filesystem reads back as 10.0, so a
+// pod created at 10.5 looks newer than a record that is in fact newer than it.
+// Two seconds covers the coarsest of those. Clock skew proper does not arise on
+// the path this runs on, because podman's Created and the file's mtime are both
+// stamped by this host's clock; a data directory on a remote filesystem with its
+// own clock is the case no fixed tolerance can bound, and it errs the same way as
+// everything else here.
+//
+// It is deliberately small. The tolerance is a window after the pod's creation in
+// which an older file still counts as newer, so an operator who records a
+// revocation and restarts within two seconds buys one extra rebuild on the
+// following start and nothing worse. A generous tolerance — a minute, say — would
+// undo the whole point for exactly the sequence the operator is told to perform.
+const createdAtSkew = 2 * time.Second
+
+// fileNewerThan reports whether the host file at path exists and may be newer
+// than a pod created at createdAt — that is, whether that pod may not be holding
+// its current contents.
+//
+// Every uncertain answer is "yes", and that asymmetry is the whole design. A
+// needless recreation costs one container rebuild and preserves the work volume
+// structurally; a missed one means a revoked member's pod goes on serving the
+// account, which is the defect recreateStalePods exists to close. So:
+//
+//   - A zero createdAt means unknown, not old, and is treated as stale. Zero
+//     reaches here from a QemuBackend sandbox made before keel wrote creation
+//     markers, from a podman `Created` field that would not parse, and from an
+//     Inspect that failed for some reason other than the sandbox being absent.
+//     None of those is evidence that the pod is current.
+//   - A stat that fails for any reason other than the file not existing is also
+//     stale. The file may well be a revocation record; if it is unreadable,
+//     replace will fail on it in podFile and say so loudly, which is the outcome
+//     to want over quietly leaving a revoked member served.
+func fileNewerThan(path string, createdAt time.Time) bool {
 	if path == "" {
 		return false
 	}
-	_, err := os.Stat(path)
-	return err == nil
+	fi, err := os.Stat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false
+	case err != nil, createdAt.IsZero():
+		return true
+	}
+	return fi.ModTime().After(createdAt.Add(-createdAtSkew))
 }
 
-// recreateOne replaces one pod that already exists, and does not wait for it.
+// errPodCurrent reports that a pod was created after every per-member file the
+// host would provision into it, so it is already holding their current contents
+// and must not be rebuilt. Not a failure.
+var errPodCurrent = errors.New("supervisor: pod already holds the current files")
+
+// recreateOne replaces one pod that already exists and may not be holding its
+// current per-member files, and does not wait for it.
 func (i *Isolated) recreateOne(ctx context.Context, p *pod) error {
 	p.opMu.Lock()
 	defer p.opMu.Unlock()
-	if _, err := i.inspect(ctx, p.name); errors.Is(err, sandbox.ErrSandboxNotFound) {
+	// One Inspect answers both questions: whether there is a pod at all, and how
+	// old it is. Any failure other than absence leaves CreatedAt zero, which stale
+	// reads as unknown and therefore stale — see fileNewerThan.
+	st, err := i.inspect(ctx, p.name)
+	if errors.Is(err, sandbox.ErrSandboxNotFound) {
 		return errPodAbsent
+	}
+	if !p.stale(st.CreatedAt) {
+		return errPodCurrent
 	}
 	return i.replace(ctx, p)
 }

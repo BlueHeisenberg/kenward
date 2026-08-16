@@ -206,7 +206,13 @@ type fakeBackend struct {
 	// volumes models the named work volume: created once with Create, reused
 	// by Recreate, deleted only by Purge. The id is the identity assertion —
 	// a recreation that changed it would have lost the member's lore.
-	volumes   map[string]int
+	volumes map[string]int
+	// createdAt models sandbox.Status.CreatedAt to the contract keel documents
+	// and measured against podman 4.9.3: Create sets it, Recreate advances it,
+	// Start leaves it alone, and a sandbox whose creation time is unknown
+	// reports the zero Time. setCreatedAt backdates a pod so a test can put a
+	// host file on either side of it.
+	createdAt map[string]time.Time
 	volSeq    int
 	creates   map[string]int
 	starts    map[string]int
@@ -229,6 +235,7 @@ func newFakeBackend() *fakeBackend {
 		panicOnInspect: make(map[string]bool),
 		panicOnStop:    make(map[string]bool),
 		volumes:        make(map[string]int),
+		createdAt:      make(map[string]time.Time),
 		creates:        make(map[string]int),
 		starts:         make(map[string]int),
 		stops:          make(map[string]int),
@@ -278,6 +285,21 @@ func (b *fakeBackend) setPanicOnStop(name string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.panicOnStop[name] = true
+}
+
+// setCreatedAt overrides when the named pod's runtime object was made. The zero
+// Time models a sandbox whose creation time the backend cannot answer for.
+func (b *fakeBackend) setCreatedAt(name string, t time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.createdAt[name] = t
+}
+
+// podCreatedAt reads back what Inspect would report.
+func (b *fakeBackend) podCreatedAt(name string) time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.createdAt[name]
 }
 
 // volumeID returns the identity of the pod's work volume.
@@ -343,6 +365,7 @@ func (b *fakeBackend) Create(_ context.Context, spec sandbox.Spec) (sandbox.Hand
 	defer b.mu.Unlock()
 	b.created[spec.Name] = spec
 	b.creates[spec.Name]++
+	b.createdAt[spec.Name] = time.Now()
 	b.running[spec.Name] = !b.crashLoop[spec.Name]
 	// Volume creation is idempotent, as in keel: an existing volume is reused
 	// with its identity — and its data — intact.
@@ -395,6 +418,10 @@ func (b *fakeBackend) Recreate(_ context.Context, spec sandbox.Spec) (sandbox.Ha
 	}
 	b.created[spec.Name] = spec
 	b.recreates[spec.Name]++
+	// Recreate replaces the runtime object, so the creation time advances even
+	// though the work volume below survives — keel's contract, stated on
+	// sandbox.Status.CreatedAt and the whole basis of recreateStalePods.
+	b.createdAt[spec.Name] = time.Now()
 	b.running[spec.Name] = !b.crashLoop[spec.Name]
 	if w := b.recreateWarmup[spec.Name]; w > 0 && b.running[spec.Name] {
 		b.warmupLeft[spec.Name] = w
@@ -417,6 +444,7 @@ func (b *fakeBackend) Purge(_ context.Context, id string) error {
 	delete(b.created, id)
 	delete(b.running, id)
 	delete(b.volumes, id)
+	delete(b.createdAt, id)
 	return nil
 }
 
@@ -435,7 +463,7 @@ func (b *fakeBackend) Inspect(_ context.Context, id string) (sandbox.Status, err
 		if b.warmupLeft[id] == 0 {
 			b.running[id] = true
 		}
-		return sandbox.Status{Running: false}, nil
+		return sandbox.Status{Running: false, CreatedAt: b.createdAt[id]}, nil
 	}
 	running := b.running[id]
 	if running && b.flapArmed[id] {
@@ -443,7 +471,7 @@ func (b *fakeBackend) Inspect(_ context.Context, id string) (sandbox.Status, err
 		b.flapArmed[id] = false
 		b.running[id] = false
 	}
-	return sandbox.Status{Running: running}, nil
+	return sandbox.Status{Running: running, CreatedAt: b.createdAt[id]}, nil
 }
 
 func (b *fakeBackend) Exec(context.Context, string, []string, sandbox.ExecOpts) (sandbox.ExecResult, error) {

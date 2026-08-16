@@ -1097,7 +1097,13 @@ bind-mount a `lore` binary at `/usr/local/bin/lore`, or build a derived image th
 them:
 
 - **The compose path** takes the bind-mount. `deploy/compose.isolated.yml` carries
-  `./bin/lore:/usr/local/bin/lore:ro` on every service.
+  `./bin/lore:/usr/local/bin/lore:ro,z` on every service. The `z` is the SELinux relabel
+  every bind mount in both compose files now carries — without it an enforcing host
+  (Fedora, RHEL, CentOS Stream) refuses the container read access to the host file and
+  the pod exits on a permission error naming no cause. Shared files take `z`, the
+  per-member invite and revocation files take `Z`, and the header of each file says why
+  swapping them breaks a household; neither option does anything on a host that is not
+  enforcing.
 - **The supervisor path can only use the derived image.** `sandbox.Spec` has `Image`,
   `Env`, `Command` and `Files` and no host bind-mount, so there is nothing for
   `Isolated` to mount with. The operator builds `FROM ghcr.io/blueheisenberg/kenward:<tag>`
@@ -1390,6 +1396,21 @@ work volume, so no member's lore moves; it does not wait for the replacement, be
 image is unchanged and holding every other member's monitor behind one crash-looping pod
 would be a worse trade than a rolling update makes. The same gap made `kenward invite`'s
 own "restart kenward before handing the code over" false, and it is the same fix.
+
+**Once, though, and not on every start.** The record is never deleted — nothing can know
+when a pod has consumed it — so recreating on its mere existence rebuilt that member's pod
+at every start for as long as they stayed revoked. What separates the two cases is the
+pod's age: keel reports each sandbox's creation time (`sandbox.Status.CreatedAt`, which
+`Start` leaves alone and `Recreate` advances), so a pod created after the record's mtime
+was given that record at create time and is left alone, and one created before it cannot
+have been and is replaced. Every uncertain answer replaces: a creation time the backend
+cannot supply, a file that will not `stat`, a filesystem whose timestamps are too coarse
+to separate the two (a two-second tolerance covers the worst of those). A needless rebuild
+costs one container and preserves the work volume; a missed one leaves a revoked member
+being served, and those are not comparable. Measured against real podman 4.9.3: with a
+record in place the first start rebuilds the pod — new container id, later `Created` — and
+the second and third leave it untouched, while the pre-change binary rebuilt it on all
+three.
 
 **And in both modes it refuses while `kenward.yaml` declares that member's
 `telegram_id`.** That is the same silent success arriving by a different route: a
