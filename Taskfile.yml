@@ -32,6 +32,21 @@ tasks:
     cmds:
       - go build -ldflags "{{.LDFLAGS}}" -o ./bin/kenward ./cmd/kenward
 
+  build:desktop:
+    desc: Build the optional status-bar wrapper into ./bin. Needs cgo on macOS only.
+    cmds:
+      # -H=windowsgui is a Windows linker mode and is added only for that GOOS.
+      # Without it, launching the tray app opens a console window behind it.
+      - |
+        flags="{{.LDFLAGS}}"
+        if [ "$(go env GOOS)" = "windows" ]; then flags="$flags -H=windowsgui"; fi
+        go build -ldflags "$flags" -o ./bin/kenward-desktop ./cmd/kenward-desktop
+
+  build:nocgo:
+    desc: Prove the daemon still builds without cgo. The distroless image depends on it.
+    cmds:
+      - CGO_ENABLED=0 go build -o /dev/null ./cmd/kenward
+
   test:
     desc: Run the test suite.
     cmds:

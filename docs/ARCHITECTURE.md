@@ -395,6 +395,12 @@ have to absorb it.
 Go 1.25, single static binary, no cgo. Cross-platform everywhere except the isolated
 supervisor, which is Linux-only and degrades with a clear error rather than a panic.
 
+The one qualification is the optional desktop wrapper, `cmd/kenward-desktop`, which is a
+second binary rather than a mode of the first precisely so that this claim survives: a
+menu bar needs cgo on macOS, and the distroless image has no libc to link against. See
+[DESKTOP.md](DESKTOP.md). The daemon is unchanged and headless remains first-class — the
+wrapper starts `kenward run` as a child process and never imports its internals.
+
 Go rather than Python because the two packages worth inheriting are Go; because lore, the
 thing being talked to, is Go; because per-member processes cost roughly 25 MB each instead
 of 150 MB, which matters once there is one per household member; and because a single
@@ -407,6 +413,13 @@ for the mechanisms that are not kenward's to own: process isolation, the sealed 
 OpenAI-compatible model client, and signed self-update. keel knows nothing about
 households; no exported keel signature contains a domain noun. Adding a dependency outside
 that set is a decision recorded here, not a `go get`.
+
+A fourth, `fyne.io/systray`, was added for the desktop wrapper and reaches nothing else.
+It was chosen over `getlantern/systray`, which is unmaintained since 2024 and needs GTK3
+and libayatana-appindicator headers on Linux, and over Wails and Fyne, which ship a
+whole toolkit for a menu. It is Apache-2.0, so it imposes nothing on kenward's BSL 1.1;
+its Linux backend is a pure-Go StatusNotifierItem implementation over D-Bus, and its
+Windows backend is pure-Go syscalls, so cgo is required on macOS alone.
 
 Telegram is the transport because it is a globally reachable, outbound-only channel that
 every household member already has, and because group chats and direct messages map

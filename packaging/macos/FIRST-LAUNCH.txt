@@ -1,0 +1,23 @@
+kenward.app is not signed by Apple, and it is not notarised.
+
+That is a deliberate choice, not an oversight, and it has one consequence you will meet
+immediately: double-clicking the app the first time will fail with a message saying it
+is damaged, or that Apple could not check it for malicious software. The app is not
+damaged. macOS says that about every unsigned application.
+
+To open it the first time:
+
+  1. Drag kenward.app into Applications.
+  2. Open Applications in Finder.
+  3. Right-click (or Control-click) kenward, and choose Open.
+  4. Click Open in the dialog that appears.
+
+macOS remembers the decision. Every launch after that is an ordinary double-click, and
+the login item, if you turn it on, works normally.
+
+On macOS 15 and later the right-click route may be refused as well. If it is, open
+System Settings → Privacy & Security, scroll to the bottom, and click "Open Anyway"
+next to the message about kenward; you will be asked once and never again.
+
+A menu bar icon appears when it starts. There is no window: kenward-desktop supervises
+the kenward daemon and opens the dashboard in your own browser.
