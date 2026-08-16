@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -26,6 +30,7 @@ import (
 // real network, and the last one is the case that must not fail.
 type probes struct {
 	lore     func(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult
+	loreInit func(ctx context.Context, bin, home, device string) error
 	sync     func(ctx context.Context) syncResult
 	telegram func(ctx context.Context, token string) telegramResult
 	endpoint func(ctx context.Context, ep routing.Endpoint) endpointResult
@@ -51,6 +56,54 @@ func (p probes) loreProbe() func(context.Context, *config.Config, config.UnitSco
 		return p.lore
 	}
 	return probeLore
+}
+
+func (p probes) loreInitProbe() func(context.Context, string, string, string) error {
+	if p.loreInit != nil {
+		return p.loreInit
+	}
+	return runLoreInit
+}
+
+// runLoreInit creates the account, device and personal space in an empty lore home.
+//
+// It is a subprocess and not a library call, and that is a finding rather than a
+// preference. lore is a Go module now, but its public API has no way to do this: package
+// lore exports Open, which *returns* ErrNoAccount on a home like this one, and no Init
+// and no CreateSpace at all — account and device generation and space creation live in
+// internal/keys and internal/store, reachable only from `cmd/lore`. So the binary is the
+// whole of the surface for this job, and importing lore here would add a module
+// dependency that cannot perform the one operation it was added for. When D-036 moves
+// kenward onto the library this is the call that has to change, and it will only be able
+// to once lore exports one.
+//
+// # The recovery code
+//
+// `lore init` prints one to stdout, once, and never again. This discards it, and that is
+// deliberate on two counts. It is a KDF factor for relay signup and backup — neither of
+// which any kenward deployment configures — so nothing here needs it; and the alternative
+// is putting a member's account recovery factor into `podman logs`, which is the operator's
+// to read, in the one mode whose purpose is that the operator holds nothing of a member's.
+// A member who later wants one mints it from inside their own pod with `lore recovery new`,
+// which needs no previous code. Everything else on stdout is the new account and device
+// ids, which are equally not the host's business.
+func runLoreInit(ctx context.Context, bin, home, device string) error {
+	cmd := exec.CommandContext(ctx, bin, "init", "--yes-i-saved-it", "--name", device)
+	// The home wins over whatever the process inherited: this call is about one
+	// specific store, and a LORE_HOME already in the environment is the same value.
+	cmd.Env = append(os.Environ(), "LORE_HOME="+home)
+	cmd.Stdout = io.Discard
+	// lore writes its failures to stderr and only the recovery code and the new ids to
+	// stdout, so this keeps the diagnosis and drops the secret.
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("%w: %s", err, detail)
+		}
+		return err
+	}
+	return nil
 }
 
 func (p probes) telegramProbe() func(context.Context, string) telegramResult {

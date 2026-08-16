@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -534,4 +535,190 @@ func mustLoad(t *testing.T, yaml string) *config.Config {
 		t.Fatalf("loading configuration: %v", err)
 	}
 	return cfg
+}
+
+// loreInitCall is one recorded `lore init`: nothing about it is a secret, and the whole
+// point of recording it is asserting the calls that must NOT happen.
+type loreInitCall struct{ bin, home, device string }
+
+// TestRunInitialisesAnEmptyPodLoreHome covers the defect that made isolated mode via
+// `kenward run` unreachable for any household that had never been brought up before.
+//
+// A pod's work volume is created empty and LORE_HOME points inside it, so `lore mcp`
+// exits before the MCP handshake, checkLore correctly refuses, and it refuses again on
+// every restart forever because nothing anywhere runs `lore init` against that volume.
+// The compose path has a documented operator step and a bind-mount to reach the store
+// with; a supervisor-started pod has neither. Found on real podman.
+//
+// Every row here is a decision about *whose* store this is. The pod initialises its own
+// and only its own: not a home that already holds one, not the host supervisor's (it has
+// none), not simple mode's, and never a LORE_HOME the environment did not name — that
+// last one being ~/.lore, a person's own store on their own machine.
+func TestRunInitialisesAnEmptyPodLoreHome(t *testing.T) {
+	t.Parallel()
+
+	// seed says what is in LORE_HOME before `run`: absent entirely, present and empty,
+	// present with a store already in it, or not named at all.
+	const (
+		absent = iota
+		empty
+		occupied
+		unset
+	)
+
+	for _, tc := range []struct {
+		name       string
+		yaml       string
+		args       []string
+		seed       int
+		wantDevice string // "" means no call may be made
+	}{
+		{"a member's pod, volume never initialised", isolatedYAML, []string{"run", "--member", "david"}, absent, "david"},
+		{"a member's pod, volume created and empty", isolatedYAML, []string{"run", "--member", "david"}, empty, "david"},
+		{"the group's pod", isolatedYAML, []string{"run", "--group"}, absent, "group"},
+		{"a member's pod whose store already exists", isolatedYAML, []string{"run", "--member", "david"}, occupied, ""},
+		{"the host supervisor, which holds no memory", isolatedYAML, []string{"run"}, absent, ""},
+		{"simple mode, where LORE_HOME is the operator's own", simpleYAML, []string{"run"}, absent, ""},
+		{"a pod with no LORE_HOME named", isolatedYAML, []string{"run", "--member", "david"}, unset, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			vars := fullEnvironment()
+			dir := filepath.Join(t.TempDir(), "lore")
+			if tc.seed != unset {
+				vars["LORE_HOME"] = dir
+			}
+			switch tc.seed {
+			case empty:
+				mustMkdir(t, dir)
+			case occupied:
+				mustMkdir(t, dir)
+				if err := os.WriteFile(filepath.Join(dir, "account.json"), []byte("{}"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			h := newHarness(t, tc.yaml, vars)
+			var calls []loreInitCall
+			h.e.probes.loreInit = func(_ context.Context, bin, home, device string) error {
+				calls = append(calls, loreInitCall{bin, home, device})
+				return nil
+			}
+			h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+				return stubSupervisor{}, nil
+			}
+
+			if code := h.run(tc.args...); code != exitOK {
+				t.Fatalf("exit = %d, want %d\n%s", code, exitOK, h.both())
+			}
+			if tc.wantDevice == "" {
+				if len(calls) != 0 {
+					t.Fatalf("`lore init` was run %d time(s) (%v); this store is not this process's to create",
+						len(calls), calls)
+				}
+				return
+			}
+			if len(calls) != 1 {
+				t.Fatalf("`lore init` was run %d time(s), want exactly 1 — a pod on an empty volume "+
+					"crash-loops forever without it\n%s", len(calls), h.both())
+			}
+			got := calls[0]
+			// The binary is memory.lore_command's, not a second name for the same
+			// program: an operator who renamed it renamed the one kenward spawns.
+			if want := "lore"; got.bin != want {
+				t.Errorf("initialised with %q, want memory.lore_command's %q", got.bin, want)
+			}
+			if got.home != dir {
+				t.Errorf("initialised %q, want this unit's own LORE_HOME %q", got.home, dir)
+			}
+			// The device name is the unit's, so `lore status` in a pod says whose
+			// store it is rather than a container id nobody chose.
+			if got.device != tc.wantDevice {
+				t.Errorf("device name %q, want %q", got.device, tc.wantDevice)
+			}
+		})
+	}
+}
+
+// TestRunInitialisesTheStoreOnceAndNeverAgain is the idempotence the fix above is only
+// safe under: whatever `lore init` left behind, the next start must leave alone.
+//
+// The recorded call seeds the directory exactly as the real binary would, so the second
+// and third starts run the real predicate against a real store rather than against a
+// second copy of the rule. "It initialised twice" and "it clobbered an existing store"
+// are the same bug, and a member's lore has no undo.
+func TestRunInitialisesTheStoreOnceAndNeverAgain(t *testing.T) {
+	t.Parallel()
+	vars := fullEnvironment()
+	dir := filepath.Join(t.TempDir(), "lore")
+	vars["LORE_HOME"] = dir
+
+	h := newHarness(t, isolatedYAML, vars)
+	calls := 0
+	h.e.probes.loreInit = func(_ context.Context, _, home, _ string) error {
+		calls++
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			return err
+		}
+		// What the real `lore init` leaves behind.
+		for _, f := range []string{"account.json", "device.json", "lore.db"} {
+			if err := os.WriteFile(filepath.Join(home, f), []byte("x"), 0o600); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+		return stubSupervisor{}, nil
+	}
+
+	for i := range 3 {
+		if code := h.run("run", "--member", "david"); code != exitOK {
+			t.Fatalf("start %d: exit = %d\n%s", i+1, code, h.both())
+		}
+	}
+	if calls != 1 {
+		t.Errorf("`lore init` ran %d times across three starts, want exactly 1; every run after "+
+			"the first would be re-keying a member's own store", calls)
+	}
+}
+
+// TestRunRefusesWhenTheStoreCannotBeCreated is the failure half. A pod that cannot make
+// its own store must say so and stop rather than serve: there is no operator step behind
+// it — the volume is reachable from nowhere else — so a warning would be a household with
+// no memory and nothing to read about it.
+func TestRunRefusesWhenTheStoreCannotBeCreated(t *testing.T) {
+	t.Parallel()
+	vars := fullEnvironment()
+	dir := filepath.Join(t.TempDir(), "lore")
+	vars["LORE_HOME"] = dir
+
+	h := newHarness(t, isolatedYAML, vars)
+	h.e.probes.loreInit = func(context.Context, string, string, string) error {
+		return errors.New("lore: mkdir /work/lore: read-only file system")
+	}
+	built := false
+	h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+		built = true
+		return stubSupervisor{}, nil
+	}
+
+	if code := h.run("run", "--member", "david"); code != exitFailure {
+		t.Fatalf("exit = %d, want %d\n%s", code, exitFailure, h.both())
+	}
+	if built {
+		t.Error("the supervisor was built anyway; nothing may be served without memory")
+	}
+	for _, want := range []string{dir, "read-only file system", "restart"} {
+		if !strings.Contains(h.stderr(), want) {
+			t.Errorf("stderr does not mention %q:\n%s", want, h.stderr())
+		}
+	}
+}
+
+func mustMkdir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 }

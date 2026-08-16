@@ -57,13 +57,21 @@ bind-mounted file, rather than `environment:`.
 
 For the container paths you also need a `lore` binary on the host to
 bind-mount in — see the Dockerfile's note on why it isn't baked into the
-image — and you need its store **initialised**, once per `LORE_HOME`, with
-`lore init`. Supplying only the binary is not enough: `lore mcp` exits
-immediately against an empty store ("no account at …/account.json"). kenward
-refuses to serve without memory and checks both halves before it starts —
-the binary on `$PATH`, then one MCP handshake with it — so an uninitialised
-store is an exit 1 that names `lore init`, not a node that quietly records
-nothing. Each compose file's header gives the exact commands.
+image — and its store has to be **initialised**, once per `LORE_HOME`.
+Supplying only the binary is not enough: `lore mcp` exits immediately against
+an empty store ("no account at …/account.json"), and kenward refuses to serve
+without memory, checking both halves before it starts — the binary on `$PATH`,
+then one MCP handshake with it.
+
+Who does that initialising differs by mode, and the difference is not
+cosmetic. **In isolated mode each container does it for itself** on first
+start, because a member's work volume is reachable from nowhere else and a
+host that could write into it could read it back — so there is no operator
+step, and you should not run `lore init` against those volumes by hand. **In
+simple mode it is still yours**: that `LORE_HOME` is the household's one
+store, not a member's, and it needs its spaces created and their ids written
+into `kenward.yaml` regardless. `compose.simple.yml`'s header gives the exact
+commands; `compose.isolated.yml`'s explains what its containers do instead.
 
 `compose.isolated.yml` additionally needs one file per member holding that
 member's outstanding claim codes: run `kenward invite --name NAME` on the host

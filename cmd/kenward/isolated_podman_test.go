@@ -15,10 +15,11 @@ package main
 // # What is real here and what is not
 //
 // Real: podman, the image built from this repository's own Dockerfile, a real `lore`
-// binary answering a real MCP handshake inside each pod, the pods' named volumes, the
-// host's `kenward invite` and `kenward revoke` through the real dispatcher, and
-// cmd/kenward's own isolatedOptions — so the wiring under test is the wiring `kenward
-// run` uses, not a second copy written for the test.
+// binary initialising a real store on each pod's own volume and then answering a real MCP
+// handshake inside the pod, the pods' named volumes, the host's `kenward invite` and
+// `kenward revoke` through the real dispatcher, and cmd/kenward's own isolatedOptions —
+// so the wiring under test is the wiring `kenward run` uses, not a second copy written
+// for the test.
 //
 // Two things are not. supervisor.NewIsolated is called here rather than through
 // defaultSupervisor, because the options need a Backend that records what was asked of
@@ -692,27 +693,24 @@ func (hh *household) volumeExists(pod string) bool {
 	return err == nil
 }
 
-// bootstrapVolumes brings the household up once for the sole purpose of letting the
-// supervisor create each pod's work volume, then initialises the lore instance the pod
-// has to find at /work/lore and returns the space id lore made in each.
+// bootstrapVolumes brings the household up once and returns the space id each pod's own
+// lore store holds, read back from that store afterwards.
 //
-// It is in two steps because neither half can be skipped and neither can be reordered.
+// It used to do more, and what it stopped doing is the point. `lore mcp` exits before the
+// MCP handshake when its LORE_HOME holds no account — the state every fresh work volume
+// is in — and `kenward run` refuses to serve a unit whose memory layer does not answer,
+// so a supervisor-started pod crash-looped forever on a volume nothing had initialised.
+// Nothing in kenward did, and nothing outside the pod can: the volume is reachable from
+// the host only the way this test reaches it, from outside, which is exactly what
+// isolated mode exists to prevent anyone doing in production. So this function used to
+// run `lore init` from the host against each mountpoint — an operator step with no
+// automation behind it and no route to one.
 //
-// The lore half is an operator step with no automation behind it: `lore mcp` exits before
-// the MCP handshake when its LORE_HOME holds no account, which is the state every fresh
-// work volume is in, and `kenward run` refuses to serve a unit whose memory layer does
-// not answer. So a supervisor-started pod on a new volume crash-loops until somebody runs
-// `lore init` against that volume, and nothing in kenward does.
-//
-// The supervisor half is why the volume is not simply created here first. keel's
-// Create runs `podman volume create` unconditionally, and podman refuses a name that
-// already exists — exit 125 — so a pod whose work volume exists and whose container does
-// not can never be created at all:
-//
-//	supervisor: pod failed to start pod=… error="creating pod …: sandbox create volume: podman volume: exit 125"
-//
-// forever, on every backoff. That is keel's to fix; here it means the volume has to be
-// keel's own, made the way production makes it, and written to only afterwards.
+// The pod does it for itself now, on first start, before the handshake (see
+// cmd/kenward's initLoreHome). This waits for the evidence rather than supplying it: a
+// pod that reaches the Telegram refusal completed a real MCP handshake against a store
+// that did not exist when its container started, and assertStoreIsThePods checks that
+// nothing on the host wrote it.
 func (hh *household) bootstrapVolumes(image string, pods []string) map[string]domain.SpaceID {
 	t := hh.t
 	t.Helper()
@@ -720,7 +718,7 @@ func (hh *household) bootstrapVolumes(image string, pods []string) map[string]do
 	sup, _ := hh.supervisorFor(image)
 	hh.start(sup, func() bool {
 		for _, p := range pods {
-			if !hh.volumeExists(p) {
+			if !reachedTelegram(hh, p) {
 				return false
 			}
 		}
@@ -729,16 +727,44 @@ func (hh *household) bootstrapVolumes(image string, pods []string) map[string]do
 
 	spaces := make(map[string]domain.SpaceID, len(pods))
 	for _, p := range pods {
-		mp := hh.mountpoint(p)
-		out := hh.lore(filepath.Join(mp, "lore"), "", "init", "--yes-i-saved-it", "--name", "kenward-e2e")
-		space := firstUUID(out)
-		if space == "" {
-			t.Fatalf("`lore init` printed no space id for pod %s:\n%s", p, out)
-		}
-		chownTree(t, mp, podUID, podGID)
-		spaces[p] = domain.SpaceID(space)
+		spaces[p] = hh.assertStoreIsThePods(p)
 	}
 	return spaces
+}
+
+// assertStoreIsThePods checks that a pod initialised its own lore home and returns the
+// personal space id that store holds.
+//
+// The account file is the whole assertion. Nothing in this test wrote it, nothing on the
+// host can reach that path except through the volume's mountpoint, and the pod's
+// container was created from an image whose /work is empty — so its presence is the pod
+// having run `lore init` against its own volume and nothing else.
+func (hh *household) assertStoreIsThePods(pod string) domain.SpaceID {
+	t := hh.t
+	t.Helper()
+	mp := hh.mountpoint(pod)
+	home := filepath.Join(mp, "lore")
+	if _, err := os.Stat(filepath.Join(home, "account.json")); err != nil {
+		t.Fatalf("pod %s has no lore account at %s: it never initialised its own store, so `lore mcp` "+
+			"cannot answer and this pod crash-loops forever (%v)\nlast log line: %s",
+			pod, home, err, lastLine(hh.logs(pod)))
+	}
+	// And the pod said so, in its own log, on its own first start. The file above is
+	// the state; this is the actor. Together they rule out the one reading that would
+	// make this whole test a lie — that something on the host initialised the volume.
+	if log := hh.logs(pod); !strings.Contains(log, "initialised a new lore store") {
+		t.Errorf("pod %s has a lore account but never reported creating one; whatever wrote %s, "+
+			"it was not the pod:\n%s", pod, home, log)
+	}
+	out := hh.lore(home, "", "spaces")
+	space := firstUUID(out)
+	if space == "" {
+		t.Fatalf("pod %s's own store lists no space:\n%s", pod, out)
+	}
+	// The host just opened that SQLite database as root, which can leave journal files
+	// the pod's own account cannot write. Give the whole volume back.
+	chownTree(t, mp, podUID, podGID)
+	return domain.SpaceID(space)
 }
 
 // loreSearch asks a pod's own store, through a fresh lore process, whether it still
@@ -928,8 +954,159 @@ func TestIsolatedPodman(t *testing.T) {
 	r := newRig(t)
 
 	t.Run("HouseholdComesUp", func(t *testing.T) { testHouseholdComesUp(t, r) })
+	t.Run("CloudTierMemberRuns", func(t *testing.T) { testCloudTierMemberRuns(t, r) })
+	t.Run("VolumeOutlivesItsContainer", func(t *testing.T) { testVolumeOutlivesItsContainer(t, r) })
 	t.Run("RollPreservesLore", func(t *testing.T) { testRollPreservesLore(t, r) })
 	t.Run("RevocationAndStalePods", func(t *testing.T) { testRevocationAndStalePods(t, r) })
+}
+
+// cloudYAML is the household shape that could not be started at all through
+// `kenward run`: one member whose tier chain reaches a cloud endpoint, one whose does
+// not, and a provider key named for that endpoint.
+const cloudYAML = `mode: isolated
+household:
+  name: Ashfield
+  shared_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8
+  tiers: [local]
+telegram:
+  bot_token_env: KENWARD_BOT_TOKEN_HOUSEHOLD
+members:
+  - id: jordan
+    name: Jordan
+    telegram_id: 87654321
+    private_space: 5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19
+    tiers: [local, cloud]
+    bot_token_env: KENWARD_BOT_TOKEN_JORDAN
+    passphrase_env: KENWARD_PASSPHRASE_JORDAN
+  - id: david
+    name: David
+    telegram_id: 12345678
+    private_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
+    tiers: [local]
+    bot_token_env: KENWARD_BOT_TOKEN_DAVID
+    passphrase_env: KENWARD_PASSPHRASE_DAVID
+endpoints:
+  - name: attic
+    base_url: http://attic.localdomain:8000/v1
+    model: qwen3-4b
+    tags: [local]
+    timeout: 120s
+  - name: openrouter
+    base_url: https://openrouter.localdomain/api/v1
+    model: anthropic/claude-sonnet-5
+    api_key_env: KENWARD_E2E_PROVIDER_KEY
+    tags: [cloud]
+memory:
+  lore_command: [lore, mcp]
+`
+
+// testCloudTierMemberRuns is the second defect found on a real host, and it is here
+// rather than only in internal/supervisor because a fake backend cannot show it: the
+// failure was a *pod* refusing its own configuration, which needs a real process reading
+// a real provisioned file inside a real container.
+//
+// config.secretRefs scopes endpoint keys by the unit's tier chain, so jordan — `tiers:
+// [local, cloud]` — is required to hold the cloud provider's key. The supervisor
+// provisioned exactly two secrets per pod, so jordan's pod exited at config validation
+// before it reached anything this file asserts on, on every restart, forever. Every
+// library test passed.
+//
+// What it proves, in order: jordan's pod now reaches the Telegram refusal, which it can
+// only do by having validated its own configuration with a key it was given; that key is
+// in its environment with the right value; and david's local-only pod holds no trace of
+// it anywhere in `podman inspect`, because a key present in an environment is a key that
+// can be used whatever the routing policy intended.
+func testCloudTierMemberRuns(t *testing.T, r *rig) {
+	hh := newHousehold(t, r, cloudYAML, householdEnv())
+	jordan, david := hh.memberPod("jordan"), hh.memberPod("david")
+	hh.bootstrapVolumes(r.image, []string{jordan, david})
+
+	sup, _ := hh.supervisorFor(r.image)
+	hh.start(sup, func() bool { return reachedTelegram(hh, jordan) && reachedTelegram(hh, david) })
+
+	for _, p := range []string{jordan, david} {
+		if !reachedTelegram(hh, p) {
+			t.Errorf("pod %s did not reach the Telegram call; it stopped earlier, at:\n%s", p, lastLine(hh.logs(p)))
+		}
+	}
+	// jordan holds the key their chain reaches, and no sibling's bot token or
+	// passphrase. The provider key is deliberately not in othersOf's set here: it is
+	// jordan's to hold in this household.
+	assertPodEnv(t, hh, jordan, map[string]string{
+		supervisor.EnvMember:        "jordan",
+		"KENWARD_BOT_TOKEN_JORDAN":  e2eJordanToken,
+		"KENWARD_PASSPHRASE_JORDAN": e2eJordanPass,
+		"KENWARD_E2E_PROVIDER_KEY":  e2eProviderKey,
+	}, map[string]string{
+		"david's bot token":       e2eDavidToken,
+		"david's passphrase":      e2eDavidPass,
+		"the household bot token": e2eGroupToken,
+	})
+	// david's chain reaches nothing cloud-tagged, so his pod holds no provider key at
+	// all — the same rule, drawn the other way.
+	assertPodEnv(t, hh, david, map[string]string{
+		supervisor.EnvMember:       "david",
+		"KENWARD_BOT_TOKEN_DAVID":  e2eDavidToken,
+		"KENWARD_PASSPHRASE_DAVID": e2eDavidPass,
+	}, map[string]string{
+		"jordan's bot token":     e2eJordanToken,
+		"jordan's passphrase":    e2eJordanPass,
+		"the cloud provider key": e2eProviderKey,
+	})
+}
+
+// testVolumeOutlivesItsContainer is the third defect from the same report, verified
+// rather than assumed fixed.
+//
+// keel's Create ran `podman volume create` unconditionally and podman refuses a name
+// that already exists — exit 125 — so a pod whose work volume existed and whose container
+// did not could never be created at all:
+//
+//	supervisor: pod failed to start pod=… error="creating pod …: sandbox create volume: podman volume: exit 125"
+//
+// forever, on every backoff. keel v0.5.5 adopts an existing volume instead. That state is
+// not hypothetical: it is what a `podman rm` of a wedged container leaves behind, and it
+// is the one shape in which a member's whole memory is one failed retry away from being
+// deleted and recreated.
+//
+// So this removes the container and leaves the volume, exactly as an operator would, and
+// asks for three things back: the pod is created again, the volume is the same one, and
+// the store the pod wrote on its first start is still in it — which is also the
+// idempotence of initLoreHome proved against a real store rather than a stubbed one.
+func testVolumeOutlivesItsContainer(t *testing.T, r *rig) {
+	hh := newHousehold(t, r, soloFor("david", "David"), householdEnv())
+	pod := hh.memberPod("david")
+	space := hh.bootstrapVolumes(r.image, []string{pod})[pod]
+
+	home := hh.workFile(pod, "lore")
+	token := fmt.Sprintf("brasswing-%d", time.Now().UnixNano())
+	hh.lore(home, "The cellar override phrase is "+token+".",
+		"put", "-space", string(space), "-domain", "kenward/e2e",
+		"-title", "Cellar override phrase", "-confidence", "validated", "-body-file", "-")
+	chownTree(t, hh.mountpoint(pod), podUID, podGID)
+
+	// The container goes; the volume stays. This is the state keel used to refuse.
+	hh.rig.podman(t, "rm", "-f", "-t", "1", hh.container(pod))
+	if hh.containerExists(pod) {
+		t.Fatalf("the container for %s is still there; this test needs it gone", pod)
+	}
+	if !hh.volumeExists(pod) {
+		t.Fatalf("removing the container took %s's work volume with it", pod)
+	}
+
+	sup, backend := hh.supervisorFor(r.image)
+	hh.start(sup, func() bool { return reachedTelegram(hh, pod) })
+
+	if !hh.volumeExists(pod) {
+		t.Fatalf("the work volume %s did not survive a pod being created over it", hh.volume(pod))
+	}
+	if n := backend.ops("Purge", ""); n != 0 {
+		t.Errorf("Purge was called %d time(s) recreating a pod over an existing volume; it deletes the member's lore", n)
+	}
+	if after := hh.loreSearch(home, space, token); !strings.Contains(after, token) {
+		t.Errorf("the member's lore did not survive: %q is gone from %s.\nEither the volume was replaced, "+
+			"or the pod re-initialised a store that already existed:\n%s", token, home, after)
+	}
 }
 
 // testHouseholdComesUp is the first four facts at once, because they are four questions

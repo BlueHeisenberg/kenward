@@ -306,6 +306,11 @@ func healthyProbes() probes {
 			}
 			return res
 		},
+		// No unit test may exec a real `lore init`, whatever LORE_HOME happens to say:
+		// one pointed at a developer's own store would create an account in it, and
+		// lore has no delete. Tests that care what `run` asked for install a recorder
+		// over this; the rest simply never reach a real binary.
+		loreInit: func(context.Context, string, string, string) error { return nil },
 		telegram: func(_ context.Context, token string) telegramResult {
 			switch token {
 			case fakeDavidToken:

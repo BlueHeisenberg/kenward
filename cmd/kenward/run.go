@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -365,6 +367,13 @@ func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 		return exitFailure
 	}
 
+	// A pod's own volume starts empty, and only the pod may touch it. See initLoreHome.
+	if cfg.Mode == config.ModeIsolated {
+		if code := initLoreHome(e, cfg, sel); code != exitOK {
+			return code
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(e.context(), loreHandshakeTimeout)
 	defer cancel()
 	if res := e.probes.loreProbe()(ctx, cfg, sel.scope()); res.Err != nil {
@@ -384,6 +393,125 @@ func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 	}
 	return exitOK
 }
+
+// loreHomeDir is the LORE_HOME the `lore mcp` this process spawns will use.
+//
+// It reads the environment by lore's own convention rather than from kenward.yaml,
+// because that is where the value actually lives: the supervisor sets LORE_HOME on every
+// pod (supervisor.EnvLoreHome) and deploy/compose.isolated.yml sets it on every service.
+// Nothing in kenward.yaml names it, and inventing a second place to state it would be a
+// second thing to keep in step with lore.
+//
+// An unset variable yields "" rather than lore's other half of the convention, ~/.lore,
+// and that asymmetry is deliberate. Every isolated pod has LORE_HOME set — the supervisor
+// sets it and the compose file sets it — so the fallback can only be reached outside a
+// pod, where ~/.lore is a person's own lore store on their own machine and creating an
+// account in it is not kenward's to do. Returning "" leaves the handshake below to refuse
+// with the message it always gave, which for somebody running by hand is the right answer.
+func loreHomeDir(e *env) string {
+	h, ok := e.env()("LORE_HOME")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(h)
+}
+
+// initLoreHome gives an isolated unit's own lore home an account, the first time it runs
+// and never again.
+//
+// # Why this exists at all
+//
+// A pod's /work volume is created empty and LORE_HOME points inside it. `lore mcp` exits
+// before the MCP handshake against an uninitialised home — "no account at
+// /work/lore/account.json (run `lore init`)" — so checkLore, correctly, refuses to serve.
+// It then refuses on every restart, forever, because nothing ever initialises the volume:
+// not the supervisor, not the image, not `kenward setup`, not any documented step. The
+// compose path has an operator step for it (deploy/compose.isolated.yml, step 4) and a
+// bind-mount to reach the store with; a pod started by `kenward run` has neither, so
+// isolated mode via the supervisor could not bring up a household that had never been
+// brought up before — which is every household. It was found by driving real podman.
+//
+// # Why the pod and not the host
+//
+// The four places this could live are the host supervisor, `kenward setup`, the image's
+// entrypoint and the pod. The image's entrypoint *is* the pod — the final stage is
+// distroless, with no shell to run a script in and the kenward binary as its ENTRYPOINT —
+// so that is this. The other two are both the host reaching into a member's work volume
+// to create their memory store, and a host that can write into a member's volume is one
+// edit away from reading it back: the mode's whole claim is that the pod is the only
+// process that touches its own volume, and the supervisor deliberately holds no path into
+// one. So the pod does it, for itself, with what it already has.
+//
+// # Idempotence
+//
+// It initialises only a home that does not exist or is empty. That is a stronger rule
+// than "no account.json", and stronger on purpose: a home holding a lore.db but no
+// account would otherwise be adopted by a new account, which is a store quietly
+// re-identified rather than one left alone. Restart after restart the directory is
+// non-empty and nothing happens; an existing store is never written to, never migrated
+// and never re-keyed, and a failure here is a refusal to serve rather than a second
+// attempt.
+//
+// # What it does not do
+//
+// It does not create the spaces kenward.yaml names. `lore init` makes an account, a
+// device and one personal space, all with ids it chooses; household.shared_space and
+// members[].private_space are ids an operator put in the file, and neither lore's CLI nor
+// its Go API can create a space at a given id. So a self-initialised pod comes up with a
+// lore that answers and spaces that are not there, which `kenward doctor` reports per
+// space and checkLore deliberately does not treat as fatal. That is the same gap
+// deploy/compose.isolated.yml already documents at length under "SHARED SPACE, AND IT IS
+// NOT SOLVED HERE", now reached by both deployment paths rather than one; closing it is
+// lore's to make possible. What this changes is that a fresh household starts, and can
+// then be finished, instead of crash-looping with nothing an operator can do about it.
+func initLoreHome(e *env, cfg *config.Config, sel unitSelection) int {
+	if !sel.single() {
+		return exitOK // the host supervisor; it holds no memory of its own.
+	}
+	cmd := cfg.Memory.LoreCommand
+	if len(cmd) == 0 {
+		return exitOK
+	}
+	home := loreHomeDir(e)
+	if home == "" {
+		return exitOK // LORE_HOME is unset; see loreHomeDir.
+	}
+	switch entries, err := os.ReadDir(home); {
+	case err == nil && len(entries) > 0:
+		return exitOK // a store is already here, and it is not this process's to touch.
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		e.errorf("%s cannot be read, and it is where this unit's lore store lives: %v", home, err)
+		return exitFailure
+	}
+
+	device := sel.member
+	if sel.group {
+		device = "group"
+	}
+	ctx, cancel := context.WithTimeout(e.context(), loreInitTimeout)
+	defer cancel()
+	if err := e.probes.loreInitProbe()(ctx, cmd[0], home, device); err != nil {
+		e.errorf("%s is empty and `%s init` could not initialise it: %v\n\n"+
+			"That directory is this unit's whole memory, and kenward will not serve without\n"+
+			"one. In a pod it is the member's own work volume, which nothing outside the pod\n"+
+			"can reach, so there is no operator step to fall back on — fix what the error\n"+
+			"above says and restart.", home, cmd[0], err)
+		return exitFailure
+	}
+	// The account and device ids `lore init` printed went nowhere, and the recovery code
+	// with them; see runLoreInit. This line says what happened and nothing that is the
+	// member's.
+	e.printf("kenward: initialised a new lore store at %s for %s. It has an account, a device\n"+
+		"and a personal space; the spaces kenward.yaml names are not in it and no lore can\n"+
+		"create a space at a chosen id — `kenward doctor` reports which ones are missing.\n",
+		home, sel.describe())
+	return exitOK
+}
+
+// loreInitTimeout bounds the one-off store creation above. It generates two key pairs and
+// writes a handful of small files to a local volume; anything slower than this is a
+// wedged filesystem, not a slow one.
+const loreInitTimeout = 30 * time.Second
 
 // loreHandshakeTimeout bounds the startup handshake above.
 //

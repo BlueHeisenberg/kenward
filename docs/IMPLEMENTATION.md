@@ -843,8 +843,13 @@ only at Create and Recreate time, so none rests on a struct a logger could print
 a rotated source is picked up by the next recreation without a supervisor restart.
 
 Each pod gets exactly the secrets its unit needs and no others: a member's pod gets that
-member's bot token and that member's passphrase; the group's pod gets the household bot
-token and no passphrase at all.
+member's bot token, that member's passphrase, and the API key of every endpoint that
+member's tier chain reaches; the group's pod gets the household bot token, the keys
+`household.tiers` reaches, and no passphrase at all. The endpoint keys are scoped through
+`Config.EndpointsForUnit` — the same function that scopes them for validation, so the set
+a pod is *given* and the set it is *required to hold* cannot drift apart. Two members
+whose chains reach one endpoint hold one key between them, which is what sharing a
+provider account means; see §8, "How a supervisor-started pod gets a provider key".
 
 Every provisioned secret file is **owned by the identity the image runs as** — uid=gid=65532,
 the distroless base's `nonroot`. That is not a nicety. keel provisions a file root-owned
@@ -1252,8 +1257,11 @@ type Supervisor interface {
   member plus one group `Unit`. Everything in one address space — the mode's stated
   limitation.
 - **`isolated`**: one pod per member plus one for the group, via `keel/sandbox`. Each
-  pod holds its own bot token, its own lore instance and its own key. Linux only.
-  Restarts are per-pod, so one crashing member does not take the household down.
+  pod holds its own bot token, its own lore instance, its own key, and the API key of
+  every endpoint its own tier chain reaches — the last of which is shared with any
+  sibling whose chain reaches the same endpoint, because it is one provider account.
+  Linux only. Restarts are per-pod, so one crashing member does not take the household
+  down.
 
 There is a **third implementation, and it is not a third mode**: `Single`, selected by
 `kenward run --member ID` or `--group`. It serves exactly one unit and is what runs
@@ -1380,6 +1388,62 @@ real-podman run of this check did, refusing before a single pod was started.
 The `Unit` implementation is identical in all three. If a change to `Unit` needs to know
 which one it is running under, that change is wrong.
 
+### How a supervisor-started pod gets a lore *store*
+
+Having the binary is half of it. The other half blocked isolated mode via `kenward run`
+for every household that had never been brought up before — which is every household —
+and it was found by driving real podman.
+
+A pod's `/work` volume is created empty and `LORE_HOME` points inside it
+(`supervisor.DefaultLoreHome`, `/work/lore`). `lore mcp` exits before the MCP handshake
+against a home with no account, so the check above refuses, correctly, and then refuses on
+every restart forever. **Nothing initialised that volume**: not the supervisor, not the
+image, not `kenward setup`, not any documented step. The compose path had an operator step
+for it and a bind-mount to reach the store with; the supervisor path had neither, because
+`sandbox.Spec` offers no route into a pod's volume and — more to the point — must not: a
+host that can write into a member's work volume is one edit from reading it back, and the
+mode's claim is that the pod is the only process that touches its own.
+
+**So the pod does it, for itself, on the way up.** `kenward run` initialises `LORE_HOME`
+when the unit is a single isolated one and that directory does not exist or is empty,
+immediately before the handshake (`cmd/kenward`'s `initLoreHome`). Four places could have
+held this and three are the same place or the wrong one: the image's entrypoint *is* the
+kenward binary, since the final stage is distroless with no shell to run a script in; the
+supervisor and `kenward setup` are both the host reaching into a member's volume.
+
+Four properties, each of which is a way this could have gone wrong:
+
+- **It runs a subprocess, and that is a finding rather than a preference.** lore is a
+  public Go module now, but its exported API cannot do this: package `lore` offers `Open`,
+  which *returns* `ErrNoAccount` on a home like this one, and no `Init` and no
+  `CreateSpace` at all. Account, device and space creation live in `internal/keys` and
+  `internal/store`, reachable only from `cmd/lore`. Importing lore here would add a module
+  dependency that cannot perform the one operation it was added for. D-036 is where this
+  call changes, and it can only change once lore exports one.
+- **It is idempotent by a stronger rule than "no account file".** A home that exists and
+  is non-empty is left alone, full stop — so a store missing its account but holding a
+  database is never adopted by a new account, which would be a member's store quietly
+  re-identified rather than one left alone.
+- **The recovery code is discarded.** `lore init` prints one to stdout, once. It is a KDF
+  factor for relay signup and backup, neither of which any kenward deployment configures,
+  and it is re-mintable from inside the pod with `lore recovery new` without the old one.
+  Logging it would put a member's account recovery factor into `podman logs`, which the
+  operator reads, in the one mode whose purpose is that the operator holds nothing of a
+  member's. The new account and device ids go the same way, for the same reason.
+- **It does not create the spaces `kenward.yaml` names, and cannot.** `lore init` makes an
+  account, a device and one personal space with ids it chooses; `household.shared_space`
+  and `members[].private_space` are ids an operator wrote in the file, and neither lore's
+  CLI nor its Go API can create a space at a given id. A self-initialised pod therefore
+  comes up with a lore that answers and configured spaces that are not in it, which
+  `doctor` reports per space and `run` deliberately does not treat as fatal. That is the
+  same gap §12 records under separate `LORE_HOME`s not converging, now reached by both
+  deployment paths rather than one. What changed is that a fresh household **starts**, and
+  can then be finished, instead of crash-looping with nothing an operator can do about it.
+
+The compose path gets this too — its services are `kenward run --member …` with
+`LORE_HOME` set, so the same code runs — which retires the `lore init` step
+`deploy/compose.isolated.yml` used to require before a first `up`.
+
 ### How the household's shared memory works in isolated mode
 
 **It did not.** Every pod resolves `household.shared_space` against its own lore store,
@@ -1414,8 +1478,11 @@ container runtime's bridge. mDNS is left on so no address has to be written down
 anywhere; a pod's address changes on every recreation, so a static peer list would be
 stale by the first rolling update.
 
-Membership is provisioned out of band, exactly as `lore init` and `lore space create`
-already are, and that is a decision rather than an omission. kenward never creates a lore
+Membership is provisioned out of band, exactly as `lore space create` already is, and
+that is a decision rather than an omission. (`lore init` is no longer beside it: a pod
+initialises its own store, per the previous section. Creating an *account* is unavoidable
+plumbing with no decision in it; creating a space and granting membership are decisions.)
+kenward never creates a lore
 space, and lore's own embeddable API declines to expose space creation or membership at
 all — *"spaces are made out of band by a person who chose a name and a sharing posture; an
 embedder joins spaces that already exist"*. An assistant that minted its own household
@@ -1446,9 +1513,13 @@ Verified on real podman against a three-pod household: jordan's pod wrote into t
 household space and david's pod and the group's pod both read it; david's pod wrote and
 jordan's and the group's read that; and each member's private-space entry stayed in its
 own store, with the other two holding no such space to search. Two things that run
-surfaced, both worth knowing before an operator meets them. `lore init` run as root
-leaves a 0700 store the pod's own uid 65532 cannot open, and the pod then refuses with
-the same message an *uninitialised* store gives — provision with `--user 65532:65532`.
+surfaced, both worth knowing before an operator meets them. `lore init` run as root — as
+an operator provisioning a volume by hand does — leaves a 0700 store the pod's own uid
+65532 cannot open, and the pod then refuses with the same message an *uninitialised* store
+gives. That trap is why the operator step is gone rather than documented with a
+`--user 65532:65532` on it: the pod initialising its own home cannot get the ownership
+wrong, because it is the owner. It is still worth knowing, because an operator who runs
+`lore init` into a volume anyway rediscovers it.
 And lore's daemon never forgets a peer it has discovered, so every rolling update leaves
 the replaced pods' addresses behind as rows that will never answer again; `doctor` treats
 some peers failing as normal and only warns when none answered.
@@ -1538,6 +1609,47 @@ forever, with the refusal listing three mechanisms and naming no variable, becau
 was no variable in the file to name. `session.passphrase_env` / `_file` closes it — see §4
 for why the field is optional, why naming a source the deployment does not supply is worse
 than naming none, and why `kenward setup` writes neither.
+
+### How a supervisor-started pod gets a provider key
+
+The third secret, and the second thing that blocked isolated mode on a real host.
+
+§4 scopes endpoint API keys by the unit's tier chain, so a member with
+`tiers: [local, cloud]` is *required* to hold the cloud provider's key — a key that is
+named and unset is a fault, not an absent optional secret. `Isolated` provisioned exactly
+two secrets per pod, the bot token and the passphrase, with no way to add a third. That
+member's pod refused its own configuration at startup:
+
+```
+kenward: /etc/kenward/kenward.yaml cannot be served (problem):
+  - endpoints[1].api_key_env: environment variable KENWARD_E2E_PROVIDER_KEY is not set
+```
+
+on every restart, forever. The compose path let an operator add the variable to that
+service by hand; the supervisor path had no equivalent, so a mixed tier chain was simply
+unavailable under `kenward run`. Every library test passed: a fake backend has no process
+inside the pod to validate anything.
+
+`Isolated` now provisions every key the unit's own chain reaches, through
+`Config.EndpointsForUnit` — the same function validation scopes with, deliberately, since
+two implementations of "which endpoints does this unit reach" would eventually disagree
+and the failure would be a pod that validates clean and then cannot route. Delivery
+mirrors the stated source exactly as the other two secrets do. An endpoint that supplies
+no key at all is skipped rather than refused, which is the usual case for the household's
+own machine; a *stated* source that cannot be read stops the whole household starting,
+naming the member and the endpoint.
+
+**What a pod learns, stated plainly, because this one is not a separation.** An endpoint
+key is not a per-member secret and cannot be made into one: it belongs to the provider
+account the household pays for. If david's chain and jordan's chain both reach
+`openrouter`, both pods hold that one key and either could spend the other's budget on
+it. That is a real reduction from "a pod holds its own secrets and no sibling's", and it
+is inherent rather than an oversight — sharing a provider account is what the
+configuration said. The narrower claim that does hold: a pod is given a key only where its
+own chain reaches the endpoint, so a local-only member's pod holds none at all, and no pod
+ever holds a key for a tier it may not route to. A household that wants two members not to
+share a key gives them two endpoints with two `api_key_env`s, and each pod then holds only
+its own.
 
 ### How a supervisor-started pod gets a claim code
 
@@ -2012,8 +2124,15 @@ design and several of them contradict what the architecture originally supposed.
   Failures arrive as `isError: true` rather than as protocol errors. The client is
   therefore a parser, and is tested against a golden corpus so that a format change
   fails loudly in one place.
-- **There is no Go client package.** Everything in lore is under `internal/`, so kenward
-  speaks MCP over stdio.
+- **There is a Go API now, and it cannot replace the CLI for everything.**
+  `github.com/BlueHeisenberg/lore` v0.3.0 exports `lore.Open(lore.Options{Home: …})` over
+  entries, search and spaces. kenward still speaks MCP over stdio — moving is D-036 — and
+  when it moves, two jobs will not move with it: **creating an account** and **creating a
+  space**. `Open` *returns* `ErrNoAccount` on an uninitialised home and there is no `Init`
+  and no `CreateSpace` on the public surface; both live in `internal/keys` and
+  `internal/store`, reachable only from `cmd/lore`. That is why a pod initialising its own
+  store runs `lore init` as a subprocess (§8) and why a store's space ids cannot be chosen
+  by whoever configures kenward.
 - **Private memory must be a `shared`-kind space with two members.** lore's `personal`
   space never crosses accounts, so a node could not read it. This is what the
   architecture already specified, now confirmed as the only workable option rather than
@@ -2024,7 +2143,9 @@ design and several of them contradict what the architecture originally supposed.
 - **Separate `LORE_HOME`s do not converge on a shared space by themselves**, and this
   document used to say they did. One `LORE_HOME` is one lore *account*, and `lore init`
   gives each account its own space ids, so the id `household.shared_space` names exists
-  in exactly one store. In every other pod `doctor` reports `space "…" is not a space
+  in at most one store — and in a household whose pods initialised themselves (§8), in
+  none of them, because no lore can be told to create a space at an id somebody already
+  wrote in a file. Where the id is not held, `doctor` reports `space "…" is not a space
   this lore store holds` and that conversation reads nothing, silently, because a turn
   that cannot read a space degrades that space rather than failing. Convergence is
   lore's own sharing — `lore space invite`, `lore join`, and a reachable `lore serve` —

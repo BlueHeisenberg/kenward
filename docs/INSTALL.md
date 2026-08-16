@@ -28,6 +28,16 @@ happily and return nothing on the first read. `kenward doctor` refuses a configu
 like that outright, which is the only reason it is a nuisance rather than a week of lost
 captures.
 
+**In isolated mode the "installed and initialised" half is not yours.** Each pod has its
+own lore store on its own volume, and it creates that store itself the first time it
+starts — nothing outside the pod can reach the volume, which is the point of the mode.
+What you supply is a `lore` binary in the image (see below) and the space ids in
+`kenward.yaml`; what you do not do is run `lore init` against a pod's volume. Read
+`kenward doctor`'s per-space lines afterwards: a pod that made its own store does not
+hold the space ids you configured, and lore has no way to create a space at an id you
+chose. That gap is lore's own sharing to close and `deploy/compose.isolated.yml`'s header
+says so at length.
+
 **At least one inference endpoint.** Anything OpenAI-compatible: vLLM, llama.cpp,
 Ollama, LM Studio, or a cloud provider. It does not need to be awake during setup —
 kenward is built for machines that are usually asleep, and setup will say so rather than
@@ -216,6 +226,28 @@ token being able to read everyone's private conversations.
 The shipped `compose.isolated.yml` is a worked two-member example with comments showing
 how to add a third. The services must not share a data volume; that sharing is exactly
 what the mode exists to prevent.
+
+### Letting kenward start the pods instead
+
+There is a second path, and it manages the pods for you:
+
+```sh
+kenward run --config kenward.yaml --image localhost/kenward-with-lore:dev
+```
+
+`--image` is not optional in practice. The published image deliberately carries no lore,
+and this path has no bind-mount to add one with, so build a derived image —
+`FROM ghcr.io/blueheisenberg/kenward:<tag>` plus a `COPY` of a `lore` binary for that
+image's OS and architecture — and name it here. Everything else is handled: the volumes,
+the per-member secrets, each pod's own lore store, and rolling every pod onto a new image
+after an update.
+
+**Two things to know before you point it at a household.** A member whose `tiers:` reach
+a cloud endpoint gets that endpoint's API key in their pod — they need it to route there
+at all — and so does every other member whose chain reaches the same endpoint, because it
+is one provider account and one key. If two people must not share a provider budget, give
+them two endpoints with two `api_key_env`s. And a member whose chain reaches *no* endpoint
+with a key gets none, which is the case you want for anyone local-only.
 
 ---
 
