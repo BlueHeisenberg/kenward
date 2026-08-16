@@ -170,7 +170,7 @@ func TestUnlockSessionsProvisionsThenUnlocks(t *testing.T) {
 		{ID: "jordan", Name: "Jordan", TelegramID: 2, Tiers: []string{"local"}},
 		{ID: "sam", Name: "Sam"}, // not enrolled: no unit, no key, nothing to do
 	}
-	pass := &passphrase{b: []byte("a-node-passphrase"), source: "a test"}
+	const pass = "a-node-passphrase"
 
 	rep, err := unlockSessions(context.Background(), mgr, store, members, pass)
 	if err != nil {
@@ -210,12 +210,12 @@ func TestUnlockSessionsRefusesAWrongPassphrase(t *testing.T) {
 	members := []domain.Member{{ID: "david", Name: "David", TelegramID: 1}}
 
 	first := newFastManager(t, session.ModeSimple, store)
-	if _, err := unlockSessions(context.Background(), first, store, members, &passphrase{b: []byte("right")}); err != nil {
+	if _, err := unlockSessions(context.Background(), first, store, members, "right"); err != nil {
 		t.Fatal(err)
 	}
 
 	second := newFastManager(t, session.ModeSimple, store)
-	_, err := unlockSessions(context.Background(), second, store, members, &passphrase{b: []byte("wrong")})
+	_, err := unlockSessions(context.Background(), second, store, members, "wrong")
 	if err == nil {
 		t.Fatal("a wrong passphrase was accepted")
 	}
@@ -296,7 +296,7 @@ func TestAPodProvisionsOnlyItsOwnMembersKey(t *testing.T) {
 
 	store := session.NewMemStore()
 	mgr := newFastManager(t, session.ModeIsolated, store)
-	pass := &passphrase{b: []byte("davids-own-passphrase"), source: "a test"}
+	const pass = "davids-own-passphrase"
 
 	rep, err := unlockSessions(context.Background(), mgr, store, []domain.Member{david}, pass)
 	if err != nil {
@@ -337,6 +337,54 @@ func TestMemberPodUnlocksBeforeStarting(t *testing.T) {
 	if !errors.Is(err, errNoPassphrase) {
 		t.Fatalf("err = %v, want errNoPassphrase: a member's pod must unlock before it serves", err)
 	}
+}
+
+// TestEnrolMidRunProvisionsAndUnlocks.
+//
+// The hook startSessions hands the supervisor is what makes a claim complete while
+// the node runs. It has to work after the passphrase buffer has been zeroed, which
+// happens the moment startSessions returns — capturing the *passphrase rather than
+// the string it revealed would leave a hook that provisions nothing and fails
+// silently in the one place nobody is watching. So this calls it exactly where
+// production does: after startup, for a member startup never saw.
+//
+// The real derivation cost is paid here deliberately. The fast-KDF managers the other
+// tests build cannot exercise this path, because the hook builds its manager itself.
+func TestEnrolMidRunProvisionsAndUnlocks(t *testing.T) {
+	t.Parallel()
+	vars := fullEnvironment()
+	vars[envPassphrase] = "a-node-passphrase"
+	h := newHarness(t, simpleYAML, vars)
+	cfg := mustLoad(t, simpleYAML)
+	logger := slog.New(slog.NewTextHandler(h.e.stderr, nil))
+	david := mustMember(t, cfg, "david")
+
+	sessions, onEnrol, err := startSessions(h.e, cfg, logger, []domain.Member{david})
+	if err != nil {
+		t.Fatalf("startSessions: %v", err)
+	}
+	if _, ok := sessions.Key("david"); !ok {
+		t.Fatal("startup left david without a key")
+	}
+
+	// Jordan claims now. Startup never provisioned anything for them.
+	jordan := mustMember(t, cfg, "jordan")
+	if _, ok := sessions.Key(jordan.ID); ok {
+		t.Fatal("jordan has a key before claiming; the test proves nothing")
+	}
+	if err := onEnrol(context.Background(), jordan); err != nil {
+		t.Fatalf("the enrolment hook: %v", err)
+	}
+	if _, ok := sessions.Key(jordan.ID); !ok {
+		t.Fatal("a member who claimed while the node was running has no unwrapped key, " +
+			"so their first private message gets the locked notice and the remedy is an operator restart")
+	}
+
+	// Custody is checked for free: in simple mode Provision verifies the offered
+	// passphrase against a member already provisioned, so a hook that had captured
+	// an emptied buffer would have failed above rather than written a record under
+	// a second passphrase.
+	h.assertNoSecrets(t)
 }
 
 // TestGroupPodNeedsNoPassphrase.

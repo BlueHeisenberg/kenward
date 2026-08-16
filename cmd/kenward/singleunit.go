@@ -43,11 +43,19 @@ func newSingleUnitSupervisor(e *env, cfg *config.Config, opts runOptions, logger
 		// would have a pod create wrapped keys for other members under its own
 		// passphrase — which is the isolation failure the mode exists to
 		// prevent, arriving through the back door of a convenience.
-		sessions, err := startSessions(e, cfg, logger, []domain.Member{m})
+		sessions, onEnrol, err := startSessions(e, cfg, logger, []domain.Member{m})
 		if err != nil {
 			return nil, err
 		}
 		single.Sessions = sessions
+		// The same rule, extended past startup. A member selected here who has
+		// not claimed yet has no key to unlock — there is nothing to provision
+		// for somebody who may never arrive — so the provisioning happens when
+		// their claim binds, in their own pod, under their own passphrase. The
+		// supervisor calls this for this pod's member and for nobody else; a
+		// claim for anyone else that lands on this bot is bound and left to
+		// their own pod, keyless here.
+		single.UnlockOnEnrol = onEnrol
 	}
 	// The group pod deliberately gets no session manager of its own making: it
 	// serves the shared space and holds no member key, so demanding a passphrase

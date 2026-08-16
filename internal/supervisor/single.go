@@ -41,6 +41,12 @@ type SingleOptions struct {
 	// session.Manager in isolated mode over a file store in the data directory,
 	// which inside a pod holds exactly one wrapped key.
 	Sessions session.Sessions
+	// UnlockOnEnrol provisions and unlocks this member's key when their claim
+	// binds, so a claim-only pod serves the moment it reports serving. It is
+	// called for this pod's own member and for nobody else — see runner.enrolled
+	// — and the passphrase it closes over is that member's own. Nil leaves a
+	// freshly claimed member locked until the pod restarts.
+	UnlockOnEnrol UnlockOnEnrol
 	// Enrol receives direct messages while the selected member has not yet
 	// claimed their invite. A member's bot exists before they claim, and the
 	// claim happens in a conversation with that bot — never the household's —
@@ -128,6 +134,7 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 		memory:            opts.Memory,
 		router:            opts.Router,
 		sessions:          opts.Sessions,
+		unlockOnEnrol:     opts.UnlockOnEnrol,
 		sessionMode:       session.ModeIsolated,
 		endpointKey:       endpointKeyFunc(cfg, secrets),
 		lookupEnv:         opts.LookupEnv,

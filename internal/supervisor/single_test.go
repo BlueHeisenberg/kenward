@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/enrol"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
@@ -39,11 +40,20 @@ func newSingleHarness(t *testing.T, cfg *config.Config, mutate func(*SingleOptio
 		startErr: make(chan error, 1),
 	}
 	opts := SingleOptions{
-		Member:         "david",
-		Transport:      h.fake,
-		Memory:         h.mem,
-		Router:         h.router,
-		Sessions:       h.sessions,
+		Member:    "david",
+		Transport: h.fake,
+		Memory:    h.mem,
+		Router:    h.router,
+		Sessions:  h.sessions,
+		// In production this closes over the pod's own member's passphrase, so
+		// what the fake must model is that calling it puts a key in this pod.
+		// Whether it is ever called for anybody but this pod's member is the
+		// thing the mode's whole claim rests on; fakeSessions records it and
+		// TestSingleClaimOnlyPodServesAfterClaim checks it.
+		UnlockOnEnrol: func(_ context.Context, m domain.Member) error {
+			h.sessions.unlock(m.ID)
+			return nil
+		},
 		RestartBackoff: time.Millisecond,
 	}
 	if mutate != nil {
@@ -223,7 +233,9 @@ func TestSingleClaimOnlyPodServesAfterClaim(t *testing.T) {
 		o.Member = "ana"
 		o.Enrol = claimer
 	})
-	h.sessions.unlock("ana")
+	// Nothing is unlocked up front: ana has no key until she claims, because
+	// there is nothing to provision for somebody who may never arrive. The claim
+	// path is what gives her one — see UnlockOnEnrol.
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
@@ -249,17 +261,17 @@ func TestSingleClaimOnlyPodServesAfterClaim(t *testing.T) {
 	})
 	before := len(h.fake.Sent())
 	h.fake.Inject(transport.Inbound{ChatID: anaTelegramID, UserID: anaTelegramID, Text: "hi", MessageID: 3})
-	waitFor(t, "ana's first turn", func() bool {
-		for _, o := range h.fake.Sent()[before:] {
-			if o.Text == "via:local" && o.ChatID == anaTelegramID {
-				return true
-			}
-		}
-		return false
-	})
+	waitFor(t, "ana's first turn", func() bool { return len(h.fake.Sent()) > before })
+	if got, _ := h.fake.LastSent(); got.Text != "via:local" || got.ChatID != anaTelegramID {
+		t.Fatalf("ana's first private message after claiming was answered with %q; "+
+			"the pod reported itself serving, so it must serve", got.Text)
+	}
 
 	// A different member's code landing on this bot binds them, but must never
-	// mint their unit in ana's address space — their pod is elsewhere.
+	// mint their unit in ana's address space — nor, more seriously, a key. Their
+	// pod holds their key under their own passphrase; one provisioned here would
+	// be wrapped under ana's, which is precisely the isolation this mode exists
+	// to provide.
 	bobCode, err := claimer.Mint(context.Background(), "Bob", time.Hour)
 	if err != nil {
 		t.Fatalf("Mint bob: %v", err)
@@ -273,6 +285,9 @@ func TestSingleClaimOnlyPodServesAfterClaim(t *testing.T) {
 		}
 		return false
 	})
+	if _, ok := h.sessions.Key(enrol.MemberIDFor("Bob")); ok {
+		t.Fatal("a foreign member's claim provisioned their key in ana's pod, wrapped under ana's passphrase")
+	}
 	hs, err := h.sup.Health(context.Background())
 	if err != nil {
 		t.Fatalf("Health: %v", err)

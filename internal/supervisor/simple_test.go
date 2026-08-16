@@ -69,10 +69,18 @@ func newSimpleHarness(t *testing.T, cfg *config.Config, mutate func(*SimpleOptio
 		startErr: make(chan error, 1),
 	}
 	opts := SimpleOptions{
-		Transport:      h.fake,
-		Memory:         h.mem,
-		Router:         h.router,
-		Sessions:       h.sessions,
+		Transport: h.fake,
+		Memory:    h.mem,
+		Router:    h.router,
+		Sessions:  h.sessions,
+		// Shaped like production: nothing pre-unlocks a member who has not
+		// claimed yet, and the key arrives on the claim path. A harness that
+		// unlocked everybody up front would pass whether or not the claim ever
+		// provisioned anything, which is how the mid-run lock went unnoticed.
+		UnlockOnEnrol: func(_ context.Context, m domain.Member) error {
+			h.sessions.unlock(m.ID)
+			return nil
+		},
 		RestartBackoff: time.Millisecond,
 	}
 	if mutate != nil {
@@ -356,6 +364,18 @@ func (testBinder) Unbind(_ context.Context, id domain.MemberID) (domain.Member, 
 	return domain.Member{ID: id}, nil
 }
 
+// TestSimpleEnrolmentMintsUnitMidRun.
+//
+// The mid-run claim has to deliver a working assistant, not the shape of one. This
+// test used to unlock ana's key by hand before starting, which quietly hid the
+// defect it should have caught: keys were provisioned and unlocked at startup only,
+// so a member who claimed while the node ran got their unit, their onboarding, and
+// then "Your assistant is locked" on their first private message — until an operator
+// restarted the node. Onboarding is the first thing a household ever does, and the
+// remedy named a person who may not be the one holding the phone.
+//
+// So the harness no longer pre-unlocks anybody. The key arrives the way production
+// delivers it: UnlockOnEnrol, called by the runner on the claim path.
 func TestSimpleEnrolmentMintsUnitMidRun(t *testing.T) {
 	claimer, err := enrol.New(enrol.NewMemStore(), testBinder{})
 	if err != nil {
@@ -368,7 +388,6 @@ func TestSimpleEnrolmentMintsUnitMidRun(t *testing.T) {
 	anaID := enrol.MemberIDFor("Ana")
 
 	h := newSimpleHarness(t, simpleTestConfig(), func(o *SimpleOptions) { o.Enrol = claimer })
-	h.sessions.unlock(anaID)
 	h.start(t)
 
 	const anaTelegramID = int64(333)
@@ -387,17 +406,17 @@ func TestSimpleEnrolmentMintsUnitMidRun(t *testing.T) {
 		return mustHealth(t, h.sup)[string(anaID)].State == StateReady
 	})
 
-	// Her next message is served by her own unit, over her own tier chain.
+	// Her next message is served by her own unit, over her own tier chain — and
+	// answered, not refused. Anything else here is the reply a real member reads
+	// as their first private word from the assistant, so the failure prints it.
 	before := len(h.fake.Sent())
 	h.fake.Inject(transport.Inbound{ChatID: anaTelegramID, UserID: anaTelegramID, Text: "hi", MessageID: 3})
-	waitFor(t, "ana's first turn", func() bool {
-		for _, o := range h.fake.Sent()[before:] {
-			if o.Text == "via:local" && o.ChatID == anaTelegramID {
-				return true
-			}
-		}
-		return false
-	})
+	waitFor(t, "ana's first turn", func() bool { return len(h.fake.Sent()) > before })
+	got, _ := h.fake.LastSent()
+	if got.Text != "via:local" || got.ChatID != anaTelegramID {
+		t.Fatalf("ana's first private message after claiming was answered with %q; "+
+			"a member who has just enrolled must get a real answer, not a notice whose only remedy is an operator restart", got.Text)
+	}
 
 	h.stop(t)
 }

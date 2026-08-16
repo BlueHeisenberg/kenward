@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -571,13 +572,26 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	}
 	t.Cleanup(sessions.Close)
 
+	// Keys arrive the way `kenward run` delivers them, and only the way it does.
+	// Startup covers the members this household has already enrolled; anybody who
+	// claims later gets theirs on the claim path. Provisioning everyone up front —
+	// which this harness used to do, unenrolled members included — hid the defect
+	// where a mid-run claim produced a unit with no key, so the newest member's
+	// first private message was answered with the locked notice.
 	ctx := context.Background()
-	for _, id := range []domain.MemberID{"david", "mei"} {
-		if err := sessions.Provision(ctx, id, passphrase); err != nil {
-			t.Fatalf("provisioning %s: %v", id, err)
+	unlockMember := func(ctx context.Context, m domain.Member) error {
+		if err := sessions.Provision(ctx, m.ID, passphrase); err != nil &&
+			!errors.Is(err, session.ErrDuplicateMember) {
+			return err
 		}
-		if err := sessions.Unlock(ctx, id, passphrase); err != nil {
-			t.Fatalf("unlocking %s: %v", id, err)
+		return sessions.Unlock(ctx, m.ID, passphrase)
+	}
+	for _, m := range cfg.DomainMembers() {
+		if !m.Enrolled() {
+			continue
+		}
+		if err := unlockMember(ctx, m); err != nil {
+			t.Fatalf("unlocking %s: %v", m.ID, err)
 		}
 	}
 
@@ -617,11 +631,12 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	// routing.Pool over the real HTTP completer, which is the wiring production
 	// uses and the thing this suite exists to exercise.
 	sup, err := supervisor.NewSimple(cfg, supervisor.SimpleOptions{
-		Transport: tr,
-		Memory:    mem,
-		Sessions:  sessions,
-		Enrol:     claimer,
-		LookupEnv: lookupEnv,
+		Transport:     tr,
+		Memory:        mem,
+		Sessions:      sessions,
+		Enrol:         claimer,
+		UnlockOnEnrol: unlockMember,
+		LookupEnv:     lookupEnv,
 	})
 	if err != nil {
 		t.Fatalf("building supervisor: %v", err)

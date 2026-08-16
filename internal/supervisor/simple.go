@@ -54,6 +54,10 @@ type SimpleOptions struct {
 	// Sessions holds unwrapped member keys. Nil builds a session.Manager in
 	// simple mode over a file store in the data directory.
 	Sessions session.Sessions
+	// UnlockOnEnrol gives a member who claims mid-run the key their unit needs.
+	// Nil means their first private message is answered with the locked notice
+	// until the node restarts; see the type.
+	UnlockOnEnrol UnlockOnEnrol
 	// Enrol, when set, receives every direct message from a sender no unit
 	// serves, so claim codes work while the household runs. Nil means strangers
 	// are dropped by the mux and enrolment happens elsewhere. The supervisor
@@ -128,11 +132,12 @@ func NewSimple(cfg *config.Config, opts SimpleOptions) (*Simple, error) {
 		secrets = config.NewSecrets(config.SecretOptions{LookupEnv: opts.LookupEnv})
 	}
 	rc := runnerConfig{
-		transport: opts.Transport,
-		memory:    opts.Memory,
-		router:    opts.Router,
-		sessions:  opts.Sessions,
-		claimer:   opts.Enrol,
+		transport:     opts.Transport,
+		memory:        opts.Memory,
+		router:        opts.Router,
+		sessions:      opts.Sessions,
+		claimer:       opts.Enrol,
+		unlockOnEnrol: opts.UnlockOnEnrol,
 		// The household bot's token, resolved through the Secrets API at the
 		// moment the transport is built — file first, then environment, then
 		// credential, exactly as the configuration states it.

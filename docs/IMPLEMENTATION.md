@@ -403,6 +403,15 @@ type Sessions interface {
 Keys are unwrapped into memory only, never written to disk, and zeroed on `Lock`.
 `LockAll` runs on shutdown signals.
 
+The passphrase itself outlives startup, in the closure that provisions a mid-run claim
+(§7). The buffer read from the credential file is still zeroed the moment startup ends;
+what persists is the string the KDF was given, which was never reclaimable on demand
+anyway. That is a real cost and the alternative was worse: without it, enrolment cannot
+finish while the node runs. It changes little in practice, because this process is
+already holding every key that passphrase wraps, unwrapped, for its whole life — D-019
+says so plainly — so a memory dump learns the passphrase rather than anything the
+passphrase was protecting here.
+
 **Idle expiry is off by default** (`session.idle_timeout`, `session.DefaultIdleTimeout`
 is zero). That follows from D-019: a passphrase never travels over Telegram, so a member
 whose key is zeroed has no way to unlock again from a chat — someone has to be at the
@@ -843,13 +852,31 @@ Telegram bot usernames are publicly discoverable and anyone may `/start`. Theref
    an expiry (default 24h). Codes are stored hashed.
 2. A stranger messaging the bot gets **no reply at all** until a valid code is
    presented. Not an error, not a prompt — silence.
-3. On a valid code: bind `telegram_id` → member, mark the code consumed, and run the
-   short onboarding explaining the two memories and how capture works. **The private
-   space is not created here.** Nothing in kenward creates a lore space, anywhere; the
-   space named in `private_space` must already exist, and enrolment binds a person to a
-   configuration entry rather than provisioning storage.
+3. On a valid code: bind `telegram_id` → member, mark the code consumed, provision and
+   unlock that member's key, and run the short onboarding explaining the two memories
+   and how capture works. **The private space is not created here.** Nothing in kenward
+   creates a lore space, anywhere; the space named in `private_space` must already
+   exist, and enrolment binds a person to a configuration entry rather than
+   provisioning storage.
 4. Codes are single-use, expiring, rate-limited (5 attempts per chat per hour) and
    compared in constant time.
+
+**A claim mid-run completes without a restart, key included.** Keys were once
+provisioned and unlocked at startup only, so somebody who claimed while the node was
+running got their unit and their onboarding and then "Your assistant is locked" on
+their first private message — a notice whose only remedy is an operator restarting the
+node, on the first thing a household ever does with kenward, addressed to the one
+person who cannot perform it. The process that binds a claim is the process that will
+serve that member, and it holds the passphrase that wraps their key: in simple mode the
+operator's node passphrase, which by that mode's definition wraps everyone's; inside a
+pod that member's own. So it provisions and unlocks there and then
+(`supervisor.UnlockOnEnrol`).
+
+The order is a safety property, not a detail. Whether this process serves the member is
+decided **first**; only then is a key touched. A claim that lands on a pod's bot for
+somebody another pod serves is bound and left there — no key, no unit — because a
+member's key provisioned inside another member's pod would be wrapped under the wrong
+passphrase, which is the one thing isolated mode exists to prevent.
 
 Removal is `kenward revoke <member>`; it unbinds the Telegram id and reports that the
 space key must be rotated in lore.
@@ -886,8 +913,9 @@ household's. It also has a state `simple` has no need for: a member whose pod ex
 who has not yet claimed their invite starts **claim-only** — no unit, no session, nothing
 touching lore, just a claimer waiting for the code. A member's bot exists before they
 claim and the claim happens in a conversation with that bot, so the pod must be able to
-serve the claim without being able to serve a turn. When the claim binds, the unit starts
-serving in place, with no restart.
+serve the claim without being able to serve a turn. When the claim binds, the member's
+key is provisioned and unlocked under the passphrase that pod was started with, and the
+unit starts serving in place, with no restart — see §7.
 
 The `Unit` implementation is identical in all three. If a change to `Unit` needs to know
 which one it is running under, that change is wrong.

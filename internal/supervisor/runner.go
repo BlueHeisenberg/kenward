@@ -47,6 +47,9 @@ type runnerConfig struct {
 	// process. Nil serves everyone, which is simple mode; a single-unit process
 	// serves exactly its own member and leaves everyone else to their own pods.
 	serveOnEnrol func(domain.Member) bool
+	// unlockOnEnrol gives that member the key their unit needs. It is called only
+	// for a member serveOnEnrol has already admitted.
+	unlockOnEnrol UnlockOnEnrol
 
 	// How to build the nil seams.
 	//
@@ -83,6 +86,25 @@ type runnerConfig struct {
 	now         func() time.Time
 	privacyMode privacy.Mode
 }
+
+// UnlockOnEnrol provisions and unlocks a member's key at the moment they claim
+// their invite, in the process that is about to serve them.
+//
+// It exists because enrolment must be complete when it reports complete. Keys were
+// provisioned and unlocked at startup only, so a member who claimed while the node
+// was running got their unit and their onboarding — and then the locked notice on
+// their first private message, until an operator restarted the node. That is an
+// operator's remedy for a fault only the member can see, on the first thing a
+// household ever does with kenward.
+//
+// It is a closure rather than a passphrase field for two reasons: the value never
+// rests on a struct a logger could print, exactly as botToken does not; and custody
+// stays with whoever read the passphrase. Which passphrase that is differs by mode
+// and must — in simple mode it is the operator's node passphrase, which by that
+// mode's own definition wraps every member's key; in a pod it is that member's own,
+// and the runner calls this only for a member the process is entitled to serve. See
+// runner.enrolled, where the order of those two decisions is the whole safeguard.
+type UnlockOnEnrol func(context.Context, domain.Member) error
 
 // runner runs units as goroutines in this process: one transport, one Mux fanning
 // its updates out by (UserID, ChatID), one goroutine per unit. It is the shared
@@ -760,8 +782,20 @@ func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound)
 }
 
 // enrolled brings a freshly claimed member into service without a restart: fold
-// their binding into a new configuration snapshot, swap it in, and give them a
-// unit. The swap is copy-on-write, so no unit ever reads a half-updated member set.
+// their binding into a new configuration snapshot, swap it in, provision and unlock
+// their key, and give them a unit. The swap is copy-on-write, so no unit ever reads
+// a half-updated member set.
+//
+// The key comes before the unit deliberately. A unit without one answers its
+// member's first private message with the locked notice — a message naming a remedy
+// only an operator can perform — and enrolment would be reporting itself complete
+// while the thing it exists to deliver does not work.
+//
+// The order of the two enrolment decisions is load-bearing. serveOnEnrol runs first,
+// so a claim that lands on this bot for somebody another process serves returns
+// before any key is touched. Without that, a member's pod would provision a second
+// member's key under its own passphrase, which is the one failure isolated mode
+// exists to prevent — worse than the bug this path fixes, and invisible.
 func (r *runner) enrolled(m domain.Member) {
 	// The binding is folded in regardless: scope resolution should know every
 	// member the household now has, even one served by a different process.
@@ -777,6 +811,18 @@ func (r *runner) enrolled(m domain.Member) {
 		return
 	}
 	r.tracker.promote(m.ID)
+
+	if r.rc.unlockOnEnrol != nil {
+		// Failing here is not a reason to withhold the unit: the member is
+		// enrolled either way, their group conversation works, and a unit that
+		// says it is locked is better than a member the node treats as a
+		// stranger. The operator sees why in the log, and a restart still fixes
+		// it.
+		if err := r.rc.unlockOnEnrol(r.turnCtx, m); err != nil {
+			r.logger.Error("supervisor: could not unlock the new member's key; their private chat stays locked until this node restarts",
+				"member", string(m.ID), "error", err)
+		}
+	}
 
 	if err := r.buildMemberUnit(m); err != nil {
 		r.logger.Error("supervisor: building unit for new member", "member", string(m.ID), "error", err)

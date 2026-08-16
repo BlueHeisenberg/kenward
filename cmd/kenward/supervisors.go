@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -73,7 +74,7 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 		// nothing ever unlocks holds no key, and a node holding no key answers
 		// every direct message with the locked notice while its group chat works
 		// perfectly — which is the shape of failure nobody diagnoses.
-		sessions, err := startSessions(e, cfg, logger, cfg.DomainMembers())
+		sessions, onEnrol, err := startSessions(e, cfg, logger, cfg.DomainMembers())
 		if err != nil {
 			return nil, err
 		}
@@ -81,53 +82,73 @@ func defaultSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog
 			// Enrol is supplied so claim codes work while the household runs:
 			// without it a member who has been handed a code has nothing to
 			// present it to until the operator restarts the node.
-			Enrol:       claimer,
-			Sessions:    sessions,
-			TierWindows: tierWindows(cfg),
-			Secrets:     e.secrets(),
-			Logger:      logger,
-			LookupEnv:   e.env(),
-			Now:         e.now,
+			Enrol: claimer,
+			// And UnlockOnEnrol so that claim finishes the job: the node
+			// passphrase is this process's to use, so a member who claims now
+			// gets the same provision-and-unlock a member present at startup
+			// got.
+			UnlockOnEnrol: onEnrol,
+			Sessions:      sessions,
+			TierWindows:   tierWindows(cfg),
+			Secrets:       e.secrets(),
+			Logger:        logger,
+			LookupEnv:     e.env(),
+			Now:           e.now,
 		})
 	}
 }
 
 // startSessions reads the passphrase, provisions any of the given members who has no
-// key yet, unlocks them, and hands back the manager the units will use.
+// key yet, unlocks them, and hands back the manager the units will use together with
+// the hook that does the same for one member who claims later.
 //
 // members is passed in rather than read from cfg because the two callers serve
 // different sets: simple mode serves the whole household from one process, and a pod
 // serves exactly one member. Handing a pod the household's member list would have it
-// provision keys for people it must never hold.
-func startSessions(e *env, cfg *config.Config, logger *slog.Logger, members []domain.Member) (session.Sessions, error) {
+// provision keys for people it must never hold. The hook carries that same rule
+// forward past startup: the supervisor calls it only for a member this process is
+// entitled to serve.
+//
+// The hook closes over the passphrase, which is what makes mid-run enrolment work and
+// is a real cost, so it is stated rather than buried. The byte buffer read from the
+// credential file is still zeroed on return — that part of the passphrase type's
+// promise is unchanged. What survives is the string copy reveal() already made and
+// that only the garbage collector could ever have reclaimed: it now lives as long as
+// the process. Against that, this process already holds every one of these members'
+// keys unwrapped in the same memory for its whole life, which D-019 says plainly, so
+// what a memory dump additionally learns is the passphrase itself rather than
+// anything it protects here. The alternative is a household where onboarding ends in
+// a lock message.
+func startSessions(e *env, cfg *config.Config, logger *slog.Logger, members []domain.Member) (session.Sessions, supervisor.UnlockOnEnrol, error) {
 	pass, err := readPassphrase(e)
 	if err != nil {
 		if errors.Is(err, errNoPassphrase) {
-			return nil, errNoPassphrase
+			return nil, nil, errNoPassphrase
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	defer pass.zero()
+	secret := pass.reveal()
 
 	store := session.NewFileStore(sessionStorePath(cfg))
 	mgr, err := session.NewManager(sessionMode(cfg.Mode), store,
 		session.WithIdleTimeout(cfg.Session.IdleTimeout.Duration()))
 	if err != nil {
-		return nil, fmt.Errorf("building the session manager: %w", err)
+		return nil, nil, fmt.Errorf("building the session manager: %w", err)
 	}
 
-	rep, err := unlockSessions(e.context(), mgr, store, members, pass)
+	rep, err := unlockSessions(e.context(), mgr, store, members, secret)
 	if err != nil {
 		mgr.Close()
 		// session.ErrBadPassphrase is deliberately indistinguishable from an
 		// unknown member, so this cannot say which of the two it was — only that
 		// the passphrase this node was given does not open what is on disk.
 		if errors.Is(err, session.ErrBadPassphrase) {
-			return nil, fmt.Errorf("the passphrase from %s does not unwrap the keys in %s.\n"+
+			return nil, nil, fmt.Errorf("the passphrase from %s does not unwrap the keys in %s.\n"+
 				"kenward will not start with keys it cannot open: it would answer every private\n"+
 				"message with the locked notice", pass.source, store.Path())
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	// Ids only. The passphrase appears in no log line, here or anywhere.
 	logger.Info("kenward",
@@ -136,7 +157,12 @@ func startSessions(e *env, cfg *config.Config, logger *slog.Logger, members []do
 		"provisioned", len(rep.Provisioned),
 		"custody", sessionMode(cfg.Mode).String(),
 		"source", pass.source)
-	return mgr, nil
+
+	onEnrol := func(ctx context.Context, m domain.Member) error {
+		_, err := unlockSessions(ctx, mgr, store, []domain.Member{m}, secret)
+		return err
+	}
+	return mgr, onEnrol, nil
 }
 
 // newClaimer builds the enrolment claimer the running node uses to process claim

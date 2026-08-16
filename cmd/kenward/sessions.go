@@ -186,9 +186,13 @@ type unlockReport struct {
 // against a member already provisioned, which is what makes "one node passphrase
 // wraps every member's key" enforced rather than assumed — a typo on the second start
 // is refused instead of quietly creating a household with two passphrases.
-func unlockSessions(ctx context.Context, mgr *session.Manager, store session.Store, members []domain.Member, pass *passphrase) (unlockReport, error) {
+//
+// It runs at startup over everyone this process serves, and again — over one member
+// — when somebody claims their invite while the node is running. The two are the
+// same work, so they are the same function: a second implementation of "provision if
+// missing, then unlock" is a second one to get wrong.
+func unlockSessions(ctx context.Context, mgr *session.Manager, store session.Store, members []domain.Member, secret string) (unlockReport, error) {
 	var rep unlockReport
-	secret := pass.reveal()
 	for _, m := range members {
 		if !m.Enrolled() {
 			// Nothing was provisioned for them and nothing needs to be: a member
