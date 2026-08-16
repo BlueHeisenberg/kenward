@@ -2,6 +2,7 @@ package enrol
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
@@ -117,6 +118,28 @@ func textFor(tag string) text {
 func Spoken(tag string) bool {
 	_, ok := tables[tag]
 	return ok
+}
+
+// TagFor maps a language named the way a person names one onto a tag this package
+// holds copy for, falling back to English for anything it does not.
+//
+// It exists because the two halves of this setting are honestly different.
+// config.PersonaConfig.Language is free text and has to be: it is passed to the model,
+// not looked up in a table, and a household is entitled to ask for a register of a
+// language kenward has never heard of. This package's copy is the opposite — a short,
+// closed list of languages somebody has actually written and read — so somewhere the
+// one has to be resolved against the other, and doing it here keeps the free-text
+// promise intact everywhere else.
+//
+// ponytail: a switch, because there are two languages. A third makes it a field on
+// text — the aliases each table answers to — rather than a longer switch here.
+func TagFor(language string) string {
+	switch strings.ToLower(strings.TrimSpace(language)) {
+	case "es", "spanish", "español", "espanol", "castellano":
+		return LangSpanish
+	default:
+		return LangEnglish
+	}
 }
 
 var english = text{

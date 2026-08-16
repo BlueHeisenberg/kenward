@@ -37,18 +37,79 @@ type Binding struct {
 // own, destroying exactly the parts of it a person put there. So the file stays
 // authoritative for what the household *is*, and this holds what has happened since.
 //
-// It holds bindings and nothing else. Anything that looks like configuration belongs in
-// the configuration.
+// It holds what the members themselves have done: claimed an invite, and answered the
+// questions their Telegram tutorial put to them. Nothing an operator writes belongs
+// here — a member's name, space and tier chain are the file's, and kenward does not
+// rewrite the file.
+//
+// A persona is on this side of that line and it is worth saying why, because it looks
+// like configuration. members[].persona is the one section of the schema an operator
+// does not fill in: it is written by the member, in Telegram, about their own
+// assistant, and the wizard deliberately refuses to answer it on their behalf. So it
+// arrives the same way a binding does — from a conversation, at runtime, one answer at
+// a time — and it is recorded the same way. MergeState folds it back into the
+// configuration, per field, so that everything downstream reads one member list and
+// never consults two sources.
 type State struct {
 	Version int `json:"version"`
 	// Bindings is keyed by MemberID: the stable internal id, never the Telegram one,
 	// so a member can re-claim from a new account without becoming a new person.
 	Bindings map[domain.MemberID]Binding `json:"bindings"`
+	// Personas is what each member chose about their own agent, keyed the same way.
+	// A member who has never answered has no entry, which is a different fact from
+	// an entry full of empty strings and stays distinguishable from it.
+	Personas map[domain.MemberID]MemberPersona `json:"personas,omitempty"`
+}
+
+// MemberPersona is one member's answers, and the little tutorial progress that has to
+// outlive the process to be worth anything.
+//
+// Persona is the part that is configuration once it has been given. The other two are
+// not, and they are here rather than in a file of their own because they are useless
+// apart from it: an onboarding that was cut off is identified by having a chat to
+// finish in and no explanation sent, and both facts are about the same member's same
+// conversation.
+type MemberPersona struct {
+	Persona PersonaConfig `json:"persona"`
+	// TutorialChat is the private chat the member's onboarding ran in, kept so an
+	// interrupted one can be finished later without guessing a chat id from a user
+	// id. Zero means no onboarding has started.
+	TutorialChat int64 `json:"tutorial_chat,omitempty"`
+	// Explained records that the memory-model explanation reached this member. It is
+	// the one thing kenward owes them rather than asks of them, so a node that died
+	// between the greeting and it has to know to send it on the next start.
+	Explained bool `json:"explained,omitempty"`
 }
 
 // NewState returns an empty state, as a first run has.
 func NewState() *State {
-	return &State{Version: stateVersion, Bindings: make(map[domain.MemberID]Binding)}
+	return &State{
+		Version:  stateVersion,
+		Bindings: make(map[domain.MemberID]Binding),
+		Personas: make(map[domain.MemberID]MemberPersona),
+	}
+}
+
+// MemberPersona returns what a member recorded about their own agent, if anything.
+func (s *State) MemberPersona(id domain.MemberID) (MemberPersona, bool) {
+	if s == nil {
+		return MemberPersona{}, false
+	}
+	p, ok := s.Personas[id]
+	return p, ok
+}
+
+// SetMemberPersona records a member's answers, replacing whatever was held.
+//
+// Replacing rather than merging is what makes an abandoned tutorial cheap: the caller
+// holds the whole of what has been answered so far and writes it after every question,
+// so there is never a partial record anywhere for a restart to reconcile.
+func (s *State) SetMemberPersona(id domain.MemberID, p MemberPersona) {
+	if s.Personas == nil {
+		s.Personas = make(map[domain.MemberID]MemberPersona)
+	}
+	s.Version = stateVersion
+	s.Personas[id] = p
 }
 
 // Binding returns the binding recorded for a member, if there is one.
@@ -122,6 +183,9 @@ func LoadState(path string) (*State, error) {
 	}
 	if st.Bindings == nil {
 		st.Bindings = make(map[domain.MemberID]Binding)
+	}
+	if st.Personas == nil {
+		st.Personas = make(map[domain.MemberID]MemberPersona)
 	}
 	if st.Version == 0 {
 		st.Version = stateVersion
@@ -298,6 +362,21 @@ func (c *Config) MergeState(st *State) error {
 	p := &problems{}
 	for i := range c.Members {
 		m := &c.Members[i]
+		// Per field, and the member's own answer wins. A field they never answered
+		// is an empty string here and leaves whatever the file said, which is what
+		// makes an abandoned tutorial equivalent to one that was never started: it
+		// cannot blank out a persona somebody wrote by hand, and it cannot half-write
+		// one either. There is no disagreement to report, unlike telegram_id below —
+		// members[].persona is the member's to write and the file's value is only
+		// ever a starting point.
+		if mp, ok := st.MemberPersona(domain.MemberID(m.ID)); ok {
+			m.Persona = PersonaConfig{
+				AgentName: orElse(mp.Persona.AgentName, m.Persona.AgentName),
+				Language:  orElse(mp.Persona.Language, m.Persona.Language),
+				Tone:      orElse(mp.Persona.Tone, m.Persona.Tone),
+				Character: orElse(mp.Persona.Character, m.Persona.Character),
+			}
+		}
 		b, ok := st.Binding(domain.MemberID(m.ID))
 		if !ok {
 			continue

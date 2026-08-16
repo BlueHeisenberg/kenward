@@ -264,6 +264,54 @@ func (b *Binder) Bind(ctx context.Context, id domain.MemberID, name string, tele
 	return memberCopy(member), nil
 }
 
+// SetMemberPersona records what a member chose about their own agent in the Telegram
+// tutorial, and the tutorial progress that goes with it.
+//
+// It is here rather than in a store of its own because this is the object that already
+// owns the state file: one mutex, one clone-write-swap, one path, and no second writer
+// racing the enrolment that produced the member in the first place. The tutorial runs
+// immediately after a claim and writes after every question, so the two writers would
+// otherwise be the same conversation half a second apart.
+//
+// A member this Binder does not hold is refused rather than recorded. A persona for
+// nobody is inert — MergeState only walks the configured member list — but writing one
+// would leave a file naming a person the household does not have, which is the kind of
+// row somebody later has to decide what to do about.
+func (b *Binder) SetMemberPersona(ctx context.Context, id domain.MemberID, p MemberPersona) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if id == "" {
+		return ErrNoMemberID
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, held := b.members[id]; !held {
+		return fmt.Errorf("%w: %q", ErrUnknownMember, id)
+	}
+	next := cloneState(b.state)
+	next.SetMemberPersona(id, p)
+	if err := next.Save(b.path); err != nil {
+		return fmt.Errorf("config: recording the persona for member %q: %w", id, err)
+	}
+	b.state = next
+	return nil
+}
+
+// MemberPersonas returns every persona recorded, copied.
+func (b *Binder) MemberPersonas(ctx context.Context) (map[domain.MemberID]MemberPersona, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make(map[domain.MemberID]MemberPersona, len(b.state.Personas))
+	for id, p := range b.state.Personas {
+		out[id] = p
+	}
+	return out, nil
+}
+
 // Unbind clears a member's Telegram binding and returns the member as it was before,
 // so a caller can say who was revoked and which space their key still opens.
 //
@@ -382,9 +430,16 @@ func memberCopy(m domain.Member) domain.Member {
 // actually there; mutating in place and rolling back on error would leave a window in
 // which it did not.
 func cloneState(s *State) *State {
-	out := &State{Version: s.Version, Bindings: make(map[domain.MemberID]Binding, len(s.Bindings))}
+	out := &State{
+		Version:  s.Version,
+		Bindings: make(map[domain.MemberID]Binding, len(s.Bindings)),
+		Personas: make(map[domain.MemberID]MemberPersona, len(s.Personas)),
+	}
 	for id, b := range s.Bindings {
 		out.Bindings[id] = b
+	}
+	for id, p := range s.Personas {
+		out.Personas[id] = p
 	}
 	return out
 }

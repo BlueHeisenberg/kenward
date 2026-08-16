@@ -3,12 +3,12 @@ package enrol
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
@@ -228,8 +228,12 @@ func TestTutorialOrder(t *testing.T) {
 	}
 
 	got := ps.get("david")
-	want := Persona{Language: LangEnglish, AgentName: "Jeeves", Register: RegisterWarm,
-		Character: "dry, likes cycling", ChatID: 500, Explained: true}
+	want := Persona{
+		PersonaConfig: config.PersonaConfig{
+			Language: english.name, AgentName: "Jeeves", Tone: ToneWarm, Character: "dry, likes cycling",
+		},
+		ChatID: 500, Explained: true,
+	}
 	if got != want {
 		t.Errorf("persona = %+v, want %+v", got, want)
 	}
@@ -260,8 +264,14 @@ func TestTutorialLanguageIsHonouredForEverythingAfterIt(t *testing.T) {
 			t.Errorf("after choosing Spanish the tutorial still said the English %q", notWant)
 		}
 	}
-	if got := ps.get("david").Language; got != LangSpanish {
-		t.Errorf("language recorded as %q, want %q", got, LangSpanish)
+	// The language's own name, not the tag: config.PersonaConfig.Language is free
+	// text and reaches the model, and "es" in a system prompt is a tag leaking out
+	// of this package. TagFor is what turns it back into an index into the copy.
+	if got := ps.get("david").Language; got != spanish.name {
+		t.Errorf("language recorded as %q, want %q", got, spanish.name)
+	}
+	if got := TagFor(ps.get("david").Language); got != LangSpanish {
+		t.Errorf("TagFor(%q) = %q, want %q", ps.get("david").Language, got, LangSpanish)
 	}
 }
 
@@ -307,7 +317,7 @@ func TestTutorialAbandonment(t *testing.T) {
 		}
 	}
 	got := ps.get("david")
-	if got.Language != "" || got.AgentName != "" || got.Register != "" || got.Character != "" {
+	if got.Language != "" || got.AgentName != "" || got.Tone != "" || got.Character != "" {
 		t.Errorf("an abandoned tutorial left settings behind: %+v", got)
 	}
 	if !got.Explained {
@@ -326,7 +336,7 @@ func TestTutorialCommitsEachAnswerAsItArrives(t *testing.T) {
 	if ps.count() < 2 {
 		t.Fatalf("the store was written %d times; an answer must be committed before the next question", ps.count())
 	}
-	if got := ps.get("david").Language; got != LangSpanish {
+	if got := ps.get("david").Language; got != spanish.name {
 		t.Errorf("the one answer given before the member vanished was lost: %+v", ps.get("david"))
 	}
 	if got := ps.get("david").ChatID; got != 500 {
@@ -352,7 +362,7 @@ func TestTutorialSurvivesARestartMidQuestion(t *testing.T) {
 	}
 
 	saved := ps.get("david")
-	if saved.Language != LangSpanish {
+	if saved.Language != spanish.name {
 		t.Fatalf("the answer given before the restart was lost: %+v", saved)
 	}
 	if saved.Explained {
@@ -433,7 +443,7 @@ func TestTutorialBack(t *testing.T) {
 	if !strings.Contains(qs[2].Text, "Language") && !strings.Contains(qs[2].Text, "Idioma") {
 		t.Errorf("Back did not return to the language question: %q", qs[2].Text)
 	}
-	if got := ps.get("david").Language; got != LangSpanish {
+	if got := ps.get("david").Language; got != spanish.name {
 		t.Errorf("the answer given after going back did not win: %q", got)
 	}
 }
@@ -448,7 +458,7 @@ func TestTutorialBackFromTypedQuestion(t *testing.T) {
 	if got := len(a.questions()); got != 3 {
 		t.Fatalf("asked %d questions, want 3: /back at the character question re-asks the register", got)
 	}
-	if got := ps.get("david").Register; got != RegisterFlat {
+	if got := ps.get("david").Tone; got != ToneFlat {
 		t.Errorf("register = %q, want the answer given after going back", got)
 	}
 }
@@ -590,39 +600,5 @@ func TestExplanationCopyInEveryLanguage(t *testing.T) {
 				t.Errorf("%s askPrivate=%v: the explanation makes the other policy's promise", tag, ask)
 			}
 		}
-	}
-}
-
-// TestPersonaFileRoundTrip covers the placeholder store: an answer written now is
-// still there after the process that wrote it has gone.
-func TestPersonaFileRoundTrip(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "personas.json")
-	ctx := context.Background()
-
-	s := NewPersonaFile(path)
-	if got, err := s.Personas(ctx); err != nil || len(got) != 0 {
-		t.Fatalf("a store with no file yet = %v, %v; want empty", got, err)
-	}
-	p := Persona{Language: LangSpanish, AgentName: "Jeeves", Register: RegisterWarm, ChatID: 500}
-	if err := s.SetPersona(ctx, "david", p); err != nil {
-		t.Fatalf("SetPersona: %v", err)
-	}
-	if err := s.SetPersona(ctx, "sam", Persona{Language: LangEnglish, ChatID: 501}); err != nil {
-		t.Fatalf("SetPersona: %v", err)
-	}
-
-	reopened := NewPersonaFile(path)
-	all, err := reopened.Personas(ctx)
-	if err != nil {
-		t.Fatalf("Personas: %v", err)
-	}
-	if len(all) != 2 {
-		t.Fatalf("held %d personas after a reopen, want 2", len(all))
-	}
-	if all["david"] != p {
-		t.Errorf("david = %+v, want %+v", all["david"], p)
-	}
-	if err := s.SetPersona(ctx, "", p); err == nil {
-		t.Error("a persona for no member was accepted")
 	}
 }

@@ -616,7 +616,7 @@ that decides how the directory is backed up, mounted and permissioned:
 
 | File | Contents | Sensitive |
 | --- | --- | --- |
-| `state.json` | the enrolment bindings: which Telegram account is which member | no |
+| `state.json` | what the members themselves have done: the enrolment bindings (which Telegram account is which member) and the personas they wrote in their Telegram tutorial | no |
 | `sessions.json` | each member's **wrapped key** | yes |
 | `invites.json` | the **hashed** claim codes not yet redeemed | yes |
 | `invites/<id>.json` | isolated mode only: one member's outstanding codes, for their pod | yes |

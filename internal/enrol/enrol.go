@@ -254,12 +254,16 @@ func WithAskPrivateWrites() Option {
 //
 // It is the language of the greeting and of the tutorial's first question — the two
 // messages that arrive before the member has been able to say anything — and it is
-// what a member who skips the language question inherits. A tag this package does
-// not hold copy for falls back to English; see Spoken.
-func WithLanguage(tag string) Option {
+// what a member who skips the language question inherits.
+//
+// It takes household.persona.language as written, which is free text named the way a
+// person names a language, and resolves it here through TagFor. A language this
+// package holds no copy for falls back to English, and says so where the member can
+// see it; see Spoken.
+func WithLanguage(language string) Option {
 	return func(c *Claimer) {
-		if tag != "" {
-			c.language = tag
+		if strings.TrimSpace(language) != "" {
+			c.language = TagFor(language)
 		}
 	}
 }

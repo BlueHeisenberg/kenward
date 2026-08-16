@@ -85,3 +85,45 @@ func TestPersonaReachesTheRightUnit(t *testing.T) {
 		}
 	})
 }
+
+// TestATutorialAnswerReachesTheMembersUnitWithoutARestart.
+//
+// The tutorial writes a member's answers to the state file and the member gets their
+// unit the moment it ends — in that order, in one goroutine, with nothing in between
+// that re-reads the file. So the running configuration has to be folded too, or the
+// member who has just named their agent Jeeves is answered by kenward until somebody
+// restarts the node: the same feature not working, with none of the symptoms.
+func TestATutorialAnswerReachesTheMembersUnitWithoutARestart(t *testing.T) {
+	cfg := isolatedTestConfig()
+	cfg.Household.Agents = config.AgentsPerMember
+	cfg.Household.Persona = config.PersonaConfig{Language: "Spanish"}
+	for i := range cfg.Members {
+		if cfg.Members[i].ID == "david" {
+			// What an operator wrote by hand. A member who skips a question must
+			// not lose it.
+			cfg.Members[i].Persona = config.PersonaConfig{Character: "Knows the house."}
+		}
+	}
+	cfg.ApplyDefaults()
+
+	h := newSingleHarness(t, cfg, nil)
+	defer func() { _ = h.fake.Close() }()
+
+	h.sup.run.personaAnswered("david", config.PersonaConfig{AgentName: "Jeeves", Tone: "warm"})
+
+	got := h.sup.run.unitOptions(unitKey{member: "david"}, []string{"local"}).Persona
+	want := assistant.Persona{
+		Name: "Jeeves", Language: "Spanish", Tone: "warm", Character: "Knows the house.",
+	}
+	if got != want {
+		t.Errorf("Persona = %+v, want %+v (answered fields win, unanswered ones keep what the file said)", got, want)
+	}
+
+	// A tutorial that answered nothing changes nothing, which is what makes
+	// abandoning it equivalent to never starting it.
+	before := h.sup.run.unitOptions(unitKey{member: "eve"}, []string{"local"}).Persona
+	h.sup.run.personaAnswered("eve", config.PersonaConfig{})
+	if after := h.sup.run.unitOptions(unitKey{member: "eve"}, []string{"local"}).Persona; after != before {
+		t.Errorf("an abandoned tutorial changed eve's persona: %+v, was %+v", after, before)
+	}
+}

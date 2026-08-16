@@ -45,10 +45,17 @@ It asks, in order:
    `kenward invite`, because asking someone to find their numeric Telegram id is a
    terrible first experience.
 5. **The identity question, and kenward's persona.** A second question, and it is not the
-   trust question's other half — neither mentions the other, and conflating them is the
-   mistake this pair exists to prevent. That one is about security and is answered by
-   topology; this one is about presentation, costs nothing, needs no container runtime,
-   and all four combinations are coherent.
+   trust question's other half — conflating them is the mistake this pair exists to
+   prevent. That one is about security and is answered by topology; this one is about
+   presentation, about who the household is talking to.
+
+   They meet in exactly one place, and it is a counting problem rather than a privacy
+   one: an agent is a Telegram contact, simple mode runs one bot for the whole
+   household, and two agents behind one contact are one agent. So `[2]` below is offered
+   in both modes and declined in simple mode, with that reason — never downgraded,
+   because a household that asked for their own assistants and got kenward wearing
+   several names would have no way to tell. `config.Validate` refuses the same pair in a
+   hand-written file.
 
    ```
    One assistant for the whole household, or one each?
@@ -74,10 +81,12 @@ It asks, in order:
    kenward's own strings — the onboarding, the capture announcements, the refusals, the
    retrieval line, the locked notice — are still English.
 
-   Under `[2]`, the privacy statement printed at the end gains a paragraph saying that a
-   member's own bot is a separate **contact**, not a separate **secret** — it seals
-   nothing unless the household also chose isolated mode. That paragraph is
-   `internal/privacy`'s and is golden-tested with the rest.
+   Under `[2]`, the privacy statement printed at the end gains a paragraph saying what a
+   member's own bot is doing: it is that member's assistant's own **contact**, and it is
+   the **mode** — not the bot — that seals their memory. Somebody who has just made a bot
+   in BotFather with their own name on it has every reason to believe otherwise, and the
+   ceremony is identical either way. That paragraph is `internal/privacy`'s and is
+   golden-tested with the rest.
 
 6. **Endpoints.** For each: name, base URL, model, tiers. The wizard probes each one as
    it is entered and says whether it answered, so a typo is caught immediately rather

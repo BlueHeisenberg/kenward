@@ -55,11 +55,15 @@ const (
 //
 // TrustQuestion is about security and is answered by topology: can the person who runs
 // this machine read somebody else's private conversations. This one is about
-// presentation: how many assistants there are. It costs nothing, it needs no container
-// runtime, and all four combinations of the two are coherent — which is exactly why
-// they are easy to conflate, and why a member's own bot is described here as a separate
+// presentation: how many assistants there are, and who each one belongs to. They are
+// easy to conflate, which is why a member's own bot is described here as a separate
 // contact and never as a separate secret. internal/privacy makes the same distinction
 // in the statement this wizard prints at the end.
+//
+// They touch in one place and it is arithmetic: one bot is one contact is one agent,
+// so one agent each needs the per-member bots only isolated mode has. The wizard says
+// that, in those terms, and says nothing about privacy while saying it — see
+// identityNeedsIsolated.
 const (
 	identityIntro = `Who kenward is
 

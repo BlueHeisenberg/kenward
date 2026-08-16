@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -1033,6 +1034,16 @@ func (r *runner) startTutorial(view transport.Transport, m domain.Member, chatID
 			r.mu.Lock()
 			delete(r.tutorials, chatID)
 			r.mu.Unlock()
+			// Their answers, before their unit is built from them. The store has
+			// the same values and is the record, but nothing re-reads the state
+			// file while the node runs — so a member who has just named their
+			// agent Alfred would be answered by kenward until the next restart,
+			// which is the same feature not working with none of the symptoms.
+			//
+			// Unconditionally, like the promotion below: a tutorial that stopped
+			// half way still gave the answers it collected, and they are already
+			// on disk.
+			r.personaAnswered(m.ID, tut.Answered().PersonaConfig)
 			// Unconditionally: a tutorial that failed, was abandoned or panicked
 			// still leaves an enrolled member, and withholding their unit over a
 			// setup question would be the worse failure by a distance.
@@ -1048,6 +1059,44 @@ func (r *runner) startTutorial(view transport.Transport, m domain.Member, chatID
 			r.logger.Warn("supervisor: onboarding tutorial did not finish", "member", string(m.ID), "error", err)
 		}
 	}()
+}
+
+// personaAnswered folds what a member chose in their tutorial into the running
+// configuration, copy-on-write, exactly as a binding is folded.
+//
+// Per field, and an unanswered field leaves whatever the file said, which is
+// config.MergeState's rule and has to be the same rule: the two are the same fold
+// happening at different times — this one while the node runs, that one on the next
+// start — and a member who skipped the language question must not lose a language an
+// operator wrote for them either way.
+func (r *runner) personaAnswered(id domain.MemberID, p config.PersonaConfig) {
+	if p == (config.PersonaConfig{}) {
+		return
+	}
+	r.cfgMu.Lock()
+	defer r.cfgMu.Unlock()
+	out := snapshotConfig(r.cfg)
+	for i := range out.Members {
+		if domain.MemberID(out.Members[i].ID) != id {
+			continue
+		}
+		held := out.Members[i].Persona
+		out.Members[i].Persona = config.PersonaConfig{
+			AgentName: orElse(p.AgentName, held.AgentName),
+			Language:  orElse(p.Language, held.Language),
+			Tone:      orElse(p.Tone, held.Tone),
+			Character: orElse(p.Character, held.Character),
+		}
+		r.cfg = out
+		return
+	}
+}
+
+func orElse(v, fallback string) string {
+	if strings.TrimSpace(v) == "" {
+		return fallback
+	}
+	return v
 }
 
 // enrolled brings a freshly claimed member into service without a restart: fold

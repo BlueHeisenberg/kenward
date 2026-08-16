@@ -177,19 +177,18 @@ func (s *FileStore) load() ([]Code, error) {
 	return f.Codes, nil
 }
 
-// store writes the codes.
+// store writes the codes: temp file in the same directory, fsync, rename over the
+// target. Same directory matters — rename is only atomic within a filesystem.
+//
+// ponytail: this is the invite store's only write and the parameters below are one
+// caller wide. It was split out when the tutorial kept a persona file of its own; the
+// personas now live in the state file, which internal/config writes with its own copy
+// of this dance. Fold it back into store if a second caller does not turn up.
 func (s *FileStore) store(codes []Code) error {
 	return writeAtomic(s.path, s.mode, ".codes-*.tmp",
 		codeFile{Version: fileFormatVersion, Codes: codes})
 }
 
-// writeAtomic writes v as JSON to path: temp file in the same directory, fsync,
-// rename over the target. Same directory matters — rename is only atomic within a
-// filesystem.
-//
-// Two stores in this package write a small versioned JSON file that must never be
-// observed half-written, and the sequence below is fiddly enough that two copies of
-// it would drift. pattern names the temp file so a stray one is attributable.
 func writeAtomic(path string, mode fs.FileMode, pattern string, v any) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

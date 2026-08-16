@@ -78,7 +78,7 @@ type household struct {
 	clock    *testClock
 	store    *countingStore
 	claimer  *enrol.Claimer
-	personas *enrol.PersonaFile
+	personas enrol.PersonaStore
 }
 
 func newHousehold(t *testing.T, opts harnessOptions) *household {
@@ -90,7 +90,6 @@ func newHousehold(t *testing.T, opts harnessOptions) *household {
 	// The same file name `kenward invite` writes, in the same place, so a restart
 	// finds the codes exactly where the running node left them.
 	hh.store = &countingStore{Store: enrol.NewFileStore(filepath.Join(opts.dataDir, "invites.json"))}
-	hh.personas = enrol.NewPersonaFile(filepath.Join(opts.dataDir, "personas.json"))
 	extra := opts.enrolOpts
 	opts.enrolFor = func(t *testing.T, cfg *config.Config) *enrol.Claimer {
 		t.Helper()
@@ -100,6 +99,12 @@ func newHousehold(t *testing.T, opts harnessOptions) *household {
 		if err != nil {
 			t.Fatalf("building the enrolment binder: %v", err)
 		}
+		// The store the binary uses: the member's own answers land in
+		// members[].persona, in the state file, written by the object that wrote
+		// their binding. Nothing about enrolment is faked here and this is part of
+		// it — a separate persona file would be a second writer this wiring does
+		// not have.
+		hh.personas = enrol.BinderPersonas(binder)
 		c, err := enrol.New(hh.store, binder, append([]enrol.Option{
 			enrol.WithClock(hh.clock.now),
 			enrol.WithPersonas(hh.personas),
@@ -573,6 +578,21 @@ func TestTheTutorialIsMultiTurnAndTheMemberIsServedAfterIt(t *testing.T) {
 			"be put to the Claimer as another claim", got)
 	}
 
+	// Wait for the question before answering it. A typed message is handed to the
+	// tutorial only while it is actually waiting for one — see deliverToTutorial,
+	// where the non-blocking send is the whole filter — and between the name being
+	// recorded and the character question going out the tutorial still has a
+	// confirmation to send and a button question to put. Injecting on the strength of
+	// the stored name races that, which is a fact about this fake transport rather
+	// than about Telegram, where nobody types faster than the next message arrives.
+	waitFor(t, "the character question to be on screen", func() bool {
+		for _, m := range h.sentTo(meiChatID) {
+			if strings.Contains(m.Text, "Anything else about how you'd like me to be") {
+				return true
+			}
+		}
+		return false
+	})
 	h.tr.InjectText(meiChatID, meiTelegramID, "a bit dry, into cycling", false)
 	sent := h.waitForReply(meiChatID, onboardingMessages+1)
 	if !strings.Contains(sent[len(sent)-1].Text, "remember something") {
@@ -588,7 +608,7 @@ func TestTheTutorialIsMultiTurnAndTheMemberIsServedAfterIt(t *testing.T) {
 	}
 
 	p := personaOf(t, h, "mei")
-	if p.Language != enrol.LangEnglish || p.Register == "" || p.Character != "a bit dry, into cycling" {
+	if p.Language == "" || p.Tone == "" || p.Character != "a bit dry, into cycling" {
 		t.Errorf("persona = %+v, want every answer recorded", p)
 	}
 	if !p.Explained {

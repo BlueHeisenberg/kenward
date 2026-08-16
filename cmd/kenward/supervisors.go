@@ -290,16 +290,25 @@ func newClaimer(cfg *config.Config, logger *slog.Logger) (*enrol.Claimer, error)
 		return nil, err
 	}
 	// The explanation's third message describes the buttons this household will
-	// actually show, so it has to know which policy is in force.
-	opts := []enrol.Option{enrol.WithPersonas(personaStore(cfg)), enrol.WithLogger(logger)}
+	// actually show, so it has to know which policy is in force. The household's
+	// language is the one the greeting arrives in — it is sent before the member has
+	// been able to say anything — and it is what a member who skips the language
+	// question inherits.
+	opts := []enrol.Option{
+		enrol.WithPersonas(enrol.BinderPersonas(binder)),
+		enrol.WithLogger(logger),
+		enrol.WithLanguage(cfg.Household.Persona.Language),
+	}
 	if cfg.Capture.PrivateWrites == config.PrivateWriteAsk {
 		opts = append(opts, enrol.WithAskPrivateWrites())
 	}
-	// ponytail: the household's language and its one-agent-each choice are
-	// internal/config's to declare, and this is where they attach —
-	// enrol.WithLanguage(cfg.<language>) and enrol.WithOneEach() under the identity
-	// question. Until they exist the tutorial runs in English and does not ask a
-	// member to name an agent that no arrangement gives them.
+	// Through AgentPerMember rather than the field: the tutorial asks a member to
+	// name their agent only where they are getting one, and simple mode answers false
+	// however household.agents is written. A member asked to name an assistant that
+	// no arrangement gives them would be answering a question with no consequence.
+	if cfg.AgentPerMember() {
+		opts = append(opts, enrol.WithOneEach())
+	}
 	c, err := enrol.New(inviteStore(cfg), binder, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("building the enrolment claimer: %w", err)

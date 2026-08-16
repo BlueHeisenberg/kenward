@@ -73,7 +73,21 @@ type Tutorial struct {
 	// cur is the language the tutorial is currently being delivered in. It starts as
 	// the household's and changes exactly once, at the language question.
 	cur text
+	// answered is what the member has settled on, kept so the caller can read it
+	// once Run has returned. See Answered.
+	answered Persona
 }
+
+// Answered is what the member chose, as of the last question they answered.
+//
+// It is for the one caller that has to act on the answers rather than store them: the
+// supervisor gives this member a unit the moment the tutorial ends, and a unit built
+// from a configuration that does not yet carry their persona would answer in
+// kenward's voice until the next restart. The store has the same values and is the
+// record; this saves the caller reading its own write back.
+//
+// Valid only after Run has returned, and read from the goroutine that called it.
+func (t *Tutorial) Answered() Persona { return t.answered }
 
 // outcome is what one question decided.
 type outcome int
@@ -127,6 +141,7 @@ func (t *Tutorial) Run(ctx context.Context) error {
 			// loop in front of a member.
 			i++
 		}
+		t.answered = p
 		t.save(ctx, p)
 	}
 
@@ -145,6 +160,7 @@ func (t *Tutorial) Run(ctx context.Context) error {
 		}
 	}
 	p.Explained = true
+	t.answered = p
 	t.save(ctx, p)
 	return nil
 }
@@ -172,8 +188,13 @@ func (t *Tutorial) askLanguage(ctx context.Context, p *Persona) outcome {
 		// language later carries this member with it.
 		return advance
 	case choiceLangEnglish, choiceLangSpanish:
-		p.Language = strings.TrimPrefix(ans.ChoiceID, "lang.")
-		t.cur = textFor(p.Language)
+		// The language's own name is recorded, not the tag. config's Language is
+		// free text on purpose — it is passed to the model rather than looked up in
+		// a table — and a member's persona reading `language: es` would put a tag in
+		// a system prompt. The tag is this package's index into its own copy and
+		// nothing else's; TagFor recovers it.
+		t.cur = textFor(strings.TrimPrefix(ans.ChoiceID, "lang."))
+		p.Language = t.cur.name
 		return advance
 	}
 
@@ -250,7 +271,7 @@ func (t *Tutorial) askRegister(ctx context.Context, p *Persona) outcome {
 	case choiceSkip:
 		return advance
 	}
-	p.Register = strings.TrimPrefix(ans.ChoiceID, "tone.")
+	p.Tone = strings.TrimPrefix(ans.ChoiceID, "tone.")
 	return advance
 }
 
@@ -426,7 +447,7 @@ func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, askPrivate
 			log.Info("supervisor: finishing an onboarding the last run did not", "member", string(id))
 		}
 		sent := true
-		for _, out := range Explanation(p.ChatID, textFor(p.Language), askPrivate) {
+		for _, out := range Explanation(p.ChatID, textFor(TagFor(p.Language)), askPrivate) {
 			if err := a.Send(ctx, out); err != nil {
 				errs = append(errs, err)
 				sent = false

@@ -49,10 +49,18 @@ const (
 //
 // It is not Mode and must never be described as though it were. Mode is a security
 // question — can the operator read a member's private plaintext — and it is answered by
-// topology. This is a presentation question, it costs nothing, it needs no container
-// runtime, and all four combinations of the two are coherent. Conflating them is the
-// one mistake this pair of settings exists to prevent: a member's own bot is a separate
-// contact, not a separate secret, and internal/privacy says so in those words.
+// topology. This is a presentation question, about who the household is talking to.
+// Conflating them is the one mistake this pair of settings exists to prevent: a
+// member's own bot is a separate contact, not a separate secret, and internal/privacy
+// says so in those words.
+//
+// The two meet in exactly one place, and it is arithmetic rather than privacy. An
+// agent is a Telegram contact; simple mode runs one bot for the whole household; two
+// agents behind one contact are one agent. So AgentsPerMember needs ModeIsolated,
+// where every member already has a bot of their own, and validateHousehold refuses the
+// other pair with that reason rather than downgrading it. AgentPerMember is the one
+// predicate that answers the question, and nothing compares this field to decide
+// anything.
 type Agents string
 
 const (
@@ -253,7 +261,7 @@ type PersonaConfig struct {
 	// It is not the Telegram bot's display name, which is global and set in
 	// BotFather. This is what the agent calls itself in conversation, which is why
 	// per-member names work however many bots exist.
-	AgentName string `yaml:"agent_name,omitempty"`
+	AgentName string `yaml:"agent_name,omitempty" json:"agent_name,omitempty"`
 	// Language is the language this agent writes in, named the way a person names one
 	// — "Spanish", "español", "Brazilian Portuguese". It is free text and not a code,
 	// because it is passed to the model rather than looked up in a table, and a
@@ -264,11 +272,11 @@ type PersonaConfig struct {
 	// strings — onboarding, capture announcements, refusals, the retrieval line, the
 	// locked notice — are still English constants, and this setting does not move
 	// them. See docs/PROMPT.md.
-	Language string `yaml:"language,omitempty"`
+	Language string `yaml:"language,omitempty" json:"language,omitempty"`
 	// Tone is the register, in a phrase: "warm", "very terse", "formal usted".
 	// Empty means the flat register docs/PROMPT.md specifies, which is the default
 	// and remains the default.
-	Tone string `yaml:"tone,omitempty"`
+	Tone string `yaml:"tone,omitempty" json:"tone,omitempty"`
 	// Character is free prose about who this agent is. Empty — the default — means
 	// there is no character, and the prompt then says so in the words it always did.
 	//
@@ -277,7 +285,7 @@ type PersonaConfig struct {
 	// arriving unmarked in a system prompt reads as instruction. It is rendered
 	// delimited and indented, exactly as a retrieved entry's body is, and the prompt
 	// states that it governs wording and cannot countermand anything else.
-	Character string `yaml:"character,omitempty"`
+	Character string `yaml:"character,omitempty" json:"character,omitempty"`
 }
 
 // IsZero reports whether this persona asks for nothing, which is the default and is
