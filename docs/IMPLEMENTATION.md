@@ -42,6 +42,8 @@ internal/config/        YAML load, defaults, validation
 internal/scope/         message -> Scope resolution. THE authorization boundary.
 internal/memory/        Memory interface + lore MCP client
 internal/transport/     Transport interface + Telegram implementation + Mux
+  .../telegramtest/     a loopback Bot API server for tests. Ships in the module
+                        rather than under _test.go because internal/e2e uses it.
 internal/routing/       tier chain, endpoint pool, probe, cooldown, failover
 internal/session/       key unwrap, idle expiry
 internal/capture/       capture proposal + confirmation state machine
@@ -1708,21 +1710,43 @@ to refusing still refused, and the refusal is the more important thing to say.
 
 ## 11. Testing
 
+`TESTING.md` is the full account, including what has been run by hand and what remains
+unproved. This section is only the part that binds: the tests a change may not remove.
+
 - `scope` has an exhaustive table test: `(config, inbound) -> Scope | rejection`. This
   is the security test of the whole product; it must cover unknown users, unknown
   chats, a member messaging from a different chat, and a group id that collides with a
   member's private space.
 - `routing` is tested against a fake endpoint set: cooldown behaviour, probe caching,
-  tier fallthrough, the three-way split of an empty response (§7) with the healthy
+  tier fallthrough, the three-way split of an empty response (§3) with the healthy
   sibling counting the requests that reach it, and the assertion that an exhausted chain
   **never** reaches an endpoint outside it.
 - `capture` is tested as a state machine including timeout-as-decline and the
   taps-from-the-wrong-user case.
-- `memory` is tested against a scripted fake MCP server, not a live lore.
-- Refusal strings are golden files.
+- `memory`'s parser is tested against a scripted fake MCP server over a corpus of 31
+  captured fixtures in `internal/memory/testdata`. A format change must fail there, in
+  one place, rather than in whatever calls it.
+- Refusal strings, rendered prompts and the privacy statements are golden files, so
+  softening one is a visible edit to a fixture rather than an accident.
+- `internal/e2e` runs whole messages through the production wiring. Its
+  `telegram_test.go` drives the real `go-telegram/bot` client over real HTTP against
+  `internal/transport/telegramtest`, a loopback Bot API server implementing Telegram's
+  real `getUpdates` offset semantics, real inline keyboards and real `callback_query`.
+  **None of `internal/e2e` except `live_test.go` is tagged**, and that is deliberate: it
+  needs nothing but the test binary, so it runs on every commit, which is the only reason
+  it caught what it caught.
 
-Integration tests requiring real Podman, a real lore or a real provider are tagged
-`//go:build integration` and excluded from the default `go test ./...`.
+Tests needing equipment — real Podman, a real lore, a real model — are tagged
+`//go:build integration` and excluded from the default `go test ./...`. There are four:
+`internal/e2e/live_test.go` (real `lore mcp` **and** a real endpoint, faking only
+Telegram), `internal/memory/integration_test.go`, `internal/setup/spaces_lore_test.go`,
+and `internal/supervisor/isolated_integration_test.go` (also `&& linux`). Each skips when
+its equipment is absent, so a green integration run on a bare machine proves nothing.
+
+Any integration test that touches lore must create its own `LORE_HOME` under `t.TempDir`
+and its own spaces inside it. lore has no delete, so a test pointed at a persistent store
+accumulates its own writes until they crowd out the entry the run just made — a test that
+corrupts what it measures gets less trustworthy every time it runs.
 
 ---
 
@@ -1743,8 +1767,19 @@ design and several of them contradict what the architecture originally supposed.
   architecture already specified, now confirmed as the only workable option rather than
   a preference.
 - **Instances are isolated by `LORE_HOME`, not by machine.** Several lore daemons can
-  run on one host, each holding a subset of spaces, and converge on a shared space.
-  This is what makes one lore per member pod viable in isolated mode.
+  run on one host, each holding a subset of spaces. This is what makes one lore per
+  member pod viable in isolated mode.
+- **Separate `LORE_HOME`s do not converge on a shared space by themselves**, and this
+  document used to say they did. One `LORE_HOME` is one lore *account*, and `lore init`
+  gives each account its own space ids, so the id `household.shared_space` names exists
+  in exactly one store. In every other pod `doctor` reports `space "…" is not a space
+  this lore store holds` and that conversation reads nothing, silently, because a turn
+  that cannot read a space degrades that space rather than failing. Convergence is
+  lore's own sharing — `lore space invite`, `lore join`, and a reachable `lore serve` —
+  and **nothing in kenward calls any of the three**: not `internal/supervisor`, not
+  `internal/setup`, and `deploy/compose.isolated.yml` defines no port, peer or daemon.
+  Private spaces are unaffected. Treated as an open limitation rather than fixed,
+  because D-036 changes what the fix looks like.
 - **Sync is last-writer-wins per entry**, compared on `(updated_at, author_account)`.
   It is not a CRDT: the losing version is discarded silently, with no conflict record.
   A machine with a fast clock wins every conflict. Household clocks should be synced,
@@ -1777,7 +1812,20 @@ design and several of them contradict what the architecture originally supposed.
 
 ## 13. Non-goals
 
-Not built, and not designed around: billing, tenant orchestration, a web dashboard, a
-control plane, SSO, organisations and teams, usage quotas, automatic memory writing
-without confirmation, and any multi-tenant runtime. One container per household is what
-makes all of these bolt-on rather than structural.
+Not built, and not designed around: billing, tenant orchestration, a control plane, SSO,
+organisations and teams, usage quotas, and any multi-tenant runtime. One container per
+household is what makes all of these bolt-on rather than structural.
+
+**A web dashboard is no longer on that list.** D-035 reverses it: the operator this
+project is aimed at is now a stranger who downloaded an app rather than the author of the
+configuration, and everything kenward asks of an operator has no interface for that
+person. The reasoning, and the exposure rules that come with opening the design's first
+inbound port, are in `ARCHITECTURE.md` under **Non-goals**. It is decided and unbuilt;
+nothing in this contract binds it yet, and the parity rule it brings — every operator
+action gets a CLI implementation too, because headless stays first-class — is the part
+that will.
+
+*"Automatic memory writing without confirmation"* has also left this list, and its removal
+is not a softening: D-038 replaces the confirmation on a **private** write with an
+announcement carrying an Undo, and leaves the approval on a **shared** write untouched and
+non-configurable. §6 is the binding text; it is being rewritten alongside the code.

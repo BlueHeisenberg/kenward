@@ -90,8 +90,10 @@ docker run --rm -v "$PWD:/src" -w /src -e CGO_ENABLED=1 -e GOWORK=off \
 ## Working style
 
 - Tests come with the code, table-driven, no network in unit tests. Integration tests
-  needing real Podman or a real lore are tagged `//go:build integration` and excluded
-  from the default run.
+  needing real Podman, a real lore or a real model are tagged `//go:build integration`
+  and excluded from the default run. An integration test that touches lore creates its
+  own `LORE_HOME` under `t.TempDir` — lore has no delete, so one pointed at a persistent
+  store poisons what it measures.
 - `gofmt` and `go vet` clean before committing.
 - Refusal strings and rendered prompts are golden-tested. Changing one is a deliberate
   fixture edit.
