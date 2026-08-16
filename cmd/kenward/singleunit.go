@@ -18,6 +18,18 @@ import (
 // passphrase. That is the property the mode's whole claim rests on, so nothing here
 // may hand it a second member's anything.
 func newSingleUnitSupervisor(e *env, cfg *config.Config, opts runOptions, logger *slog.Logger) (supervisor.Supervisor, error) {
+	single, err := singleUnitOptions(e, cfg, opts, logger)
+	if err != nil {
+		return nil, err
+	}
+	return supervisor.NewSingle(cfg, single)
+}
+
+// singleUnitOptions is the wiring newSingleUnitSupervisor hands to
+// supervisor.NewSingle, separated from the construction so a test can put fakes on
+// the three edges — Telegram, lore, the endpoints — and still exercise the wiring
+// this file decides. Everything the pod's behaviour depends on is decided here.
+func singleUnitOptions(e *env, cfg *config.Config, opts runOptions, logger *slog.Logger) (supervisor.SingleOptions, error) {
 	sel := opts.selection
 	single := supervisor.SingleOptions{
 		Group: sel.group,
@@ -34,7 +46,7 @@ func newSingleUnitSupervisor(e *env, cfg *config.Config, opts runOptions, logger
 	if !sel.group {
 		m, ok := cfg.MemberByID(domain.MemberID(sel.member))
 		if !ok {
-			return nil, fmt.Errorf("no member %q in this household", sel.member)
+			return supervisor.SingleOptions{}, fmt.Errorf("no member %q in this household", sel.member)
 		}
 		single.Member = m.ID
 
@@ -45,7 +57,7 @@ func newSingleUnitSupervisor(e *env, cfg *config.Config, opts runOptions, logger
 		// prevent, arriving through the back door of a convenience.
 		sessions, onEnrol, err := startSessions(e, cfg, logger, []domain.Member{m})
 		if err != nil {
-			return nil, err
+			return supervisor.SingleOptions{}, err
 		}
 		single.Sessions = sessions
 		// The same rule, extended past startup. A member selected here who has
@@ -56,12 +68,32 @@ func newSingleUnitSupervisor(e *env, cfg *config.Config, opts runOptions, logger
 		// claim for anyone else that lands on this bot is bound and left to
 		// their own pod, keyless here.
 		single.UnlockOnEnrol = onEnrol
+
+		// And the claim that hook completes has to be able to arrive. D-023: this
+		// member's bot exists before they claim, and the claim happens in a
+		// conversation with it rather than the household's, so the pod of a member
+		// who has not claimed comes up claim-only and waits for the code. Without a
+		// claimer it refuses to start instead, and the code has nowhere to go.
+		//
+		// It is the same claimer the simple-mode node builds, over the same invite
+		// store `kenward invite` mints into — one enrolment path, not a second one
+		// for pods. NewSingle ignores it for a member who has already claimed, and
+		// a claim for anybody else that lands on this bot is bound and left keyless
+		// and unitless here, for their own pod to serve.
+		claimer, err := newClaimer(cfg)
+		if err != nil {
+			return supervisor.SingleOptions{}, err
+		}
+		single.Enrol = claimer
 	}
 	// The group pod deliberately gets no session manager of its own making: it
 	// serves the shared space and holds no member key, so demanding a passphrase
-	// for it would be asking for a secret that unwraps nothing.
+	// for it would be asking for a secret that unwraps nothing. It gets no claimer
+	// either: D-023 puts the claim conversation on the member's own bot, and a
+	// household bot that accepted codes would carry the start of exactly the
+	// relationship isolated mode exists to keep off it.
 
-	return supervisor.NewSingle(cfg, single)
+	return single, nil
 }
 
 // tierWindows would name the smallest context window, in the assistant's estimated
