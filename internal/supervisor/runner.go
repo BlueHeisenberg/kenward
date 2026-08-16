@@ -239,7 +239,6 @@ func (r *runner) buildDeps() error {
 		}
 		c, err := memory.NewClient(memory.Config{
 			Command:  cmd[0],
-			Args:     cmd[1:],
 			LoreHome: r.rc.loreHome,
 			Logger:   r.logger,
 		})

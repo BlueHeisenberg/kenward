@@ -87,7 +87,7 @@ func TestBudgetOverflowDropsFromEndOfSharedFirstAndSaysSo(t *testing.T) {
 		!strings.Contains(sys, "more entry was retrieved but dropped to fit the context budget)") {
 		t.Errorf("dropped entries not disclosed in the prompt:\n%s", sys)
 	}
-	shared := sys[strings.Index(sys, "## Excerpts from the household's shared memory"):]
+	shared := sys[strings.Index(sys, "## From the household's shared memory"):]
 	if !strings.Contains(strings.SplitN(shared, "\n\n", 2)[0], "dropped to fit the context budget") {
 		t.Error("drop disclosure is not inside the shared section")
 	}
@@ -157,13 +157,10 @@ func TestBudgetExhaustedKeepsNonNegotiableParts(t *testing.T) {
 			t.Errorf("missing drop disclosure %q\n%s", want, sys)
 		}
 	}
-	// The dropped entries were excerpts, so the sections stay labelled by what
-	// retrieval found even though nothing of it is visible any more — and the note
-	// explaining what an excerpt is moves with the headings.
-	if got := strings.Count(sys, "## Excerpts from"); got != 2 {
-		t.Errorf("%d sections headed as excerpts, want 2", got)
-	}
-	if !strings.Contains(sys, "search excerpts") {
-		t.Error("sections headed as excerpts but the excerpt note is missing")
+	// Both sections keep their heading even with nothing of their content left:
+	// what the budget dropped is disclosed by the drop note, and a section that
+	// retrieved something and could not show it is not the same as an empty one.
+	if got := strings.Count(sys, "## From "); got != 2 {
+		t.Errorf("%d memory sections, want 2", got)
 	}
 }

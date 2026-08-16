@@ -103,9 +103,9 @@ func TestHappyPathDirect(t *testing.T) {
 	}
 	sys := req.Messages[0].Content
 	for _, want := range []string{
-		"## Excerpts from David's private memory",
+		"## From David's private memory",
 		"- Coffee order [validated]",
-		"## Excerpts from the household's shared memory",
+		"## From the household's shared memory",
 		"- Bin day [hardened] (UPDATED)",
 	} {
 		if !strings.Contains(sys, want) {
@@ -299,13 +299,10 @@ func TestEmptyRetrievalRendersExplicitStatement(t *testing.T) {
 	if got := strings.Count(sys, "(nothing relevant found)"); got != 2 {
 		t.Errorf("empty-group statement appears %d times, want 2 (both spaces empty)\n%s", got, sys)
 	}
-	// Nothing was shown, so nothing is labelled as an excerpt and the excerpt note
-	// has nothing to describe.
-	if strings.Contains(sys, "Excerpts from") {
-		t.Error("an empty section is headed as excerpts")
-	}
-	if strings.Contains(sys, "search excerpts") {
-		t.Error("excerpt note rendered with no excerpts shown")
+	// Nothing was shown, so the paragraph saying entries are data rather than
+	// instruction has nothing to describe and must not render.
+	if strings.Contains(sys, "not instruction") {
+		t.Error("the untrusted-entry note rendered with no entries shown")
 	}
 }
 
@@ -788,10 +785,14 @@ func TestRouterFailuresGetReplies(t *testing.T) {
 	}
 }
 
-// TestPutFailureUncertaintyReachesMember tests the join the packages' own tests
-// miss: the member taps Save, the store fails, and the member — not just the log —
-// hears that the write is uncertain.
-func TestPutFailureUncertaintyReachesMember(t *testing.T) {
+// TestPutFailureReachesMember tests the join the packages' own tests miss: the
+// member taps Save, the store fails, and the member — not just the log — hears
+// that nothing was stored.
+//
+// It used to assert a hedge, because a lost MCP response left a write that might
+// have landed under an id kenward never received. The store commits or returns
+// now, so the member gets the fact.
+func TestPutFailureReachesMember(t *testing.T) {
 	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -813,17 +814,17 @@ func TestPutFailureUncertaintyReachesMember(t *testing.T) {
 	if err := rig.unit.Handle(context.Background(), directInbound("remember this")); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	var uncertain bool
+	var told bool
 	for _, txt := range rig.tr.sentTexts() {
-		if strings.Contains(txt, "can't confirm") && strings.Contains(txt, "Check before saving it again") {
-			uncertain = true
+		if strings.Contains(txt, "couldn't save") && strings.Contains(txt, "nothing was stored") {
+			told = true
 		}
 		if strings.Contains(txt, "Saved") {
 			t.Errorf("member saw a confirmation for a write that failed: %q", txt)
 		}
 	}
-	if !uncertain {
-		t.Fatalf("member never told the write is uncertain; sent: %v", rig.tr.sentTexts())
+	if !told {
+		t.Fatalf("member never told the write failed; sent: %v", rig.tr.sentTexts())
 	}
 }
 
@@ -1123,12 +1124,12 @@ func TestPublishReadFailureStillAnswers(t *testing.T) {
 	}
 }
 
-// TestPublishShareFailureReportsUncertainty: the worse half. The member saw the full
-// text, tapped Publish to household — an act that cannot be taken back — and the
-// store then failed. The copy may still have landed, so the member is told the truth
-// about what is unknown, not a success and not a bare failure. Same reasoning as the
-// failed write in capture.Offer (IMPLEMENTATION.md section 12).
-func TestPublishShareFailureReportsUncertainty(t *testing.T) {
+// TestPublishShareFailureIsReported: the worse half. The member saw the full text,
+// tapped Publish to household — an act that cannot be taken back — and the store
+// then failed. They are told that nothing reached the household, which is now a
+// fact rather than the hedge it had to be while a lost reply could leave a private
+// entry in the shared space with nobody able to name it.
+func TestPublishShareFailureIsReported(t *testing.T) {
 	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -1148,8 +1149,8 @@ func TestPublishShareFailureReportsUncertainty(t *testing.T) {
 		t.Fatalf("sent %v, want the reply and a notice about the publication", texts)
 	}
 	got := texts[len(texts)-1]
-	if !strings.Contains(got, "can't confirm") || !strings.Contains(got, "can't be taken back") {
-		t.Errorf("notice %q does not report the uncertainty of an irreversible act", got)
+	if !strings.Contains(got, "couldn't publish") || !strings.Contains(got, "nothing reached the household") {
+		t.Errorf("notice %q does not tell the member the publication did not happen", got)
 	}
 	if strings.Contains(got, "Everyone can see it now") {
 		t.Errorf("notice %q reads as a confirmation", got)

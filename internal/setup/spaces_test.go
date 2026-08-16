@@ -3,8 +3,8 @@ package setup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -171,43 +171,44 @@ func TestLoreUnreachableFallsBackToAskingForTheID(t *testing.T) {
 
 	transcript := io.Transcript()
 	for _, want := range []string{
-		"lore is not installed, or not on this PATH.",
+		"lore has not been set up on this machine yet",
+		"lore init",
 		"lore spaces",
-		"A display name\n  will not work here",
+		"A display name will not work here",
 	} {
 		if !strings.Contains(transcript, want) {
 			t.Errorf("the fallback does not say %q:\n%s", want, transcript)
 		}
 	}
 	// Said once, not before every question.
-	if n := strings.Count(transcript, "Tried: lore mcp"); n != 1 {
+	if n := strings.Count(transcript, "Looked in:"); n != 1 {
 		t.Errorf("the lore warning was printed %d times, want 1", n)
 	}
 }
 
-// TestLoreFailedForSomeOtherReasonSaysSo distinguishes "not installed" from "ran and
-// broke", because the two have entirely different first moves.
+// TestLoreFailedForSomeOtherReasonSaysSo distinguishes "never initialised" from
+// "opened and broke", because the two have entirely different first moves.
 func TestLoreFailedForSomeOtherReasonSaysSo(t *testing.T) {
-	broken := unreachableLore(errors.New("mcp handshake: unexpected EOF"))
+	broken := unreachableLore(errors.New("database disk image is malformed"))
 	_, _, io, err := runWizard(t, "linux", Options{Spaces: broken}, "1", "Casa", householdSpaceID)
 	if !errors.Is(err, ErrInputClosed) {
 		t.Fatalf("err = %v", err)
 	}
 	transcript := io.Transcript()
-	if strings.Contains(transcript, "not installed") {
-		t.Error("a lore that ran and failed was reported as missing")
+	if strings.Contains(transcript, "has not been set up on this machine") {
+		t.Error("a store that opened and failed was reported as never initialised")
 	}
-	if !strings.Contains(transcript, "could not be started") || !strings.Contains(transcript, "unexpected EOF") {
+	if !strings.Contains(transcript, "could not be opened") || !strings.Contains(transcript, "disk image is malformed") {
 		t.Errorf("the underlying failure was not shown:\n%s", transcript)
 	}
 }
 
-func TestLoreNotFoundRecognisesAnExecError(t *testing.T) {
-	if !loreNotFound(&exec.Error{Name: "lore", Err: exec.ErrNotFound}) {
-		t.Error("a missing executable was not recognised")
+func TestLoreNotInitialisedRecognisesAnUnusableHome(t *testing.T) {
+	if !loreNotInitialised(fmt.Errorf("memory: opening the lore store: %w", memory.ErrStoreUnavailable)) {
+		t.Error("a home with no account in it was not recognised")
 	}
-	if loreNotFound(errors.New("handshake failed")) {
-		t.Error("an unrelated failure was reported as a missing executable")
+	if loreNotInitialised(errors.New("disk on fire")) {
+		t.Error("an unrelated failure was reported as an uninitialised home")
 	}
 }
 

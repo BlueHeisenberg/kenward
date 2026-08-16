@@ -1,8 +1,0 @@
-2 result(s) for "kettle" (full entry: lore_get with the id)
-
-a1b2c3d4-0000-4000-8000-000000000002  space:household  domain:home/kitchen
-  Kettle (experimental)
-  
-a1b2c3d4-0000-4000-8000-000000000003  space:household  domain:home/kitchen
-  Kettle descaling (validated) [UPDATED]
-  descale the [kettle] monthly

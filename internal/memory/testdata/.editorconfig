@@ -1,4 +1,0 @@
-# Golden fixtures are lore's output byte for byte. Some lines are significant
-# whitespace: lore prints an empty search snippet as a line of two spaces.
-[*.txt]
-trim_trailing_whitespace = false

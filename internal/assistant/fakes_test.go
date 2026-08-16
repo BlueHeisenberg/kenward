@@ -109,9 +109,9 @@ func loreMatch(e memory.Entry, query string) bool {
 	return true
 }
 
-// Get serves whole entries out of the same canned spaces Search draws excerpts from,
-// so a test can only Get what that space actually holds — which is the property the
-// promotion flow depends on.
+// Get serves out of the same canned spaces Search draws from, so a test can only
+// Get what that space actually holds — which is the property the promotion flow
+// depends on.
 func (f *fakeMemory) Get(ctx context.Context, space domain.SpaceID, id string) (memory.Entry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -121,7 +121,6 @@ func (f *fakeMemory) Get(ctx context.Context, space domain.SpaceID, id string) (
 	}
 	for _, e := range f.bySpace[space] {
 		if e.ID == id {
-			e.Partial = false
 			return e, nil
 		}
 	}
@@ -500,9 +499,10 @@ func groupInbound(text string) transport.Inbound {
 	return in
 }
 
-// entry fabricates one search hit. Partial is set because that is what the real
-// lore client guarantees for everything Search returns: a search result is an
-// excerpt, and the fakes model that contract rather than a friendlier one.
+// entry fabricates one search hit. Body is the whole body, because that is what
+// the real client guarantees for everything Search returns now that lore is
+// imported rather than parsed: a search result carries the entry, and the fakes
+// model that contract rather than the excerpt one it replaced.
 func entry(space domain.SpaceID, title, body, confidence string, markers ...string) memory.Entry {
 	return memory.Entry{
 		ID:         "id-" + title,
@@ -511,6 +511,5 @@ func entry(space domain.SpaceID, title, body, confidence string, markers ...stri
 		Body:       body,
 		Confidence: confidence,
 		Markers:    markers,
-		Partial:    true,
 	}
 }

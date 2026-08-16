@@ -1,2 +1,0 @@
-# Just a title
-id a1b2c3d4-0000-4000-8000-000000000005 (v2) | space household | domain home/misc | experimental | origin directive | updated 2026-01-02T03:04:05.000000000Z

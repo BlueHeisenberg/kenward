@@ -330,25 +330,43 @@ func noSpaceFor(use string, all []memory.Space) string {
 }
 
 // loreUnreachable is printed when the listing cannot be fetched. The first line is
-// the one that matters: an operator who has not installed lore yet needs to be told
-// that, not handed a transport error from an MCP handshake.
+// the one that matters: an operator whose lore home has never been initialised
+// needs to be told that, not handed the error underneath it.
+//
+// It used to distinguish "lore is not installed" from "lore ran and failed",
+// because the listing came from a `lore mcp` subprocess and a missing binary was
+// the common case. kenward opens the store itself now, so the binary's presence
+// says nothing and the common case is a home with no account in it.
 func loreUnreachable(cause error) string {
-	first := "lore could not be started, so setup cannot show you which spaces you have."
-	if loreNotFound(cause) {
-		first = "lore is not installed, or not on this PATH."
+	first := "lore's store could not be opened, so setup cannot show you which spaces you have."
+	if loreNotInitialised(cause) {
+		first = "lore has not been set up on this machine yet — its home holds no account."
 	}
 	return fmt.Sprintf(`%s
 
-  Tried: %s
+  Looked in: %s
 
   %v
 
+  Run `+"`lore init`"+` in another terminal if you have not, then create the spaces
+  this household needs.
+
   Setup can carry on, but it needs the space ids rather than their names. Run
-  `+"`lore spaces`"+` in another terminal and copy the id column. A display name
-  will not work here: lore does not make names unique, so kenward identifies a
-  space by id, and a name configured here fails the first time somebody asks
-  the assistant to remember something.`,
-		first, strings.Join(DefaultLoreCommand, " "), cause)
+  `+"`lore spaces`"+` and copy the id column. A display name will not work here:
+  lore does not make names unique, so kenward identifies a space by id, and a
+  name configured here fails the first time somebody asks the assistant to
+  remember something.`,
+		first, loreHomeForMessage(), cause)
+}
+
+// loreHomeForMessage names the home the listing was attempted against, so an
+// operator with more than one knows which. An unknown home says so rather than
+// naming a directory it guessed at.
+func loreHomeForMessage() string {
+	if h := memory.DefaultLoreHome(); h != "" {
+		return h
+	}
+	return "the default lore home (LORE_HOME is unset and this user has no home directory)"
 }
 
 // stoppedForLinux is printed when somebody chooses to go and do this properly.

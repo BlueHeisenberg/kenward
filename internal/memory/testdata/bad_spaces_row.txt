@@ -1,2 +1,0 @@
-personal  kind:personal  members:1  entries:42  id:1c0a0000-0000-4000-8000-000000000000
-household (shared, 19 entries) 3e2c0000-0000-4000-8000-000000000000

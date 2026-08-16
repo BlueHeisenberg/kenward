@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 	"unicode/utf8"
 
@@ -12,14 +11,15 @@ import (
 )
 
 // SpaceLister lists the spaces a lore home holds. Nil in Options means asking the
-// real lore; tests supply their own, because no test here may spawn a subprocess.
+// real lore; tests supply their own so that the wizard's behaviour given a listing
+// can be exercised without one.
 type SpaceLister func(ctx context.Context) ([]memory.Space, error)
 
-// loreSpaces asks lore for its spaces, using the same argv the wizard writes into
-// the configuration — so if this works, what it writes will work too.
+// loreSpaces asks lore for its spaces, opening the lore home this machine's
+// kenward will be served from — so if this works, what the wizard writes will work
+// too.
 func loreSpaces(ctx context.Context) ([]memory.Space, error) {
-	argv := DefaultLoreCommand
-	client, err := memory.NewClient(memory.Config{Command: argv[0], Args: argv[1:]})
+	client, err := memory.NewClient(memory.Config{})
 	if err != nil {
 		return nil, err
 	}
@@ -167,8 +167,14 @@ func shortID(id string) string {
 	return id[:8] + "…"
 }
 
-// loreNotFound reports whether lore could not be started because there is no such
-// program, which is a different problem from lore failing once it ran.
-func loreNotFound(err error) bool {
-	return errors.Is(err, exec.ErrNotFound) || errors.Is(err, exec.ErrDot)
+// loreNotInitialised reports the one listing failure an operator can act on
+// directly: this machine has a lore home with no account in it, so there is
+// nothing to list and `lore init` is the next move.
+//
+// It replaces a check for exec.ErrNotFound. Nothing here execs any more, so a
+// missing binary is no longer a way for the listing to fail — and a lore home
+// that was never initialised, which used to arrive as a subprocess exiting before
+// its handshake, now arrives typed.
+func loreNotInitialised(err error) bool {
+	return errors.Is(err, memory.ErrStoreUnavailable)
 }

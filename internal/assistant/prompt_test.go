@@ -95,18 +95,28 @@ func TestHistoryRendersOldestFirstAndIsBounded(t *testing.T) {
 	}
 }
 
-func TestCompleteEntriesAreNotLabelledExcerpts(t *testing.T) {
+// TestRetrievedEntriesAreNotLabelledExcerpts.
+//
+// Retrieval used to be a fragment of an entry — lore's MCP surface rendered a
+// twelve-token snippet and threw the body away — so a section showing one was
+// headed "Excerpts from …" and a paragraph explained what an excerpt was. lore is
+// imported now and a search returns the entry, so the hedge would be false in the
+// direction that matters: it would teach the model to distrust information it has
+// in full.
+//
+// The whole body has to reach the prompt for that to be true, so this asserts the
+// end of a body a snippet would have cut, not only the heading.
+func TestRetrievedEntriesAreNotLabelledExcerpts(t *testing.T) {
 	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A complete entry — Partial unset, as every non-search path guarantees — is
-	// genuinely whole, and memory.IsExcerpt is the discriminator this package
-	// obeys instead of assuming everything it renders is a fragment.
-	whole := entry("david-private", "Coffee order", "David drinks oat-milk flat whites.", "validated")
-	whole.Partial = false
-	whole.Origin = "evidence"
-	rig.mem.bySpace["david-private"] = []memory.Entry{whole}
+	tail := "and he never drinks it after four."
+	rig.mem.bySpace["david-private"] = []memory.Entry{
+		entry("david-private", "Coffee order",
+			"David drinks oat-milk flat whites, "+strings.Repeat("with a great deal of detail in between, ", 8)+tail,
+			"validated"),
+	}
 	rig.mem.bySpace["household"] = []memory.Entry{
 		entry("household", "Bin day", "Bins go out Thursday night.", "hardened"),
 	}
@@ -117,19 +127,19 @@ func TestCompleteEntriesAreNotLabelledExcerpts(t *testing.T) {
 	req, _ := rig.router.lastRequest()
 	sys := req.Messages[0].Content
 
-	if !strings.Contains(sys, "## From David's private memory") {
-		t.Error("a section of complete entries lost its completeness heading")
+	for _, want := range []string{
+		"## From David's private memory",
+		"## From the household's shared memory",
+		tail,
+	} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("the prompt is missing %q", want)
+		}
 	}
-	if strings.Contains(sys, "## Excerpts from David's private memory") {
-		t.Error("complete entries labelled as excerpts")
-	}
-	// The shared group is still a search excerpt and keeps saying so, and the note
-	// renders because at least one excerpt is shown.
-	if !strings.Contains(sys, "## Excerpts from the household's shared memory") {
-		t.Error("excerpt section lost its excerpt heading")
-	}
-	if !strings.Contains(sys, "search excerpts") {
-		t.Error("excerpt note missing although an excerpt is shown")
+	for _, unwanted := range []string{"Excerpts from", "search excerpts", "may continue beyond what is"} {
+		if strings.Contains(sys, unwanted) {
+			t.Errorf("the prompt still hedges about excerpts: %q", unwanted)
+		}
 	}
 }
 

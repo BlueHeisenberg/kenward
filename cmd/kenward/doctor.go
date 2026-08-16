@@ -321,16 +321,16 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 		}
 		return []check{{
 			Status: statusFail,
-			Text:   "lore mcp did not respond",
+			Text:   "lore did not answer",
 			Detail: []string{
 				res.Err.Error(),
-				"kenward spawns `lore mcp` (memory.lore_command). Without it there is " +
-					"no retrieval, no capture and no enrolment history.",
+				"kenward opens this machine's lore home itself. Without a store there " +
+					"is no retrieval, no capture and no enrolment history.",
 			},
 		}}
 	}
 
-	checks := []check{{Status: statusOK, Text: "lore mcp responds"}}
+	checks := []check{{Status: statusOK, Text: "lore answers"}}
 	for _, s := range res.Spaces {
 		switch {
 		case s.Err == nil:
@@ -429,7 +429,7 @@ func doctorSharedMemory(ctx context.Context, e *env, cfg *config.Config, scope c
 		// syncing to a laptop needs the same daemon and nothing else would say so.
 		return []check{{
 			Status: statusWarn,
-			Text:   "`lore mcp` does not sync on its own",
+			Text:   "this lore store does not sync on its own",
 			Detail: []string{"run `lore serve` on the same LORE_HOME if this store should reach another machine"},
 		}}
 	}

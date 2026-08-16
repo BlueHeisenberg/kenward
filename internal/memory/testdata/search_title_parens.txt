@@ -1,5 +1,0 @@
-1 result(s) for "router" (full entry: lore_get with the id)
-
-a1b2c3d4-0000-4000-8000-000000000004  space:household  domain:home/network
-  Router reset (the one in the hall) (provisional) [IMPORTANT]
-  hold the [router] reset pin for ten…

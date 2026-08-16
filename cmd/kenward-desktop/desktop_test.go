@@ -168,7 +168,7 @@ func TestStatusReportReadsDoctorJSON(t *testing.T) {
 	  "version": "v0.1.0",
 	  "mode": "simple",
 	  "configuration": [{"status":"ok","text":"kenward.yaml parses and validates"}],
-	  "memory": [{"status":"warn","text":"` + "`lore mcp` does not sync on its own" + `"}],
+	  "memory": [{"status":"warn","text":"this lore store does not sync on its own"}],
 	  "transport": [{"status":"fail","text":"david: Telegram did not authorise the token"}],
 	  "endpoints": [{"name":"monster","reached":false,"detail":"connection refused"}],
 	  "exit_code": 1

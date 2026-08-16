@@ -8,14 +8,22 @@ package memory
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
-	"unicode"
+
+	"github.com/BlueHeisenberg/lore"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 )
 
 // Entry is a stored piece of knowledge as kenward sees it.
+//
+// Every Entry this package returns is whole. Body is the entry's whole body on
+// every path, search included, and Origin and the timestamps are always the
+// stored ones. That has not always been true: while lore was reached by parsing
+// the text of `lore mcp`, a search hit was about twelve tokens of the body with
+// no origin and no timestamps, and this struct carried a Partial flag so that
+// nothing could render a fragment as a memory. lore's Go API returns the entry,
+// so there is no fragment to disclose and no flag to check.
 type Entry struct {
 	ID         string
 	Space      domain.SpaceID
@@ -27,16 +35,6 @@ type Entry struct {
 	Origin     string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
-	// Partial reports that this is a search excerpt rather than a whole entry:
-	// Body may be elided in the middle, and Origin, CreatedAt and UpdatedAt are
-	// absent because lore's search does not return them.
-	//
-	// It is a field rather than something a caller infers, because the consequence
-	// of getting it wrong is invisible. Anything rendering an entry into a prompt
-	// must say which it has — a model shown a fragment under a heading claiming
-	// completeness will answer confidently from the part it can see, and neither it
-	// nor the member has any way to know something was cut out.
-	Partial bool
 }
 
 // Draft is a proposed new entry, before it has been confirmed and stored.
@@ -66,30 +64,12 @@ type SearchQuery struct {
 
 // Terms reduces text to the words lore will actually search for.
 //
-// lore's search is a conjunctive full-text match over bare words, and this is what it
-// does to a query, measured against a real store rather than inferred:
-//
-//   - Everything that is not a letter or a digit is a separator, so "boiler, service",
-//     "boiler service" and `"boiler service"` are the same query.
-//   - It is case-insensitive.
-//   - There are no operators. "boiler AND service" finds nothing, because "and" is
-//     just another word every entry must contain; "boiler OR service" likewise. The
-//     trailing "*" of "boiler*" is stripped rather than honoured — it finds what
-//     "boiler" finds, and "boil*" finds nothing at all. There is no prefix matching.
-//   - There is no stemming. An entry saying "service" is not found by "servicing".
-//   - There are no stopwords, and no minimum term length that matters here: "is" and
-//     "the" match entries containing them, and rule out entries that do not.
-//   - Every term must be present. One absent word — "what", in "what is the boiler
-//     service code" — excludes an entry that holds the answer.
-//
-// Terms exists so that a caller can reason in the units lore counts in. Matching a
-// whole word rather than a substring is part of that: lore tokenises
-// "quillfeather921834100" as one word, so "quillfeather" does not find it.
-func Terms(text string) []string {
-	return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	})
-}
+// It is lore.Terms, re-exported so that callers here need not import lore to
+// reason in the units it counts in. The rules — conjunctive, case-insensitive, no
+// operators, no stemming, no prefix matching, no stopwords, every term required —
+// are documented on lore.Terms, which is where they belong: they are properties
+// of lore's index, and this package used to describe them from the outside.
+func Terms(text string) []string { return lore.Terms(text) }
 
 // ErrEmptySpaceSet is returned when a search is attempted without an explicit space
 // set. It is a programming error, not a user-facing condition.
@@ -122,10 +102,11 @@ type Memory interface {
 	// because the caller that needs this is undoing a write it just made and
 	// "already gone" is the outcome it wanted.
 	//
-	// A non-nil error splits two ways and the caller must not conflate them. An
-	// error matching ErrWriteUncertain means the request reached the store and no
-	// answer came back: the entry may or may not still be there, and saying either
-	// is a guess. Anything else means the entry is still there.
+	// A non-nil error means the entry is still there. There is no third case:
+	// the store commits or it returns, so a write's outcome is never unknown.
+	// It was, while lore was a subprocess — a lost response left a tombstone
+	// that may or may not have landed — and this interface used to carry an
+	// ErrWriteUncertain for it.
 	Delete(ctx context.Context, space domain.SpaceID, entryID string) error
 	Close() error
 }

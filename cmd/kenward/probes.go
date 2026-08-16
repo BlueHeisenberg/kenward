@@ -1,18 +1,16 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/BlueHeisenberg/lore"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
@@ -30,7 +28,7 @@ import (
 // real network, and the last one is the case that must not fail.
 type probes struct {
 	lore     func(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult
-	loreInit func(ctx context.Context, bin, home, device string) error
+	loreInit func(ctx context.Context, home, device string) (bool, error)
 	sync     func(ctx context.Context) syncResult
 	telegram func(ctx context.Context, token string) telegramResult
 	endpoint func(ctx context.Context, ep routing.Endpoint) endpointResult
@@ -58,7 +56,7 @@ func (p probes) loreProbe() func(context.Context, *config.Config, config.UnitSco
 	return probeLore
 }
 
-func (p probes) loreInitProbe() func(context.Context, string, string, string) error {
+func (p probes) loreInitProbe() func(context.Context, string, string) (bool, error) {
 	if p.loreInit != nil {
 		return p.loreInit
 	}
@@ -67,43 +65,46 @@ func (p probes) loreInitProbe() func(context.Context, string, string, string) er
 
 // runLoreInit creates the account, device and personal space in an empty lore home.
 //
-// It is a subprocess and not a library call, and that is a finding rather than a
-// preference. lore is a Go module now, but its public API has no way to do this: package
-// lore exports Open, which *returns* ErrNoAccount on a home like this one, and no Init
-// and no CreateSpace at all — account and device generation and space creation live in
-// internal/keys and internal/store, reachable only from `cmd/lore`. So the binary is the
-// whole of the surface for this job, and importing lore here would add a module
-// dependency that cannot perform the one operation it was added for. When D-036 moves
-// kenward onto the library this is the call that has to change, and it will only be able
-// to once lore exports one.
+// It is a library call. It was a subprocess until lore exported Init, because account
+// and device generation lived behind internal/keys and the binary was the whole of the
+// surface for this job.
+//
+// # Idempotence is lore's to decide, not this function's
+//
+// Init refuses a home that already holds an account.json, a device.json or a lore.db,
+// and returns lore.ErrAlreadyInitialised having written nothing. That is the check
+// kenward used to make for itself by reading the directory, and lore's is the better
+// one: the rule kenward wanted was "never let a new account adopt an existing store",
+// and lore names the three files that would mean rather than inferring it from a
+// directory being non-empty. The caller treats that error as success.
 //
 // # The recovery code
 //
-// `lore init` prints one to stdout, once, and never again. This discards it, and that is
-// deliberate on two counts. It is a KDF factor for relay signup and backup — neither of
-// which any kenward deployment configures — so nothing here needs it; and the alternative
-// is putting a member's account recovery factor into `podman logs`, which is the operator's
-// to read, in the one mode whose purpose is that the operator holds nothing of a member's.
-// A member who later wants one mints it from inside their own pod with `lore recovery new`,
-// which needs no previous code. Everything else on stdout is the new account and device
-// ids, which are equally not the host's business.
-func runLoreInit(ctx context.Context, bin, home, device string) error {
-	cmd := exec.CommandContext(ctx, bin, "init", "--yes-i-saved-it", "--name", device)
-	// The home wins over whatever the process inherited: this call is about one
-	// specific store, and a LORE_HOME already in the environment is the same value.
-	cmd.Env = append(os.Environ(), "LORE_HOME="+home)
-	cmd.Stdout = io.Discard
-	// lore writes its failures to stderr and only the recovery code and the new ids to
-	// stdout, so this keeps the diagnosis and drops the secret.
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			return fmt.Errorf("%w: %s", err, detail)
-		}
-		return err
+// Init returns one, once, and lore stores it nowhere. This drops it, deliberately, on
+// two counts. It is a KDF factor for relay signup and backup — neither of which any
+// kenward deployment configures — so nothing here needs it; and the alternative is
+// putting a member's account recovery factor into `podman logs`, which is the
+// operator's to read, in the one mode whose purpose is that the operator holds nothing
+// of a member's. A member who later wants one mints it from inside their own pod with
+// `lore recovery new`, which needs no previous code.
+//
+// The account and device ids it also returns are dropped for the same reason: they are
+// not the host's business either. created reports only that a home was made, which is
+// the one bit of this an operator watching a fresh household come up needs.
+func runLoreInit(ctx context.Context, home, device string) (created bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
-	return nil
+	// The Identity is discarded at the call rather than bound to a variable, so there
+	// is nothing here for a later edit to log by reaching for the struct.
+	switch _, err := lore.Init(home, device); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, lore.ErrAlreadyInitialised):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 func (p probes) telegramProbe() func(context.Context, string) telegramResult {
@@ -137,7 +138,8 @@ type spaceResult struct {
 	Err error
 }
 
-// probeLore starts `lore mcp` and asks each configured space one bounded question.
+// probeLore opens this machine's lore home and asks each configured space one
+// bounded question.
 //
 // The search text is a fixed marker and the limit is one; nothing retrieved is kept,
 // counted or printed. `doctor` may confirm that a space answers, and may not report
@@ -148,7 +150,7 @@ func probeLore(ctx context.Context, cfg *config.Config, scope config.UnitScope) 
 	if len(cmd) == 0 {
 		return loreResult{Err: errors.New("memory.lore_command is empty")}
 	}
-	client, err := memory.NewClient(memory.Config{Command: cmd[0], Args: cmd[1:]})
+	client, err := memory.NewClient(memory.Config{Command: cmd[0]})
 	if err != nil {
 		return loreResult{Err: err}
 	}
@@ -161,9 +163,9 @@ func probeLore(ctx context.Context, cfg *config.Config, scope config.UnitScope) 
 			Spaces: []domain.SpaceID{space},
 			Limit:  1,
 		})
-		// The first call is what starts the subprocess and completes the MCP
-		// handshake, so a failure there is lore not answering rather than a
-		// problem with that particular space.
+		// A failure that is not about this particular space is lore itself not
+		// answering — the store went away under us, or it is contended — and it
+		// would repeat identically for every remaining space.
 		if i == 0 && err != nil && !isSpaceError(err) {
 			return loreResult{Err: err}
 		}

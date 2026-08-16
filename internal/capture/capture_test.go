@@ -820,12 +820,13 @@ func TestPromotionFailuresAlwaysSpeak(t *testing.T) {
 			want:  "Nothing was published",
 		},
 		{
-			// The member has already tapped Publish, so this one may not read as a
-			// flat failure: the copy may have landed and cannot be taken back.
+			// The member has already tapped Publish, so what they are told about
+			// an irreversible act has to be exact. A failed copy published
+			// nothing, and it says so.
 			name:    "publish fails after the member confirmed",
 			setup:   func(m *stubMemory, _ *stubTransport) { m.entry, m.shareErr = stored, boom },
 			answers: []transport.Answer{accept(ChoicePublish)},
-			want:    "can't confirm",
+			want:    "nothing reached the household memory",
 		},
 	}
 
@@ -890,10 +891,12 @@ func TestAskFailurePropagates(t *testing.T) {
 	}
 }
 
-// TestPutFailureReportsUncertainty: lore has no delete, so a write that failed after
-// the member said yes is reported as uncertain rather than retried or passed over in
-// silence (IMPLEMENTATION.md section 12).
-func TestPutFailureReportsUncertainty(t *testing.T) {
+// TestPutFailureIsReported: a write that failed after the member said yes is
+// reported rather than retried or passed over in silence (IMPLEMENTATION.md
+// section 12). It says nothing was stored, which it can now: while lore was a
+// subprocess a lost reply could leave an entry kenward could not name and
+// therefore could not delete, and this notice had to hedge about a duplicate.
+func TestPutFailureIsReported(t *testing.T) {
 	mem := &stubMemory{putErr: errors.New("lore is down")}
 	tr := &stubTransport{answers: []transport.Answer{accept(ChoiceShared)}}
 	e := New(mem, tr, Options{})
@@ -908,18 +911,18 @@ func TestPutFailureReportsUncertainty(t *testing.T) {
 		t.Error("outcome claims a write that failed")
 	}
 	if len(tr.sends) != 1 {
-		t.Fatalf("sends = %v, want exactly the uncertainty notice", tr.sends)
+		t.Fatalf("sends = %v, want exactly the failure notice", tr.sends)
 	}
 	got := tr.sends[0].Text
-	if !strings.Contains(got, "can't confirm") || !strings.Contains(got, "Check before saving it again") {
-		t.Errorf("notice %q does not report uncertainty", got)
+	if !strings.Contains(got, "couldn't save") || !strings.Contains(got, "nothing was stored") {
+		t.Errorf("notice %q does not tell the member the write failed", got)
 	}
 	if strings.Contains(got, "Saved") {
 		t.Errorf("notice %q reads as a confirmation", got)
 	}
 
-	// The title is suppressed while the member verifies, so the model cannot
-	// immediately re-propose the thing they were told to check first.
+	// The title is still suppressed: a write that just failed will fail again
+	// next turn, and re-proposing it is noise rather than a second chance.
 	e.BeginTurn(sc, "turn-2")
 	out, err = e.Offer(context.Background(), sc, proposal(TargetShared), davidID)
 	if err != nil {
@@ -1541,10 +1544,15 @@ func TestUndoFailureNeverSaysItWasUndone(t *testing.T) {
 			wantNotIn: []string{"Removed", "can't tell"},
 		},
 		{
-			name:      "lore did not answer, so nobody knows",
-			deleteErr: fmt.Errorf("%w: no answer", memory.ErrWriteUncertain),
-			wantIn:    []string{"can't tell whether", "Bins go out Tuesday"},
-			wantNotIn: []string{"Removed", "still in your private memory"},
+			// There is no "nobody knows" case left. A store that is busy, closed
+			// or unreachable failed the delete outright, so the entry is still
+			// there and the member is told so — the hedged third message this
+			// replaces existed only because a lost MCP response could leave a
+			// tombstone that may or may not have landed.
+			name:      "the store was busy, so it is still there",
+			deleteErr: fmt.Errorf("capture: undoing: %w", memory.ErrBusy),
+			wantIn:    []string{"couldn't take that back", "still in", "Bins go out Tuesday"},
+			wantNotIn: []string{"Removed", "can't tell"},
 		},
 	}
 

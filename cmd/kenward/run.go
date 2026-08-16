@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -444,44 +442,34 @@ func loreHomeDir(e *env) string {
 //
 // # Idempotence
 //
-// It initialises only a home that does not exist or is empty. That is a stronger rule
-// than "no account.json", and stronger on purpose: a home holding a lore.db but no
-// account would otherwise be adopted by a new account, which is a store quietly
-// re-identified rather than one left alone. Restart after restart the directory is
-// non-empty and nothing happens; an existing store is never written to, never migrated
-// and never re-keyed, and a failure here is a refusal to serve rather than a second
-// attempt.
+// It asks lore to initialise the home every time and lets lore refuse. lore.Init
+// creates nothing in a home that already holds an account.json, a device.json or a
+// lore.db, and says so with ErrAlreadyInitialised, which runLoreInit reports as
+// success. That check used to be made here, by reading the directory and treating any
+// non-empty one as taken — a rule written to stop a new account adopting an existing
+// lore.db. lore's names those three files instead of inferring them, so kenward's copy
+// has gone: an existing store is never written to, never migrated and never re-keyed,
+// and now that is enforced by the code that would have to do the writing.
 //
 // # What it does not do
 //
-// It does not create the spaces kenward.yaml names. `lore init` makes an account, a
-// device and one personal space, all with ids it chooses; household.shared_space and
-// members[].private_space are ids an operator put in the file, and neither lore's CLI nor
-// its Go API can create a space at a given id. So a self-initialised pod comes up with a
-// lore that answers and spaces that are not there, which `kenward doctor` reports per
-// space and checkLore deliberately does not treat as fatal. That is the same gap
-// deploy/compose.isolated.yml already documents at length under "SHARED SPACE, AND IT IS
-// NOT SOLVED HERE", now reached by both deployment paths rather than one; closing it is
-// lore's to make possible. What this changes is that a fresh household starts, and can
-// then be finished, instead of crash-looping with nothing an operator can do about it.
+// It does not create the spaces kenward.yaml names. Init makes an account, a device and
+// one personal space, all with ids it chooses, and lore.CreateSpace mints a fresh id
+// too; household.shared_space and members[].private_space are ids an operator put in
+// the file, and nothing in lore can create a space *at a given id*. So a
+// self-initialised pod comes up with a lore that answers and spaces that are not there,
+// which `kenward doctor` reports per space and checkLore deliberately does not treat as
+// fatal. That is the same gap deploy/compose.isolated.yml documents at length under
+// "SHARED SPACE, AND IT IS NOT SOLVED HERE". What this changes is that a fresh
+// household starts, and can then be finished, instead of crash-looping with nothing an
+// operator can do about it.
 func initLoreHome(e *env, cfg *config.Config, sel unitSelection) int {
 	if !sel.single() {
 		return exitOK // the host supervisor; it holds no memory of its own.
 	}
-	cmd := cfg.Memory.LoreCommand
-	if len(cmd) == 0 {
-		return exitOK
-	}
 	home := loreHomeDir(e)
 	if home == "" {
 		return exitOK // LORE_HOME is unset; see loreHomeDir.
-	}
-	switch entries, err := os.ReadDir(home); {
-	case err == nil && len(entries) > 0:
-		return exitOK // a store is already here, and it is not this process's to touch.
-	case err != nil && !errors.Is(err, fs.ErrNotExist):
-		e.errorf("%s cannot be read, and it is where this unit's lore store lives: %v", home, err)
-		return exitFailure
 	}
 
 	device := sel.member
@@ -490,16 +478,20 @@ func initLoreHome(e *env, cfg *config.Config, sel unitSelection) int {
 	}
 	ctx, cancel := context.WithTimeout(e.context(), loreInitTimeout)
 	defer cancel()
-	if err := e.probes.loreInitProbe()(ctx, cmd[0], home, device); err != nil {
-		e.errorf("%s is empty and `%s init` could not initialise it: %v\n\n"+
+	created, err := e.probes.loreInitProbe()(ctx, home, device)
+	if err != nil {
+		e.errorf("%s could not be initialised as this unit's lore store: %v\n\n"+
 			"That directory is this unit's whole memory, and kenward will not serve without\n"+
 			"one. In a pod it is the member's own work volume, which nothing outside the pod\n"+
 			"can reach, so there is no operator step to fall back on — fix what the error\n"+
-			"above says and restart.", home, cmd[0], err)
+			"above says and restart.", home, err)
 		return exitFailure
 	}
-	// The account and device ids `lore init` printed went nowhere, and the recovery code
-	// with them; see runLoreInit. This line says what happened and nothing that is the
+	if !created {
+		return exitOK // a store was already here, and it is not this process's to touch.
+	}
+	// The account and device ids lore minted went nowhere, and the recovery code with
+	// them; see runLoreInit. This line says what happened and nothing that is the
 	// member's.
 	e.printf("kenward: initialised a new lore store at %s for %s. It has an account, a device\n"+
 		"and a personal space; the spaces kenward.yaml names are not in it and no lore can\n"+

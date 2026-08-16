@@ -37,7 +37,7 @@ const (
 	envFileMode    = 0o600
 )
 
-// DefaultLoreCommand starts lore's MCP server. It is written into every generated
+// DefaultLoreCommand locates the lore executable. It is written into every generated
 // configuration rather than asked about, because there is no useful answer an
 // operator could give that they would not have to look up first.
 //
