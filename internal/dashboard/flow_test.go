@@ -306,7 +306,7 @@ func TestAMemberIsNotWrittenWhenLoreCannotMakeTheirSpace(t *testing.T) {
 	h.createAdmin()
 	before := h.writeConfig()
 	h.signIn()
-	h.lore.createErr = errors.New("lore mcp did not answer")
+	h.lore.createErr = errors.New("lore did not answer")
 
 	resp := h.postCSRF("/members/add", url.Values{"name": {"Jordan"}, "tiers": {"local"}})
 	defer resp.Body.Close()

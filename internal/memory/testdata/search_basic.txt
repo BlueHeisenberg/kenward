@@ -1,8 +1,0 @@
-2 result(s) for "bin day" (full entry: lore_get with the id)
-
-3f1c9e2a-6d0b-4a52-9f0e-8c1d2b3a4e5f  space:hearth-private  domain:home/routine
-  Bin day is Tuesday (validated)
-  the green [bin] goes out Tuesday night, recycling…
-7b2d4c11-9e88-4d31-b0aa-1f2e3d4c5b6a  space:hearth-private  domain:home/routine
-  Recycling collection (provisional)
-  …[recycling] is fortnightly on the same [day]

@@ -11,7 +11,7 @@ Access
       own shell
 
 Memory
-  ✓ lore mcp responds
+  ✓ lore answers
   ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
   ✓ space "7d5047bb-d939-4539-b3db-8b6221a2e245" reachable
   ✓ shared memory is syncing: this store holds the household's space and reaches

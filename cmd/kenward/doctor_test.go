@@ -106,7 +106,7 @@ func TestDoctorLoreUnreachableFails(t *testing.T) {
 	if code := h.run("doctor"); code != exitFailure {
 		t.Fatalf("exit = %d, want %d", code, exitFailure)
 	}
-	if !strings.Contains(h.stdout(), "lore mcp did not respond") {
+	if !strings.Contains(h.stdout(), "lore did not answer") {
 		t.Errorf("output does not say lore did not respond:\n%s", h.stdout())
 	}
 	// Everything else still ran: doctor reports all results rather than stopping.
@@ -118,7 +118,7 @@ func TestDoctorLoreUnreachableFails(t *testing.T) {
 // TestDoctorReportsBrokenSharedMemory is the defect this section exists for.
 //
 // A pod can pass every other check with a shared space that reaches nobody: its own
-// lore store holds the space, `lore mcp` answers about it, and nothing carries an
+// lore store holds the space, lore answers about it, and nothing carries an
 // entry to or from the household's other pods because no sync daemon is running. That
 // used to render as a cheerful tick and a standing hint to run `lore serve`. It must
 // now say plainly that shared memory is not moving — and must not fail the report,

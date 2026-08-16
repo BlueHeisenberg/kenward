@@ -12,6 +12,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/enrol"
+	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/setup"
 )
@@ -346,14 +347,14 @@ func (s *Server) finishWizard(w http.ResponseWriter, r *http.Request, sess *sess
 	spaces := map[string]string{}
 	shared, err := lore.CreateSpace(r.Context(), st.HouseholdName+" — household")
 	if err != nil {
-		s.wizardError(w, sess, idx, "creating the household's shared memory: "+err.Error())
+		s.wizardError(w, sess, idx, "creating the household's shared memory: "+spaceExistsHint(err))
 		return
 	}
 	spaces[householdSpaceKey] = shared.ID
 	for _, name := range st.MemberNames {
 		sp, err := lore.CreateSpace(r.Context(), st.HouseholdName+" — "+name)
 		if err != nil {
-			s.wizardError(w, sess, idx, fmt.Sprintf("creating %s's private memory: %v", name, err))
+			s.wizardError(w, sess, idx, fmt.Sprintf("creating %s's private memory: %s", name, spaceExistsHint(err)))
 			return
 		}
 		spaces[setup.Slugify(name)] = sp.ID
@@ -672,7 +673,7 @@ func (s *Server) handleMemberAdd(w http.ResponseWriter, r *http.Request, sess *s
 	}
 	space, err := lore.CreateSpace(r.Context(), label)
 	if err != nil {
-		s.membersError(w, sess, cfg, "creating their private memory: "+err.Error())
+		s.membersError(w, sess, cfg, "creating their private memory: "+spaceExistsHint(err))
 		return
 	}
 
@@ -775,6 +776,23 @@ func (s *Server) handleMemberRevoke(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 	redirectWith(w, r, "/members", m.Name+" is unbound. Their memory is untouched; mint a new code when they need to bind again.")
+}
+
+// spaceExistsHint renders a space-creation failure, and turns the one that is a
+// person's mistake rather than a fault into an instruction.
+//
+// lore refuses a name another space already holds and creates nothing. It is
+// deliberate that kenward does not then reuse the existing space: this id becomes a
+// member's private memory, and quietly attaching a new member to a space that was
+// already there is how one person's memory becomes another's. So the only sound
+// answer is a different name, and this is where a person is told that.
+func spaceExistsHint(err error) string {
+	if errors.Is(err, memory.ErrSpaceExists) {
+		return err.Error() + ". Spaces are never reused for this — that would attach them to " +
+			"memory somebody else may already be using — so give them a name no space in this " +
+			"lore has yet, or configure the existing space's id by hand."
+	}
+	return err.Error()
 }
 
 func (s *Server) membersError(w http.ResponseWriter, sess *session, cfg *config.Config, msg string) {

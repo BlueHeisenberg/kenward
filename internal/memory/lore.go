@@ -2,16 +2,14 @@ package memory
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/BlueHeisenberg/lore"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 )
@@ -19,67 +17,32 @@ import (
 // Config describes how to reach one lore instance.
 //
 // One Client speaks to one lore home. LoreHome is per-instance and not a process
-// wide setting precisely so that a deployment can run one lore per member pod:
-// LORE_HOME is the only thing that isolates two lore instances on a host.
+// wide setting precisely so that a deployment can run one lore per member pod: the
+// home is the only thing that isolates two lore instances on a host.
 type Config struct {
-	// Command is the lore executable. Required.
+	// Command is the lore executable. Nothing on Client needs it: the store is
+	// opened in this process and every operation is a library call. It is here
+	// for the one thing that is still a subprocess and cannot be anything else —
+	// `lore serve`, the sync daemon, which is a long-running process with a
+	// lifecycle of its own rather than a call. See sync.go.
 	Command string
-	// Args are its arguments; kenward passes ["mcp"].
-	Args []string
-	// LoreHome is exported to the subprocess as LORE_HOME. Empty leaves lore's
-	// own default (~/.lore), which is almost never what a deployment wants.
+	// LoreHome is the lore home this client opens. Empty means DefaultLoreHome —
+	// $LORE_HOME, then ~/.lore — which is almost never what a deployment wants.
 	LoreHome string
-	// Env holds extra KEY=VALUE pairs for the subprocess, appended after the
-	// inherited environment and LoreHome, so they win.
+	// Env holds extra KEY=VALUE pairs for the sync daemon, appended after the
+	// inherited environment and LoreHome, so they win. It has no effect on the
+	// store, which is opened in this process.
 	Env []string
-	// Dir is the subprocess working directory. lore consults its working
-	// directory only when a space is not given explicitly, and this client
-	// always gives one, so Dir is hygiene rather than routing.
+	// Dir is the sync daemon's working directory.
 	Dir string
-	// CallTimeout bounds a single tool call. Default 15s.
-	CallTimeout time.Duration
-	// StartTimeout bounds launching the subprocess and completing the MCP
-	// handshake. Default 20s.
-	StartTimeout time.Duration
-	// ShutdownGrace is how long a subprocess is given to exit after its input
-	// is closed before it is killed. Default 5s.
-	ShutdownGrace time.Duration
-	// MaxConcurrent bounds in-flight tool calls. lore serves its SQLite store
-	// through a single connection with a five second busy timeout, so a high
-	// value buys contention rather than throughput. Default 2.
-	MaxConcurrent int
-	// BusyRetries is how many times a call is retried after lore reports store
-	// contention. Default 3; a negative value disables retrying.
-	BusyRetries int
-	// Logger receives subprocess lifecycle events. Default: discard.
+	// Logger receives lifecycle events. Default: discard.
 	Logger *slog.Logger
-	// RunCLI runs lore's own command line — not its MCP server — and returns the
-	// combined output. Nil means a real subprocess.
-	//
-	// It exists for exactly one operation, CreateSpace, because lore's MCP surface
-	// has no tool that creates a space. It is a seam rather than a bare exec so that
-	// nothing in this package's tests spawns a process. See create.go.
-	RunCLI func(ctx context.Context, args []string, env []string, dir string) ([]byte, error)
 }
 
 // withDefaults fills in the zero values.
 func (c Config) withDefaults() Config {
-	if c.CallTimeout <= 0 {
-		c.CallTimeout = 15 * time.Second
-	}
-	if c.StartTimeout <= 0 {
-		c.StartTimeout = 20 * time.Second
-	}
-	if c.ShutdownGrace <= 0 {
-		c.ShutdownGrace = 5 * time.Second
-	}
-	if c.MaxConcurrent <= 0 {
-		c.MaxConcurrent = 2
-	}
-	if c.BusyRetries < 0 {
-		c.BusyRetries = 0
-	} else if c.BusyRetries == 0 {
-		c.BusyRetries = 3
+	if c.LoreHome == "" {
+		c.LoreHome = DefaultLoreHome()
 	}
 	if c.Logger == nil {
 		c.Logger = slog.New(slog.DiscardHandler)
@@ -87,7 +50,7 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// childEnv builds the subprocess environment.
+// childEnv builds the environment for the sync daemon in sync.go.
 func (c Config) childEnv() []string {
 	env := os.Environ()
 	if c.LoreHome != "" {
@@ -96,288 +59,165 @@ func (c Config) childEnv() []string {
 	return append(env, c.Env...)
 }
 
-// Client is a Memory backed by a `lore mcp` subprocess.
+// Client is a Memory backed by an embedded lore store.
 //
 // # How it talks to lore
 //
-// lore's MCP server is stdio only and every one of its five tools answers with a
-// single block of human-readable text; failures arrive as a successful response
-// carrying isError rather than as a protocol error. This client therefore parses
-// text (see parse.go) and classifies prose (see errors.go). Output it cannot
-// understand becomes a *ParseError naming the expectation that failed — never a
-// partly-filled Entry.
+// It imports lore and calls it. There is no subprocess, no MCP session and no
+// text to parse: lore's Go API returns typed entries and a typed error contract,
+// and this file is the translation between that and the vocabulary kenward's
+// callers use. Every error it returns is one of this package's sentinels or
+// wraps one.
 //
 // # Operator notes
 //
-//   - `lore mcp` never syncs. It reads and writes the local SQLite store under
-//     LORE_HOME and fires one best-effort, one-second poke at a daemon named in
-//     LORE_HOME/daemon.json. Without a separate `lore serve` process on the same
-//     LORE_HOME, entries written through this client never leave the machine and
-//     entries written elsewhere never arrive. Deploy `lore serve` alongside.
-//   - `lore mcp` exits before the MCP handshake if LORE_HOME has no account.json
-//     and device.json. Run `lore init` first; the subprocess stderr is included
-//     in the start-up error to make that diagnosable.
-//   - lore deletes by tombstone, and only by id. `lore_delete` writes a signed
-//     tombstone that propagates to every synced device; the entry then stops
-//     coming back from lore_search and lore_get. What that does not give kenward
-//     is a way to clean up after a write whose answer was lost: the id comes back
-//     in the receipt, so a write with no receipt leaves nothing to delete. An
-//     uncertain write is still uncertain and still must not be retried.
-//   - Space display names are not unique and not stable across lore instances.
-//     Everything here is keyed on space ids, which are what kenward configures.
-//   - The member count printed by lore_spaces is hard-coded to 1 and is neither
-//     read nor exposed here.
+//   - Opening the store does not sync it. Entries written here reach the
+//     household's other lore homes only if a `lore serve` is running on this one;
+//     writes poke it immediately (lore.Options.NotifyOnWrite) so it does not wait
+//     for its next poll. Without a daemon, entries written through this client
+//     never leave the machine and entries written elsewhere never arrive. In
+//     isolated mode kenward runs one itself — see sync.go.
+//   - The home must already be initialised: NewClient on one that is not is
+//     ErrStoreUnavailable. In a pod kenward initialises it for itself with
+//     lore.Init before this client is built; anywhere else it is `lore init`,
+//     run by an operator.
+//   - One Client per lore home per process. Two stores on one home contend over
+//     one write-ahead log for no gain.
+//   - Space display names are neither unique nor stable across lore instances.
+//     Everything here is keyed on space ids, which are what kenward configures,
+//     and lore compares ids too — so an entry cannot be read or written out of
+//     the space the caller named.
 type Client struct {
-	cfg Config
-	sem chan struct{}
-
-	mu     sync.Mutex
-	cur    *session
-	closed bool
-
-	spacesMu   sync.Mutex
-	spaceNames map[domain.SpaceID]string
-	nameUses   map[string]int
+	cfg   Config
+	store *lore.Store
 }
 
-// NewClient returns a Client for one lore instance. The subprocess is not started
-// until the first call.
+// NewClient opens the lore home in cfg and returns a Client for it.
+//
+// Unlike the subprocess client this replaces, it fails here rather than on the
+// first call: a home that was never initialised, or one written by a newer lore
+// than this build, is ErrStoreUnavailable at construction. That is the better
+// place for it — every caller already handles a construction error, and a
+// deployment fault should not first present itself as a failed retrieval in the
+// middle of somebody's conversation.
 func NewClient(cfg Config) (*Client, error) {
-	if strings.TrimSpace(cfg.Command) == "" {
-		return nil, fmt.Errorf("memory: lore command is empty: %w", ErrInvalidArgument)
-	}
 	cfg = cfg.withDefaults()
-	return &Client{cfg: cfg, sem: make(chan struct{}, cfg.MaxConcurrent)}, nil
+	if cfg.LoreHome == "" {
+		return nil, fmt.Errorf("memory: no lore home: LORE_HOME is unset and this user has no home directory: %w", ErrInvalidArgument)
+	}
+	st, err := lore.Open(lore.Options{
+		Home: cfg.LoreHome,
+		// Not optional. kenward writes through this client and `lore serve`
+		// carries those writes to the household's other homes; without the poke
+		// a write sits here until the daemon's next poll, thirty seconds by
+		// default, and nothing anywhere reports that it did.
+		NotifyOnWrite: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("memory: opening the lore store at %s: %w", cfg.LoreHome, mapErr(err))
+	}
+	return &Client{cfg: cfg, store: st}, nil
 }
 
 var _ Memory = (*Client)(nil)
 
-// Close terminates the subprocess. It is idempotent, and every later call returns
+// Close releases the store. It is idempotent, and every later call returns
 // ErrClosed.
-func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return nil
-	}
-	c.closed = true
-	if c.cur != nil {
-		c.cur.close(c.cfg.ShutdownGrace)
-		c.cur = nil
-	}
-	return nil
-}
+func (c *Client) Close() error { return c.store.Close() }
 
-// Excerpt is one lore search hit. It is deliberately a different type from Entry.
-//
-// A search result is not a memory: lore_search returns about twelve tokens of the
-// body, no origin and no timestamps. An assistant that renders one into a prompt
-// as though it were the whole entry is telling the model something false, so the
-// two are not interchangeable and converting an Excerpt into an Entry has to be
-// written out (see Excerpt.Entry) rather than happening by assignment.
-type Excerpt struct {
-	// Entry carries what lore_search reports: ID, Space, Domain, Title,
-	// Confidence and Markers, with Partial set. Body holds the excerpt with
-	// lore's match highlighting removed. Origin, CreatedAt and UpdatedAt are
-	// always zero, because lore_search does not report them.
-	Entry Entry
-	// Snippet is lore's snippet verbatim, with the FTS5 match brackets still in
-	// it. It is kept for diagnosing retrieval, not for showing to anyone.
-	Snippet string
-
-	// spaceName is the space display name lore echoed for this hit. It is not
-	// exported because it is not authoritative — display names are neither
-	// unique nor stable, and Entry.Space is the id the caller asked for — but it
-	// is checked against that id before the hit is returned.
-	spaceName string
-}
-
-// IsExcerpt reports whether e is a search excerpt rather than a whole entry. It
-// is Entry.Partial under a name that states the question being asked.
-//
-// Prompt rendering, and anything else that presents an entry to the model as a
-// complete memory, should check this: an excerpt is about twelve tokens of the
-// body, and presenting it as the whole thing tells the model something false.
-func IsExcerpt(e Entry) bool { return e.Partial }
-
-// Search implements Memory. It is a thin wrapper over SearchExcerpts, kept
-// because the interface is expressed in entries; prefer SearchExcerpts, whose
-// type says what these values actually are.
-//
-// Every Entry it returns has Partial set: Body is an excerpt of about twelve
-// tokens, and Origin, CreatedAt and UpdatedAt are zero. The flag is what survives
-// into a []Entry, where the Excerpt type no longer can. Call Get with the id for
-// the real entry before presenting one as a memory.
-func (c *Client) Search(ctx context.Context, q SearchQuery) ([]Entry, error) {
-	xs, err := c.SearchExcerpts(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]Entry, 0, len(xs))
-	for _, x := range xs {
-		out = append(out, x.Entry)
-	}
-	return out, nil
-}
-
-// SearchExcerpts runs one lore_search per space, concurrently, and returns the
-// results grouped in the order the caller listed the spaces.
+// Search runs one lore search per space and returns the results grouped in the
+// order the caller listed the spaces.
 //
 // Nothing is re-ranked across spaces: lore's relevance ordering holds inside a
 // group only. Ranking a private space against a shared one is a policy decision
 // that belongs to the assistant.
 //
-// Excerpt.Entry.Body is lore's FTS5 snippet with the match brackets stripped —
-// roughly twelve tokens of the body, with an ellipsis where text was elided. The
-// stripping cannot distinguish a highlight bracket from a bracket that was in the
-// body, so the untouched snippet is kept on Excerpt.Snippet.
+// Every Entry it returns is whole. lore's search result carries the entry's full
+// body alongside the snippet that explains the match, so a retrieved entry is the
+// entry — not a fragment of it — and it arrives with its origin and its
+// timestamps. That was not true of the MCP surface this replaces, which rendered
+// the snippet and threw the body away, and the excerpt doctrine that used to live
+// here existed only to be honest about it.
 //
 // Limit applies per space, not to the whole result set, so that a second space
 // cannot be crowded out by the first. Zero leaves lore's own default of eight.
-func (c *Client) SearchExcerpts(ctx context.Context, q SearchQuery) ([]Excerpt, error) {
+func (c *Client) Search(ctx context.Context, q SearchQuery) ([]Entry, error) {
 	// The space set is the authorization decision, so it is checked as one: an
 	// empty slice and an empty id inside a non-empty slice are the same failure,
 	// a call that has not named a space it is entitled to. lore reads an empty
-	// space argument as "work it out from the working directory", which is the
-	// one thing this client never lets it do.
+	// space set as "every space this home holds", which is the one thing this
+	// client never lets it do.
 	if len(q.Spaces) == 0 || slices.Contains(q.Spaces, "") {
 		return nil, ErrEmptySpaceSet
 	}
 	if strings.TrimSpace(q.Text) == "" {
 		return nil, fmt.Errorf("memory: search text is empty: %w", ErrInvalidArgument)
 	}
-	spaces := dedupeSpaces(q.Spaces)
 
-	groups := make([][]Excerpt, len(spaces))
-	errs := make([]error, len(spaces))
-	var wg sync.WaitGroup
-	for i, sp := range spaces {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			groups[i], errs[i] = c.searchSpace(ctx, sp, q)
-		}()
-	}
-	wg.Wait()
-	// A dropped space would be a silently narrowed answer, so a failure in any
-	// one of them fails the search.
-	if err := errors.Join(errs...); err != nil {
-		return nil, err
-	}
-
-	var out []Excerpt
-	for _, g := range groups {
-		out = append(out, g...)
+	var out []Entry
+	for _, sp := range dedupeSpaces(q.Spaces) {
+		// lore filters a search by space id in SQL, so a space this home does not
+		// hold comes back as no results rather than as an error. That distinction
+		// is the whole of `kenward doctor`'s memory check — a display name
+		// configured where an id belongs must read as a configuration fault, not
+		// as an empty memory — so it is drawn here, before the search.
+		if err := c.requireSpace(ctx, sp); err != nil {
+			return nil, fmt.Errorf("memory: search space %s: %w", sp, err)
+		}
+		rs, err := c.store.Search(ctx, q.Text, lore.SearchOpts{
+			Spaces: []string{string(sp)},
+			Domain: q.Domain,
+			Limit:  q.Limit,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("memory: search space %s: %w", sp, mapErr(err))
+		}
+		// A dropped space would be a silently narrowed answer, so a failure in
+		// any one of them fails the search — hence the return above rather than
+		// a collected error.
+		for _, r := range rs {
+			out = append(out, entryOf(r.Entry))
+		}
 	}
 	return out, nil
 }
 
-// searchSpace runs lore_search against exactly one space.
-//
-// As in Get, the space lore echoes for each hit is checked against the space the
-// caller asked for. lore scopes a search to the space argument, so a hit from
-// anywhere else is lore misbehaving rather than an authorization hole — but this
-// is the only path that would otherwise stamp the caller's space id onto an entry
-// without ever having looked at what lore said. The check is as weak as lore's
-// display names, exactly as it is in Get.
-func (c *Client) searchSpace(ctx context.Context, space domain.SpaceID, q SearchQuery) ([]Excerpt, error) {
-	want, err := c.spaceNameFor(ctx, space)
-	if err != nil {
-		return nil, err
-	}
-	args := map[string]any{
-		"query": q.Text,
-		"space": string(space),
-	}
-	if q.Domain != "" {
-		args["domain"] = q.Domain
-	}
-	if q.Limit > 0 {
-		args["limit"] = q.Limit
-	}
-	text, err := c.callTool(ctx, toolSearch, args, true)
-	if err != nil {
-		return nil, fmt.Errorf("memory: search space %s: %w", space, err)
-	}
-	xs, err := parseSearch(text)
-	if err != nil {
-		return nil, err
-	}
-	for i := range xs {
-		if xs[i].spaceName != want {
-			return nil, fmt.Errorf("memory: search of space %s returned an entry from lore space %q: %w",
-				space, xs[i].spaceName, ErrNotFound)
-		}
-		xs[i].Entry.Space = space
-	}
-	return xs, nil
-}
-
-// Get fetches one entry by id and confirms it lives in the given space.
+// Get fetches one entry by id from one space.
 //
 // An entry id must never be taken from member-supplied text: ids originate only
 // from a search performed within the current Scope, or from a promotion flow that
 // already resolved one.
 //
-// That rule is the first line of defence, and this is the second. lore_get is not
-// space-scoped — an entry id is globally unique in a lore store and lore will
-// happily return an entry from any space, so an id is in effect a capability to
-// read any space — so this client resolves the space id to its display name
-// through lore_spaces and rejects a mismatch as ErrNotFound. The check is only as
-// strong as lore's naming: if two spaces in the same store carry the same display
-// name it cannot tell them apart, which is why it is not the primary defence.
-//
-// Entry.CreatedAt is always zero; lore's MCP surface never reports created_at.
-// lore also returns tombstoned entries by id and does not mark them, so a deleted
-// entry is indistinguishable from a live one here.
+// That rule is the first line of defence and the store is the second. An entry id
+// is global to a lore home, so an id is in effect a capability to name an entry in
+// any space; lore's scoped read compares the entry's space id to the one asked
+// for and refuses a mismatch. An entry that is not in space is ErrNotFound, which
+// is also what a deleted one is — a tombstone never comes back from a read.
 func (c *Client) Get(ctx context.Context, space domain.SpaceID, id string) (Entry, error) {
 	if strings.TrimSpace(id) == "" {
 		return Entry{}, fmt.Errorf("memory: entry id is empty: %w", ErrInvalidArgument)
 	}
-	want, err := c.spaceNameFor(ctx, space)
-	if err != nil {
+	if err := c.requireSpace(ctx, space); err != nil {
 		return Entry{}, err
 	}
-	r, err := c.getRendered(ctx, id)
+	e, err := c.store.GetEntryIn(ctx, string(space), id)
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, mapErr(err)
 	}
-	if r.SpaceName != want {
-		return Entry{}, fmt.Errorf("memory: entry %s is in lore space %q, not %q: %w",
-			id, r.SpaceName, want, ErrNotFound)
-	}
-	r.Entry.Space = space
-	return r.Entry, nil
-}
-
-// getRendered fetches an entry by id without checking which space it is in.
-func (c *Client) getRendered(ctx context.Context, id string) (rendered, error) {
-	text, err := c.callTool(ctx, toolGet, map[string]any{"id": id}, true)
-	if err != nil {
-		return rendered{}, err
-	}
-	return parseEntry(text)
+	return entryOf(e), nil
 }
 
 // Put writes a draft into the given space, always naming the space explicitly so
-// that lore's subject routing and working-directory lookup never run.
+// that lore's own routing never runs.
 //
-// lore's own defaults apply to anything the Draft leaves empty: confidence
+// lore's defaults apply to anything the Draft leaves empty: confidence
 // "provisional" and origin "evidence". Markers are normalised by lore — trimmed,
 // upper-cased and bracket-wrapped unless already bracketed — and are passed as a
-// comma-separated list, so a marker containing a comma is rejected here rather
-// than silently split.
+// slice, so no separator can be embedded in one.
 //
-// The returned Entry is read back from lore so that it carries the stored form
-// rather than the draft. If the read-back fails the write still succeeded, and
-// the Entry is reconstructed from the draft and the write receipt, with
-// UpdatedAt left zero.
-//
-// On failure the caller must distinguish two cases before saying anything to a
-// member. An error matching ErrWriteUncertain means the request reached lore and
-// the answer did not come back: the entry may exist. Anything else means nothing
-// was written. Delete takes an id and an uncertain write returned none, so a
-// retry after one can leave a duplicate that nothing here can remove.
+// The returned Entry is what lore stored, returned by the write itself. There is
+// no read-back and no reconstruction: a commit either happened or returned an
+// error, so a write's outcome is never in doubt.
 func (c *Client) Put(ctx context.Context, space domain.SpaceID, d Draft) (Entry, error) {
 	if strings.TrimSpace(d.Title) == "" || strings.TrimSpace(d.Body) == "" || strings.TrimSpace(d.Domain) == "" {
 		return Entry{}, fmt.Errorf("memory: title, body and domain are required: %w", ErrInvalidArgument)
@@ -385,66 +225,25 @@ func (c *Client) Put(ctx context.Context, space domain.SpaceID, d Draft) (Entry,
 	if space == "" {
 		return Entry{}, fmt.Errorf("memory: put requires an explicit space: %w", ErrInvalidArgument)
 	}
-	args := map[string]any{
-		"title":  d.Title,
-		"body":   d.Body,
-		"domain": d.Domain,
-		"space":  string(space),
+	// The rejected value is not named: a draft is model-generated from a member's
+	// conversation, so every one of its fields is content and this error is one a
+	// caller may log. The vocabulary it failed against is the diagnostic, and it
+	// is constant.
+	if d.Confidence != "" && !lore.Confidence(d.Confidence).Valid() {
+		return Entry{}, fmt.Errorf("memory: draft confidence is not one of lore's values (experimental, provisional, validated, hardened): %w", ErrInvalidArgument)
 	}
-	if d.Confidence != "" {
-		// The rejected value is not named: a draft is model-generated from a
-		// member's conversation, so every one of its fields is content and this
-		// error is one a caller may log. The vocabulary it failed against is the
-		// diagnostic, and it is constant.
-		if !confidences[d.Confidence] {
-			return Entry{}, fmt.Errorf("memory: draft confidence is not one of lore's values (experimental, provisional, validated, hardened): %w", ErrInvalidArgument)
-		}
-		args["confidence"] = d.Confidence
-	}
-	if len(d.Markers) > 0 {
-		for i, m := range d.Markers {
-			if strings.Contains(m, ",") {
-				return Entry{}, fmt.Errorf("memory: draft marker %d contains a comma, which lore uses as its marker separator: %w", i, ErrInvalidArgument)
-			}
-		}
-		args["markers"] = strings.Join(d.Markers, ",")
-	}
-
-	// Not retried on a lost subprocess: a write that may have landed must not be
-	// replayed. Store contention is still retried, because lore reports it
-	// before anything is committed.
-	text, err := c.callTool(ctx, toolPut, args, false)
-	if err != nil {
-		return Entry{}, err
-	}
-	st, err := parseStored(text)
-	if err != nil {
-		// lore answered, so the entry is stored; this client just cannot read
-		// the receipt well enough to name it. From the member's side that is
-		// the same situation as a lost answer.
-		return Entry{}, fmt.Errorf("%w: %w", ErrWriteUncertain, err)
-	}
-
-	fallback := Entry{
-		ID:         st.ID,
-		Space:      space,
-		Domain:     st.Domain,
+	e, err := c.store.PutEntry(ctx, lore.PutParams{
+		SpaceID:    string(space),
+		Domain:     d.Domain,
 		Title:      d.Title,
 		Body:       d.Body,
-		Confidence: st.Confidence,
-		Origin:     st.Origin,
-		Markers:    normalizeMarkers(d.Markers),
-		// Whole, not partial: Body is the draft's own text. Only UpdatedAt is
-		// missing, and that is absence of a timestamp, not elision of content.
-		Partial: false,
-	}
-	r, err := c.getRendered(ctx, st.ID)
+		Markers:    d.Markers,
+		Confidence: lore.Confidence(d.Confidence),
+	})
 	if err != nil {
-		c.cfg.Logger.Warn("lore: stored entry could not be read back", "entry", st.ID, "err", err)
-		return fallback, nil
+		return Entry{}, fmt.Errorf("memory: storing an entry in %s: %w", space, mapErr(err))
 	}
-	r.Entry.Space = space
-	return r.Entry, nil
+	return entryOf(e), nil
 }
 
 // Share copies an entry from one space to another, preserving lore's provenance.
@@ -453,19 +252,10 @@ func (c *Client) Put(ctx context.Context, space domain.SpaceID, d Draft) (Entry,
 // from a search performed within the current Scope, or from a promotion flow that
 // already resolved one.
 //
-// lore_share takes no source space, so the source is fetched first and its space
-// checked against from; an entry that is not in from is reported as ErrNotFound,
-// for the same reason Get does it, and with the same caveat — it is the second
-// line of defence, not the first. The copy is executed directly with
-// confirm:true — lore's two-phase preview is an affordance for an agent deciding
-// whether to share, and kenward has already taken that decision through its own
-// confirmation before calling here.
-//
-// lore refuses to copy entries whose domain begins with profile/ or feedback/ out
-// of the personal space, on every path; that comes back as ErrUserModel.
-//
-// As with Put, a failure matching ErrWriteUncertain means the copy may exist and
-// must not be retried blindly; anything else means nothing was copied.
+// The source is read scoped to from, so an entry that is not in from is
+// ErrNotFound — an id comparison inside the store, not a name check. lore refuses
+// to copy entries whose domain begins with profile/ or feedback/ out of the
+// personal space, on every path; that comes back as ErrUserModel.
 func (c *Client) Share(ctx context.Context, from, to domain.SpaceID, entryID string) (Entry, error) {
 	if strings.TrimSpace(entryID) == "" {
 		return Entry{}, fmt.Errorf("memory: entry id is empty: %w", ErrInvalidArgument)
@@ -473,67 +263,32 @@ func (c *Client) Share(ctx context.Context, from, to domain.SpaceID, entryID str
 	if from == "" || to == "" {
 		return Entry{}, fmt.Errorf("memory: share requires both spaces: %w", ErrInvalidArgument)
 	}
-	fromName, err := c.spaceNameFor(ctx, from)
-	if err != nil {
+	if err := c.requireSpace(ctx, from); err != nil {
 		return Entry{}, err
 	}
-	if _, err := c.spaceNameFor(ctx, to); err != nil {
+	if err := c.requireSpace(ctx, to); err != nil {
 		return Entry{}, err
 	}
-	src, err := c.getRendered(ctx, entryID)
+	if _, err := c.store.GetEntryIn(ctx, string(from), entryID); err != nil {
+		return Entry{}, mapErr(err)
+	}
+	e, err := c.store.CopyEntry(ctx, entryID, string(to))
 	if err != nil {
-		return Entry{}, err
+		return Entry{}, fmt.Errorf("memory: copying entry %s into %s: %w", entryID, to, mapErr(err))
 	}
-	if src.SpaceName != fromName {
-		return Entry{}, fmt.Errorf("memory: entry %s is in lore space %q, not %q: %w",
-			entryID, src.SpaceName, fromName, ErrNotFound)
-	}
-
-	text, err := c.callTool(ctx, toolShare, map[string]any{
-		"entry_id": entryID,
-		"to_space": string(to),
-		"confirm":  true,
-	}, false)
-	if err != nil {
-		return Entry{}, err
-	}
-	cp, err := parseCopied(text)
-	if err != nil {
-		return Entry{}, fmt.Errorf("%w: %w", ErrWriteUncertain, err)
-	}
-
-	r, err := c.getRendered(ctx, cp.NewID)
-	if err != nil {
-		// The copy exists; only its stored timestamps are unknown.
-		c.cfg.Logger.Warn("lore: shared entry could not be read back", "entry", cp.NewID, "err", err)
-		e := src.Entry
-		e.ID = cp.NewID
-		e.Space = to
-		e.UpdatedAt = time.Time{}
-		return e, nil
-	}
-	r.Entry.Space = to
-	return r.Entry, nil
+	return entryOf(e), nil
 }
 
 // Delete tombstones one entry in one space.
 //
-// The space is passed through to lore, which refuses an entry that is not in it.
-// That is the same defence Get makes and a stronger one: lore compares space ids
-// rather than the display names this client has to fall back on, so a delete
-// cannot reach out of the space the caller named even where two spaces share a
-// name. The client still resolves the space first, so a space this lore home does
-// not hold is ErrUnknownSpace rather than a delete attempt.
+// The space is checked before the delete so that a space this lore home does not
+// hold is ErrUnknownSpace rather than a delete attempt, and lore compares space
+// ids on the delete itself, so a delete cannot reach out of the space the caller
+// named.
 //
 // Deleting an entry that is already a tombstone returns nil. lore reports it as a
 // no-op and it is one; the caller that needs this is undoing a write and wants
 // the entry gone, not the honour of being the one who removed it.
-//
-// The call is issued as a write, not as an idempotent read, even though repeating
-// a tombstone is harmless. The flag decides whether a lost answer comes back
-// wrapped in ErrWriteUncertain, and after an undo the difference between "it is
-// still there" and "I cannot tell" is the entire message the member gets. Buying
-// one free retry by giving that distinction up is the wrong trade.
 func (c *Client) Delete(ctx context.Context, space domain.SpaceID, entryID string) error {
 	if strings.TrimSpace(entryID) == "" {
 		return fmt.Errorf("memory: entry id is empty: %w", ErrInvalidArgument)
@@ -541,74 +296,27 @@ func (c *Client) Delete(ctx context.Context, space domain.SpaceID, entryID strin
 	if space == "" {
 		return fmt.Errorf("memory: delete requires an explicit space: %w", ErrInvalidArgument)
 	}
-	if _, err := c.spaceNameFor(ctx, space); err != nil {
+	if err := c.requireSpace(ctx, space); err != nil {
 		return err
 	}
-
-	text, err := c.callTool(ctx, toolDelete, map[string]any{
-		"id":    entryID,
-		"space": string(space),
-	}, false)
+	_, deleted, err := c.store.DeleteEntry(ctx, string(space), entryID)
 	if err != nil {
-		return err
+		return fmt.Errorf("memory: deleting entry %s from %s: %w", entryID, space, mapErr(err))
 	}
-	got, already, err := parseDeleted(text)
-	if err != nil {
-		// lore answered without an error, so the tombstone is written; this client
-		// just cannot read the receipt. Saying "deleted" on the strength of an
-		// unrecognised line would be guessing at the one thing the caller is about
-		// to tell a member, so it is reported as uncertain instead.
-		return fmt.Errorf("%w: %w", ErrWriteUncertain, err)
-	}
-	if got != entryID {
-		return fmt.Errorf("%w: memory: delete of %s was answered for entry %s", ErrWriteUncertain, entryID, got)
-	}
-	if already {
+	if !deleted {
 		c.cfg.Logger.Info("lore: entry was already deleted", "entry", entryID, "space", string(space))
 	}
 	return nil
 }
 
-// spaceNameFor resolves a space id to lore's display name for it, refreshing the
-// cached listing once on a miss so that a space created after this client started
-// is still found.
-func (c *Client) spaceNameFor(ctx context.Context, space domain.SpaceID) (string, error) {
-	if space == "" {
-		return "", fmt.Errorf("memory: empty space id: %w", ErrInvalidArgument)
-	}
-	c.spacesMu.Lock()
-	name, ok := c.spaceNames[space]
-	c.spacesMu.Unlock()
-	if ok {
-		return name, nil
-	}
-	if _, err := c.refreshSpaces(ctx); err != nil {
-		return "", err
-	}
-	c.spacesMu.Lock()
-	defer c.spacesMu.Unlock()
-	name, ok = c.spaceNames[space]
-	if !ok {
-		// lore's own tools accept either a space id or a display name, so a
-		// name reaches here having already worked for a write; the resolution
-		// is what says which of the two kenward is configured with.
-		return "", fmt.Errorf("memory: lore holds no space %s (spaces are named by id here, not by display name): %w",
-			space, ErrUnknownSpace)
-	}
-	if c.nameUses[name] > 1 {
-		c.cfg.Logger.Warn("lore: space display name is ambiguous, entry space checks are weakened",
-			"name", name, "spaces", c.nameUses[name])
-	}
-	return name, nil
-}
-
 // Space is a lore space as lore reports it, for a caller that has to choose one.
 //
-// It exists because kenward never creates a space: spaces are made out of band,
-// and configuration names them by id. Anything asking an operator which space to
-// use must therefore offer what lore already holds rather than invent a name —
-// and must be able to tell a personal space from a shared one, because lore's
-// personal space never crosses accounts and cannot serve as a household's memory.
+// It exists because kenward never creates a space in the ordinary course: spaces
+// are made out of band, and configuration names them by id. Anything asking an
+// operator which space to use must therefore offer what lore already holds rather
+// than invent a name — and must be able to tell a personal space from a shared
+// one, because lore's personal space never crosses accounts and cannot serve as a
+// household's memory.
 type Space struct {
 	// ID is what kenward is configured with. Names are for humans.
 	ID string
@@ -616,209 +324,123 @@ type Space struct {
 	Name string
 	// Kind is "personal" or "shared", as lore's own enum.
 	Kind string
-	// Entries is how many entries lore reports in the space.
+	// Entries is how many live entries lore reports in the space.
 	Entries int
 }
 
-// Spaces lists the spaces this lore home holds. It is read-only: nothing in this
-// package creates or modifies a space.
+// Spaces lists the spaces this lore home holds. It is read-only; CreateSpace is
+// the only thing here that makes one.
 //
 // Rows are returned in lore's order, including two spaces sharing one display
 // name. lore does not enforce unique names, so the duplicate is the answer — a
 // caller showing both with their ids is strictly better than this package
 // choosing one of them.
 func (c *Client) Spaces(ctx context.Context) ([]Space, error) {
-	rows, err := c.refreshSpaces(ctx)
+	sps, err := c.store.Spaces(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("memory: listing lore spaces: %w", mapErr(err))
 	}
-	out := make([]Space, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, Space{ID: r.ID, Name: r.Name, Kind: r.Kind, Entries: r.Entries})
+	out := make([]Space, 0, len(sps))
+	for _, s := range sps {
+		// CountEntries counts in SQL; the listing this replaces loaded every body
+		// in the home to take a len.
+		n, err := c.store.CountEntries(ctx, s.ID)
+		if err != nil {
+			return nil, fmt.Errorf("memory: counting entries in space %s: %w", s.ID, mapErr(err))
+		}
+		out = append(out, Space{ID: s.ID, Name: s.Name, Kind: string(s.Kind), Entries: n})
 	}
 	return out, nil
 }
 
-// refreshSpaces reloads the space id to display name mapping from lore_spaces and
-// returns the rows it was built from.
-func (c *Client) refreshSpaces(ctx context.Context) ([]spaceRow, error) {
-	text, err := c.callTool(ctx, toolSpaces, map[string]any{}, true)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := parseSpaces(text)
-	if err != nil {
-		return nil, err
-	}
-	names := make(map[domain.SpaceID]string, len(rows))
-	uses := make(map[string]int, len(rows))
-	for _, r := range rows {
-		names[domain.SpaceID(r.ID)] = r.Name
-		uses[r.Name]++
-	}
-	c.spacesMu.Lock()
-	c.spaceNames, c.nameUses = names, uses
-	c.spacesMu.Unlock()
-	return rows, nil
-}
-
-// deadGrace is how long a failed call waits for the session to confirm it died,
-// so that a subprocess that exited mid-call is recognised as such rather than
-// reported as an opaque transport error.
-const deadGrace = 200 * time.Millisecond
-
-// callTool makes one lore tool call, restarting the subprocess when it has died
-// and retrying bounded, safe failures.
+// CreateSpace makes a shared lore space and returns it.
 //
-// idempotent marks a call that may be replayed on a fresh subprocess. Writes are
-// not idempotent: a lore_put whose response was lost may already have landed, so
-// it is reported rather than repeated, and the next call restarts the subprocess.
-// A non-idempotent call that fails after the request went out is wrapped in
-// ErrWriteUncertain; a rejection lore itself sent back is not, because lore
-// rejecting a call means it did not apply it.
-func (c *Client) callTool(ctx context.Context, tool string, args map[string]any, idempotent bool) (string, error) {
-	select {
-	case c.sem <- struct{}{}:
-	case <-ctx.Done():
-		return "", ctx.Err()
+// kenward creates a space in one circumstance only — the setup wizard and the
+// dashboard's add-a-member flow, where a person has just named a household or a
+// member and there is no space for them yet. Everywhere else spaces are
+// configured by id and this package only reads them.
+//
+// A name another space already holds is ErrSpaceExists and nothing is created.
+// There is deliberately no get-or-create here: this id becomes a member's private
+// space, and quietly handing back an existing space because the names matched is
+// how one member's memory becomes another's. The caller asks a person for a
+// different name.
+func (c *Client) CreateSpace(ctx context.Context, name string) (Space, error) {
+	name = strings.TrimSpace(name)
+	switch {
+	case name == "":
+		return Space{}, fmt.Errorf("memory: a space needs a name: %w", ErrInvalidArgument)
+	case strings.ContainsAny(name, "\x00\n\r"):
+		// The name comes from a web form, and this is the trust boundary. A
+		// newline is not a lore problem — lore would store it — it is a name
+		// that cannot be shown on the one line every listing gives it, here and
+		// in `lore spaces`.
+		return Space{}, fmt.Errorf("memory: a space name cannot contain a newline or a null byte: %w", ErrInvalidArgument)
+	case strings.HasPrefix(name, "-"):
+		// No longer argv from here — lore is called in-process — but `lore space
+		// invite <name>` is the very next command an operator runs against a
+		// space kenward made, and lore's flag parser reads a leading dash as a
+		// flag.
+		return Space{}, fmt.Errorf("memory: a space name cannot start with %q, which lore's own command line would read as a flag: %w", "-", ErrInvalidArgument)
 	}
-	defer func() { <-c.sem }()
-
-	attempts := c.cfg.BusyRetries + 1
-	var lastErr error
-	for attempt := range attempts {
-		if attempt > 0 {
-			if err := sleepCtx(ctx, backoff(attempt)); err != nil {
-				return "", err
-			}
-		}
-		s, err := c.acquire(ctx)
-		if err != nil {
-			return "", err
-		}
-		callCtx, cancel := context.WithTimeout(ctx, c.cfg.CallTimeout)
-		res, err := s.mcp.CallTool(callCtx, &mcp.CallToolParams{Name: tool, Arguments: args})
-		timedOut := callCtx.Err() != nil && ctx.Err() == nil
-		cancel()
-
-		// Once the request is on the wire, an error that is not lore's own
-		// answer leaves a write's outcome unknown: lore may have committed it
-		// and lost the reply. Reads have no such problem.
-		uncertain := func(err error) error {
-			if idempotent {
-				return err
-			}
-			return fmt.Errorf("%w: %w", ErrWriteUncertain, err)
-		}
-
-		switch {
-		case err != nil && ctx.Err() != nil:
-			return "", uncertain(fmt.Errorf("memory: %s: %w", tool, ctx.Err()))
-		case err != nil && timedOut:
-			// The subprocess is alive but did not answer, so acquire would hand
-			// it to the next call and that one would time out too, for as long
-			// as the process stays wedged. It is retired here instead: process
-			// death is not the only way lore stops being usable.
-			c.discard(s)
-			c.cfg.Logger.Warn("lore: subprocess did not answer in time, discarding it", "tool", tool)
-			return "", uncertain(fmt.Errorf("memory: %s: no answer within %s: %w", tool, c.cfg.CallTimeout, err))
-		case err != nil:
-			if !s.waitDead(deadGrace) {
-				return "", uncertain(fmt.Errorf("memory: %s: %w", tool, err))
-			}
-			c.discard(s)
-			c.cfg.Logger.Warn("lore: subprocess ended", "tool", tool, "err", err)
-			ended := error(&ProcessError{
-				Stage:  tool + ": lore subprocess ended",
-				Stderr: s.proc.stderrTailText(),
-				Err:    err,
-			})
-			if !idempotent {
-				return "", uncertain(ended)
-			}
-			lastErr = ended
-			continue
-		}
-
-		if res.IsError {
-			terr := toolError(tool, resultText(res))
-			if errors.Is(terr, ErrBusy) {
-				lastErr = terr
-				continue
-			}
-			return "", terr
-		}
-		return resultText(res), nil
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("memory: %s: exhausted retries", tool)
-	}
-	return "", lastErr
-}
-
-// acquire returns the live session, starting or restarting the subprocess as
-// needed. A subprocess that has died is replaced here rather than remembered as a
-// permanent failure.
-func (c *Client) acquire(ctx context.Context) (*session, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closed {
-		return nil, ErrClosed
-	}
-	if c.cur != nil {
-		if c.cur.alive() {
-			return c.cur, nil
-		}
-		c.cfg.Logger.Info("lore: restarting subprocess", "command", c.cfg.Command)
-		c.cur.close(c.cfg.ShutdownGrace)
-		c.cur = nil
-	}
-	s, err := dial(ctx, c.cfg)
+	sp, err := c.store.CreateSpace(ctx, name, lore.Shared)
 	if err != nil {
-		return nil, err
+		return Space{}, fmt.Errorf("memory: creating lore space %q: %w", name, mapErr(err))
 	}
-	c.cur = s
-	return s, nil
+	return Space{ID: sp.ID, Name: sp.Name, Kind: string(sp.Kind)}, nil
 }
 
-// discard retires a session if it is still the current one.
-func (c *Client) discard(s *session) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.cur == s {
-		c.cur = nil
+// requireSpace fails unless this lore home holds the named space.
+//
+// It is a fresh lookup every time rather than a cached listing. The listing it
+// replaces was cached because each one cost a subprocess round-trip and a parse;
+// in-process it is one indexed row read, and not caching it means a space created
+// after this client was built is simply found.
+func (c *Client) requireSpace(ctx context.Context, space domain.SpaceID) error {
+	if space == "" {
+		return fmt.Errorf("memory: empty space id: %w", ErrInvalidArgument)
 	}
-	s.close(c.cfg.ShutdownGrace)
+	if _, err := c.store.GetSpace(ctx, string(space)); err != nil {
+		// lore's own tools accept either a space id or a display name, so a name
+		// reaches here having already worked elsewhere; this is what says which
+		// of the two kenward is configured with.
+		return fmt.Errorf("memory: lore holds no space %s (spaces are named by id here, not by display name): %w",
+			space, mapErr(err))
+	}
+	return nil
 }
 
-// resultText joins the text blocks of a tool result. lore always returns exactly
-// one; joining rather than requiring one keeps a future second block from being
-// dropped silently.
-func resultText(res *mcp.CallToolResult) string {
-	var parts []string
-	for _, ct := range res.Content {
-		if tc, ok := ct.(*mcp.TextContent); ok {
-			parts = append(parts, tc.Text)
-		}
+// entryOf converts one of lore's entries into kenward's.
+//
+// Everything kenward models is a field on lore's Entry now, including the origin
+// and the timestamps that search used not to report. lore's Version and
+// Provenance are dropped rather than carried: nothing in kenward reads them, and
+// a field on this struct is a promise to keep filling it.
+func entryOf(e lore.Entry) Entry {
+	return Entry{
+		ID:         e.ID,
+		Space:      domain.SpaceID(e.SpaceID),
+		Domain:     e.Domain,
+		Title:      e.Title,
+		Body:       e.Body,
+		Confidence: string(e.Confidence),
+		Markers:    e.Markers,
+		Origin:     string(e.Origin),
+		CreatedAt:  loreTime(e.CreatedAt),
+		UpdatedAt:  loreTime(e.UpdatedAt),
 	}
-	return strings.Join(parts, "\n")
 }
 
-// normalizeMarkers mirrors lore's marker normalisation so that a reconstructed
-// Entry matches what lore stored.
-func normalizeMarkers(in []string) []string {
-	var out []string
-	for _, m := range in {
-		m = strings.TrimSpace(m)
-		if m == "" {
-			continue
-		}
-		if !strings.HasPrefix(m, "[") {
-			m = "[" + strings.ToUpper(m) + "]"
-		}
-		out = append(out, m)
+// loreTime parses one of lore's timestamps, tolerating the same-tick padding lore
+// appends to keep last-writer-wins monotonic. An unparseable timestamp is the
+// zero time: a missing timestamp is a cosmetic loss, and refusing an entry over
+// one would be a retrieval failure caused by a clock.
+func loreTime(ts lore.Timestamp) time.Time {
+	t, err := ts.Time()
+	if err != nil {
+		return time.Time{}
 	}
-	return out
+	return t.UTC()
 }
 
 // dedupeSpaces removes repeats while preserving the caller's order.
@@ -832,25 +454,4 @@ func dedupeSpaces(in []domain.SpaceID) []domain.SpaceID {
 		}
 	}
 	return out
-}
-
-// backoff is the delay before retry number n, starting at n = 1.
-func backoff(n int) time.Duration {
-	d := 50 * time.Millisecond << (n - 1)
-	if d > time.Second {
-		d = time.Second
-	}
-	return d
-}
-
-// sleepCtx sleeps unless the context ends first.
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }

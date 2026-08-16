@@ -8,7 +8,7 @@ package e2e
 // seam: a scripted memory.Memory, an httptest server pretending to be a model.
 // That structurally cannot see what a real dependency does differently from the
 // fake written to stand in for it. This file therefore builds the production
-// wiring with a real memory.Client over a real `lore mcp` subprocess and a real
+// wiring with a real memory.Client over a real embedded lore store and a real
 // routing.Pool over a real OpenAI-compatible endpoint, and fakes only Telegram,
 // for which no bot token exists.
 //
@@ -16,6 +16,9 @@ package e2e
 //
 //   - spyMemory wraps the real client and records which spaces each call named,
 //     then delegates. Every answer comes from lore.
+//   - loreCLI reads and writes the same store through the `lore` binary, out of
+//     process. It is how this suite checks kenward's writes with something other
+//     than the library kenward wrote them with.
 //   - recordingProxy is an HTTP relay in front of the real endpoint: it records
 //     the request body and forwards it unchanged. Every completion comes from
 //     the model.
@@ -51,6 +54,8 @@ import (
 	"time"
 
 	"github.com/BlueHeisenberg/keel/vault"
+	"github.com/BlueHeisenberg/lore"
+
 	"github.com/BlueHeisenberg/kenward/internal/assistant"
 	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/config"
@@ -95,9 +100,9 @@ func liveEnv(t *testing.T) live {
 }
 
 // newLoreStore gives this run a lore store it owns outright: a fresh LORE_HOME
-// under t.TempDir(), initialised by the real `lore` binary, holding two spaces
-// created here and nothing else. The temporary directory takes it away again, so
-// no state survives a run and no run can see another's.
+// under t.TempDir(), holding two spaces created here and nothing else. The
+// temporary directory takes it away again, so no state survives a run and no run
+// can see another's.
 //
 // This replaces pointing the suite at spaces kept for the purpose in a persistent
 // store, which does not work, because lore has no delete. Not in the CLI, not over
@@ -108,37 +113,40 @@ func liveEnv(t *testing.T) live {
 // not tell apart — the suite had made itself fail. A test whose store degrades
 // every time it runs is measuring its own history.
 //
-// Owning the store costs this file nothing it was built to have. The binary, the
-// SQLite database, the MCP handshake and the full-text search are all still the
-// real ones, which is the whole claim in the comment at the top; only somebody's
-// accumulated personal entries are absent, and those were never the subject.
+// Owning the store costs this file nothing it was built to have. The SQLite
+// database and the full-text search are still the real ones, which is the whole
+// claim in the comment at the top; only somebody's accumulated personal entries
+// are absent, and those were never the subject.
+//
+// It is built with lore's Go API rather than its command line. It used to be
+// `lore init` and two `lore space create`s with the new id scraped out of the
+// line each one printed — the last place in this repository that recovered a
+// value from lore's prose. The ids come back typed now, and the suite still
+// watches the store from outside the process through loreCLI, which is the part
+// that was ever load-bearing here.
 func newLoreStore(t *testing.T, l live) live {
 	t.Helper()
 	l.loreHome = t.TempDir()
-	loreCLI(t, l, "", "init", "--yes-i-saved-it", "--name", "kenward-e2e")
-	l.private = createSpace(t, l, "kenward-e2e-private")
-	l.shared = createSpace(t, l, "kenward-e2e-shared")
-	return l
-}
-
-// createSpace makes one topic space and returns the id lore assigned it, taken
-// from the line lore prints:
-//
-//	ok: created topic space "kenward-e2e-private" <uuid> (you are owner)
-//
-// The id is read from there rather than looked up in `lore spaces` afterwards
-// because configuration names spaces by id, and a lookup by display name is the
-// step that would let two spaces with the same name be confused.
-func createSpace(t *testing.T, l live, name string) domain.SpaceID {
-	t.Helper()
-	out := loreCLI(t, l, "", "space", "create", name)
-	for _, f := range strings.Fields(out) {
-		if len(f) == 36 && strings.Count(f, "-") == 4 {
-			return domain.SpaceID(f)
-		}
+	if _, err := lore.Init(l.loreHome, "kenward-e2e"); err != nil {
+		t.Fatalf("lore.Init: %v", err)
 	}
-	t.Fatalf("`lore space create %s` printed no space id:\n%s", name, out)
-	return ""
+	// Opened, used and closed before anything else touches this home: one store
+	// per home per process, and the client under test opens its own below.
+	st, err := lore.Open(lore.Options{Home: l.loreHome})
+	if err != nil {
+		t.Fatalf("lore.Open: %v", err)
+	}
+	defer st.Close()
+	mk := func(name string) domain.SpaceID {
+		sp, err := st.CreateSpace(t.Context(), name, lore.Shared)
+		if err != nil {
+			t.Fatalf("creating space %s: %v", name, err)
+		}
+		return domain.SpaceID(sp.ID)
+	}
+	l.private = mk("kenward-e2e-private")
+	l.shared = mk("kenward-e2e-shared")
+	return l
 }
 
 // testWriter sends a logger's output to the test log.
@@ -387,12 +395,11 @@ func newLiveHarness(t *testing.T, l live, opts liveOptions) *liveHarness {
 		t.Fatalf("loading configuration: %v", err)
 	}
 
-	// The real client, over a real `lore mcp` subprocess against a real store.
+	// The real client, over a real lore store — the embedded library, not a
+	// subprocess.
 	client, err := memory.NewClient(memory.Config{
-		Command:     l.loreBin,
-		Args:        []string{"mcp"},
-		LoreHome:    l.loreHome,
-		CallTimeout: 30 * time.Second,
+		Command:  l.loreBin,
+		LoreHome: l.loreHome,
 	})
 	if err != nil {
 		t.Fatalf("building the lore client: %v", err)

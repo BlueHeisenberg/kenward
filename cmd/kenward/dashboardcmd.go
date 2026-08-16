@@ -217,7 +217,7 @@ func openLoreClient(path, dataDir string) (dashboard.SpaceClient, error) {
 			argv = cfg.Memory.LoreCommand
 		}
 	}
-	return memory.NewClient(memory.Config{Command: argv[0], Args: argv[1:]})
+	return memory.NewClient(memory.Config{Command: argv[0]})
 }
 
 // renderDashboardBanner is what the process prints on the way up.

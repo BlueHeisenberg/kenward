@@ -8,10 +8,12 @@
 # ---------------------------------------------------------------------------
 # IMPORTANT — lore is NOT in this image.
 #
-# kenward's only route to its memory layer is spawning `lore mcp` as a
-# subprocess (kenward.yaml: memory.lore_command, default ["lore", "mcp"]).
-# Without a `lore` binary on $PATH inside the container, kenward starts but
-# has no memory: no retrieval, no capture, no enrolment history. This image
+# kenward imports lore and opens its store in-process, so it does not need the
+# binary to read or write memory. It needs it for one thing: `lore serve`, the
+# sync daemon, which is what carries a household's shared memory between pods
+# and between machines (kenward.yaml: memory.lore_command, default ["lore"]).
+# Without a `lore` binary on $PATH inside the container, an isolated pod's
+# shared memory reaches nobody. This image
 # deliberately does not bundle it — lore is a sibling project with its own
 # release cadence, and baking a copy in here would pin kenward to whatever
 # lore version happened to be current at image build time.

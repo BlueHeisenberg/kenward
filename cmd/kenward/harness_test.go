@@ -310,7 +310,7 @@ func healthyProbes() probes {
 		// one pointed at a developer's own store would create an account in it, and
 		// lore has no delete. Tests that care what `run` asked for install a recorder
 		// over this; the rest simply never reach a real binary.
-		loreInit: func(context.Context, string, string, string) error { return nil },
+		loreInit: func(context.Context, string, string) (bool, error) { return false, nil },
 		telegram: func(_ context.Context, token string) telegramResult {
 			switch token {
 			case fakeDavidToken:
@@ -412,7 +412,7 @@ func everythingAsleep(base probes) probes {
 }
 
 // loreUninitialised is the world a fresh container volume is in: the binary is on PATH
-// and `lore mcp` exits before the MCP handshake because LORE_HOME holds no account.
+// and the lore home holds no account, so the store cannot be opened.
 // The message is lore's own, measured against a real container.
 func loreUninitialised(base probes) probes {
 	base.lore = func(context.Context, *config.Config, config.UnitScope) loreResult {
@@ -424,7 +424,7 @@ func loreUninitialised(base probes) probes {
 
 func loreDown(base probes) probes {
 	base.lore = func(context.Context, *config.Config, config.UnitScope) loreResult {
-		return loreResult{Err: errors.New("lore mcp: exec: \"lore\": executable file not found in $PATH")}
+		return loreResult{Err: errors.New("memory: opening the lore store: memory: lore store is unavailable")}
 	}
 	return base
 }

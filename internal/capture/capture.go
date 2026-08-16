@@ -613,14 +613,12 @@ func (e *Engine) undo(ctx context.Context, sc domain.Scope, out Outcome, speaker
 		}
 		return out, nil
 
-	case errors.Is(err, memory.ErrWriteUncertain):
-		// The tombstone may or may not have landed. Both "removed" and "still
-		// there" are guesses, and the member can settle it by asking.
-		return out, e.told(ctx, sc,
-			fmt.Sprintf("I can't tell whether %q was removed — the memory store didn't answer. Ask me about it before assuming either way.", out.Title),
-			fmt.Errorf("capture: undoing entry %s in %s: %w", out.EntryID, out.Space, err))
-
 	default:
+		// A failed delete left the entry where it was. There is no third answer
+		// to give a member here: the store either wrote the tombstone or it
+		// returned an error, and while lore was a subprocess it could also lose
+		// the reply and leave both of us guessing — which is what the
+		// ErrWriteUncertain branch this replaces had to say out loud.
 		return out, e.told(ctx, sc,
 			fmt.Sprintf("I couldn't take that back: %q is still in %s (%s).", out.Title, where, out.Space),
 			fmt.Errorf("capture: undoing entry %s in %s: %w", out.EntryID, out.Space, err))
@@ -639,15 +637,18 @@ func (e *Engine) store(ctx context.Context, sc domain.Scope, p Proposal, title s
 	draft.Title = title
 	entry, err := e.mem.Put(ctx, space, draft)
 	if err != nil {
-		// The write may have landed even though the store reported failure. lore can
-		// delete, but only by id, and the id was in the receipt that never arrived —
-		// so there is nothing to clean up with and a retry that duplicates is
-		// permanent. Report the uncertainty to the member (IMPLEMENTATION.md section
-		// 12) instead of retrying silently, and suppress the title so the model does
-		// not immediately re-propose the thing they were just told to verify first.
+		// A failed write stored nothing, and the member is told exactly that. It
+		// used to be told as a hedge — "I can't confirm whether it was saved" —
+		// because a lost MCP response left an entry that might exist under an id
+		// kenward never received, and therefore could not delete. In-process the
+		// commit either happened or returned, so there is no duplicate to warn
+		// about (IMPLEMENTATION.md section 12).
+		//
+		// The title is still suppressed: a write that just failed will fail again
+		// next turn, and re-proposing it is noise rather than a second chance.
 		e.recordDecline(sc, speaker, title, turn)
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I can't confirm whether %q was saved — the memory store didn't answer. Check before saving it again; I have no way to remove a duplicate I can't name.", title),
+			fmt.Sprintf("I couldn't save %q — the memory store refused the write, so nothing was stored.", title),
 			fmt.Errorf("capture: storing an entry in %s: %w", space, err))
 	}
 
@@ -729,13 +730,13 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 
 	shared, err := e.mem.Share(ctx, from, to, entryID)
 	if err != nil {
-		// The member has just authorised something irreversible, so the copy may
-		// have landed even though the store reported failure — the same reasoning as
-		// the failed Put in Offer (IMPLEMENTATION.md section 12), and worse here,
-		// because what a retry might duplicate is a private entry in the household's
-		// memory. Report the uncertainty rather than a success or a bare failure.
+		// A failed copy published nothing, so the member is told that rather than
+		// asked to go and check. The hedge this replaces was the same reasoning as
+		// the failed Put in store (IMPLEMENTATION.md section 12): a lost reply
+		// could have left a private entry sitting in the household's memory with
+		// nobody able to name it. It cannot now.
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I can't confirm whether %q was published — the memory store didn't answer. Check the household memory before publishing it again; a publication can't be taken back.", entry.Title),
+			fmt.Sprintf("I couldn't publish %q — the memory store refused the copy, so nothing reached the household memory.", entry.Title),
 			fmt.Errorf("capture: publishing %s to %s: %w", entryID, to, err))
 	}
 

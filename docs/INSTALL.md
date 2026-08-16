@@ -116,7 +116,7 @@ and a unit that fails on install is a unit people learn to ignore.
 The unit supplies secrets as **systemd credentials** rather than environment variables,
 because an `EnvironmentFile=` value stays in the process's environment for as long as it
 runs, is readable through `/proc`, and is inherited by every child it spawns — including
-the `lore mcp` subprocess, which has no business seeing a Telegram token. Put one file
+the `lore serve` subprocess, which has no business seeing a Telegram token. Put one file
 per secret under `/etc/kenward/credentials/` — `bot_token` for the household bot,
 `bot_token.<member id>` and `api_key.<endpoint name>` where they apply — and name each on
 a `LoadCredential=` line. kenward looks for exactly those names with no configuration at

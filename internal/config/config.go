@@ -99,20 +99,21 @@ const (
 	DefaultMaxCompletionTokens = 4096
 )
 
-// DefaultLoreCommand returns the argv that starts lore's MCP server.
+// DefaultLoreCommand returns the argv that locates the lore executable.
 //
-// It is a default rather than a required field because omitting it has never meant
-// anything safer: a configuration with no lore command validated cleanly and then failed
-// at startup, when the memory client tried to spawn nothing. kenward without memory is
-// not a degraded mode, it is a broken one, so the useful behaviour for an omitted block
-// is the documented one — which this already was, in the setup wizard, the example
-// configuration and the docs. Defaulting it makes the implicit case behave like the
-// written one instead of failing later and less clearly.
+// It used to be ["lore", "mcp"], because kenward reached its memory by spawning
+// `lore mcp` and talking MCP to it. kenward embeds lore as a Go library now and the
+// store is opened in-process, so the second element named a subcommand nothing runs.
+// What is left needs the program and not a command line: the one thing still started
+// as a process is `lore serve`, the sync daemon, which supplies its own arguments.
+//
+// Only element zero is ever read, so a configuration still saying ["lore", "mcp"]
+// works unchanged and is not worth rewriting on anyone's disk.
 //
 // It returns a fresh slice on every call, deliberately. A package-level slice would be
 // shared by every configuration that took the default, and one caller editing its own
 // argv would rewrite the default for the whole process.
-func DefaultLoreCommand() []string { return []string{"lore", "mcp"} }
+func DefaultLoreCommand() []string { return []string{"lore"} }
 
 // LookupEnvFunc reads an environment variable, with the same shape as os.LookupEnv.
 //
@@ -282,8 +283,12 @@ func (c *Config) ChainLimits(chain []string) (contextWindow, maxTokens int) {
 
 // MemoryConfig configures the lore client.
 type MemoryConfig struct {
-	// LoreCommand is the argv used to start lore's MCP server. Omitted, it is
-	// DefaultLoreCommand; stated, it is used exactly as written.
+	// LoreCommand locates the lore executable. Omitted, it is DefaultLoreCommand.
+	//
+	// Only the first element is used, and only to start `lore serve`: the store
+	// itself is opened in-process through lore's Go API. Trailing elements are
+	// accepted and ignored, so a configuration written when kenward spawned
+	// `lore mcp` still works.
 	LoreCommand []string `yaml:"lore_command"`
 	// SearchLimit is the per-space retrieval budget for one turn.
 	SearchLimit int `yaml:"search_limit"`

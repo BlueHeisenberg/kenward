@@ -2,7 +2,7 @@ package setup
 
 import (
 	"context"
-	"os/exec"
+	"fmt"
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/memory"
@@ -34,8 +34,9 @@ func fixedSpaces(spaces []memory.Space) SpaceLister {
 // unreachableLore is a SpaceLister that fails the way an uninstalled lore does.
 func unreachableLore(err error) SpaceLister {
 	if err == nil {
-		// What an uninstalled lore actually produces.
-		err = &exec.Error{Name: "lore", Err: exec.ErrNotFound}
+		// What a machine with lore installed and never initialised produces.
+		err = fmt.Errorf("memory: opening the lore store at /home/someone/.lore: %w: lore: home is not initialised",
+			memory.ErrStoreUnavailable)
 	}
 	return func(context.Context) ([]memory.Space, error) { return nil, err }
 }

@@ -98,9 +98,6 @@ func (m *fakeMemory) seed(space domain.SpaceID, entries ...memory.Entry) {
 	defer m.mu.Unlock()
 	for i := range entries {
 		entries[i].Space = space
-		// Real lore searches return excerpts, never whole entries. Saying so
-		// here keeps the assembled prompt the same shape production sees.
-		entries[i].Partial = true
 	}
 	m.seeded[space] = entries
 }

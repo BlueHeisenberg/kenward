@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -537,9 +538,15 @@ func mustLoad(t *testing.T, yaml string) *config.Config {
 	return cfg
 }
 
-// loreInitCall is one recorded `lore init`: nothing about it is a secret, and the whole
-// point of recording it is asserting the calls that must NOT happen.
-type loreInitCall struct{ bin, home, device string }
+// loreInitCall is one recorded initialisation: nothing about it is a secret, and the
+// whole point of recording it is asserting the calls that must NOT happen.
+type loreInitCall struct {
+	home, device string
+	// created is what the real lore.Init decided — whether a store was made or the
+	// home already held one. Now that the emptiness rule is lore's rather than
+	// kenward's, that answer is the thing worth asserting.
+	created bool
+}
 
 // TestRunInitialisesAnEmptyPodLoreHome covers the defect that made isolated mode via
 // `kenward run` unreachable for any household that had never been brought up before.
@@ -571,15 +578,19 @@ func TestRunInitialisesAnEmptyPodLoreHome(t *testing.T) {
 		yaml       string
 		args       []string
 		seed       int
-		wantDevice string // "" means no call may be made
+		wantDevice string // "" means no call may be made at all
+		// wantCreated is whether that call must actually have made a store. A pod
+		// whose volume already holds one still asks — the emptiness rule is lore's
+		// now — and must be told no.
+		wantCreated bool
 	}{
-		{"a member's pod, volume never initialised", isolatedYAML, []string{"run", "--member", "david"}, absent, "david"},
-		{"a member's pod, volume created and empty", isolatedYAML, []string{"run", "--member", "david"}, empty, "david"},
-		{"the group's pod", isolatedYAML, []string{"run", "--group"}, absent, "group"},
-		{"a member's pod whose store already exists", isolatedYAML, []string{"run", "--member", "david"}, occupied, ""},
-		{"the host supervisor, which holds no memory", isolatedYAML, []string{"run"}, absent, ""},
-		{"simple mode, where LORE_HOME is the operator's own", simpleYAML, []string{"run"}, absent, ""},
-		{"a pod with no LORE_HOME named", isolatedYAML, []string{"run", "--member", "david"}, unset, ""},
+		{"a member's pod, volume never initialised", isolatedYAML, []string{"run", "--member", "david"}, absent, "david", true},
+		{"a member's pod, volume created and empty", isolatedYAML, []string{"run", "--member", "david"}, empty, "david", true},
+		{"the group's pod", isolatedYAML, []string{"run", "--group"}, absent, "group", true},
+		{"a member's pod whose store already exists", isolatedYAML, []string{"run", "--member", "david"}, occupied, "david", false},
+		{"the host supervisor, which holds no memory", isolatedYAML, []string{"run"}, absent, "", false},
+		{"simple mode, where LORE_HOME is the operator's own", simpleYAML, []string{"run"}, absent, "", false},
+		{"a pod with no LORE_HOME named", isolatedYAML, []string{"run", "--member", "david"}, unset, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -599,10 +610,14 @@ func TestRunInitialisesAnEmptyPodLoreHome(t *testing.T) {
 			}
 
 			h := newHarness(t, tc.yaml, vars)
+			// Records, then delegates to the real thing: what decides "already
+			// initialised" is lore, and a stub answering for it would be testing
+			// a second copy of the rule rather than the rule.
 			var calls []loreInitCall
-			h.e.probes.loreInit = func(_ context.Context, bin, home, device string) error {
-				calls = append(calls, loreInitCall{bin, home, device})
-				return nil
+			h.e.probes.loreInit = func(ctx context.Context, home, device string) (bool, error) {
+				created, err := runLoreInit(ctx, home, device)
+				calls = append(calls, loreInitCall{home, device, created})
+				return created, err
 			}
 			h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
 				return stubSupervisor{}, nil
@@ -613,20 +628,19 @@ func TestRunInitialisesAnEmptyPodLoreHome(t *testing.T) {
 			}
 			if tc.wantDevice == "" {
 				if len(calls) != 0 {
-					t.Fatalf("`lore init` was run %d time(s) (%v); this store is not this process's to create",
+					t.Fatalf("initialisation was attempted %d time(s) (%v); this store is not this process's to create",
 						len(calls), calls)
 				}
 				return
 			}
 			if len(calls) != 1 {
-				t.Fatalf("`lore init` was run %d time(s), want exactly 1 — a pod on an empty volume "+
+				t.Fatalf("initialisation was attempted %d time(s), want exactly 1 — a pod on an empty volume "+
 					"crash-loops forever without it\n%s", len(calls), h.both())
 			}
 			got := calls[0]
-			// The binary is memory.lore_command's, not a second name for the same
-			// program: an operator who renamed it renamed the one kenward spawns.
-			if want := "lore"; got.bin != want {
-				t.Errorf("initialised with %q, want memory.lore_command's %q", got.bin, want)
+			if got.created != tc.wantCreated {
+				t.Errorf("created = %v, want %v; a store that was already there must be left alone",
+					got.created, tc.wantCreated)
 			}
 			if got.home != dir {
 				t.Errorf("initialised %q, want this unit's own LORE_HOME %q", got.home, dir)
@@ -641,12 +655,14 @@ func TestRunInitialisesAnEmptyPodLoreHome(t *testing.T) {
 }
 
 // TestRunInitialisesTheStoreOnceAndNeverAgain is the idempotence the fix above is only
-// safe under: whatever `lore init` left behind, the next start must leave alone.
+// safe under: whatever the first start left behind, the next start must leave alone.
 //
-// The recorded call seeds the directory exactly as the real binary would, so the second
-// and third starts run the real predicate against a real store rather than against a
-// second copy of the rule. "It initialised twice" and "it clobbered an existing store"
-// are the same bug, and a member's lore has no undo.
+// The seam is pointed at the real runLoreInit rather than at the harness's stub, so
+// three starts run the real lore.Init against a real home and what is asserted is the
+// rule itself, not kenward's memory of it — which matters more since the rule moved
+// into lore. "It initialised twice" and "it clobbered an existing store" are the same
+// bug, and a member's lore has no undo, so the account key is compared byte for byte
+// rather than the store merely being counted.
 func TestRunInitialisesTheStoreOnceAndNeverAgain(t *testing.T) {
 	t.Parallel()
 	vars := fullEnvironment()
@@ -654,32 +670,27 @@ func TestRunInitialisesTheStoreOnceAndNeverAgain(t *testing.T) {
 	vars["LORE_HOME"] = dir
 
 	h := newHarness(t, isolatedYAML, vars)
-	calls := 0
-	h.e.probes.loreInit = func(_ context.Context, _, home, _ string) error {
-		calls++
-		if err := os.MkdirAll(home, 0o700); err != nil {
-			return err
-		}
-		// What the real `lore init` leaves behind.
-		for _, f := range []string{"account.json", "device.json", "lore.db"} {
-			if err := os.WriteFile(filepath.Join(home, f), []byte("x"), 0o600); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
+	h.e.probes.loreInit = runLoreInit
 	h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
 		return stubSupervisor{}, nil
 	}
 
+	var first []byte
 	for i := range 3 {
 		if code := h.run("run", "--member", "david"); code != exitOK {
 			t.Fatalf("start %d: exit = %d\n%s", i+1, code, h.both())
 		}
-	}
-	if calls != 1 {
-		t.Errorf("`lore init` ran %d times across three starts, want exactly 1; every run after "+
-			"the first would be re-keying a member's own store", calls)
+		account, err := os.ReadFile(filepath.Join(dir, "account.json"))
+		if err != nil {
+			t.Fatalf("start %d: the store was not created: %v", i+1, err)
+		}
+		if i == 0 {
+			first = account
+			continue
+		}
+		if !bytes.Equal(account, first) {
+			t.Fatalf("start %d re-keyed the member's store; the account key changed under them", i+1)
+		}
 	}
 }
 
@@ -694,8 +705,8 @@ func TestRunRefusesWhenTheStoreCannotBeCreated(t *testing.T) {
 	vars["LORE_HOME"] = dir
 
 	h := newHarness(t, isolatedYAML, vars)
-	h.e.probes.loreInit = func(context.Context, string, string, string) error {
-		return errors.New("lore: mkdir /work/lore: read-only file system")
+	h.e.probes.loreInit = func(context.Context, string, string) (bool, error) {
+		return false, errors.New("lore: mkdir /work/lore: read-only file system")
 	}
 	built := false
 	h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {

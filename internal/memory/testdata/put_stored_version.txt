@@ -1,1 +1,0 @@
-stored a1b2c3d4-0000-4000-8000-000000000001 (v7) in space "household" — domain home/heating, confidence hardened, origin constraint

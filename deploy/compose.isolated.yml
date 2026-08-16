@@ -33,11 +33,10 @@
 #      start, and you should NOT run `lore init` against these volumes by hand.
 #
 #      This step used to be an operator step, and the reason it is gone is worth
-#      knowing. `lore mcp` refuses to start against an uninitialised LORE_HOME —
-#      "no account at /var/lib/kenward/lore/account.json (run `lore init`)" —
-#      and so does kenward: `run` completes an MCP handshake with lore before it
-#      serves anything. A fresh volume is in exactly that state, so every
-#      service exited 1 on first `up` until somebody ran `lore init` into it.
+#      knowing. A lore home with no account in it cannot be opened, and kenward
+#      refuses to serve a unit whose memory does not answer. A fresh volume is
+#      in exactly that state, so every service exited 1 on first `up` until
+#      somebody ran `lore init` into it.
 #      `kenward run` now does it itself, in the container, when LORE_HOME does
 #      not exist or is empty, and never again after that — an existing store is
 #      left alone whatever else happens. A `lore init` of your own would only

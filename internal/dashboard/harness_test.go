@@ -25,7 +25,7 @@ import (
 // length check rather than whatever it meant to.
 const testPassword = "correct horse battery staple"
 
-// fakeLore stands in for a `lore mcp` subprocess.
+// fakeLore stands in for a lore store.
 //
 // It is a fake rather than a mock and the distinction is load-bearing here: it holds
 // real state, CreateSpace really adds a space with a real id, and Spaces really returns
