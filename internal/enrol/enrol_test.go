@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -718,7 +719,7 @@ func TestExplanationCopy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msgs := Explanation(500, english, tc.askPrivate)
+			msgs := Explanation(500, lang.For(lang.English), tc.askPrivate)
 			if len(msgs) != 3 {
 				t.Fatalf("explanation is %d messages, want 3", len(msgs))
 			}

@@ -207,8 +207,24 @@ func New(text string, every Every, hour, minute int, weekday time.Weekday, date 
 	return r, nil
 }
 
-// When renders a reminder's schedule the way a member reads it. It is product surface
-// and is golden-tested.
+// When renders a reminder's schedule in English, and it stays English.
+//
+// It serves three audiences from one function and only one of them is a member
+// reading their own language:
+//
+//	assistant/prompt.go  the model's system prompt      English, pinned
+//	cmd/kenward/doctor   the operator's CLI             English
+//	the member, over Telegram                           lang.Catalogue.When
+//
+// The prompt is the one that matters. docs/PROMPT.md is checked against the rendered
+// prompt verbatim, and the model is told the member's language by the persona rather
+// than by having its instructions translated — a translated prompt changes what the
+// model is asked to do, not what a member is told. So the member's reading of a
+// schedule is a separate function in internal/lang, with the weekday and month tables
+// Go's time package does not have, and this one is asserted English by
+// TestReminderWhenStaysEnglishWhateverTheMemberSpeaks.
+//
+// It is product surface for the operator and is golden-tested.
 func (r Reminder) When(loc *time.Location) string {
 	hhmm := fmt.Sprintf("%02d:%02d", r.Hour, r.Minute)
 	switch r.Every {

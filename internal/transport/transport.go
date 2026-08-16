@@ -66,7 +66,55 @@ type Question struct {
 	// Empty keeps the defaults. It is a note, not a whole text: it is appended
 	// after the question exactly as a chosen label is.
 	RetiredNote string
+	// Notes is what this conversation's language calls a question nobody answered.
+	//
+	// The words travel on the question rather than being looked up here, because
+	// this package cannot see the catalogue: the catalogue calls format.go's markup
+	// helpers, so a dependency in the other direction would be a cycle. The zero
+	// value is English, which is what every caller that has no language gets.
+	//
+	// It is not decoration. retireReserve sizes the message against Telegram's
+	// 4096-unit budget from these exact strings, so a language whose outcome line
+	// is longer than English's reserves more room by construction rather than by a
+	// margin somebody guessed.
+	Notes OutcomeNotes
 }
+
+// OutcomeNotes is the wording appended to a question that ended without a tap.
+//
+// Dash is separate from the two phrases because the separator is language-dependent
+// in its own right: Chinese uses 破折号 and takes no following space, and Arabic
+// needs a leading RLM so the dash does not detach from the phrase it introduces when
+// the question above it was written in Latin script.
+type OutcomeNotes struct {
+	Dash      string
+	Declined  string
+	Withdrawn string
+}
+
+// orDefault fills any empty field from the English defaults, per field rather than
+// per struct: a caller that translated one line and not the other should get the
+// line they translated.
+func (n OutcomeNotes) orDefault() OutcomeNotes {
+	if n.Dash == "" {
+		n.Dash = defaultDash
+	}
+	if n.Declined == "" {
+		n.Declined = defaultDeclined
+	}
+	if n.Withdrawn == "" {
+		n.Withdrawn = defaultWithdrawn
+	}
+	return n
+}
+
+// The English outcome lines. They are the fallback and they are what every golden
+// file asserts.
+const (
+	defaultDash      = "— "
+	defaultDeclined  = "no answer, treated as declined"
+	defaultWithdrawn = "question withdrawn"
+)
 
 // Answer is the member's choice.
 type Answer struct {

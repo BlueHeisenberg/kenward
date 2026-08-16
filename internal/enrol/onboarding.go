@@ -1,6 +1,7 @@
 package enrol
 
 import (
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -48,15 +49,20 @@ func Greeting(chatID int64, member string, t text) transport.Outbound {
 // marks events — something was saved, something is being asked — and these are
 // explanations rather than events. A member who sees 🧠 here and 🧠 on a real
 // write learns nothing from either.
-func Explanation(chatID int64, t text, askPrivate bool) []transport.Outbound {
-	third := t.writesBody
+// The copy is the catalogue's rather than this package's tutorial table, and that is
+// the one place the two language lists differ on purpose: the questions are written
+// in two languages and this is written in ten. A member who asked for a language the
+// tutorial cannot hold still gets the part of onboarding the product is obliged to
+// deliver, in their own language.
+func Explanation(chatID int64, c lang.Catalogue, askPrivate bool) []transport.Outbound {
+	third := c.EnrolMemoryBodyDefault
 	if askPrivate {
-		third = t.writesAsk
+		third = c.EnrolMemoryBodyAsk
 	}
 	texts := []string{
-		transport.Bold(t.privateHead) + "\n\n" + t.privateBody,
-		transport.Bold(t.sharedHead) + "\n\n" + t.sharedBody,
-		transport.Bold(t.writesHead) + "\n\n" + third,
+		transport.Bold(c.EnrolPrivateHeading) + "\n\n" + c.EnrolPrivateBody,
+		transport.Bold(c.EnrolGroupHeading) + "\n\n" + c.EnrolGroupBody,
+		transport.Bold(c.EnrolMemoryHeading) + "\n\n" + third,
 	}
 
 	out := make([]transport.Outbound, 0, len(texts))

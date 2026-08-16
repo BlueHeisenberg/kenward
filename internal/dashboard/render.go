@@ -7,6 +7,8 @@ import (
 	"html/template"
 	"net/http"
 	"strings"
+
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 )
 
 // assets holds the whole front end: templates and one stylesheet.
@@ -44,6 +46,15 @@ var pages = func() map[string]*template.Template {
 
 var funcs = template.FuncMap{
 	"join": strings.Join,
+	// languages is the list kenward's own messages are written in, taken from the
+	// catalogue rather than typed into the two templates that quote it. A list in
+	// prose drifts from a list in code the first time an eleventh table lands, and
+	// the drift is invisible: the page goes on describing a product that has grown
+	// past it.
+	"languages": func() string {
+		names := lang.EnglishNames()
+		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	},
 	"yesno": func(b bool) string {
 		if b {
 			return "yes"

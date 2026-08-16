@@ -10,6 +10,7 @@ import (
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -211,7 +212,7 @@ func TestTutorialOrder(t *testing.T) {
 
 	sent := a.sentTexts()
 	order := []string{"What would you like to call me", "Anything else about how",
-		"This chat is private", "The group chat is shared", "What happens when I remember"}
+		"This chat is private", "The group chat is shared", "What happens when I write something down"}
 	at := 0
 	for _, want := range order {
 		found := -1
@@ -251,15 +252,22 @@ func TestTutorialLanguageIsHonouredForEverythingAfterIt(t *testing.T) {
 	for _, want := range []string{
 		spanish.registerQ,
 		spanish.characterQ,
-		spanish.privateBody,
-		spanish.sharedBody,
-		spanish.writesBody,
+		// The explanation comes from the catalogue rather than from this package's
+		// tutorial table, so this is also the assertion that the language chosen in
+		// question one reaches it.
+		lang.For(spanish.name).EnrolPrivateBody,
+		lang.For(spanish.name).EnrolGroupBody,
+		lang.For(spanish.name).EnrolMemoryBodyDefault,
 	} {
 		if !strings.Contains(all, want) {
 			t.Errorf("after choosing Spanish the tutorial did not say %q:\n%s", want, all)
 		}
 	}
-	for _, notWant := range []string{english.registerQ, english.privateBody, english.writesBody} {
+	for _, notWant := range []string{
+		english.registerQ,
+		lang.For(lang.English).EnrolPrivateBody,
+		lang.For(lang.English).EnrolMemoryBodyDefault,
+	} {
 		if strings.Contains(all, notWant) {
 			t.Errorf("after choosing Spanish the tutorial still said the English %q", notWant)
 		}
@@ -286,8 +294,15 @@ func TestTutorialSaysWhenItCannotSpeakYourLanguage(t *testing.T) {
 	if !strings.Contains(all, "only written in English and Spanish") {
 		t.Errorf("the tutorial did not admit it cannot hold this conversation in Português:\n%s", all)
 	}
-	if !strings.Contains(all, "the rest of it will be in English") {
-		t.Errorf("the tutorial did not say which language it is carrying on in:\n%s", all)
+	if !strings.Contains(all, "the rest of them will be in English") {
+		t.Errorf("the tutorial did not say which language the questions carry on in:\n%s", all)
+	}
+	// And then the explanation arrives in Português anyway. The two language lists
+	// are different on purpose: the four setup questions are written in two
+	// languages and the memory model in ten, and the part the product is obliged to
+	// get right is the one with the longer list.
+	if !strings.Contains(all, lang.For("Português").EnrolPrivateBody) {
+		t.Errorf("the explanation did not arrive in the language the member named:\n%s", all)
 	}
 	if got := ps.get("david").Language; got != "Português" {
 		t.Errorf("the named language was not recorded: %q", got)
@@ -311,7 +326,7 @@ func TestTutorialAbandonment(t *testing.T) {
 	if !strings.Contains(all, "left the rest on my defaults") {
 		t.Errorf("an abandoned tutorial did not say what it had done:\n%s", all)
 	}
-	for _, want := range []string{"This chat is private", "The group chat is shared", "What happens when I remember"} {
+	for _, want := range []string{"This chat is private", "The group chat is shared", "What happens when I write something down"} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("an abandoned tutorial swallowed the explanation; missing %q:\n%s", want, all)
 		}
@@ -375,7 +390,8 @@ func TestTutorialSurvivesARestartMidQuestion(t *testing.T) {
 		t.Fatalf("FinishInterrupted: %v", err)
 	}
 	all := second.transcript()
-	for _, want := range []string{spanish.privateBody, spanish.sharedBody, spanish.writesBody} {
+	es := lang.For(spanish.name)
+	for _, want := range []string{es.EnrolPrivateBody, es.EnrolGroupBody, es.EnrolMemoryBodyDefault} {
 		if !strings.Contains(all, want) {
 			t.Errorf("the restart did not deliver the explanation, in the language chosen before it:\n%s", all)
 		}
@@ -564,10 +580,7 @@ func TestEveryLanguageIsComplete(t *testing.T) {
 			"registerQ": tbl.registerQ, "registerFlat": tbl.registerFlat,
 			"registerWarm": tbl.registerWarm, "registerPlayful": tbl.registerPlayful,
 			"characterQ": tbl.characterQ, "characterTooLong": tbl.characterTooLong,
-			"abandoned": tbl.abandoned, "privateHead": tbl.privateHead,
-			"privateBody": tbl.privateBody, "sharedHead": tbl.sharedHead,
-			"sharedBody": tbl.sharedBody, "writesHead": tbl.writesHead,
-			"writesBody": tbl.writesBody, "writesAsk": tbl.writesAsk,
+			"abandoned": tbl.abandoned,
 		} {
 			if strings.TrimSpace(s) == "" {
 				t.Errorf("table %q has no %s", tag, name)
@@ -582,16 +595,20 @@ func TestEveryLanguageIsComplete(t *testing.T) {
 // TestExplanationCopyInEveryLanguage: the promise the last message makes has to
 // track capture.private_writes in every language, not only the one somebody
 // remembered to update. It went out wrong over real Telegram once in English.
+//
+// It walks the catalogue's languages rather than this package's, because that is
+// where the explanation now lives — ten of them rather than two.
 func TestExplanationCopyInEveryLanguage(t *testing.T) {
-	for tag, tbl := range tables {
+	for _, tag := range lang.Tags() {
+		c := lang.For(tag)
 		for _, ask := range []bool{false, true} {
 			all := ""
-			for _, m := range Explanation(500, tbl, ask) {
+			for _, m := range Explanation(500, c, ask) {
 				all += m.Text + "\n"
 			}
-			want, reject := tbl.writesBody, tbl.writesAsk
+			want, reject := c.EnrolMemoryBodyDefault, c.EnrolMemoryBodyAsk
 			if ask {
-				want, reject = tbl.writesAsk, tbl.writesBody
+				want, reject = c.EnrolMemoryBodyAsk, c.EnrolMemoryBodyDefault
 			}
 			if !strings.Contains(all, want) {
 				t.Errorf("%s askPrivate=%v: the explanation does not make the right promise", tag, ask)

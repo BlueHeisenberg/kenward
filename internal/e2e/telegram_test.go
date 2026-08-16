@@ -228,7 +228,7 @@ func TestTelegramPrivateWriteIsAnnouncedAndUndoneByARealButtonTap(t *testing.T) 
 	// The member is told the entry is gone, and told so only because it is.
 	waitFor(t, "the removal notice", func() bool {
 		for _, c := range sendsTo(api, davidChatID) {
-			if strings.Contains(c.Form.Get("text"), "Removed") {
+			if strings.Contains(c.Form.Get("text"), "I've removed") {
 				return true
 			}
 		}

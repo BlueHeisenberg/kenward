@@ -76,10 +76,14 @@ It asks, in order:
    an answer that changes nothing. Pressing Enter three times gives the assistant kenward
    has always been: English, brief, no character.
 
-   The language question says what it does not do, because it is the sort of half-feature
-   somebody otherwise discovers a week later: it changes what the **model** writes.
-   kenward's own strings — the onboarding, the capture announcements, the refusals, the
-   retrieval line, the locked notice — are still English.
+   The language question says what it does and does not reach, because it is the sort of
+   half-answer somebody otherwise discovers a week later. It is free text and is passed
+   to the **model** as written, so a household may ask for a language kenward has never
+   heard of. It also chooses kenward's own strings — the capture announcements, the
+   refusals, the retrieval line, the reminder notices, the locked notice, the memory
+   model explained to each member when they join — but only from the closed list those
+   are written in, which the wizard prints rather than paraphrases. Name anything else
+   and the model still answers in it while kenward's own strings stay English.
 
    Under `[2]`, the privacy statement printed at the end gains a paragraph saying what a
    member's own bot is doing: it is that member's assistant's own **contact**, and it is

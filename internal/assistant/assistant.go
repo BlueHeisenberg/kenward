@@ -35,6 +35,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/remind"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
@@ -254,37 +255,46 @@ func (o Options) normalized() Options {
 // message the member gets instead of the answer they asked for. That is the whole
 // job the glyph does: a member scrolling back can see which turns produced
 // nothing without reading them.
-const (
-	// lockedText is sent when a direct conversation arrives while the member's key
-	// is not unwrapped. The turn stops there: retrieval without a session would be
-	// retrieval without the member present.
-	//
-	// It deliberately does not invite the member to send anything. There is no
-	// unlock flow over Telegram and there cannot be one: a passphrase typed into a
-	// chat travels through Telegram, stays in the member's own history, and in
-	// simple mode is readable by whoever holds the bot token. Passphrases are
-	// supplied to the process when it starts and never travel in a message, so a
-	// prompt that hinted otherwise would train exactly the habit the design
-	// refuses to support.
-	lockedText = transport.GlyphProblem + " Your assistant is locked. It needs to be unlocked on the machine it runs on."
-	// contentFilterText is sent when the model declined the turn. It reports what
-	// happened and stops: the assistant neither apologises for the model nor
-	// explains a policy it cannot see.
-	contentFilterText = transport.GlyphProblem + " The model declined to answer this."
-	// queuedText is sent when a message has waited behind a long-running turn for
-	// more than Options.QueueNoticeAfter.
-	queuedText = transport.GlyphProblem + " Still working on your last message — this one is queued and I'll take it next."
-	// droppedText is sent when the queue behind a running turn is full. Dropping
-	// with a notice is honest; dropping silently would read as being ignored.
-	droppedText = transport.GlyphProblem + " I'm backed up and had to drop that message. Send it again in a moment."
-	// noAnswerText is sent when the turn ran to the end and produced nothing the
-	// member could see: the model returned no text and no tool call, or it returned
-	// only a tool call whose proposal the capture engine suppressed without asking.
-	// Neither is a failure the node can classify further, and neither is a reason to
-	// go quiet — a turn that ends in silence teaches a household the assistant is
-	// broken (IMPLEMENTATION.md sections 5 and 10).
-	noAnswerText = transport.GlyphProblem + " I didn't get a usable answer to that. Try asking again."
-)
+// Each is a method rather than a constant because the words depend on the member's
+// language and the glyph does not. The glyph is prepended here, at the one funnel,
+// so it cannot be forgotten by the tenth caller the way a mark copied into ten
+// tables can.
+
+// locked is sent when a direct conversation arrives while the member's key is not
+// unwrapped. The turn stops there: retrieval without a session would be retrieval
+// without the member present.
+//
+// It deliberately does not invite the member to send anything. There is no unlock
+// flow over Telegram and there cannot be one: a passphrase typed into a chat travels
+// through Telegram, stays in the member's own history, and in simple mode is
+// readable by whoever holds the bot token. Passphrases are supplied to the process
+// when it starts and never travel in a message, so a prompt that hinted otherwise
+// would train exactly the habit the design refuses to support.
+func (u *Unit) locked() string { return u.problem(u.cat.Locked) }
+
+// contentFilter is sent when the model declined the turn. It reports what happened
+// and stops: the assistant neither apologises for the model nor explains a policy it
+// cannot see.
+func (u *Unit) contentFilter() string { return u.problem(u.cat.ContentFilter) }
+
+// queued is sent when a message has waited behind a long-running turn for more than
+// Options.QueueNoticeAfter.
+func (u *Unit) queued() string { return u.problem(u.cat.Queued) }
+
+// dropped is sent when the queue behind a running turn is full. Dropping with a
+// notice is honest; dropping silently would read as being ignored.
+func (u *Unit) dropped() string { return u.problem(u.cat.Dropped) }
+
+// noAnswer is sent when the turn ran to the end and produced nothing the member
+// could see: the model returned no text and no tool call, or it returned only a tool
+// call whose proposal the capture engine suppressed without asking. Neither is a
+// failure the node can classify further, and neither is a reason to go quiet — a
+// turn that ends in silence teaches a household the assistant is broken
+// (IMPLEMENTATION.md sections 5 and 10).
+func (u *Unit) noAnswer() string { return u.problem(u.cat.NoAnswer) }
+
+// problem marks a turn that produced nothing and says why.
+func (u *Unit) problem(text string) string { return transport.GlyphProblem + " " + text }
 
 // Unit is one conversation's assistant: a member's direct chat, or the household
 // group's. It owns nothing shared — no state keyed by member id lives anywhere in
@@ -322,6 +332,17 @@ type Unit struct {
 	// history is the unit-local turn ring. It is only written by the running turn
 	// but carries its own lock so a snapshot is always consistent.
 	history *historyRing
+
+	// cat is every string this unit's member reads, in their language. It is
+	// resolved once at construction from the persona, because the persona is per
+	// unit and a unit is one conversation: the group chat gets the household's
+	// language and a member's private chat gets theirs.
+	//
+	// Nothing model-facing reads it. prompt.go stays English whatever this says —
+	// the model is told the language by the persona and answers in it, and
+	// translating the prompt would change what the model is asked to do rather
+	// than what the member is told.
+	cat lang.Catalogue
 }
 
 // New builds a Unit over its dependencies. It fails fast on a missing dependency
@@ -346,6 +367,7 @@ func New(deps Deps, opts Options) (*Unit, error) {
 		opts:    opts,
 		slot:    make(chan struct{}, 1),
 		history: newHistoryRing(opts.HistoryLimit),
+		cat:     lang.For(opts.Persona.Language),
 	}, nil
 }
 
@@ -408,7 +430,7 @@ func (u *Unit) admit(ctx context.Context, sc domain.Scope, in transport.Inbound)
 	u.waitersMu.Lock()
 	if u.waiters >= u.opts.QueueLimit {
 		u.waitersMu.Unlock()
-		if err := u.send(ctx, sc, in, droppedText); err != nil {
+		if err := u.send(ctx, sc, in, u.dropped()); err != nil {
 			return nil, fmt.Errorf("assistant: reporting dropped message: %w", err)
 		}
 		return nil, nil
@@ -429,7 +451,7 @@ func (u *Unit) admit(ctx context.Context, sc domain.Scope, in transport.Inbound)
 			return release(), nil
 		case <-notice.C:
 			// The wait is long enough to be felt; say so, once, then keep waiting.
-			if err := u.send(ctx, sc, in, queuedText); err != nil {
+			if err := u.send(ctx, sc, in, u.queued()); err != nil {
 				u.deps.Logger.Warn("assistant: queue notice failed", "error", err)
 			}
 		case <-ctx.Done():
@@ -451,7 +473,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// something it never uses, in the very process that is not supposed to hold it.
 	if sc.TouchesPrivateMemory() && sc.Member != nil {
 		if _, ok := u.deps.Sessions.Key(sc.Member.ID); !ok {
-			return nil, u.send(ctx, sc, in, lockedText)
+			return nil, u.send(ctx, sc, in, u.locked())
 		}
 		u.deps.Sessions.Touch(sc.Member.ID)
 	}
@@ -470,7 +492,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// turn for the same reason — having cleared the history, saying nothing is the
 	// one outcome that is not allowed.
 	if u.maybeReset(u.opts.Now()) {
-		if err := u.send(ctx, sc, in, resetNoticeText); err != nil {
+		if err := u.send(ctx, sc, in, u.cat.ResetNotice); err != nil {
 			return nil, fmt.Errorf("assistant: reporting the scheduled history reset: %w", err)
 		}
 	}
@@ -507,7 +529,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		}
 		var nbe *routing.NoBackendError
 		if errors.As(err, &nbe) {
-			return nil, u.send(ctx, sc, in, refusalText(sc, nbe))
+			return nil, u.send(ctx, sc, in, u.refusalText(sc, nbe))
 		}
 		// Every other failure still gets the member a reply. A member who sends a
 		// message always gets one — a stack trace in a log the operator reads next
@@ -515,7 +537,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// broken and unpredictable. The error goes to the log; a short classified
 		// notice goes to the chat.
 		u.deps.Logger.Warn("assistant: turn failed", "error", err)
-		return nil, u.send(ctx, sc, in, completionFailureText(err))
+		return nil, u.send(ctx, sc, in, u.completionFailureText(err))
 	}
 
 	// A content filter is the model declining, which is a final answer: the member
@@ -523,7 +545,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// no history. The routing seam already guarantees the refused content was not
 	// re-offered to another machine.
 	if comp.FinishReason == routing.FinishContentFilter {
-		return nil, u.send(ctx, sc, in, contentFilterText)
+		return nil, u.send(ctx, sc, in, u.contentFilter())
 	}
 
 	proposal, warn := extractProposal(comp.ToolCalls)
@@ -625,7 +647,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// misbehaved, but the member still sent a message, so they still get an
 		// answer.
 		u.deps.Logger.Warn("assistant: model returned an empty reply", "chat", in.ChatID)
-		return nil, u.send(ctx, sc, in, noAnswerText)
+		return nil, u.send(ctx, sc, in, u.noAnswer())
 	}
 
 	// A publish is something the member asked for; a remember proposal is something
@@ -644,7 +666,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 				// after a failed publication this generic notice would read as an
 				// invitation to retry something that cannot be taken back.
 				if reply == "" && !errors.Is(err, capture.ErrMemberNotified) {
-					if err := u.send(fctx, sc, in, noAnswerText); err != nil {
+					if err := u.send(fctx, sc, in, u.noAnswer()); err != nil {
 						u.deps.Logger.Warn("assistant: reporting an empty turn", "error", err)
 					}
 				}
@@ -675,7 +697,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// no reply text that leaves the member with nothing at all, so the node
 		// says so — the suppression is the assistant's business, not theirs.
 		if reply == "" && (out.Kind == capture.OutcomeDuplicate || out.Kind == capture.OutcomeLimited) {
-			if err := u.send(fctx, sc, in, noAnswerText); err != nil {
+			if err := u.send(fctx, sc, in, u.noAnswer()); err != nil {
 				u.deps.Logger.Warn("assistant: reporting an empty turn", "error", err)
 			}
 		}
@@ -786,10 +808,10 @@ func (u *Unit) readNotice(inp promptInput, searched bool) string {
 	}
 	var parts []string
 	if inp.hasPrivate {
-		parts = append(parts, "your private memory "+readCount(inp.privateErr, len(inp.private)))
+		parts = append(parts, u.cat.PartPrivate(u.cat.Count(inp.privateErr, len(inp.private))))
 	}
 	if inp.hasShared {
-		parts = append(parts, "the household memory "+readCount(inp.sharedErr, len(inp.shared)))
+		parts = append(parts, u.cat.PartShared(u.cat.Count(inp.sharedErr, len(inp.shared))))
 	}
 	if len(parts) == 0 {
 		return ""
@@ -803,24 +825,16 @@ func (u *Unit) readNotice(inp promptInput, searched bool) string {
 	// as the answer below it and competed with it. It rides on the reply rather
 	// than arriving as its own message (see the call site), so being visually
 	// subordinate is the only thing keeping it from being noise.
-	return transport.Italic(transport.GlyphRead + " searched " + strings.Join(parts, ", "))
-}
-
-// readCount renders one space's contribution. A space that could not be read says so
-// rather than counting to zero, on the same reasoning as the prompt's own
-// unreadableGroupText: an error rendered as "nothing found" is a lie the member might
-// act on.
-func readCount(unreadable bool, n int) string {
-	switch {
-	case unreadable:
-		return "(couldn't be read)"
-	case n == 0:
-		return "(nothing)"
-	case n == 1:
-		return "(1 entry)"
-	default:
-		return fmt.Sprintf("(%d entries)", n)
-	}
+	//
+	// The preposition lives in the parts rather than in the prefix, which reads as
+	// an arbitrary choice in English and is the only grammatical shape in three of
+	// the languages this line is written in — Portuguese contracts em and a into
+	// na, so a shared prefix cannot exist there at all.
+	//
+	// Catalogue.Count is a function and not a table of three strings because
+	// counting is not a string: Arabic has six CLDR categories and five distinct
+	// forms and needs n%100 to tell them apart, and Chinese has one.
+	return u.cat.Notice(transport.Italic(transport.GlyphRead + " " + u.cat.Searched(parts)))
 }
 
 // searchSpace runs one search per term against one space and unions the hits.

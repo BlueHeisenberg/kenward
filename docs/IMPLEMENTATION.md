@@ -1208,9 +1208,9 @@ in a different state in each:
 
 | Ending | What the member gets |
 | --- | --- |
-| Delete confirmed, or the entry was already a tombstone | *"Removed … It won't come back in an answer, here or on any other device in the household."* Outcome is `OutcomeUndone`, and `Stored()` is false. |
+| Delete confirmed, or the entry was already a tombstone | *"I've removed … It won't come back in an answer, not here and not on any other device in the household."* Outcome is `OutcomeUndone`, and `Stored()` is false. |
 | lore refused the delete, for any reason | *"I couldn't take that back: … is still in your private memory."* The outcome stays `OutcomeSaved`, because it is. There is no second failure row: the store writes the tombstone or returns an error, so the entry's state is never unknown. It could be while lore was a subprocess, and this table had a *"I can't tell whether … was removed"* row for it. |
-| Nobody taps; the window closes | The announcement is edited in place, keeping its text and appending *"— the undo window has closed; this is still in memory"*. |
+| Nobody taps; the window closes | The announcement is edited in place, keeping its text and appending *"— the undo window has closed; this is still in your private memory"*. |
 | The announcement itself could not be sent | A plain confirmation, saying the undo button did not go through. Silence here would be a silent write. |
 
 Reporting a failed or unconfirmed delete as "undone" would be the plainest lie the product
@@ -2060,7 +2060,7 @@ requirements list's.
 Refusal text is a product surface. It must say what happened and why, and never imply a
 capability that does not exist:
 
-> No machine in your allowed tiers (`local`) is reachable right now — `monster` and
+> No machine in your allowed tiers (`local`) is reachable right now. `monster` and
 > `5090` were unavailable. This conversation is limited to that tier, so I won't send it
 > anywhere else. Wake one of them and ask again.
 
@@ -2073,8 +2073,21 @@ value is being accurate. And the refusal names the boundary rather than the
 configuration behind it: a member is told this conversation goes no further, not that
 somebody set their space to local-only.
 
-Refusals are golden-tested, in `internal/assistant/testdata`. Changing one is a
-deliberate edit to a test fixture.
+The list of unavailable machines is a **whole sentence** and is joined with a full stop,
+not spliced into the middle of another one after an em dash. It used to be the latter,
+and the result was "…right now — `Node-B` was unavailable. This conversation is limited
+to…": a complete sentence inside another with no punctuation contract between them. The
+zero case had a worse problem — it read "No machine in your allowed tiers (`alpha`,
+`beta`) is reachable right now — I found no endpoints to try", which names two tiers and
+then says it found nothing to try. It now says "None of them had a reachable address",
+which is the true thing, and it says *machine* where it used to say *endpoint*, because
+every neighbouring clause says machine and a family does not have endpoints.
+
+Refusals are golden-tested in English, in `internal/assistant/testdata`. Changing one is
+a deliberate edit to a test fixture. The other nine languages are covered by
+`internal/lang`'s completeness and structure tests rather than by byte goldens: a
+generated translation is not a reviewed fixture, and pretending otherwise would put nine
+files in front of a reviewer who cannot read them.
 
 ### Every turn produces a reply
 
@@ -2090,7 +2103,7 @@ notices, chosen so that each one tells the member the truth about what they can 
 | --- | --- |
 | Rate limited (HTTP 429) | "The model is busy right now. Try again in a moment." |
 | A rejected key, an unknown model, a request the endpoint will not parse (400, 401, 403, 404, invalid request) | "Something is wrong with this household's setup — tell whoever runs it." |
-| The model spent the turn thinking and never answered (empty response carrying a reasoning trace) | "The model spent the whole turn thinking and didn't get to an answer. Nothing is broken — try asking again, or in smaller pieces." |
+| The model spent the turn thinking and never answered (empty response carrying a reasoning trace) | "The model spent the whole time thinking and didn't get to an answer. Nothing is broken — try asking again, or in smaller pieces." |
 | Anything else | "Something went wrong reaching the model, and your message wasn't answered. Try again in a moment." |
 
 The setup row is the one that earns its place: no amount of retrying fixes a rejected
@@ -2114,11 +2127,44 @@ than as part of one. They are product surface exactly as the refusals are.
 
 | When | What is sent |
 | --- | --- |
-| The model declined the turn (content filter) | "The model declined to answer this." |
+| The model declined the turn (content filter) | "The model declined to answer your message." |
 | A direct message arrives while the member's key is locked | "Your assistant is locked. It needs to be unlocked on the machine it runs on." |
 | A message has waited behind a running turn for longer than `QueueNoticeAfter` | "Still working on your last message — this one is queued and I'll take it next." |
 | A message arrives when the queue behind a running turn is already full | "I'm backed up and had to drop that message. Send it again in a moment." |
 | The turn ran to the end and produced nothing the member could see | "I didn't get a usable answer to that. Try asking again." |
+
+### Where the words live
+
+None of the strings quoted in this section is a constant any more. They are fields on
+`lang.Catalogue`, and the tables that fill it are `internal/lang/{en,es,ca,pt,fr,it,nl,de,zh,ar}.go`.
+English is the reviewed source and is what every golden file asserts; the other nine are
+selected by `config.PersonaConfig.Language`, which the supervisor resolves once per unit
+so that the assistant and the capture engine cannot end up in different languages.
+
+Three things about the shape are load-bearing rather than stylistic.
+
+**A struct, not a map.** A missing map key is an empty string in front of a member. A
+missing field is a name that does not compile in any of the ten tables, and a field left
+at its zero value fails `TestEveryLanguageIsComplete`.
+
+**Interpolating entries are functions.** Each language writes its own `Sprintf`, so
+German can put the verb last and Arabic can put a bidi isolate around the digits without
+either arguing with a shared format string.
+
+**There is no destination slot.** English builds nine sentences by dropping "your private
+memory" after a preposition; German inflects the phrase with the preposition, French
+contracts the article and Dutch changes the preposition itself, so `Saved`, `Removed`,
+`UndoFailed` and the rest take a `bool` and write both sentences out. The general rule the
+translations kept rediscovering is that **any translated noun phrase following a
+preposition is a latent grammar bug**, and it applied to three slots, not one.
+
+Everything the *model* reads stays English — the system prompt, the tool descriptions,
+the JSON schema descriptions — because the model is told the member's language by the
+persona and answers in it, and `docs/PROMPT.md` is checked against those strings verbatim.
+`remind.Reminder.When` is the one function on the boundary: it serves the member, the
+model's prompt and the operator's CLI, and it stays English, with
+`lang.Catalogue.When` as the member's copy and a test asserting the prompt path never
+sees a translation.
 
 The two queue notices exist because turns are serialised (§5) and a member cannot see
 that. Waiting in silence and being ignored look identical from inside a chat; so do a

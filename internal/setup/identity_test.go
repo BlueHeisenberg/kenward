@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 )
 
 // identityAnswers is simpleAnswers with the four identity-step answers replaced.
@@ -106,17 +107,26 @@ func TestOneEachIsWrittenAndSaysWhoWritesTheRest(t *testing.T) {
 	}
 }
 
-// TestPersonaLanguageIsHonestAboutWhatItChanges. The language setting reaches the model
-// and not kenward's own strings, and a household that is told otherwise will find out
-// the first time it saves something and reads an English confirmation. Saying it in the
+// TestPersonaLanguageIsHonestAboutWhatItChanges. The setting reaches two places under
+// two different rules — free text to the model, a closed list for kenward's own
+// messages — and a household told about only the first finds out the difference the
+// first time it names a language nobody has written the copy in. Saying it in the
 // wizard is cheaper than every other way of finding out.
 func TestPersonaLanguageIsHonestAboutWhatItChanges(t *testing.T) {
 	_, _, io, err := runWizard(t, "linux", Options{}, identityAnswers("1", "Spanish", "", "")...)
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, io.Transcript())
 	}
-	if !strings.Contains(io.Transcript(), "are still English") {
-		t.Errorf("the language question does not say what it leaves in English:\n%s", io.Transcript())
+	if !strings.Contains(io.Transcript(), "kenward's own messages stay\n  English") {
+		t.Errorf("the language question does not say what falls back to English:\n%s", io.Transcript())
+	}
+	// The note's list is built from the catalogue rather than typed out, so an
+	// eleventh language cannot ship with the wizard still describing ten. This is the
+	// assertion that the wiring is actually in place.
+	for _, name := range lang.EnglishNames() {
+		if !strings.Contains(io.Transcript(), name) {
+			t.Errorf("the language note does not list %s, which the catalogue holds", name)
+		}
 	}
 }
 

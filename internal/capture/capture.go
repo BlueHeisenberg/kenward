@@ -46,6 +46,7 @@ import (
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
@@ -281,6 +282,14 @@ type Options struct {
 	// Shared names the household's shared space, for the case where a direct scope's
 	// Read set does not carry it. It is a fallback: the scope wins when it knows.
 	Shared domain.SpaceID
+	// Language is the language this conversation's member reads, named the way a
+	// person names one. Empty is English.
+	//
+	// It is per engine because an engine belongs to one unit and a unit is one
+	// conversation. The group chat has no member to ask, so it gets the
+	// household's — which is the same resolution the assistant's persona already
+	// makes, and it is made once, in the supervisor, so the two cannot drift.
+	Language string
 }
 
 func (o Options) normalized() Options {
@@ -336,6 +345,11 @@ type Engine struct {
 	mem  memory.Memory
 	tr   transport.Transport
 	opts Options
+	// cat is every string this engine's member reads. Announcements, button labels
+	// and the outcome line on a spent question all come from it, and the outcome
+	// line travels on the Question so the transport can size the message against
+	// this language rather than against English.
+	cat lang.Catalogue
 
 	mu     sync.Mutex
 	states map[string]*scopeState
@@ -350,6 +364,7 @@ func New(m memory.Memory, t transport.Transport, opts Options) *Engine {
 		mem:    m,
 		tr:     t,
 		opts:   opts.normalized(),
+		cat:    lang.For(opts.Language),
 		states: make(map[string]*scopeState),
 	}
 }
@@ -448,7 +463,7 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		// A remember turn is routinely a bare tool call with no prose, so a silent
 		// return here is a turn that answers nothing at all — the same class of
 		// defect as the publish paths below.
-		return Outcome{}, e.told(ctx, sc, "I couldn't save that — nothing was written.", err)
+		return Outcome{}, e.told(ctx, sc, e.cat.SaveFailed, err)
 	}
 
 	ans, err := e.tr.Ask(ctx, q)
@@ -457,7 +472,7 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		// The member may have seen a question that will never resolve; the one
 		// thing they must not be left believing is that something was stored.
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I meant to ask about remembering %s, but the question didn't go through. Nothing was written.", transport.Bold(title)),
+			e.cat.AskFailed(title),
 			fmt.Errorf("capture: asking the member to confirm a proposal: %w", err))
 	}
 
@@ -479,13 +494,13 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	switch ans.ChoiceID {
 	case ChoicePersonal:
 		if !sc.AllowsPrivateCapture() {
-			return Outcome{}, e.told(ctx, sc, "I couldn't save that — nothing was written.", ErrPersonalNotAllowed)
+			return Outcome{}, e.told(ctx, sc, e.cat.SaveFailed, ErrPersonalNotAllowed)
 		}
 		space = personalSpace(sc)
 	case ChoiceShared:
 		space, err = e.sharedSpace(sc)
 		if err != nil {
-			return Outcome{}, e.told(ctx, sc, "I couldn't save that — nothing was written.", err)
+			return Outcome{}, e.told(ctx, sc, e.cat.SaveFailed, err)
 		}
 	default:
 		e.recordDecline(sc, askUserID, title, turn)
@@ -501,7 +516,7 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	// it, so the outcome is returned alongside the error.
 	if err := e.tr.Send(ctx, transport.Outbound{
 		ChatID: sc.ChatID,
-		Text:   fmt.Sprintf("%s Saved %s to %s.", transport.GlyphMemory, transport.Bold(title), destinationPhrase(sc, out.Space)),
+		Text:   transport.GlyphMemory + " " + e.cat.Saved(isPrivate(sc, out.Space), title),
 	}); err != nil {
 		// The notice the member needed was this confirmation, and it has already been
 		// attempted; there is nothing useful left to say to a transport that just
@@ -541,11 +556,12 @@ func (e *Engine) writeAndAnnounce(ctx context.Context, sc domain.Scope, p Propos
 
 	ans, err := e.tr.Ask(ctx, transport.Question{
 		ChatID:        sc.ChatID,
-		Text:          writtenText(p, title, destinationPhrase(sc, out.Space)),
-		Choices:       []transport.Choice{{ID: ChoiceUndo, Label: "Undo"}},
+		Text:          e.writtenText(p, title, isPrivate(sc, out.Space)),
+		Choices:       []transport.Choice{{ID: ChoiceUndo, Label: e.cat.BtnUndo}},
 		AllowedUserID: askUserID,
 		Timeout:       e.opts.AskTimeout,
-		RetiredNote:   undoExpiredNote,
+		RetiredNote:   e.cat.UndoExpiredNote,
+		Notes:         e.cat.OutcomeNotes(),
 	})
 	if err != nil {
 		// The entry is written and the message carrying that news did not go out.
@@ -555,8 +571,7 @@ func (e *Engine) writeAndAnnounce(ctx context.Context, sc domain.Scope, p Propos
 		// that the affordance is missing, because a member who has been told they
 		// can undo something and cannot is worse off than one who was never told.
 		return out, e.told(ctx, sc,
-			fmt.Sprintf("Saved %s to %s, but the undo button didn't go through, so I can't take it back from here.",
-				transport.Bold(title), destinationPhrase(sc, out.Space)),
+			e.cat.SavedNoUndo(isPrivate(sc, out.Space), title),
 			fmt.Errorf("capture: announcing entry %s written to %s: %w", out.EntryID, out.Space, err))
 	}
 
@@ -591,7 +606,7 @@ func (e *Engine) undo(ctx context.Context, sc domain.Scope, out Outcome, speaker
 	// re-proposes next turn and the default policy writes it straight back.
 	e.recordDecline(sc, speaker, out.Title, turn)
 
-	where := destinationPhrase(sc, out.Space)
+	private := isPrivate(sc, out.Space)
 	err := e.mem.Delete(ctx, out.Space, out.EntryID)
 	switch {
 	case err == nil:
@@ -604,8 +619,7 @@ func (e *Engine) undo(ctx context.Context, sc domain.Scope, out Outcome, speaker
 		// promises and only the second one is kept.
 		if serr := e.tr.Send(ctx, transport.Outbound{
 			ChatID: sc.ChatID,
-			Text: fmt.Sprintf("%s Removed %s from %s. It won't come back in an answer, here or on any other device in the household.",
-				transport.GlyphGone, transport.Bold(out.Title), where),
+			Text:   transport.GlyphGone + " " + e.cat.Removed(private, out.Title),
 		}); serr != nil {
 			// As with the confirmation in Offer: the news has been attempted and
 			// there is nothing useful left to say to a transport that just failed.
@@ -620,7 +634,7 @@ func (e *Engine) undo(ctx context.Context, sc domain.Scope, out Outcome, speaker
 		// the reply and leave both of us guessing — which is what the
 		// ErrWriteUncertain branch this replaces had to say out loud.
 		return out, e.told(ctx, sc,
-			fmt.Sprintf("I couldn't take that back: %s is still in %s.", transport.Bold(out.Title), where),
+			e.cat.UndoFailed(private, out.Title),
 			fmt.Errorf("capture: undoing entry %s in %s: %w", out.EntryID, out.Space, err))
 	}
 }
@@ -648,7 +662,7 @@ func (e *Engine) store(ctx context.Context, sc domain.Scope, p Proposal, title s
 		// next turn, and re-proposing it is noise rather than a second chance.
 		e.recordDecline(sc, speaker, title, turn)
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I couldn't save %s — the memory store refused the write, so nothing was stored.", transport.Bold(title)),
+			e.cat.StoreRefused(isPrivate(sc, space), title),
 			fmt.Errorf("capture: storing an entry in %s: %w", space, err))
 	}
 
@@ -662,7 +676,7 @@ func (e *Engine) store(ctx context.Context, sc domain.Scope, p Proposal, title s
 	if entry.Space != space {
 		e.recordDecline(sc, speaker, title, turn)
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("Something went wrong: %s was not stored where it should have been. Tell whoever runs this node before saving it again.", transport.Bold(title)),
+			e.cat.WrongSpace(title),
 			fmt.Errorf("capture: store reported space %s for a write to %s", entry.Space, space))
 	}
 
@@ -693,7 +707,7 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 	from := personalSpace(sc)
 	to, err := e.sharedSpace(sc)
 	if err != nil {
-		return Outcome{}, e.told(ctx, sc, "I couldn't publish that — nothing was published.", err)
+		return Outcome{}, e.told(ctx, sc, e.cat.PublishNoShared, err)
 	}
 
 	entry, err := e.mem.Get(ctx, from, entryID)
@@ -701,23 +715,27 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 		// The member asked for this and the model's own reply is frequently a bare
 		// tool call with no prose, so a silent return here is a turn that answers
 		// nothing at all.
-		return Outcome{}, e.told(ctx, sc, "I couldn't read that entry, so nothing was published.",
+		return Outcome{}, e.told(ctx, sc, e.cat.PublishUnreadable,
 			fmt.Errorf("capture: reading %s from %s: %w", entryID, from, err))
 	}
 
 	ans, err := e.tr.Ask(ctx, transport.Question{
-		ChatID:        sc.ChatID,
-		Text:          promotionText(entry),
-		Choices:       []transport.Choice{{ID: ChoicePublish, Label: "Publish to household"}, {ID: ChoiceCancel, Label: "Cancel"}},
+		ChatID: sc.ChatID,
+		Text:   e.promotionText(entry),
+		Choices: []transport.Choice{
+			{ID: ChoicePublish, Label: e.cat.BtnPublishHousehold},
+			{ID: ChoiceCancel, Label: e.cat.BtnCancel},
+		},
 		AllowedUserID: askUserID,
 		Timeout:       e.opts.AskTimeout,
+		Notes:         e.cat.OutcomeNotes(),
 	})
 	if err != nil {
 		// As in Offer: the member may be looking at a question that will never
 		// resolve, and the one thing they must not be left believing is that their
 		// private entry is now public.
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I meant to ask about publishing %s, but the question didn't go through. Nothing was published.", transport.Bold(entry.Title)),
+			e.cat.PublishAskFailed(entry.Title),
 			fmt.Errorf("capture: asking about publishing %s: %w", entryID, err))
 	}
 
@@ -736,7 +754,7 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 		// could have left a private entry sitting in the household's memory with
 		// nobody able to name it. It cannot now.
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("I couldn't publish %s — the memory store refused the copy, so nothing reached the household memory.", transport.Bold(entry.Title)),
+			e.cat.PublishRefused(entry.Title),
 			fmt.Errorf("capture: publishing %s to %s: %w", entryID, to, err))
 	}
 
@@ -745,14 +763,14 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 	// failure, not something to confirm.
 	if shared.Space != to {
 		return Outcome{}, e.told(ctx, sc,
-			fmt.Sprintf("Something went wrong: %s was not published where you chose. Tell whoever runs this node.", transport.Bold(entry.Title)),
+			e.cat.PublishWrongSpace(entry.Title),
 			fmt.Errorf("capture: store reported space %s for a publication confirmed to %s", shared.Space, to))
 	}
 
 	out := Outcome{Kind: OutcomeSaved, Space: shared.Space, EntryID: shared.ID, Title: entry.Title}
 	if err := e.tr.Send(ctx, transport.Outbound{
 		ChatID: sc.ChatID,
-		Text:   fmt.Sprintf("%s Published %s to the household memory. Everyone can see it now.", transport.GlyphHousehold, transport.Bold(entry.Title)),
+		Text:   transport.GlyphHousehold + " " + e.cat.Published(entry.Title),
 	}); err != nil {
 		// As in Offer, and worse: the publication happened and cannot be taken back,
 		// so an unmarked error here would put "try asking again" in front of a member
@@ -768,6 +786,10 @@ func (e *Engine) question(sc domain.Scope, p Proposal, title string, askUserID i
 		ChatID:        sc.ChatID,
 		AllowedUserID: askUserID,
 		Timeout:       e.opts.AskTimeout,
+		// The outcome line travels with the question so the transport can size the
+		// message against this language's wording rather than English's. Choice ids
+		// are stable constants and never translate; only the labels do.
+		Notes: e.cat.OutcomeNotes(),
 	}
 
 	// Outside a direct scope there is no personal destination to offer, so an unsure
@@ -784,42 +806,40 @@ func (e *Engine) question(sc domain.Scope, p Proposal, title string, askUserID i
 		// the resolution fails after the fact, and nothing they can see explains
 		// why nothing happened. If no shared destination exists, offer what does.
 		if _, err := e.sharedSpace(sc); err != nil {
-			space := personalSpace(sc)
-			q.Text = proposalText(p, title, destinationPhrase(sc, space))
+			q.Text = e.proposalText(p, title, dest{known: true, private: isPrivate(sc, personalSpace(sc))})
 			q.Choices = []transport.Choice{
-				{ID: ChoicePersonal, Label: "Save to personal"},
-				{ID: ChoiceDecline, Label: "Don't save"},
+				{ID: ChoicePersonal, Label: e.cat.BtnSavePersonal},
+				{ID: ChoiceDecline, Label: e.cat.BtnDontSave},
 			}
 			break
 		}
-		q.Text = proposalText(p, title, "")
+		q.Text = e.proposalText(p, title, dest{})
 		q.Choices = []transport.Choice{
-			{ID: ChoicePersonal, Label: "Personal"},
-			{ID: ChoiceShared, Label: "Household"},
-			{ID: ChoiceDecline, Label: "Don't save"},
+			{ID: ChoicePersonal, Label: e.cat.BtnPersonal},
+			{ID: ChoiceShared, Label: e.cat.BtnHousehold},
+			{ID: ChoiceDecline, Label: e.cat.BtnDontSave},
 		}
 	case TargetPersonal:
-		space := personalSpace(sc)
-		q.Text = proposalText(p, title, destinationPhrase(sc, space))
+		q.Text = e.proposalText(p, title, dest{known: true, private: isPrivate(sc, personalSpace(sc))})
 		q.Choices = []transport.Choice{
-			{ID: ChoicePersonal, Label: "Save to personal"},
-			{ID: ChoiceDecline, Label: "Don't save"},
+			{ID: ChoicePersonal, Label: e.cat.BtnSavePersonal},
+			{ID: ChoiceDecline, Label: e.cat.BtnDontSave},
 		}
 	case TargetShared:
 		space, err := e.sharedSpace(sc)
 		if err != nil {
 			return transport.Question{}, err
 		}
-		label := "Save to household"
+		label := e.cat.BtnSaveHousehold
 		if !sc.AllowsPrivateCapture() {
 			// In the group there is nothing to choose between, so the button says
 			// where it goes rather than pretending to be a choice of space.
-			label = "Household"
+			label = e.cat.BtnHousehold
 		}
-		q.Text = proposalText(p, title, destinationPhrase(sc, space))
+		q.Text = e.proposalText(p, title, dest{known: true, private: isPrivate(sc, space)})
 		q.Choices = []transport.Choice{
 			{ID: ChoiceShared, Label: label},
-			{ID: ChoiceDecline, Label: "Don't save"},
+			{ID: ChoiceDecline, Label: e.cat.BtnDontSave},
 		}
 	}
 	return q, nil
@@ -850,22 +870,29 @@ func (e *Engine) sharedSpace(sc domain.Scope) (domain.SpaceID, error) {
 	return "", ErrNoSharedSpace
 }
 
-// destinationPhrase names a space the way it is spoken about in the chat.
+// isPrivate reports whether a space is this member's own rather than the
+// household's, which is the only thing the catalogue needs in order to choose the
+// right sentence.
 //
-// This phrase is the only name a member is given for a space, and that is
-// deliberate. Every message here used to append lore's space id as well — "Saved
-// … to your private memory (a3a02466-c412-4da1-b931-74380179e69d)" — on the
-// reasoning that the phrase is what a member reads and the id is what they can
-// check. They cannot check it: there is nowhere for a member to type a space id,
-// nothing to compare it against, and a household never has two private memories
-// or two shared ones to tell apart. It cost a UUID's width on every confirmation
-// and bought nothing. The id is still on every log line, where whoever runs the
-// node can use it.
-func destinationPhrase(sc domain.Scope, space domain.SpaceID) string {
-	if sc.AllowsPrivateCapture() && space == sc.Write {
-		return "your private memory"
-	}
-	return "the household memory"
+// It used to be destinationPhrase, returning "your private memory" or "the household
+// memory" to be slotted into nine sentences. That worked in English and in no
+// language with a case system: German inflects the phrase with the preposition and
+// contracts in + dem into im, French contracts à + le into au, and Dutch changes the
+// preposition itself — opslaan in against verwijderen uit — so a shared slot
+// produced "verwijderd in je persoonlijke geheugen", which claims the opposite of
+// what happened. The catalogue writes each containing sentence out instead, and this
+// predicate is all that is left of the slot.
+//
+// The phrase, however a language spells it, is still the only name a member is given
+// for a space. Every message here used to append lore's space id as well — "Saved …
+// to your private memory (a3a02466-c412-4da1-b931-74380179e69d)" — on the reasoning
+// that the phrase is what a member reads and the id is what they can check. They
+// cannot check it: there is nowhere for a member to type a space id, nothing to
+// compare it against, and a household never has two private memories or two shared
+// ones to tell apart. It cost a UUID's width on every confirmation and bought
+// nothing. The id is still on every log line, where whoever runs the node can use it.
+func isPrivate(sc domain.Scope, space domain.SpaceID) bool {
+	return sc.AllowsPrivateCapture() && space == sc.Write
 }
 
 // entryBlock renders a draft or an entry as the member sees it: the title in
@@ -882,28 +909,35 @@ func entryBlock(title, body string) string {
 	return out
 }
 
-func proposalText(p Proposal, title, destination string) string {
+// dest is which memory a question is about, when it is about one at all. An unsure
+// proposal offers a genuine choice and names no destination, which is the zero value.
+type dest struct {
+	known   bool
+	private bool
+}
+
+func (e *Engine) proposalText(p Proposal, title string, d dest) string {
 	var b strings.Builder
-	b.WriteString(transport.GlyphAsk + " I can remember this:\n\n")
+	b.WriteString(transport.GlyphAsk + " " + e.cat.ProposalOpener + "\n\n")
 	b.WriteString(entryBlock(title, p.Draft.Body))
-	if destination == "" {
-		b.WriteString("\n\nWhere should it go?")
+	b.WriteString("\n\n")
+	if d.known {
+		b.WriteString(e.cat.ProposalWithDest(d.private))
 	} else {
-		b.WriteString("\n\nSave it to ")
-		b.WriteString(destination)
-		b.WriteString("?")
+		b.WriteString(e.cat.ProposalNoDest)
 	}
 	return b.String()
 }
 
-// undoExpiredNote is appended to a write announcement once its undo window has closed,
-// in place of the transport's default "no answer, treated as declined".
+// Catalogue.UndoExpiredNote is appended to a write announcement once its undo window
+// has closed, in place of the transport's default "no answer, treated as declined".
 //
 // The default would be a lie in the worst available direction: it would leave a
 // message that says an entry was written ending in a line that reads as though the
-// write had been called off. This says the two things that are true — the button is
-// finished and the entry is not.
-const undoExpiredNote = "the undo window has closed; this is still in memory"
+// write had been called off. The note says the two things that are true — the button
+// is finished and the entry is not — and it names which memory the entry is still in,
+// because this product's whole premise is that there are two of them. It rides only
+// on a private write announcement, so naming that one is not a guess.
 
 // writtenText is the announcement of a write that already happened.
 //
@@ -916,22 +950,20 @@ const undoExpiredNote = "the undo window has closed; this is still in memory"
 // asks, and they are otherwise the same shape on the screen. The closing hint is
 // set apart in italics because it is the button being explained, not part of what
 // was written.
-func writtenText(p Proposal, title, destination string) string {
+func (e *Engine) writtenText(p Proposal, title string, private bool) string {
 	var b strings.Builder
-	b.WriteString(transport.GlyphMemory + " I've written this to ")
-	b.WriteString(destination)
-	b.WriteString(":\n\n")
+	b.WriteString(transport.GlyphMemory + " " + e.cat.WrittenOpener(private) + "\n\n")
 	b.WriteString(entryBlock(title, p.Draft.Body))
 	b.WriteString("\n\n")
-	b.WriteString(transport.Italic("Undo removes it."))
+	b.WriteString(transport.Italic(e.cat.WrittenHint))
 	return b.String()
 }
 
-func promotionText(entry memory.Entry) string {
+func (e *Engine) promotionText(entry memory.Entry) string {
 	var b strings.Builder
-	b.WriteString(transport.GlyphAsk + " This would be published to the household exactly as it stands, and cannot be unpublished:\n\n")
+	b.WriteString(transport.GlyphAsk + " " + e.cat.PromotionOpener + "\n\n")
 	b.WriteString(entryBlock(entry.Title, entry.Body))
-	b.WriteString("\n\nPublish it?")
+	b.WriteString("\n\n" + e.cat.PromotionCloser)
 	return b.String()
 }
 

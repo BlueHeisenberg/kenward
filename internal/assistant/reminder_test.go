@@ -86,7 +86,7 @@ func TestRemindToolWithNoReplyTextStillAnswers(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("sent %v, want exactly the reminder notice", sent)
 	}
-	if strings.Contains(sent[0], noAnswerText) {
+	if strings.Contains(sent[0], enNotice(enCat.NoAnswer)) {
 		t.Errorf("a reminder-only turn was reported as an empty one: %q", sent[0])
 	}
 	if !strings.Contains(sent[0], "reminder set") {
@@ -150,8 +150,8 @@ func TestUnknownCodeIsRefusedNotGuessed(t *testing.T) {
 	if got := rig.reminders.List(); len(got) != 1 {
 		t.Fatalf("%d reminders left, want the untouched one", len(got))
 	}
-	if sent := rig.tr.sentTextsRaw(); len(sent) != 1 || !strings.Contains(sent[0], unremindNoneText) {
-		t.Errorf("sent %v, want %q", sent, unremindNoneText)
+	if sent := rig.tr.sentTextsRaw(); len(sent) != 1 || !strings.Contains(sent[0], enCat.UnremindNone) {
+		t.Errorf("sent %v, want %q", sent, enCat.UnremindNone)
 	}
 }
 
@@ -194,8 +194,8 @@ func TestMalformedRemindIsDroppedWithANotice(t *testing.T) {
 			// failed when that line stopped being bracketed. A member who asked to
 			// be reminded and is told nothing believes they were.
 			sent := rig.tr.sentTextsRaw()
-			if len(sent) != 1 || !strings.Contains(sent[0], remindFailedText) {
-				t.Fatalf("sent %v, want it to contain %q", sent, remindFailedText)
+			if len(sent) != 1 || !strings.Contains(sent[0], enCat.RemindFailed) {
+				t.Fatalf("sent %v, want it to contain %q", sent, enCat.RemindFailed)
 			}
 		})
 	}
@@ -219,8 +219,8 @@ func TestRemindInThePastIsRefusedRatherThanFiredNow(t *testing.T) {
 	if got := rig.reminders.List(); len(got) != 0 {
 		t.Fatalf("stored %+v for a time that has gone", got)
 	}
-	if sent := rig.tr.sentTextsRaw(); len(sent) != 1 || !strings.Contains(sent[0], remindPastText) {
-		t.Errorf("sent %v, want %q", sent, remindPastText)
+	if sent := rig.tr.sentTextsRaw(); len(sent) != 1 || !strings.Contains(sent[0], enCat.RemindPast) {
+		t.Errorf("sent %v, want %q", sent, enCat.RemindPast)
 	}
 }
 

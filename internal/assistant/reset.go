@@ -30,7 +30,7 @@ import "time"
 //
 // The second sentence is the load-bearing one. The failure this text exists to prevent
 // is a member reading the first and believing something was dropped from their memory.
-const resetNoticeText = "Starting fresh — I've cleared the earlier part of this conversation. Nothing in your memory changed; this is the scheduled reset."
+// It lives in the catalogue (internal/lang, section ERR, ResetNotice).
 
 // historyBoundary returns the most recent scheduled reset at or before now.
 //
