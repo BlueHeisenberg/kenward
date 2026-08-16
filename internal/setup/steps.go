@@ -584,6 +584,9 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 			Model:     strings.TrimSpace(e.Model),
 			APIKeyEnv: strings.TrimSpace(e.APIKeyEnv),
 			Tags:      e.Tiers,
+			// Zero leaves ApplyDefaults to fill in the modest default, which
+			// is what the terminal wizard always produces.
+			ContextWindow: e.ContextWindow,
 		}
 		if len(endpoint.Tags) == 0 {
 			if isLocal(endpoint.BaseURL) {

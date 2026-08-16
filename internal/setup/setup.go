@@ -214,6 +214,15 @@ type EndpointAnswer struct {
 	// for a machine on the household's own network and CloudTier for anything
 	// else.
 	Tiers []string
+	// ContextWindow is the window this endpoint actually has, where the caller
+	// knows it. Zero means it does not, and config.DefaultContextWindow applies.
+	//
+	// The terminal wizard never fills this in — it probes whether an address
+	// answers, not what the server behind it was started with. The dashboard
+	// wizard does: it reads /v1/models, and the number vLLM publishes there is
+	// the one that binds. Dropping it silently gave a 262144-token machine a
+	// 16384-token configuration, with nothing on any screen saying so.
+	ContextWindow int
 }
 
 // Wizard runs the first-run flow.

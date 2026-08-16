@@ -197,6 +197,10 @@ func (st *wizardState) answers(spaces map[string]string) *setup.Answers {
 			APIKeyEnv: e.APIKeyEnv,
 			APIKey:    e.APIKey,
 			Tiers:     splitList(e.Tiers),
+			// What /v1/models published, or what the operator typed over it.
+			// Without this the endpoints step reads a 262144-token window off
+			// vLLM, shows it, and writes 16384.
+			ContextWindow: e.ContextWindow,
 		})
 	}
 	return a
