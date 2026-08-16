@@ -274,9 +274,14 @@ type pod struct {
 	// logger could print, and a rotated token file or credential is picked up
 	// by the next recreation without a supervisor restart.
 	base sandbox.Spec
-	// secrets are the values this pod cannot run without: its own bot token, and
-	// for a member's pod the passphrase that unwraps that member's key. Nobody
-	// else's, ever — that is the mode.
+	// secrets are the values this pod cannot run without: its own bot token, for a
+	// member's pod the passphrase that unwraps that member's key, and the API key of
+	// every endpoint this unit's own tier chain reaches.
+	//
+	// No sibling's token and no sibling's passphrase, ever — that is the mode. An
+	// endpoint key is the one thing here that can be shared, because it is one
+	// provider account rather than one member's secret; see endpointSecrets, which
+	// says exactly what that costs.
 	secrets []podSecret
 	// inviteSeed is the host file of this member's outstanding claim codes, or
 	// empty. It is read at Create and Recreate time and never held, the same way
@@ -493,8 +498,13 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			func() (config.Secret, error) { return mc.BotToken(secrets) })
 		pass, perr := prove("session passphrase", mc.PassphraseRef(),
 			func() (config.Secret, error) { return mc.Passphrase(secrets) })
-		if terr != nil || perr != nil {
-			for _, err := range []error{terr, perr} {
+		// And the provider keys this member's own tier chain reaches — see
+		// endpointSecrets. Not "and no others": that is the whole of what a member's
+		// pod may hold, and an endpoint key is shared with every sibling whose chain
+		// reaches the same endpoint, because it is one provider account.
+		keys, kerrs := endpointSecrets(i.cfg, config.UnitScope{Member: string(m.ID)}, secrets)
+		if terr != nil || perr != nil || len(kerrs) > 0 {
+			for _, err := range append([]error{terr, perr}, kerrs...) {
 				if err != nil {
 					missing = append(missing, fmt.Sprintf("member %s: %v", m.ID, err))
 				}
@@ -510,7 +520,7 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			key:        k,
 			name:       name,
 			enrolled:   m.Enrolled(),
-			secrets:    []podSecret{token, pass},
+			secrets:    append([]podSecret{token, pass}, keys...),
 			inviteSeed: perMemberPath(opts.InviteSeedDir, m.ID),
 			revocation: perMemberPath(opts.RevocationDir, m.ID),
 			base: i.podSpec(name, map[string]string{
@@ -531,8 +541,15 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 		// exists to keep out of it.
 		token, err := prove("bot token", cfgSnapshot.BotTokenRef(),
 			func() (config.Secret, error) { return cfgSnapshot.BotToken(secrets) })
-		if err != nil {
-			missing = append(missing, fmt.Sprintf("group: %v", err))
+		// The group conversation routes on household.tiers, so its pod needs the keys
+		// that chain reaches for exactly the reason a member's does.
+		keys, kerrs := endpointSecrets(i.cfg, config.UnitScope{Group: true}, secrets)
+		if err != nil || len(kerrs) > 0 {
+			for _, e := range append([]error{err}, kerrs...) {
+				if e != nil {
+					missing = append(missing, fmt.Sprintf("group: %v", e))
+				}
+			}
 		} else {
 			k := unitKey{group: true}
 			name := podName(opts.NamePrefix, "group")
@@ -544,7 +561,7 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 				name: name,
 				// The group has nobody to enrol; its pod is ready when it runs.
 				enrolled: true,
-				secrets:  []podSecret{token},
+				secrets:  append([]podSecret{token}, keys...),
 				base: i.podSpec(name, map[string]string{
 					EnvGroup:    "1",
 					EnvLoreHome: opts.LoreHome,
@@ -714,6 +731,75 @@ func newPodSecret(what string, ref config.SecretRef, resolve func() (config.Secr
 		return podSecret{}, fmt.Errorf("%s has no stated source and no credential name", what)
 	}
 	return s, nil
+}
+
+// endpointSecrets are the provider keys one unit's pod has to be given: the key of
+// every endpoint its own tier chain can reach, and no other.
+//
+// It exists because config.secretRefs already scopes endpoint keys this way, and the
+// pod validates its own configuration on the way up. A member whose chain reaches a
+// cloud endpoint is therefore *required* to hold that provider's key — and until this,
+// a supervisor-started pod was given exactly two secrets, so that member's pod refused
+// its own configuration at startup and never ran. The compose path let an operator add
+// the variable by hand; this path had no equivalent, so `tiers: [local, cloud]` was
+// simply unavailable under `kenward run`.
+//
+// EndpointsForUnit is the same function validation scopes with, deliberately: two
+// implementations of "which endpoints does this unit reach" would eventually disagree,
+// and the way that failure presents is a pod that validates clean and then cannot
+// route, or one that holds a key its chain forbids it to use.
+//
+// # What a pod learns, stated plainly
+//
+// An endpoint key is not a per-member secret and cannot be made into one. It belongs to
+// the provider account the household pays for, so if david's chain and jordan's chain
+// both reach `openrouter`, both pods hold that one key and each could spend the other's
+// budget on it. That is a real reduction from "a pod holds its own secrets and no
+// sibling's", and it is inherent rather than an oversight: sharing a provider account is
+// what the configuration said. What still holds is the narrower claim: a pod is given a
+// key only where its own chain reaches the endpoint, so a local-only member's pod holds
+// none at all, and no pod ever holds a key for a tier it may not route to. A household
+// that wants two members not to share a key gives them two endpoints with two
+// `api_key_env`s, and each pod then holds only its own.
+//
+// A key resolved from a systemd credential travels as a credential, a file as a file, an
+// environment variable as a variable — newPodSecret's mirroring, unchanged. An endpoint
+// that supplied no key at all is skipped rather than refused, because the household's own
+// inference machine needs none; a *stated* source that cannot be read is a fault, which is
+// exactly what EndpointConfig.APIKey already distinguishes and what validation reports.
+func endpointSecrets(cfg *config.Config, scope config.UnitScope, secrets *config.Secrets) ([]podSecret, []error) {
+	var (
+		out  []podSecret
+		errs []error
+		seen = make(map[[3]string]bool)
+	)
+	for _, ec := range cfg.EndpointsForUnit(scope) {
+		ec := ec
+		what := fmt.Sprintf("the API key for endpoint %q", ec.Name)
+		sec, err := ec.APIKey(secrets)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", what, err))
+			continue
+		}
+		if !sec.IsSet() {
+			continue // this endpoint needs no key, which is the usual local case.
+		}
+		s, err := newPodSecret(what, ec.APIKeyRef(), func() (config.Secret, error) { return ec.APIKey(secrets) })
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		// Two endpoints on one variable is legitimate — internal/config says so where
+		// it dedups the same references — and provisioning it twice would resolve the
+		// same value twice for one slot in the pod's environment.
+		k := [3]string{s.env, s.file, s.cred}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, s)
+	}
+	return out, errs
 }
 
 // specFor completes a pod's spec with its secrets, resolved now. Create and

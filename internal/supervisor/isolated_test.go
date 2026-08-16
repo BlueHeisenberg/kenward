@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -1640,4 +1641,199 @@ func TestIsolatedUnreadableInvitesRefuseTheSpec(t *testing.T) {
 			t.Fatal("specFor accepted an unreadable seed; david's pod would start and refuse his code in silence")
 		}
 	}
+}
+
+// providerKeyConfig is a household where the three tier chains reach three different
+// sets of endpoints: the group and david local only, jordan local and cloud, ana local
+// and cloud as well — so `openrouter` is genuinely shared between two members, which is
+// the case the assertions below have to be honest about.
+func providerKeyConfig() *config.Config {
+	return &config.Config{
+		Mode: config.ModeIsolated,
+		Household: config.HouseholdConfig{
+			Name: "Home", SharedSpace: "household", GroupChatID: groupChatID,
+			Tiers: []string{"local"},
+		},
+		Telegram: config.TelegramConfig{BotTokenEnv: "TOK_GROUP"},
+		Members: []config.MemberConfig{
+			{ID: "david", Name: "David", TelegramID: 1, PrivateSpace: "d", Tiers: []string{"local"},
+				BotTokenEnv: "TOK_DAVID", PassphraseEnv: "PASS_DAVID"},
+			{ID: "jordan", Name: "Jordan", TelegramID: 2, PrivateSpace: "j", Tiers: []string{"local", "cloud"},
+				BotTokenEnv: "TOK_JORDAN", PassphraseEnv: "PASS_JORDAN"},
+			{ID: "ana", Name: "Ana", TelegramID: 3, PrivateSpace: "a", Tiers: []string{"local", "cloud"},
+				BotTokenEnv: "TOK_ANA", PassphraseEnv: "PASS_ANA"},
+		},
+		Endpoints: []config.EndpointConfig{
+			// The household's own machine, which needs no key at all. A pod must not
+			// be refused for failing to hold one that does not exist.
+			{Name: "attic", BaseURL: "http://attic.localdomain:8000/v1", Model: "qwen3-4b", Tags: []string{"local"}},
+			{Name: "openrouter", BaseURL: "https://openrouter.test/api/v1", Model: "sonnet",
+				APIKeyEnv: "OPENROUTER_KEY", Tags: []string{"cloud"}},
+			{Name: "frontier", BaseURL: "https://frontier.test/v1", Model: "opus",
+				APIKeyEnv: "FRONTIER_KEY", Tags: []string{"frontier"}},
+		},
+	}
+}
+
+// TestIsolatedPodHoldsTheProviderKeysItsChainReaches is the second defect that blocked
+// isolated mode on a real host: a member whose tier chain reached a cloud endpoint could
+// not run under `kenward run` at all.
+//
+// config.secretRefs scopes endpoint keys by the unit's chain, so a member with
+// `tiers: [local, cloud]` is *required* to hold the cloud provider's key — and the
+// supervisor provisioned exactly two secrets per pod, the bot token and the passphrase,
+// with no way to add a third. That pod refused its own configuration at startup and never
+// ran. The compose path let an operator add the variable by hand; this path had no
+// equivalent, so a mixed chain was simply unavailable through the supervisor.
+//
+// The assertions are the whole of the rule, including the part that is not a
+// separation: an endpoint key is one provider account, so jordan and ana share
+// `openrouter`'s and each could spend the other's budget on it. What still holds is that
+// a chain reaches a key or the pod does not have it — david's local-only pod holds
+// neither cloud key, no pod holds `frontier`'s, and no pod holds a sibling's bot token
+// or passphrase.
+func TestIsolatedPodHoldsTheProviderKeysItsChainReaches(t *testing.T) {
+	sup, err := newIsolated(providerKeyConfig(), isolatedTestOptions(newFakeBackend()), "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+
+	want := map[string][]string{
+		"david":  nil,                // local only
+		"jordan": {"OPENROUTER_KEY"}, // local + cloud
+		"ana":    {"OPENROUTER_KEY"}, // the same key, and it is the same account
+		"group":  nil,                // household.tiers is local only
+	}
+	seen := map[string]bool{}
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		unit := string(p.key.member)
+		if p.key.group {
+			unit = "group"
+		}
+		seen[unit] = true
+		for _, k := range want[unit] {
+			if got := spec.Env[k]; got != testLookupEnvValue(k) {
+				t.Errorf("%s's pod does not hold %s, which its own tier chain reaches — "+
+					"it will refuse its own configuration at startup and never run (env keys %v)",
+					unit, k, envKeys(spec))
+			}
+		}
+		// No key its chain does not reach. A key present in an environment is a key
+		// that can be used whatever the routing policy intended, which is the reason
+		// the scoping exists at all.
+		for _, k := range []string{"OPENROUTER_KEY", "FRONTIER_KEY"} {
+			if slices.Contains(want[unit], k) {
+				continue
+			}
+			if _, ok := spec.Env[k]; ok {
+				t.Errorf("%s's pod holds %s, and its tier chain does not reach that endpoint", unit, k)
+			}
+		}
+	}
+	for unit := range want {
+		if !seen[unit] {
+			t.Errorf("no pod was built for %s", unit)
+		}
+	}
+}
+
+// TestIsolatedProviderKeyTravelsAsItsSource is the mirroring rule applied to the third
+// kind of secret: an endpoint key stated as a file arrives as a file at the same path,
+// and one supplied as a systemd credential arrives under the synthetic credentials
+// directory — because the pod's own resolver reads the same provisioned configuration
+// and has to find the value where the file says it is.
+//
+// It also covers the dedup: two endpoints on one variable is legitimate (internal/config
+// says so where it dedups the same reference) and must not resolve the same value twice
+// into one slot.
+func TestIsolatedProviderKeyTravelsAsItsSource(t *testing.T) {
+	cfg := providerKeyConfig()
+	cfg.Endpoints = []config.EndpointConfig{
+		{Name: "openrouter", BaseURL: "https://openrouter.test/api/v1", Model: "sonnet",
+			APIKeyFile: "/etc/kenward/keys/openrouter", Tags: []string{"cloud"}},
+		// The same key, twice, which is how one provider account serves two models.
+		{Name: "openrouter-fast", BaseURL: "https://openrouter.test/api/v1", Model: "haiku",
+			APIKeyFile: "/etc/kenward/keys/openrouter", Tags: []string{"cloud"}},
+		{Name: "attic", BaseURL: "http://attic.localdomain:8000/v1", Model: "qwen3-4b", Tags: []string{"local"}},
+	}
+	opts := isolatedTestOptions(newFakeBackend())
+	opts.Secrets = config.NewSecrets(config.SecretOptions{
+		LookupEnv: testLookupEnv,
+		FS:        fakeSecretFS{"/etc/kenward/keys/openrouter": "sk-openrouter"},
+	})
+	sup, err := newIsolated(cfg, opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		const path = "/etc/kenward/keys/openrouter"
+		files := 0
+		for _, f := range spec.Files {
+			if f.Path == path {
+				files++
+			}
+		}
+		reaches := p.key.member == "jordan" || p.key.member == "ana"
+		switch {
+		case reaches && files != 1:
+			t.Errorf("%s's pod was given the openrouter key %d time(s) at %s, want exactly 1 — "+
+				"two endpoints on one key is one key", p.key.member, files, path)
+		case reaches:
+			assertProvisioned(t, spec, path, "sk-openrouter")
+		case files != 0:
+			t.Errorf("pod %s holds the openrouter key at %s and its chain does not reach that endpoint",
+				p.name, path)
+		}
+	}
+}
+
+// TestIsolatedRefusesWhenAReachableProviderKeyIsUnreadable keeps the household from
+// starting half-configured on the new secret for the same reason it does on the old two.
+//
+// A stated source that cannot be read is a fault, and it is the pod's fault to hit at
+// startup out of sight: the member's chain reaches that endpoint, so validation demands
+// the key, so the pod refuses its configuration and crash-loops. Refusing here names the
+// member and the endpoint in the operator's terminal instead.
+func TestIsolatedRefusesWhenAReachableProviderKeyIsUnreadable(t *testing.T) {
+	cfg := providerKeyConfig()
+	opts := isolatedTestOptions(newFakeBackend())
+	opts.Secrets = config.NewSecrets(config.SecretOptions{
+		LookupEnv: func(name string) (string, bool) {
+			if name == "OPENROUTER_KEY" {
+				return "", false // named in the file, absent from the environment.
+			}
+			return testLookupEnv(name)
+		},
+	})
+	_, err := newIsolated(cfg, opts, "linux")
+	if err == nil {
+		t.Fatal("newIsolated started a household whose cloud members cannot resolve the key their chain requires")
+	}
+	for _, want := range []string{"jordan", "ana", "openrouter"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q, so an operator cannot act on it: %v", want, err)
+		}
+	}
+	// david's chain never reaches it, so his pod is not part of this fault.
+	if strings.Contains(err.Error(), "member david") {
+		t.Errorf("the refusal blames david, whose local-only chain reaches no cloud endpoint: %v", err)
+	}
+}
+
+func envKeys(spec sandbox.Spec) []string {
+	out := make([]string, 0, len(spec.Env))
+	for k := range spec.Env {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

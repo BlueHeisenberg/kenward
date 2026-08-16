@@ -29,27 +29,26 @@
 #   3. Supply a `lore` binary per service (see ../Dockerfile's note) — each
 #      service gets its OWN copy/mount, never a shared one, since sharing the
 #      binary is fine but sharing the *instance* (same LORE_HOME) is not.
-#   4. Initialise each service's lore store ONCE, in that service's OWN volume,
-#      before its first `up` — one per service, never a shared one:
+#   4. Nothing to do: each service initialises its own lore store on first
+#      start, and you should NOT run `lore init` against these volumes by hand.
 #
-#        docker compose -f compose.isolated.yml run --rm --no-deps --user 65532:65532 \
-#          --entrypoint /usr/local/bin/lore kenward-david init --name david
+#      This step used to be an operator step, and the reason it is gone is worth
+#      knowing. `lore mcp` refuses to start against an uninitialised LORE_HOME —
+#      "no account at /var/lib/kenward/lore/account.json (run `lore init`)" —
+#      and so does kenward: `run` completes an MCP handshake with lore before it
+#      serves anything. A fresh volume is in exactly that state, so every
+#      service exited 1 on first `up` until somebody ran `lore init` into it.
+#      `kenward run` now does it itself, in the container, when LORE_HOME does
+#      not exist or is empty, and never again after that — an existing store is
+#      left alone whatever else happens. A `lore init` of your own would only
+#      race it, and against a volume that already holds a store it fails.
 #
-#      `--user 65532:65532` is not optional and the failure it prevents is not
-#      obvious. `lore init` creates a 0700 lore home owned by whoever ran it, and
-#      a store created as root is a store the container's own process — uid
-#      65532, the distroless base's fixed non-root identity — cannot open. The
-#      service then refuses to start with the SAME message an uninitialised store
-#      gives ("lore did not answer"), which sends you to run `lore init` again.
-#      Found by running this against real podman.
-#
-#      `lore mcp` refuses to start against an uninitialised LORE_HOME — "no
-#      account at /var/lib/kenward/lore/account.json (run `lore init`)" — and
-#      so does kenward: `run` completes an MCP handshake with lore before it
-#      serves anything, so a pod whose store was never initialised exits 1
-#      saying exactly that, instead of starting, authorising, greeting and
-#      recording nothing. Keep each recovery code `init` prints; nothing else
-#      can recover that member's store.
+#      The recovery code is DISCARDED rather than printed, deliberately: it is a
+#      KDF factor for relay signup and backup, which nothing here configures,
+#      and printing it would put a member's account recovery factor into
+#      `docker logs`, which is yours to read and not yours to hold. If a member
+#      wants one, mint it inside their own container with
+#      `lore recovery new --yes-i-saved-it`; it needs no previous code.
 #
 #   4b. THE SHARED SPACE. Every pod resolves household.shared_space against ITS
 #      OWN lore store — a member's pod reads and writes the shared space as well
@@ -72,8 +71,10 @@
 #      `up`. `docker compose exec kenward-david /usr/local/bin/lore peer list`
 #      shows what it has found.
 #
-#      The other is membership, and it stays yours, exactly as `lore init` above
-#      does. kenward never creates a lore space and never grants itself
+#      The other is membership, and unlike `lore init` above it stays yours.
+#      That is the line: creating an account is plumbing with no decision in it,
+#      so the container does it; creating a space and handing out membership are
+#      decisions. kenward never creates a lore space and never grants itself
 #      membership of one; lore's own embeddable API declines to expose either,
 #      because a space is made by a person who chose a name and a sharing
 #      posture. Create the space once, in the household service's store:
@@ -344,7 +345,12 @@ services:
       # kenward.yaml DO include a cloud tier (e.g. `[local, cloud]`) backed by
       # an endpoint with `api_key_env: OPENROUTER_API_KEY`. Because jordan's
       # own chain can reach it, jordan's container — and only jordan's — gets
-      # the key:
+      # the key. `kenward run` applies the same rule to the pods it starts,
+      # from the same scoping function, without anyone writing a line: it is
+      # what makes a mixed tier chain runnable on that path at all. Where two
+      # members' chains reach ONE endpoint they share ONE key, here and there
+      # alike — it is one provider account, and the way to keep two budgets
+      # apart is two endpoints with two api_key_env values.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
