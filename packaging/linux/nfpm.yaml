@@ -48,11 +48,25 @@ contents:
   # Fixed paths, not ${BINDIR}: nfpm expands environment variables in its scalar
   # fields but not inside content globs, so the caller stages the binaries for the
   # architecture being packaged here and invokes nfpm once per architecture.
+  #
+  # Every mode is stated. Without file_info nfpm copies the staged file's own
+  # permissions into the archive, which makes the installed mode a property of
+  # whoever ran the build — a Windows or umask-002 builder produces a .deb whose
+  # /usr/bin/kenward-desktop is 0664 and will not execute. It installs cleanly
+  # and then does nothing, which is the worst way for this to fail.
   - src: dist/nfpm/kenward-desktop
     dst: /usr/bin/kenward-desktop
+    file_info:
+      mode: 0755
   - src: dist/nfpm/kenward
     dst: /usr/bin/kenward
+    file_info:
+      mode: 0755
   - src: packaging/linux/kenward-desktop.desktop
     dst: /usr/share/applications/kenward-desktop.desktop
+    file_info:
+      mode: 0644
   - src: packaging/kenward.png
     dst: /usr/share/icons/hicolor/512x512/apps/kenward.png
+    file_info:
+      mode: 0644

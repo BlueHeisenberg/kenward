@@ -40,8 +40,22 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Builds every command, which on macOS is also the cgo build of
+      # cmd/kenward-desktop — the one target that cannot be cross-compiled and
+      # so has nowhere else to be checked before a release runs.
       - name: Build
         run: go build ./...
+
+      # The daemon has to keep linking without cgo: the distroless image has no
+      # libc, and cmd/kenward-desktop's tray library needs cgo on macOS. One
+      # import reaching from the daemon into anything cgo-touching would break
+      # the container image without breaking a single test, and the release
+      # gate would be the first thing to notice — after a tag exists.
+      - name: The daemon builds without cgo
+        shell: bash
+        env:
+          CGO_ENABLED: '0'
+        run: go build -o "$RUNNER_TEMP/kenward-nocgo" ./cmd/kenward
 
       - name: Test (race)
         run: go test -race ./...

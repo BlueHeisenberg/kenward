@@ -87,6 +87,14 @@ That is the only command that starts a release. `.github/workflows/release.yml` 
   `install.sh` writes it into `/etc/systemd/system` as root, so it must be verifiable
   the same way the binary is. It used to be fetched from the tip of `main` and checked
   against nothing;
+- builds the desktop wrapper on three runners — `.deb` and `.rpm` on Linux, a universal
+  `.dmg` on macOS, an Inno Setup installer on Windows — attaches them to the same draft
+  and extends `checksums.txt` to cover them. This is outside GoReleaser because
+  `cmd/kenward-desktop` needs cgo on darwin and cgo does not cross-compile;
+  `docs/DESKTOP.md` has the whole reasoning. The daemon inside each bundle is a
+  separate build of the same commit, stamped identically but not byte-identical to the
+  published `kenward_<goos>_<goarch>` — the bundle is checksummed, the copy inside it
+  is not separately;
 - pushes `ghcr.io/blueheisenberg/kenward:v0.2.0` (and `:latest`, unless the tag carries a
   hyphen and is therefore a prerelease) for linux/amd64 and linux/arm64.
 
@@ -125,6 +133,16 @@ the bytes GitHub will serve, not bytes that ought to be the same. The archives a
 that come down with them are ignored — `manifest` only recognises files named
 `kenward_<goos>_<goarch>`.
 
+**Keep the `kenward_*` pattern.** `manifest` reads a platform out of any filename shaped
+`*_<goos>_<goarch>`, on purpose, so renaming the binary does not silently drop every
+artifact from the manifest. The desktop bundles are named `kenward-desktop_*` and
+`kenward_<tag>_macos.dmg`, none of which match `kenward_*` followed by a bare
+`<goos>_<goarch>` — but widen the pattern to `kenward*` and a `kenward-desktop_linux_amd64`
+would parse as `linux/amd64` and collide with the daemon. It fails loudly rather than
+producing a wrong manifest; it still costs you the download. The desktop wrapper is not
+in the manifest and is not meant to be — `docs/DESKTOP.md`, "The wrapper is not in the
+update manifest", says why.
+
 The signed envelope must be attached under the name `manifest.json`, because that is the
 filename `releaseManifestURL` in `cmd/kenward/release.go` asks for.
 
@@ -155,12 +173,57 @@ material, and the private half never appears there in any form.
 
 ### Homebrew
 
-`.goreleaser.yaml` generates a cask but does not push it: `HOMEBREW_TAP_SKIP` defaults to
-`true` because `github.com/BlueHeisenberg/homebrew-tap` does not exist yet. To turn it on,
-create that repository — a bare public repo with a `Casks/` directory is enough — put a
-token that can write to it in the secret `HOMEBREW_TAP_TOKEN`, and set the variable
-`HOMEBREW_TAP_SKIP` to `false`. The generated cask is in `dist/homebrew/Casks/kenward.rb`
-after any `task snapshot`, so it can be read before the tap is ever created.
+`.goreleaser.yaml` generates a cask on every run and does not push it. As of v0.1.0 it
+never has, and `brew install --cask BlueHeisenberg/tap/kenward` fails for everyone who
+tries it.
+
+`github.com/BlueHeisenberg/homebrew-tap` **exists** — public, `main`, containing
+`Casks/.gitkeep` and nothing else. The repository is not the missing piece and creating
+another one will not help. What is missing is a credential and a switch, both on
+`BlueHeisenberg/kenward`, and neither can be created by CI or from this repository:
+
+1. **A token that can write to the tap.** A GitHub *fine-grained* personal access token:
+
+   - Resource owner: `BlueHeisenberg`
+   - Repository access: **Only select repositories** → `BlueHeisenberg/homebrew-tap`
+   - Repository permissions: **Contents: Read and write**. Nothing else. (Metadata:
+     Read-only is added automatically and cannot be removed.)
+   - Expiry: your choice, but note that when it expires the release stops publishing a
+     cask and says nothing, because `skip_upload` failing open is the whole design.
+
+   A classic token works too and needs `public_repo` (the tap is public), but it is a
+   credential for every repository the account can reach and there is no reason to
+   accept that here.
+
+   The token must **not** be able to write to `BlueHeisenberg/kenward`. It is handed to
+   GoReleaser in the same process that holds `GITHUB_TOKEN`; keeping the two disjoint
+   means the tap credential cannot touch a release.
+
+2. **Store it as a secret and flip the switch:**
+
+   ```sh
+   gh secret set HOMEBREW_TAP_TOKEN --repo BlueHeisenberg/kenward       # paste the token
+   gh variable set HOMEBREW_TAP_SKIP --repo BlueHeisenberg/kenward --body false
+   ```
+
+   `HOMEBREW_TAP_SKIP` is a **variable**, not a secret — it is the string `false`, and
+   the workflow reads `${{ vars.HOMEBREW_TAP_SKIP || 'true' }}`, so unset means skip.
+   `HOMEBREW_TAP_TOKEN` is a **secret**. Setting one without the other does nothing
+   useful: with the variable set and no token, GoReleaser tries to push with an empty
+   credential and the release job fails partway through.
+
+Nothing else is required. The tap needs no workflow, no formula, no `README`; GoReleaser
+commits `Casks/kenward.rb` to `main` itself.
+
+**Until then, by hand.** The cask is written to `dist/homebrew/Casks/kenward.rb` on every
+run including `task snapshot`, with the real URLs and digests. Copying that one file into
+the tap and pushing it produces exactly what the automated path would, and needs no
+token at all — it just has to be redone every release, which is why it is the fallback
+and not the plan.
+
+**Timing.** GoReleaser pushes the cask while the GitHub release is still a draft, and the
+URLs inside the cask 404 until it is published. Sign and undraft promptly; the window is
+however long signing takes you.
 
 The manifest carries, per channel: the version, release notes, publication timestamp, a
 `securitySensitive` flag, and for each platform an artifact URL, SHA-256 and size. The
@@ -221,6 +284,12 @@ you are not running `edge` at home, the stable channel is not being tested by an
       runs `kenward version` on its own platform — the updater's preflight will execute
       exactly this before swapping, and a binary that fails it refuses the update rather
       than bricking the install
+- [ ] The draft release carries the three desktop bundles — the `.dmg`, the
+      `_setup.exe`, and four packages — and `checksums.txt` has a line for each. A
+      failed `desktop-publish` job leaves the release looking complete and quietly
+      missing them
+- [ ] `kenward-desktop` launched once from at least one bundle, and its icon appeared.
+      A tray icon is the one thing no test can assert
 - [ ] `KENWARD_RELEASE_KEYS` is set, so the published binaries can verify anything at all
 - [ ] Major version implies the update will ask for consent
 - [ ] `securitySensitive` set if anything in the list above changed

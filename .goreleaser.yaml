@@ -139,10 +139,22 @@ homebrew_casks:
       token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
     homepage: https://github.com/BlueHeisenberg/kenward
     description: Household AI assistant where each person's memory is actually their own
-    # Skipped until github.com/BlueHeisenberg/homebrew-tap exists and
-    # HOMEBREW_TAP_TOKEN is set on the repository. The cask is still generated
-    # into dist/ on every run, so it can be read before the tap is ever
-    # created.
+    # github.com/BlueHeisenberg/homebrew-tap now exists — public, `Casks/`
+    # present — so the only things still holding the upload back are the two
+    # settings this line and the `token` line above read. Both are absent
+    # today, and absent means skip: HOMEBREW_TAP_SKIP defaults to "true", so a
+    # release with neither set quietly publishes no cask rather than failing
+    # with an empty token halfway through. docs/RELEASING.md, "Homebrew", says
+    # exactly what to create.
+    #
+    # The cask is generated into dist/homebrew/Casks/kenward.rb on every run
+    # regardless, so it can be read — and copied into the tap by hand — with no
+    # token at all.
+    #
+    # One timing note if you do turn this on: GoReleaser pushes the cask while
+    # the GitHub release is still a draft, and the URLs inside it 404 until the
+    # release is published. Sign and undraft promptly, or `brew install` fails
+    # for everyone who tries in the gap.
     skip_upload: '{{ envOrDefault "HOMEBREW_TAP_SKIP" "true" }}'
     hooks:
       post:
