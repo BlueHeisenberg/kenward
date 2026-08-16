@@ -310,7 +310,7 @@ type Completer interface {
 type KeyFunc func(ep Endpoint) (string, error)
 
 func NewPool(endpoints []Endpoint, c Completer) *Pool   // *Pool implements Router
-func NewHTTPCompleter(client *http.Client, key KeyFunc) Completer
+func NewHTTPCompleter(client *http.Client, key KeyFunc, logger *slog.Logger) Completer
 
 // ErrNoBackend carries what was tried, so the refusal can be specific.
 type NoBackendError struct{ Chain []string; Tried []string }
@@ -892,6 +892,24 @@ with no text and no tool call, and a bare tool call whose capture proposal was s
 without asking. Neither is a failure the node can classify further, and neither may be
 answered with silence — this section promises every message produces something, and until
 this notice existed that promise had two paths where it was untrue.
+
+The generic notice is the last resort, not the mechanism. A turn that ends in a capture
+question — a remember proposal or a publish request — hands the rest of the turn to
+`internal/capture`, and **every error path there that a member could be waiting on sends
+its own notice first**, because the engine knows what failed and the generic notice does
+not. Those errors are marked with `capture.ErrMemberNotified`; the assistant falls back
+to "I didn't get a usable answer to that" only when the marker is absent and the turn
+produced no reply of its own. The marker is what keeps the member from being told two
+different things about one failure.
+
+This matters most in the publish flow, where the model is instructed to answer with a
+bare tool call and the member's tap authorises something irreversible. A failure to
+resolve the shared space, to read the entry back, or to put the question is reported as
+nothing having been published. A failure of `Share` **after** the member has tapped
+*Publish to household* is reported as uncertainty — "I can't confirm whether … was
+published … a publication can't be taken back" — on the same reasoning as an uncertain
+write in section 12: the copy may have landed, lore has no delete, and a member who is
+told a flat failure will simply publish again.
 
 All of them are golden-tested alongside the refusals.
 

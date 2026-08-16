@@ -560,6 +560,29 @@ func (i *Isolated) logStartup() {
 		"privacy", privacy.Statement(privacy.ModeIsolated))
 }
 
+// recoverPump contains a panic raised by a pod-supervising goroutine itself —
+// the monitor loop in runPod, or a pod's own stop in shutdown — outside
+// whatever that goroutine was doing to one pod. One member's pod misbehaving
+// is exactly the failure isolated mode exists to contain from the rest of the
+// household; a panic reaching all the way to the process would defeat that
+// for every pod, not just this one.
+//
+// This mirrors runner.recoverPump rather than reusing it: Isolated and runner
+// are unrelated types (no shared base), so the method can't be called across
+// them, but the pattern — log, tracker.fail, tracker.set(StateStopped) — is
+// the same one, not a second convention.
+func (i *Isolated) recoverPump(k unitKey, what string) {
+	rec := recover()
+	if rec == nil {
+		return
+	}
+	err := fmt.Errorf("supervisor: %s panicked: %v", what, rec)
+	i.logger.Error("supervisor: pod goroutine crashed; the rest of the household keeps running",
+		"pump", what, "member", k.member, "group", k.group, "error", err)
+	i.tracker.fail(k, err)
+	i.tracker.set(k, StateStopped)
+}
+
 // runPod owns one pod's lifecycle: bring it up, watch it, and bring it back with
 // backoff when it exits unexpectedly. Every backend call is bounded by its own
 // timeout so a hung runtime cannot wedge shutdown.
@@ -577,6 +600,7 @@ func (i *Isolated) logStartup() {
 // lifecycle calls on one id to be serialised anyway.
 func (i *Isolated) runPod(ctx context.Context, p *pod) {
 	defer i.wg.Done()
+	defer i.recoverPump(p.key, "pod monitor")
 	bo := newBackoff(i.opts.RestartBackoff, i.opts.MaxRestartBackoff)
 	i.tracker.set(p.key, StateStarting)
 
@@ -599,8 +623,15 @@ func (i *Isolated) runPod(ctx context.Context, p *pod) {
 		}
 
 		if !up {
-			err := i.ensureRunning(ctx, p)
-			p.opMu.Unlock()
+			// The unlock is deferred inside this closure, not just called after
+			// ensureRunning returns, so a panic from the backend still releases
+			// the lock instead of wedging it for every future Roll or Stop on
+			// this pod: recoverPump contains the panic, but only this releases
+			// what it was holding.
+			err := func() error {
+				defer p.opMu.Unlock()
+				return i.ensureRunning(ctx, p)
+			}()
 			if err != nil {
 				if i.stoppingOr(ctx) {
 					return
@@ -623,8 +654,11 @@ func (i *Isolated) runPod(ctx context.Context, p *pod) {
 			continue
 		}
 
-		st, err := i.inspect(ctx, p.name)
-		p.opMu.Unlock()
+		// Same reasoning as above: the unlock must survive a panicking Inspect.
+		st, err := func() (sandbox.Status, error) {
+			defer p.opMu.Unlock()
+			return i.inspect(ctx, p.name)
+		}()
 		if err != nil || !st.Running {
 			if i.stoppingOr(ctx) {
 				return
@@ -756,6 +790,7 @@ func (i *Isolated) shutdown(ctx context.Context) error {
 			wg.Add(1)
 			go func(p *pod) {
 				defer wg.Done()
+				defer i.recoverPump(p.key, "pod stop")
 				// The operation lock serialises this against a monitor tick or a
 				// rolling update mid-step on the same pod.
 				p.opMu.Lock()

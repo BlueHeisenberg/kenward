@@ -198,6 +198,11 @@ type fakeBackend struct {
 	// die — the health check that lies.
 	recreateFlap map[string]bool
 	flapArmed    map[string]bool
+	// panicOnInspect and panicOnStop make the named pod's next Inspect or Stop
+	// call panic, once, to prove a panic inside a pod-supervising goroutine
+	// cannot take the process down with it.
+	panicOnInspect map[string]bool
+	panicOnStop    map[string]bool
 	// volumes models the named work volume: created once with Create, reused
 	// by Recreate, deleted only by Purge. The id is the identity assertion —
 	// a recreation that changed it would have lost the member's lore.
@@ -221,6 +226,8 @@ func newFakeBackend() *fakeBackend {
 		warmupLeft:     make(map[string]int),
 		recreateFlap:   make(map[string]bool),
 		flapArmed:      make(map[string]bool),
+		panicOnInspect: make(map[string]bool),
+		panicOnStop:    make(map[string]bool),
 		volumes:        make(map[string]int),
 		creates:        make(map[string]int),
 		starts:         make(map[string]int),
@@ -257,6 +264,20 @@ func (b *fakeBackend) setRecreateFlap(name string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.recreateFlap[name] = true
+}
+
+// setPanicOnInspect makes the named pod's next Inspect call panic, once.
+func (b *fakeBackend) setPanicOnInspect(name string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.panicOnInspect[name] = true
+}
+
+// setPanicOnStop makes the named pod's next Stop call panic, once.
+func (b *fakeBackend) setPanicOnStop(name string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.panicOnStop[name] = true
 }
 
 // volumeID returns the identity of the pod's work volume.
@@ -348,6 +369,10 @@ func (b *fakeBackend) Start(_ context.Context, id string) error {
 func (b *fakeBackend) Stop(_ context.Context, id string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.panicOnStop[id] {
+		b.panicOnStop[id] = false
+		panic("fakeBackend: scripted panic on Stop " + id)
+	}
 	if _, ok := b.created[id]; !ok {
 		return sandbox.ErrSandboxNotFound
 	}
@@ -398,6 +423,10 @@ func (b *fakeBackend) Purge(_ context.Context, id string) error {
 func (b *fakeBackend) Inspect(_ context.Context, id string) (sandbox.Status, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.panicOnInspect[id] {
+		b.panicOnInspect[id] = false
+		panic("fakeBackend: scripted panic on Inspect " + id)
+	}
 	if _, ok := b.created[id]; !ok {
 		return sandbox.Status{}, sandbox.ErrSandboxNotFound
 	}

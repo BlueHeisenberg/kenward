@@ -875,6 +875,61 @@ func TestIsolatedReadyMeansTheContainerIsRunning(t *testing.T) {
 	h.stop(t)
 }
 
+// TestIsolatedRunPodPanicDoesNotCrashProcess proves isolated mode's own promise
+// about itself: a panic inside runPod's monitor loop — not a turn, not
+// anything a member did, the goroutine that watches the container — must not
+// reach the process. If recoverPump were missing here, this goroutine's panic
+// would crash the whole test binary rather than fail one assertion, so this
+// test passing at all (rather than the process dying) is part of the proof;
+// the health assertions below check that the failure was reported rather than
+// swallowed silently.
+func TestIsolatedRunPodPanicDoesNotCrashProcess(t *testing.T) {
+	h := newIsolatedHarness(t, nil)
+	h.start(t)
+	h.waitAllReady(t)
+
+	h.backend.setPanicOnInspect("kenward-member-eve")
+
+	waitFor(t, "eve's monitor to panic and report failed", func() bool {
+		return mustHealth(t, h.sup)["eve"].State == StateStopped
+	})
+	hs := mustHealth(t, h.sup)
+	if hs["eve"].Err == nil {
+		t.Fatal("eve's panic was not retained as a failure")
+	}
+
+	// The rest of the household is unaffected: david and the group keep serving
+	// while eve's monitor goroutine is gone.
+	if hs["david"].State != StateReady || hs["group"].State != StateReady {
+		t.Fatalf("david=%v group=%v after eve's monitor panicked, want both still ready", hs["david"].State, hs["group"].State)
+	}
+
+	h.stop(t)
+}
+
+// TestIsolatedShutdownStopPanicDoesNotCrashProcess is the sibling case: a panic
+// in the per-pod goroutine Stop launches during shutdown must not take the
+// process down either, and Stop must still return once every other pod's
+// graceful stop has completed.
+func TestIsolatedShutdownStopPanicDoesNotCrashProcess(t *testing.T) {
+	h := newIsolatedHarness(t, nil)
+	h.start(t)
+	h.waitAllReady(t)
+
+	h.backend.setPanicOnStop("kenward-member-eve")
+
+	// h.stop asserts Stop returns without error and Start unwinds cleanly; if
+	// the panic reached the process this call would never return.
+	h.stop(t)
+
+	if _, _, stops := h.backend.counts("kenward-member-david"); stops != 1 {
+		t.Fatal("david was not gracefully stopped alongside eve's panicking stop")
+	}
+	if _, _, stops := h.backend.counts("kenward-group"); stops != 1 {
+		t.Fatal("the group pod was not gracefully stopped alongside eve's panicking stop")
+	}
+}
+
 func TestIsolatedNoGoroutineLeaksAfterStop(t *testing.T) {
 	before := runtime.NumGoroutine()
 

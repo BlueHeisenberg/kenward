@@ -144,6 +144,7 @@ func TestFileStoreRefusesAMalformedFile(t *testing.T) {
 		"not json":        "{ this is not json",
 		"wrong version":   `{"version":99,"codes":[]}`,
 		"missing version": `{"codes":[]}`,
+		"empty file":      "",
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(dir, strings.ReplaceAll(name, " ", "-")+".json")

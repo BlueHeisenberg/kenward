@@ -126,9 +126,6 @@ func (s *FileStore) load() ([]Code, error) {
 	if err != nil {
 		return nil, fmt.Errorf("enrol: read %s: %w", s.path, err)
 	}
-	if len(b) == 0 {
-		return nil, nil
-	}
 	var f codeFile
 	if err := json.Unmarshal(b, &f); err != nil {
 		return nil, fmt.Errorf("enrol: parse %s: %w", s.path, err)
