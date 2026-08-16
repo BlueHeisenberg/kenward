@@ -22,6 +22,12 @@ Memory
   ✓ conversations keep their recent turns until the node restarts
     (history.reset_every is off)
 
+Reminders
+  ✓ at most 6 unprompted messages a day, per conversation
+      times are on this machine's own clock; a repeating reminder missed by more
+      than 6h0m0s is skipped rather than delivered late, and a one-off is
+      delivered however late it is
+
 Sessions
   ✓ key custody: isolated mode. Each member's key (members: david, jordan) is
     wrapped by that member's own passphrase; no single passphrase unlocks more

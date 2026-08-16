@@ -21,6 +21,14 @@ import (
 	"strings"
 	"time"
 
+	// The IANA timezone database, embedded. reminders.timezone names a zone and the
+	// node has to resolve it, but Windows ships no zoneinfo and a minimal Linux
+	// container often does not either — so without this a household that wrote
+	// "Europe/Madrid" would be refused on exactly the hosts kenward is meant to run
+	// on. It is stdlib and costs a few hundred kilobytes of binary, which is the
+	// cheapest correct answer available.
+	_ "time/tzdata"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -83,10 +91,25 @@ const (
 	// DefaultPrivateWrites is the decided behaviour: a note to a member's own space
 	// is written, then shown to them with an undo button. A household wanting the
 	// old question back sets capture.private_writes: ask.
-	DefaultPrivateWrites   = PrivateWriteSave
-	DefaultUpdateChannel   = UpdateStable
-	DefaultCheckInterval   = 6 * time.Hour
-	DefaultEndpointTimeout = 120 * time.Second
+	DefaultPrivateWrites = PrivateWriteSave
+	DefaultUpdateChannel = UpdateStable
+	DefaultCheckInterval = 6 * time.Hour
+	// DefaultRemindersMaxPerDay is how many unprompted messages one conversation may
+	// receive in a day. Six is a handful: enough for a morning routine and a few
+	// one-offs, few enough that nobody reaches for the mute button.
+	//
+	// Zero is "unset" here and is rewritten to this, unlike session.idle_timeout —
+	// the off value is a negative number precisely so that the absence of the key and
+	// a household's deliberate silence stay distinguishable.
+	DefaultRemindersMaxPerDay = 6
+	// DefaultRemindersCatchUp is how late a repeating occurrence may be delivered
+	// after the node has been off. Six hours carries a morning reminder across a node
+	// that booted late and drops one from the day before, which is the line most
+	// households would draw. It does not bound a one-off; see internal/remind.
+	DefaultRemindersCatchUp = 6 * time.Hour
+	// DefaultRemindersMaxStored caps how many reminders one conversation may hold.
+	DefaultRemindersMaxStored = 20
+	DefaultEndpointTimeout    = 120 * time.Second
 	// DefaultContextWindow is the context window assumed for an endpoint that does
 	// not state one, in tokens as the assistant estimates them.
 	//
@@ -154,6 +177,9 @@ type Config struct {
 	Session   SessionConfig    `yaml:"session"`
 	Capture   CaptureConfig    `yaml:"capture"`
 	Update    UpdateConfig     `yaml:"update"`
+	// Reminders bounds proactive messages: the timezone they are stated in, how many
+	// a conversation may receive in a day, and how late a missed one may be.
+	Reminders RemindersConfig `yaml:"reminders"`
 	// Dashboard configures the admin dashboard's HTTP server. Its zero value is off,
 	// which is what every configuration written before it existed means. See
 	// dashboard.go.
@@ -397,6 +423,53 @@ const (
 	PrivateWriteAsk PrivateWrites = "ask"
 )
 
+// RemindersConfig bounds the one thing kenward does without being asked.
+//
+// Every other message this node sends answers one a member sent. A reminder does not,
+// and that makes these three numbers the household's control over a capability it
+// cannot otherwise refuse: a household that finds the assistant chatty mutes it, and a
+// muted assistant is a dead one.
+type RemindersConfig struct {
+	// Timezone is the IANA name of the household's clock — "Europe/Madrid". Members
+	// state reminders in wall-clock time and mean their own clock, not the node's.
+	// Empty means the machine's local zone, which is right for the ordinary case of a
+	// node sitting in the house it serves.
+	Timezone string `yaml:"timezone"`
+	// MaxPerDay caps how many unprompted messages one conversation may receive in a
+	// day, counted in the household's own timezone.
+	//
+	// Zero means unset and takes DefaultRemindersMaxPerDay. A negative number turns
+	// proactive messages off entirely: reminders can still be set and are still
+	// listed, they are simply never delivered. That is deliberately expressible,
+	// because a household that wants the assistant silent should be able to say so
+	// without every member having to cancel their own reminders.
+	MaxPerDay int `yaml:"max_per_day"`
+	// CatchUpWindow is how late a *repeating* occurrence may be and still be
+	// delivered after the node has been off. It does not bound a one-off, which is a
+	// promise to a person and is delivered however late — see internal/remind.
+	CatchUpWindow Duration `yaml:"catch_up_window"`
+	// MaxStored caps how many reminders one conversation may hold at once. It is what
+	// stops a model that has learned it can call the tool from filling a member's
+	// list with them.
+	MaxStored int `yaml:"max_stored"`
+}
+
+// Location resolves the household's timezone, defaulting to the machine's own.
+//
+// An unloadable name is an error rather than a silent fall back to UTC: a household
+// that wrote "Europe/Madrid" and got reminders an hour or two out would have no way to
+// tell that from a bug, and validation reports it before anything runs.
+func (r RemindersConfig) Location() (*time.Location, error) {
+	if r.Timezone == "" {
+		return time.Local, nil
+	}
+	loc, err := time.LoadLocation(r.Timezone)
+	if err != nil {
+		return nil, err
+	}
+	return loc, nil
+}
+
 // UpdateConfig configures self-update.
 type UpdateConfig struct {
 	Channel UpdateChannel `yaml:"channel"`
@@ -552,6 +625,18 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Update.CheckInterval == 0 {
 		c.Update.CheckInterval = Duration(DefaultCheckInterval)
+	}
+	// reminders.timezone is deliberately not defaulted to a name: empty means the
+	// machine's own zone, and writing one in here would freeze a household's clock to
+	// whatever the node believed on the day it first started.
+	if c.Reminders.MaxPerDay == 0 {
+		c.Reminders.MaxPerDay = DefaultRemindersMaxPerDay
+	}
+	if c.Reminders.CatchUpWindow == 0 {
+		c.Reminders.CatchUpWindow = Duration(DefaultRemindersCatchUp)
+	}
+	if c.Reminders.MaxStored == 0 {
+		c.Reminders.MaxStored = DefaultRemindersMaxStored
 	}
 	for i := range c.Endpoints {
 		if c.Endpoints[i].Timeout == 0 {

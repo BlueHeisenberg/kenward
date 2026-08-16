@@ -150,6 +150,9 @@ func TestExampleStatesEveryDefaultedKey(t *testing.T) {
 		"capture.max_proposals_per_turn",
 		"update.channel",
 		"update.check_interval",
+		"reminders.max_per_day",
+		"reminders.catch_up_window",
+		"reminders.max_stored",
 	} {
 		if v, ok := lookupYAMLPath(raw, path); !ok || isEmptyYAMLValue(v) {
 			t.Errorf("kenward.example.yaml does not state %s; it has a default, so leaving it out still loads — "+

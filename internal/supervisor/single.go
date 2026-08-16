@@ -126,6 +126,10 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 	if secrets == nil {
 		secrets = config.NewSecrets(config.SecretOptions{LookupEnv: opts.LookupEnv})
 	}
+	remindOpts, err := remindOptions(cfg)
+	if err != nil {
+		return nil, err
+	}
 	rc := runnerConfig{
 		transport:         opts.Transport,
 		memory:            opts.Memory,
@@ -135,6 +139,7 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 		sessionMode:       session.ModeIsolated,
 		endpointKey:       endpointKeyFunc(cfg, secrets),
 		lookupEnv:         opts.LookupEnv,
+		remindOpts:        remindOpts,
 		unitOpts:          opts.Unit,
 		logger:            opts.Logger,
 		drainTimeout:      opts.DrainTimeout,

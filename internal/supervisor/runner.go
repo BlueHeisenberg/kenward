@@ -17,6 +17,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/enrol"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
+	"github.com/BlueHeisenberg/kenward/internal/remind"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
 	"github.com/BlueHeisenberg/kenward/internal/scope"
 	"github.com/BlueHeisenberg/kenward/internal/session"
@@ -67,6 +68,10 @@ type runnerConfig struct {
 	loreHome    string
 	lookupEnv   config.LookupEnvFunc
 
+	// remindOpts tunes every unit's reminder store. It is one set of numbers for the
+	// household because the cap is a household policy, but each unit gets its own
+	// Store over its own file: the limits are shared, the state never is.
+	remindOpts        remind.Options
 	unitOpts          assistant.Options
 	logger            *slog.Logger
 	drainTimeout      time.Duration
@@ -128,6 +133,15 @@ type runner struct {
 	// stopped, and cancelling turns is the drain's last resort, not its first act.
 	turnCtx    context.Context
 	turnCancel context.CancelFunc
+	// clockCtx is what the reminder clocks run under. It is cancelled the moment a
+	// drain begins — before in-flight turns are waited for — because a drain is
+	// exactly the wrong time to start sending a household messages it did not ask
+	// for, and unlike a turn there is nobody waiting on one to finish.
+	clockCtx    context.Context
+	clockCancel context.CancelFunc
+	// clockWg tracks the reminder clocks. They are kept off the active-worker count
+	// on purpose; see launchClock.
+	clockWg sync.WaitGroup
 	// draining tells unit pumps to stop after the turn they are in.
 	draining chan struct{}
 	// turnWg tracks in-flight turns. Turns run on their own goroutines — the
@@ -165,28 +179,36 @@ type pendingUnit struct {
 	key  unitKey
 	unit *assistant.Unit
 	view transport.Transport
+	// clock delivers this unit's reminders. It gets a goroutine of its own beside
+	// the unit's pump, and it sends through the unit's own view — so a reminder can
+	// only ever reach the conversation the unit already serves.
+	clock *remind.Clock
 }
 
 // newRunner wires the machinery over cfg. It returns ErrNoUnits when rc names
 // nothing to run and no Claimer could change that.
 func newRunner(cfg *config.Config, rc runnerConfig) (*runner, error) {
 	turnCtx, turnCancel := context.WithCancel(context.Background())
+	clockCtx, clockCancel := context.WithCancel(context.Background())
 	r := &runner{
-		rc:         rc,
-		logger:     rc.logger,
-		tracker:    newTracker(rc.now),
-		cfg:        snapshotConfig(cfg),
-		turnCtx:    turnCtx,
-		turnCancel: turnCancel,
-		draining:   make(chan struct{}),
-		allDone:    make(chan struct{}),
-		stoppedCh:  make(chan struct{}),
-		served:     make(map[int64]struct{}),
-		units:      make(map[unitKey]struct{}),
+		rc:          rc,
+		logger:      rc.logger,
+		tracker:     newTracker(rc.now),
+		cfg:         snapshotConfig(cfg),
+		turnCtx:     turnCtx,
+		turnCancel:  turnCancel,
+		clockCtx:    clockCtx,
+		clockCancel: clockCancel,
+		draining:    make(chan struct{}),
+		allDone:     make(chan struct{}),
+		stoppedCh:   make(chan struct{}),
+		served:      make(map[int64]struct{}),
+		units:       make(map[unitKey]struct{}),
 	}
 
 	if err := r.buildDeps(); err != nil {
 		turnCancel()
+		clockCancel()
 		r.closeOwned()
 		return nil, err
 	}
@@ -211,6 +233,7 @@ func newRunner(cfg *config.Config, rc runnerConfig) (*runner, error) {
 	}
 	if len(r.pending) == 0 && rc.claimer == nil {
 		turnCancel()
+		clockCancel()
 		r.closeOwned()
 		return nil, fmt.Errorf("supervisor: %w", ErrNoUnits)
 	}
@@ -287,13 +310,13 @@ func (r *runner) buildMemberUnit(m domain.Member) error {
 	view := r.mux.View(func(in transport.Inbound) bool {
 		return !in.IsGroup && in.UserID == telegramID
 	})
-	u, err := r.buildUnit(view, "member:"+string(m.ID), m.Tiers)
+	k := unitKey{member: m.ID}
+	u, clock, err := r.buildUnit(view, k, "member:"+string(m.ID), m.Tiers)
 	if err != nil {
 		return err
 	}
-	k := unitKey{member: m.ID}
 	r.mu.Lock()
-	r.pending = append(r.pending, pendingUnit{key: k, unit: u, view: view})
+	r.pending = append(r.pending, pendingUnit{key: k, unit: u, view: view, clock: clock})
 	r.served[telegramID] = struct{}{}
 	r.units[k] = struct{}{}
 	r.mu.Unlock()
@@ -308,20 +331,33 @@ func (r *runner) buildGroupUnit() error {
 	view := r.mux.View(func(in transport.Inbound) bool {
 		return in.IsGroup && in.ChatID == groupChatID
 	})
-	u, err := r.buildUnit(view, "group", r.cfg.Household.Tiers)
+	k := unitKey{group: true}
+	u, clock, err := r.buildUnit(view, k, "group", r.cfg.Household.Tiers)
 	if err != nil {
 		return err
 	}
-	k := unitKey{group: true}
 	r.mu.Lock()
-	r.pending = append(r.pending, pendingUnit{key: k, unit: u, view: view})
+	r.pending = append(r.pending, pendingUnit{key: k, unit: u, view: view, clock: clock})
 	r.units[k] = struct{}{}
 	r.mu.Unlock()
 	r.tracker.add(k)
 	return nil
 }
 
-func (r *runner) buildUnit(view transport.Transport, name string, tiers []string) (*assistant.Unit, error) {
+// buildUnit constructs one unit and the clock that serves it.
+//
+// The reminder store is built here, per unit, over a path derived from the unit's own
+// identity — never one store handed to several units. That is the same rule the
+// capture engine follows and it is not stylistic: a member's unit shares no mutable
+// state with any other, which is what lets identical code run as a goroutine beside
+// its siblings and alone in a pod, and a reminder table keyed by member would be the
+// first thing to break it.
+func (r *runner) buildUnit(view transport.Transport, k unitKey, name string, tiers []string) (*assistant.Unit, *remind.Clock, error) {
+	store, err := remind.Open(r.cfg.RemindersPath(k.member, k.group), r.rc.remindOpts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("supervisor: opening reminders for unit %s: %w", name, err)
+	}
+	logger := r.logger.With("unit", name)
 	engine := r.captureEngine(view)
 	unitOpts := r.unitOptions(tiers)
 	u, err := assistant.New(assistant.Deps{
@@ -331,12 +367,19 @@ func (r *runner) buildUnit(view transport.Transport, name string, tiers []string
 		Transport: view,
 		Sessions:  r.sessions,
 		Capture:   engine,
-		Logger:    r.logger.With("unit", name),
+		Reminders: store,
+		Logger:    logger,
 	}, unitOpts)
 	if err != nil {
-		return nil, fmt.Errorf("supervisor: building unit %s: %w", name, err)
+		return nil, nil, fmt.Errorf("supervisor: building unit %s: %w", name, err)
 	}
-	return u, nil
+	// The clock is given the unit's own view and nothing else. There is deliberately
+	// no router here: a reminder sends stored text and cannot reach a model, so a
+	// timer cannot spend a token or widen a tier chain even by accident.
+	clock := remind.NewClock(store, func(ctx context.Context, chatID int64, text string) error {
+		return view.Send(ctx, transport.Outbound{ChatID: chatID, Text: text})
+	}, r.rc.now, logger)
+	return u, clock, nil
 }
 
 // captureEngine builds one unit's capture engine over its own transport view.
@@ -516,7 +559,34 @@ func (r *runner) launch(ctx context.Context, pu pendingUnit) error {
 	r.mu.Unlock()
 	r.tracker.set(pu.key, StateStarting)
 	go r.runUnit(pu.key, pu.unit, ch)
+	r.launchClock(pu)
 	return nil
+}
+
+// launchClock gives one unit's reminder clock a goroutine.
+//
+// It is tracked on clockWg and deliberately NOT in the runner's active-worker count.
+// That count exists to detect one specific failure — every pump exiting, which means
+// the bot's update stream ended and no unit can receive anything — and a clock is not
+// a pump. Counting one would keep the tally above zero forever, so a dead transport
+// would never be noticed and the process would sit there serving nobody. It is the
+// kind of mistake that only shows up as a hang, and it did.
+func (r *runner) launchClock(pu pendingUnit) {
+	if pu.clock == nil {
+		return
+	}
+	r.mu.Lock()
+	if r.stopping {
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+	r.clockWg.Add(1)
+	go func() {
+		defer r.clockWg.Done()
+		defer r.recoverPump(pu.key, "reminder clock")
+		pu.clock.Run(r.clockCtx)
+	}()
 }
 
 // runUnit is one unit's pump. Each message is dispatched to Handle on its own
@@ -915,6 +985,18 @@ func (r *runner) shutdown(ctx context.Context) error {
 		// member are owed a finish.
 		close(r.draining)
 
+		// The clocks stop here rather than at the end, with the sessions. A
+		// reminder is not owed a finish the way a turn is — nobody is waiting on
+		// one — and starting to message a household during the shutdown that is
+		// taking their assistant away is the worst possible moment for the one
+		// thing this node sends unprompted.
+		//
+		// Waited for here and not with the turns: a clock returns as soon as it sees
+		// the cancellation, and nothing downstream may run while one could still be
+		// mid-send through a view the mux is about to close.
+		r.clockCancel()
+		r.clockWg.Wait()
+
 		// pumpsDone records whether every pump was seen to exit. Waiting on
 		// turnWg is only meaningful once they have: a pump still in dispatchTurn
 		// can Add while this goroutine Waits, which is the one thing a WaitGroup
@@ -1012,6 +1094,25 @@ func snapshotConfig(c *config.Config) *config.Config {
 	out.Endpoints = append([]config.EndpointConfig(nil), c.Endpoints...)
 	out.Household.Tiers = append([]string(nil), c.Household.Tiers...)
 	return &out
+}
+
+// remindOptions reads the household's reminder policy out of the configuration.
+//
+// The timezone error is propagated rather than defaulted away. Validation has already
+// rejected an unloadable name, so reaching here means the supervisor was handed an
+// unvalidated configuration — and a household whose reminders quietly arrived on UTC
+// instead of their own clock would have no way to tell that from a bug.
+func remindOptions(cfg *config.Config) (remind.Options, error) {
+	loc, err := cfg.Reminders.Location()
+	if err != nil {
+		return remind.Options{}, fmt.Errorf("supervisor: reminders.timezone: %w", err)
+	}
+	return remind.Options{
+		Location:  loc,
+		MaxPerDay: cfg.Reminders.MaxPerDay,
+		MaxStored: cfg.Reminders.MaxStored,
+		CatchUp:   cfg.Reminders.CatchUpWindow.Duration(),
+	}, nil
 }
 
 // endpointKeyFunc builds the router's key resolver over config's accessor, so

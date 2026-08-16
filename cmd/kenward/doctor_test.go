@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
+	"github.com/BlueHeisenberg/kenward/internal/remind"
 )
 
 var updateGolden = flag.Bool("update-golden", false, "rewrite the golden files in testdata")
@@ -49,6 +51,45 @@ func TestDoctorGolden(t *testing.T) {
 			got := strings.ReplaceAll(normalize(h.stdout()), h.config, "<CONFIG>")
 			compareGolden(t, tc.golden, got)
 		})
+	}
+}
+
+// TestDoctorListsWhatIsScheduled. The Reminders section is the only part of this
+// report about what the node will do when nobody is talking to it, so an operator has
+// to be able to see what is set without going near a member's chat — and must not see
+// the reminder text itself, which is that member's private business and is read over
+// somebody's shoulder here.
+func TestDoctorListsWhatIsScheduled(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, simpleYAML, fullEnvironment())
+
+	// Write a member's store where the running node would have written it.
+	cfg := &config.Config{DataDir: filepath.Join(h.dir, "data")}
+	store, err := remind.Open(cfg.RemindersPath("david", false), remind.Options{Location: time.UTC})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	r, err := remind.New("ring the plumber about the leak", remind.EveryDaily, 7, 30, time.Sunday, "", 99, now, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Add(r); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := h.run("doctor"); code != exitOK {
+		t.Fatalf("exit = %d, want 0 — a scheduled reminder is never a health failure\n%s", code, h.stderr())
+	}
+	out := h.stdout()
+	if !strings.Contains(out, "David has 1 reminder scheduled") {
+		t.Errorf("doctor does not report what is scheduled:\n%s", out)
+	}
+	if !strings.Contains(out, "every day at 07:30") {
+		t.Errorf("doctor does not say when it fires:\n%s", out)
+	}
+	if strings.Contains(out, "plumber") {
+		t.Errorf("doctor printed the reminder's text; it is the member's private business:\n%s", out)
 	}
 }
 

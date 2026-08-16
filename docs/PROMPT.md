@@ -21,10 +21,12 @@ because a member reading a transcript should be able to predict what the assista
 3. **Retrieved memory** — grouped by space, primary first, each entry rendered with its
    confidence and markers.
 4. **Capture instructions** — static, but the available destinations vary by scope.
-5. **Recent turns** — the unit-local history ring, oldest first. See *The scheduled
+5. **Reminders** — static instructions, then this conversation's own scheduled
+   messages, soonest first.
+6. **Recent turns** — the unit-local history ring, oldest first. See *The scheduled
    reset* below: the ring may be emptied on a boundary the household chose, and when it
    is, the member is told.
-6. **The member's message.**
+7. **The member's message.**
 
 ### Budget
 
@@ -33,6 +35,10 @@ endpoint's context budget, entries are dropped from the **end of the shared grou
 first**, then from the end of the private group, never from the middle, and the fact
 that entries were dropped is stated in the prompt rather than hidden. Recent turns are
 trimmed before retrieved memory: a forgotten fact is worse than a forgotten pleasantry.
+
+The reminder list is **not** elastic and is never trimmed. A model shown half a list
+will offer to cancel entries it cannot see, and the list is bounded already by
+`reminders.max_stored`.
 
 ---
 
@@ -392,6 +398,89 @@ the member, are told when they have been given less than the household holds.
 The notice is not recorded in history, for the same reason the retrieval line is not: it
 is the node accounting for itself, and a model that has seen itself announce a reset
 starts announcing them.
+
+---
+
+## Reminders
+
+A reminder is the only message kenward sends that answers nothing. The section is
+rendered in every scope — a household reminder is a real thing for the group chat to
+set, and it lands in the group chat, which is the only chat the group's unit can reach.
+
+The instruction block, verbatim, with no member name in it: it has to read correctly in
+the group conversation too, where the name placeholder becomes "The member who asked"
+and would land mid-sentence.
+
+```
+You can set a reminder by calling the remind tool. At the time asked for, this
+conversation is sent the text you wrote and nothing else happens: no answer is
+generated then, and no memory is searched. Write the message that should arrive, not a
+note to yourself.
+
+Set one only when you are asked for one. This is the only thing kenward sends without
+being spoken to first, there is a limit on how many it will send in a day, and a
+household that finds it chatty will silence it.
+```
+
+Then this conversation's own reminders, soonest first. `(none)` when there are none —
+an absent section reads as "there are none" too, but arrived at by guessing:
+
+```
+Reminders already set:
+- [a3f0] every day at 07:30 — bins go out tonight
+- [b91c] Monday 4 August at 09:00 — call the dentist
+
+To stop one, call the unremind tool with the code shown in brackets. Cancel only the
+one you were asked to cancel.
+```
+
+The closing line is rendered only when there is something to cancel. Teaching the model
+an `unremind` call it has nothing to aim at only invites it to invent a code.
+
+Reminder text is written by the model out of member text and comes back into the prompt
+here, so it is flattened to one line and indented behind a bullet, exactly as a
+retrieved entry's title is: nothing in a reminder can reach column zero and forge a
+heading of the prompt's own.
+
+```json
+{
+  "name": "remind",
+  "description": "Set a reminder. At the time asked for, this conversation is sent the text given, exactly as written. Only set one when asked for one.",
+  "input_schema": {
+    "type": "object",
+    "required": ["text", "at"],
+    "properties": {
+      "text":  {"type": "string", "description": "The message to send when the time comes, written as it will be read. Nothing is generated at that moment — this exact text is what arrives."},
+      "at":    {"type": "string", "description": "The time of day on a 24-hour clock, as HH:MM."},
+      "every": {"type": "string", "enum": ["once", "daily", "weekly"], "description": "How often it repeats. Defaults to once."},
+      "on":    {"type": "string", "description": "For once, the date as YYYY-MM-DD; for weekly, the name of the weekday. Omit it for daily, or for a one-off at the next time that clock reading comes round."}
+    }
+  }
+}
+```
+
+```json
+{
+  "name": "unremind",
+  "description": "Cancel a reminder that is already set, by the code shown beside it. Cancel only the one that was named.",
+  "input_schema": {
+    "type": "object",
+    "required": ["id"],
+    "properties": {
+      "id": {"type": "string", "description": "The code shown beside the reminder in the list of reminders above."}
+    }
+  }
+}
+```
+
+**There is no button.** A `remember` proposal is asked about because the model
+volunteered a write to a memory the household will read for years; a reminder is
+something the member asked for out loud, is reversible with one word, and writes nothing
+to lore at all. So the member is told rather than asked, in a bracketed line that rides
+on the reply the way the retrieval line does — `[reminder set, every day at 07:30: bins
+go out tonight — code a3f0]`. Every failure produces a line too: a member who asked to
+be reminded and was told nothing will believe they were, and a reminder nobody set is
+discovered by missing the thing it was for.
 
 ---
 

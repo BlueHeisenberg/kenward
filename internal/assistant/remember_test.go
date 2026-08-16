@@ -3,6 +3,7 @@ package assistant
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/capture"
@@ -208,11 +209,13 @@ func TestRememberSchemaIsValidJSON(t *testing.T) {
 		t.Fatalf("publish schema properties = %v, want title", props)
 	}
 
-	if tools := toolSpecs(testDirectScope()); len(tools) != 2 || tools[0].Name != "remember" || tools[1].Name != "publish" {
-		t.Fatalf("direct tools = %+v, want remember and publish", tools)
+	// The reminder tools are offered in both scopes; publish is the only one gated,
+	// because a group conversation has nothing to publish from.
+	if got, want := toolNames(toolSpecs(testDirectScope())), []string{"remember", "publish", "remind", "unremind"}; !slices.Equal(got, want) {
+		t.Fatalf("direct tools = %v, want %v", got, want)
 	}
-	if tools := toolSpecs(testGroupScope()); len(tools) != 1 || tools[0].Name != "remember" {
-		t.Fatalf("group tools = %+v, want exactly the remember tool", tools)
+	if got, want := toolNames(toolSpecs(testGroupScope())), []string{"remember", "remind", "unremind"}; !slices.Equal(got, want) {
+		t.Fatalf("group tools = %v, want %v — publish must not be offered where it can only be dropped", got, want)
 	}
 }
 

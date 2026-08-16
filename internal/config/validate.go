@@ -204,6 +204,7 @@ func (c *Config) ValidateForUnit(s *Secrets, scope UnitScope) error {
 	c.validateMemory(p)
 	c.validateLimits(p)
 	c.validateUpdate(p)
+	c.validateReminders(p)
 	c.validateDashboard(p)
 	c.validateScope(p, scope)
 	c.validateSecrets(p, s, scope)
@@ -615,6 +616,24 @@ func (c *Config) validateUpdate(p *problems) {
 	if c.Update.CheckInterval < 0 {
 		p.addf("update.check_interval: %s is negative", c.Update.CheckInterval)
 	}
+}
+
+func (c *Config) validateReminders(p *problems) {
+	if _, err := c.Reminders.Location(); err != nil {
+		// Not defaulted to UTC: a household whose reminders arrived an hour out
+		// would have no way to tell that from a bug, so the name has to be right
+		// before anything runs.
+		p.addf("reminders.timezone: %q is not a timezone this node can load (%v); use an IANA name such as \"Europe/Madrid\", or leave it empty for the machine's own clock",
+			c.Reminders.Timezone, err)
+	}
+	if c.Reminders.CatchUpWindow < 0 {
+		p.addf("reminders.catch_up_window: %s is negative", c.Reminders.CatchUpWindow)
+	}
+	if c.Reminders.MaxStored < 0 {
+		p.addf("reminders.max_stored: %d is negative; use 0 for the default", c.Reminders.MaxStored)
+	}
+	// reminders.max_per_day is deliberately unchecked below zero: a negative number
+	// is how a household says no proactive message is ever to be delivered.
 }
 
 // secretRef is one secret this configuration depends on, together with the reason it

@@ -36,6 +36,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
+	"github.com/BlueHeisenberg/kenward/internal/remind"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
 	"github.com/BlueHeisenberg/kenward/internal/scope"
 	"github.com/BlueHeisenberg/kenward/internal/session"
@@ -74,6 +75,10 @@ type Deps struct {
 	Sessions session.Sessions
 	// Capture runs the confirmation state machine for proposed memory writes.
 	Capture *capture.Engine
+	// Reminders is this conversation's own durable set of scheduled messages. It is
+	// this unit's and no other's: nothing keyed by member lives in this package, and
+	// a store shared between units would be the first thing to break that.
+	Reminders *remind.Store
 	// Logger receives dropped tool calls and degraded retrievals. Optional; nil
 	// discards.
 	Logger *slog.Logger
@@ -93,6 +98,8 @@ func (d Deps) validate() error {
 		return errors.New("assistant: Deps.Sessions is required")
 	case d.Capture == nil:
 		return errors.New("assistant: Deps.Capture is required")
+	case d.Reminders == nil:
+		return errors.New("assistant: Deps.Reminders is required")
 	}
 	return nil
 }
@@ -533,10 +540,21 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		u.deps.Logger.Warn("assistant: publish call dropped", "reason", warn)
 	}
 
+	// Reminders are acted on rather than proposed: there is no button and no waiting,
+	// so this happens here, before the reply goes out, and its notice rides on the
+	// reply the way the retrieval line does. It is deliberately not part of the
+	// one-question-per-turn budget below — a member who asked for a reminder and also
+	// got a capture question has had two different things happen, and being told about
+	// only one of them is how a reminder silently fails to exist.
+	remindNotice, warn := u.applyReminders(sc, comp.ToolCalls)
+	if warn != "" {
+		u.deps.Logger.Warn("assistant: reminder call dropped", "reason", warn)
+	}
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if reply != "" {
+	if reply != "" || remindNotice != "" {
 		// The retrieval line rides on the reply rather than arriving as a message of
 		// its own. A turn already costs a reply and may cost a write announcement,
 		// and a third message on every single turn — most of them saying nothing was
@@ -556,11 +574,23 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// literal asterisks on the member's screen, and with one it still does; the
 		// register the model is asked for is flat prose either way
 		// (docs/PROMPT.md).
-		outbound := transport.Esc(reply)
-		if notice := u.readNotice(shown, searched); notice != "" {
-			outbound = notice + "\n\n" + outbound
+		//
+		// The parts of one outbound message, in a fixed order: what was read, the
+		// reply itself, then what the node did about reminders. Each is omitted when
+		// empty, so a turn that only set a reminder sends the reminder notice alone —
+		// and the retrieval line stays tied to the reply, because a line about what
+		// informed an answer says nothing when there is no answer.
+		var parts []string
+		if reply != "" {
+			if notice := u.readNotice(shown, searched); notice != "" {
+				parts = append(parts, notice)
+			}
+			parts = append(parts, transport.Esc(reply))
 		}
-		if err := u.send(ctx, sc, in, outbound); err != nil {
+		if remindNotice != "" {
+			parts = append(parts, remindNotice)
+		}
+		if err := u.send(ctx, sc, in, strings.Join(parts, "\n\n")); err != nil {
 			return nil, fmt.Errorf("assistant: sending reply: %w", err)
 		}
 		// Record only a turn with both sides delivered. A turn whose reply was
@@ -568,7 +598,13 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// side would leave two consecutive user messages in the next request,
 		// which several local chat templates reject or silently merge. History is
 		// unit-local, bounded and in memory only; it is never written to lore.
-		u.history.add(in.Text, reply)
+		//
+		// A reminder-only turn is therefore not recorded either: the notice is the
+		// node accounting for itself, exactly as the retrieval line is, and feeding
+		// it back would teach the model to write those brackets itself.
+		if reply != "" {
+			u.history.add(in.Text, reply)
+		}
 	} else if proposal == nil && publishID == "" {
 		// Nothing to say, nothing to propose and nothing to publish. The model
 		// misbehaved, but the member still sent a message, so they still get an

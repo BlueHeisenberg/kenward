@@ -50,7 +50,11 @@ func TestToolSpecsMatchPromptDoc(t *testing.T) {
 		}))
 	}
 
-	for _, name := range []string{rememberToolName, publishToolName} {
+	// Every tool kenward offers, named explicitly. The reverse pass below catches a
+	// tool documented but never offered; only this list catches the opposite, so a
+	// new tool that is not added here has its doc-versus-code equality asserted by
+	// nothing at all.
+	for _, name := range []string{rememberToolName, publishToolName, remindToolName, unremindToolName} {
 		w, ok := want[name]
 		if !ok {
 			t.Errorf("docs/PROMPT.md no longer documents a %q tool; remember.go still defines one", name)

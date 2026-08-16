@@ -12,9 +12,11 @@ package assistant
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
+	"github.com/BlueHeisenberg/kenward/internal/remind"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
 )
 
@@ -144,6 +146,39 @@ const captureGroupText = `This is a group conversation, so anything remembered h
 memory. You cannot propose storing anything in a private memory from here. Nothing is
 written there unless the member who asked says yes to it first.`
 
+// remindText is the reminder instruction block, verbatim from docs/PROMPT.md.
+//
+// It names no member, unlike the capture text, because it has to read correctly in the
+// group conversation too — where the member placeholder becomes "The member who asked"
+// and would land in the middle of these sentences rather than at the start of one.
+//
+// The second paragraph is doing the work. A reminder is the only message kenward sends
+// that answers nothing, the household's allowance for them is finite, and a model that
+// sets one whenever a time is mentioned spends that allowance on messages nobody asked
+// for — which is how an assistant gets muted.
+const remindText = `You can set a reminder by calling the remind tool. At the time asked for, this
+conversation is sent the text you wrote and nothing else happens: no answer is
+generated then, and no memory is searched. Write the message that should arrive, not a
+note to yourself.
+
+Set one only when you are asked for one. This is the only thing kenward sends without
+being spoken to first, there is a limit on how many it will send in a day, and a
+household that finds it chatty will silence it.`
+
+// remindListHeading introduces the reminders already set. Like a memory section, it is
+// rendered even when empty: an absent section reads as "there are none", which is the
+// same thing here but arrived at by guessing.
+const remindListHeading = "Reminders already set:"
+
+// noRemindersText is rendered when nothing is scheduled.
+const noRemindersText = "(none)"
+
+// remindCancelText closes the section, verbatim. It is rendered only when there is
+// something to cancel — teaching the model an unremind call it has nothing to aim at
+// only invites it to invent a code.
+const remindCancelText = `To stop one, call the unremind tool with the code shown in brackets. Cancel only the
+one you were asked to cancel.`
+
 // emptyGroupText is rendered for a group whose search returned nothing. An absent
 // section reads to the model as "there is no such memory"; an explicit empty one
 // reads as "I looked and found nothing". The second is true and the first is not.
@@ -183,6 +218,13 @@ type promptInput struct {
 	hasShared     bool
 	sharedErr     bool
 	sharedDropped int
+
+	// reminders are this conversation's own, soonest first, and loc is the clock they
+	// are stated in. They are not elastic: the budget loop never trims them, because
+	// a list the model can only see half of is a list it will offer to cancel entries
+	// from that it cannot see. remind.Options.MaxStored is what bounds their size.
+	reminders []remind.Reminder
+	loc       *time.Location
 }
 
 // assemble renders the turn's request within the context budget.
@@ -251,6 +293,8 @@ func (u *Unit) promptInput(sc domain.Scope, groups []spaceGroup) promptInput {
 		scope:         sc,
 		householdName: u.opts.HouseholdName,
 		date:          u.opts.Now().Format(dateFormat),
+		reminders:     u.deps.Reminders.List(),
+		loc:           u.deps.Reminders.Location(),
 	}
 	if sc.Kind == domain.ScopeDirect && sc.Member != nil {
 		inp.memberName = sc.Member.Name
@@ -329,8 +373,38 @@ func renderSystem(inp promptInput) string {
 		captureSection += "\n\n" + fill.Replace(publishText)
 	}
 	sections = append(sections, captureSection)
+	sections = append(sections, renderReminders(inp))
 
 	return strings.Join(sections, "\n\n")
+}
+
+// renderReminders is the reminder instructions followed by what is already set.
+//
+// The list is the only reason the unremind tool can work: a model can only cancel a
+// reminder whose code it can see, and a code it invented would name somebody's other
+// reminder or nothing at all. It is rendered from this conversation's own store, which
+// holds this conversation's reminders and no other's.
+//
+// Reminder text is written by the model out of member text and comes back into the
+// prompt here, so it gets the defence a retrieved entry's title gets: every reminder is
+// one line, indented behind a bullet, so nothing in one can reach column zero and forge
+// a heading of the prompt's own.
+func renderReminders(inp promptInput) string {
+	var b strings.Builder
+	b.WriteString(remindText)
+	b.WriteString("\n\n")
+	b.WriteString(remindListHeading)
+	if len(inp.reminders) == 0 {
+		b.WriteString("\n")
+		b.WriteString(noRemindersText)
+		return b.String()
+	}
+	for _, r := range inp.reminders {
+		fmt.Fprintf(&b, "\n- [%s] %s — %s", r.ID, r.When(inp.loc), oneLine(r.Text))
+	}
+	b.WriteString("\n\n")
+	b.WriteString(remindCancelText)
+	return b.String()
 }
 
 // renderMemorySection renders one space's group: heading, entries with confidence
