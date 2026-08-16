@@ -236,16 +236,24 @@ func WithRateLimit(attempts int, window time.Duration) Option {
 	}
 }
 
+// WithAskPrivateWrites says the household has capture.private_writes: ask, so the
+// onboarding describes a question rather than a write with an Undo button. Unset is
+// kenward's default, which writes first and shows the member what it wrote.
+func WithAskPrivateWrites() Option {
+	return func(c *Claimer) { c.askPrivate = true }
+}
+
 // Claimer mints claim codes and processes messages from senders who are not yet
 // members. It is safe for concurrent use.
 type Claimer struct {
-	store  Store
-	binder Binder
-	now    func() time.Time
-	ttl    time.Duration
-	iters  int
-	limit  int
-	window time.Duration
+	store      Store
+	binder     Binder
+	now        func() time.Time
+	ttl        time.Duration
+	iters      int
+	limit      int
+	window     time.Duration
+	askPrivate bool
 
 	mu       sync.Mutex
 	attempts map[int64][]time.Time
@@ -378,7 +386,7 @@ func (c *Claimer) Handle(ctx context.Context, in transport.Inbound) (Result, err
 	return Result{
 		Enrolled: true,
 		Member:   member,
-		Messages: Onboarding(in.ChatID, member.Name),
+		Messages: Onboarding(in.ChatID, member.Name, c.askPrivate),
 	}, nil
 }
 

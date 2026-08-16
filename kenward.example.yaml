@@ -141,8 +141,9 @@ members:
     #
     # passphrase_file: /run/secrets/david-passphrase is the alternative, and the better
     # one for a pod: an environment value is readable by every process in the container
-    # and is inherited by the `lore` subprocess. Naming both is an error, not a
-    # precedence. With neither, the systemd credential `passphrase.david` is used.
+    # and is inherited by every child kenward starts, `lore serve` included. Naming
+    # both is an error, not a precedence. With neither, the systemd credential
+    # `passphrase.david` is used.
     passphrase_env: KENWARD_PASSPHRASE_DAVID
   - id: jordan
     name: Jordan
@@ -243,11 +244,17 @@ endpoints:
 
 # memory configures the lore client every unit uses for retrieval and capture.
 memory:
-  # lore_command is the argv kenward runs to start lore's own MCP server as a
-  # subprocess. This is what kenward actually ships with as its default — ["lore",
-  # "mcp"] — spelled out here rather than left implicit, because a wrong binary name is
-  # a silent failure to start memory at all rather than a validation error.
-  lore_command: ["lore", "mcp"]
+  # lore_command locates the lore executable. kenward opens the store itself, in
+  # process, through lore's Go API — this names the binary for one other thing: the
+  # sync daemon (`lore serve`) an isolated pod runs so its copy of the household's
+  # shared space reaches the other pods. Only the first element is read. Trailing
+  # elements are accepted and ignored, so a configuration written when kenward
+  # spawned `lore mcp` still loads unchanged.
+  #
+  # Naming it is worth the line on a machine where `lore` is not on PATH: in simple
+  # mode nothing needs it and it is inert, but in isolated mode a missing binary is
+  # a household whose shared memory silently stops converging.
+  lore_command: ["lore"]
   # search_limit is the per-space retrieval budget for one turn: how many entries lore
   # may return from each space in scope before assembly stops asking. Kenward's default
   # is 8; set explicitly here to the same value. Too high and prompts bloat with
@@ -292,7 +299,8 @@ session:
   #
   # passphrase_file: /run/secrets/kenward-passphrase is the better form in a container,
   # where an environment variable is readable by every process in it and is inherited
-  # by the `lore` subprocess kenward spawns. One source only: naming both is an error.
+  # by every child kenward starts, `lore serve` included. One source only: naming both
+  # is an error.
   passphrase_env: KENWARD_PASSPHRASE
 
 # capture governs how memory writes reach the member.

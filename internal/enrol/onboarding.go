@@ -18,7 +18,25 @@ import (
 // Someone was handed a code by a person they live with. What they need is the shape
 // of the thing, in the order they will run into it — this chat, the group chat, and
 // what happens when it wants to remember something.
-func Onboarding(chatID int64, name string) []transport.Outbound {
+//
+// askPrivate is capture.private_writes: false — kenward's default — means a note to
+// this member's own memory is written and then shown to them with an Undo button;
+// true means it is put as a question first. The third message says which, because
+// it is the one the member acts on, and a member told to expect a Save button who
+// gets a written note and an Undo instead has been lied to about the one promise
+// this product is built on.
+func Onboarding(chatID int64, name string, askPrivate bool) []transport.Outbound {
+	third := "When something sounds worth keeping for your own memory, I write it " +
+		"down and then show you exactly what I wrote and which memory it went to, " +
+		"with an Undo button that takes it back. Anything for the household's " +
+		"shared memory I ask about first and write nothing until you tap Save.\n\n" +
+		"Either way you always see it. That's all of it. Just talk to me normally."
+	if askPrivate {
+		third = "I never save anything by myself. When something sounds worth " +
+			"keeping I'll ask — you'll see what I'd write down and which memory it " +
+			"goes to, and you tap Save or Don't save. If you don't answer, I don't " +
+			"save it.\n\nThat's all of it. Just talk to me normally."
+	}
 	texts := []string{
 		fmt.Sprintf(
 			"Hello %s. You're in.\n\n"+
@@ -32,10 +50,7 @@ func Onboarding(chatID int64, name string) []transport.Outbound {
 			"should become shared, ask me, and I'll show you the exact text before any " +
 			"of it moves.",
 
-		"I never save anything by myself. When something sounds worth keeping I'll " +
-			"ask — you'll see what I'd write down and which memory it goes to, and you " +
-			"tap Save or Don't save. If you don't answer, I don't save it.\n\n" +
-			"That's all of it. Just talk to me normally.",
+		third,
 	}
 
 	out := make([]transport.Outbound, 0, len(texts))

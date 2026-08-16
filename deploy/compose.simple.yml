@@ -63,7 +63,7 @@
 # in every variable that happens to sit in `.env` — including keys for
 # providers this household's kenward.yaml never references, or secrets left
 # over from something else sharing the file — and hands all of it to this
-# process and to the `lore` subprocess it spawns. Listing only the variables
+# process, and to any `lore serve` it starts. Listing only the variables
 # kenward.yaml actually names keeps that surface to what is in use.
 
 services:
@@ -105,8 +105,8 @@ services:
       # wrapping secret for everything under kenward-data, not a login.
       #
       # A file is better than this variable if you can manage one, because an
-      # environment variable is inherited by the `lore` subprocess kenward
-      # spawns. Two ways to do that, and pick exactly one:
+      # environment variable is inherited by every child process kenward starts,
+      # `lore serve` included. Two ways to do that, and pick exactly one:
       #
       #   1. kenward.yaml's own `session: passphrase_file: /run/secrets/…`,
       #      mounted read-only at 0600. Drop the line below and the
@@ -125,13 +125,13 @@ services:
       # kenward reports which one it used at startup — `source=…` on the
       # sessions line — which is how you check.
       KENWARD_PASSPHRASE: ${KENWARD_PASSPHRASE}
-      # Where the `lore` this container spawns keeps its store. It must be
-      # under the data volume below and it must be stated: unset, lore falls
-      # back to $HOME/.lore — /home/nonroot/.lore in this image — which is on
-      # the read_only root filesystem, so the store cannot be created, `lore
-      # mcp` exits, and kenward runs on with no memory at all. Same variable
-      # and same path as every service in compose.isolated.yml, for the same
-      # reason.
+      # Where this container's lore store lives. kenward opens it in process, so
+      # this is the store the household actually remembers into. It must be under
+      # the data volume below and it must be stated: unset, lore falls back to
+      # $HOME/.lore — /home/nonroot/.lore in this image — which is on the
+      # read_only root filesystem, so the store cannot be created and kenward
+      # refuses to serve rather than running on with no memory. Same variable and
+      # same path as every service in compose.isolated.yml, for the same reason.
       LORE_HOME: /var/lib/kenward/lore
       # Add one line here (and in .env) per api_key_env your endpoints
       # reference, e.g.:
