@@ -22,12 +22,12 @@ of the rest of this document.
 
 | Suite | Telegram | Model | lore | Runs on |
 | --- | --- | --- | --- | --- |
-| package unit tests | fake | fake | scripted fake | every commit |
+| package unit tests | fake | fake | fake `memory.Memory` | every commit |
+| `internal/memory` | — | — | **real store, temp home** | every commit |
+| `internal/setup/spaces_lore_test.go` | — | — | **real store, temp home** | every commit |
 | `internal/e2e` (most files) | `transport.Fake` | `httptest` | scripted recorder | every commit |
 | `internal/e2e/telegram_test.go` | **real client, real HTTP** | `httptest` | scripted recorder | every commit |
-| `internal/e2e/live_test.go` | `transport.Fake` | **real endpoint** | **real `lore mcp`** | `-tags integration` |
-| `internal/memory/integration_test.go` | — | — | **real `lore mcp`** | `-tags integration` |
-| `internal/setup/spaces_lore_test.go` | — | — | **real `lore` CLI** | `-tags integration` |
+| `internal/e2e/live_test.go` | `transport.Fake` | **real endpoint** | **real store** | `-tags integration` |
 | `internal/supervisor/isolated_integration_test.go` | — | — | — | `-tags integration`, Linux, **real Podman** |
 
 ## The real Telegram client, on every commit
@@ -60,9 +60,11 @@ the wire rather than the store.
 ## Real lore and a real model
 
 `internal/e2e/live_test.go` is the one suite with no fake below Telegram. It builds the
-production wiring with a real `memory.Client` over a real `lore mcp` subprocess and a real
+production wiring with a real `memory.Client` over a real embedded lore store and a real
 `routing.Pool` over a real OpenAI-compatible endpoint, and fakes only Telegram, for which
-the suite has no token.
+the suite has no token. A third observer, `loreCLI`, reads and writes the same store
+through the `lore` binary out of process, so what kenward wrote is checked with something
+other than the library it wrote with.
 
 Two observers sit in the path and neither replaces a dependency: `spyMemory` records which
 spaces each call named and then delegates, so every answer comes from lore; and
@@ -163,9 +165,6 @@ they matter less:
 KENWARD_E2E_ENDPOINT=http://localhost:11434/v1 \
 KENWARD_E2E_MODEL=qwen2.5:0.5b \
 go test -tags integration -run TestLive ./internal/e2e/
-
-# real lore, parser and MCP handshake only
-KENWARD_LORE_BIN=/path/to/lore go test -tags integration ./internal/memory/
 
 # real Podman, lifecycle only
 KENWARD_TEST_IMAGE=docker.io/library/alpine go test -tags integration ./internal/supervisor/
@@ -272,19 +271,19 @@ is refused and exits. The test asserts that rather than tolerating it: everythin
 about happens before that call and leaves evidence on the pod's volume, and a pod that
 died earlier died of something the test is looking for.
 
-One operator step has no automation behind it and the test performs it: a pod's `/work`
-volume starts empty, `lore mcp` exits before the MCP handshake when its `LORE_HOME` holds
-no account, and `kenward run` refuses to serve a unit whose memory layer does not answer.
-So a supervisor-started pod on a fresh volume crash-loops until somebody runs `lore init`
-against that volume, and nothing in kenward does it.
+A pod's `/work` volume starts empty, a lore home with no account in it cannot be opened,
+and `kenward run` refuses to serve a unit whose memory layer does not answer — so a fresh
+volume used to crash-loop until an operator ran `lore init` against it. `kenward run` now
+does that for itself with `lore.Init` before it serves, and this suite exercises that
+path rather than performing the step on its behalf.
 
 ## What this has and has not proved
 
 It has proved that the logic is right, that the pieces fit together, and — since the live
 and Telegram suites landed — that the two dependencies most likely to disagree with their
-fakes do not: lore's real output still matches the golden corpus and answers the MCP
-handshake this SDK performs, and the real `go-telegram` client confirms its offsets
-correctly over real HTTP. Scope resolution holds over generated households, routing cannot
+fakes do not: lore is now imported rather than imitated, so `internal/memory` has no fake
+left to disagree with it, and the real `go-telegram` client confirms its offsets correctly
+over real HTTP. Scope resolution holds over generated households, routing cannot
 reach an endpoint outside a chain, a group conversation cannot name a private space, a
 shared write requires approval, and the whole path from an inbound message to a reply
 works when assembled.

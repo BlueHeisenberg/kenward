@@ -166,12 +166,13 @@ per-OS state location. It is what the container image sets, since a container's 
 directory is not where anyone expects state to live.
 
 **It refuses to start unless lore actually answers.** Before anything is built, `run`
-looks for `memory.lore_command[0]` on `$PATH` and then completes one bounded MCP
-handshake with it — the same one `doctor` performs. Both halves are needed: a missing
-binary and an uninitialised `LORE_HOME` produce the same outcome, a node that runs,
-answers and records nothing, and only the handshake catches the second. `lore mcp` exits
-before the handshake against a store with no account, which is the state every fresh
-container volume is in, so the refusal names `lore init` as the usual remedy. A space
+looks for `memory.lore_command[0]` on `$PATH` — the binary is still needed, for the
+`lore serve` sync daemon — and then opens the store and searches it once, the same check
+`doctor` performs. Both halves are needed: a missing binary and an uninitialised
+`LORE_HOME` produce different failures and only the second stops memory working. A home
+with no account in it cannot be opened, which is the state every fresh container volume
+is in, so the refusal names `lore init` as the remedy — though a pod started by the
+supervisor initialises its own home before reaching this point. A space
 lore does not hold is *not* a refusal — that is one space's problem and `doctor` reports
 it. The isolated **host supervisor** is exempt: it starts pods and holds no memory client
 of its own, and each pod asks this question of its own image on its own way up.
@@ -380,11 +381,11 @@ Configuration
   ✓ every secret the configuration names can be read
 
 Memory
-  ✓ lore mcp responds
+  ✓ lore answers
   ✓ space "7d5047bb-d939-4539-b3db-8b6221a2e245" reachable
   ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
   ✓ space "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19" reachable
-  ! `lore mcp` does not sync on its own
+  ! this lore store does not sync on its own
       run `lore serve` on the same LORE_HOME if this store should reach another
       machine
 

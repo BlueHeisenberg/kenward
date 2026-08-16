@@ -101,7 +101,7 @@ memory — it structurally cannot, since the retrieval never happened — but th
 ## Rendering retrieved memory
 
 ```
-## {{if .PrivatePartial}}Excerpts from{{else}}From{{end}} {{.MemberName}}'s private memory
+## From {{.MemberName}}'s private memory
 {{range .Private}}
 <entry>
 - {{.Title}} [{{.Confidence}}]{{if .Markers}} ({{join .Markers ", "}}){{end}}
@@ -109,7 +109,7 @@ memory — it structurally cannot, since the retrieval never happened — but th
 </entry>
 {{end}}
 
-## {{if .SharedPartial}}Excerpts from{{else}}From{{end}} the household's shared memory
+## From the household's shared memory
 {{range .Shared}}
 <entry>
 - {{.Title}} [{{.Confidence}}]{{if .Markers}} ({{join .Markers ", "}}){{end}}
@@ -118,11 +118,8 @@ memory — it structurally cannot, since the retrieval never happened — but th
 {{end}}
 ```
 
-The heading is conditional because it is a claim about what is underneath it, and the
-rule it follows is set out under *Retrieved items are excerpts* below: a section showing
-any excerpt is headed **Excerpts from**, a section whose entries are all complete keeps
-**From**, and a mixed section counts as excerpts. Treating complete information as
-possibly partial is the harmless error; the reverse is not.
+`{{.Body}}` is the entry's whole body. See *Retrieved entries are whole* below; the
+heading used to be conditional and is not any more.
 
 Empty groups are rendered as an explicit statement, not omitted:
 
@@ -147,17 +144,30 @@ the subject, and the member would never learn that the answer was given without
 consulting a memory that exists. An error disguised as an honest empty is worse than
 either.
 
-**Retrieved items are excerpts, and the prompt says so.** lore's search returns a snippet
-rather than a full entry — no origin, no timestamps, and a body that may be elided in the
-middle. Presenting that as the whole memory teaches the model to answer confidently from
-a fragment. The section heading therefore reads *"Excerpts from …"* rather than *"From
-…"*, and the instruction block states that these are search results and that an entry may
-continue beyond what is shown. That note renders whenever any section is headed as
-excerpts and never otherwise, so it cannot describe entries that are not there.
+**Retrieved entries are whole, and the prompt no longer hedges.** lore's search returns
+the entry — the complete body, with a snippet alongside that kenward does not use, and
+with the origin and timestamps too. So a retrieved entry is the memory, the heading is
+always *"From …"*, and nothing tells the model an entry might continue past what it can
+see.
 
-The empty and failed cases above keep *"From …"*, deliberately: nothing is shown, so
-there is no partiality to disclose, and calling an absent section a set of excerpts would
-be a claim about content that does not exist.
+This is a change, and the reason it was ever otherwise is worth keeping. kenward used to
+reach lore by spawning `lore mcp` and parsing its human-readable output, and that server
+rendered lore's twelve-token FTS5 snippet and threw the body away. Retrieval really was a
+fragment then, with no origin and no timestamps, so the prompt said so: sections showing
+one were headed *"Excerpts from …"*, a paragraph explained what an excerpt was, and
+`memory.Entry` carried a `Partial` flag so nothing could render a fragment as a memory by
+accident. All of that was honest about a real limitation — and all of it was an artefact
+of the MCP server rather than of lore. D-036 imported lore instead, and the limitation
+went with it.
+
+Keeping the hedge would now be the same kind of error in the other direction. A model
+told that complete information may be incomplete discounts what it has been given, and
+the member pays for that in worse answers with no compensating honesty.
+
+**What is still disclosed**, because it is still true: an empty section says so, a
+failed retrieval says so, and entries dropped to fit the context budget are counted in
+the prompt. Those are the three ways the model can be given less than the household
+holds, and none of them is silent.
 
 **Retrieved entries are delimited, and the prompt says they are data.** Titles, bodies
 and markers are written by members. The shared space is writable by *any* member and is
@@ -292,11 +302,13 @@ it:
 ```
 
 **It takes a title and no id, and that is the whole security design of the tool.**
-lore's ids are global and `lore_get` is not space-scoped, so an id is a capability:
-whoever holds one can name an entry in any space, including one this conversation may
-not read. An id may therefore only originate from a search performed inside the current
-scope, and the model is not such a source — everything it writes is derived from what
-the member just said. So the model names a title it can see, and the node resolves it
+lore's ids are global to a store, so an id names an entry in any space, including one
+this conversation may not read. The store refuses a read that names a space the entry is
+not in — kenward always passes one — but that only protects the space a caller *claims*;
+it cannot tell a legitimate id from one the model invented for a space it does happen to
+read. So an id may only originate from a search performed inside the current scope, and
+the model is not such a source: everything it writes is derived from what the member just
+said. The model names a title it can see, and the node resolves it
 against *this turn's own retrieval* in the space this scope writes to. A title matching
 no retrieved entry, or more than one, is dropped with a log line exactly like a
 malformed `remember`: nothing is asked and nothing reaches memory, not even the read

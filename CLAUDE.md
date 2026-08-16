@@ -40,13 +40,13 @@ a refactor.
 - **Nothing is written to memory without an explicit member confirmation**, and there is
   no configuration option to disable it.
 - **A group conversation never offers a personal capture destination.**
-- **An entry id never comes from member-supplied text.** lore's ids are global and
-  `lore_get` is not space-scoped, so an id is a capability: whoever holds one can name an
-  entry in any space. Ids must originate only from a search performed within the current
-  Scope, or from a promotion flow that already resolved one. The memory client verifies
-  the fetched entry's space and rejects a mismatch, but that check resolves spaces by
-  display name and lore does not enforce name uniqueness — so it is a second line of
-  defence, not the first. The first is never accepting an id from a member.
+- **An entry id never comes from member-supplied text.** lore's ids are global to a
+  store, so an id names an entry in any space. Ids must originate only from a search
+  performed within the current Scope, or from a promotion flow that already resolved one.
+  Every read naming both an id and a space is scoped by lore and refuses a mismatch — an
+  id comparison inside the store, not the display-name check it used to be — but that
+  only protects the space a caller claims, so it is a second line of defence. The first
+  is never accepting an id from a member.
 - **Simple mode is described honestly.** Separation between members is real in both
   modes; sealing against the operator exists only in Isolated. Never use sealed-memory
   language for Simple mode.

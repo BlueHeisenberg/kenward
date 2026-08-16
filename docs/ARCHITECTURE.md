@@ -72,9 +72,9 @@ anything assuming a single key.
 
 ## Memory: lore, unchanged
 
-kenward owns no knowledge model. It calls `lore_search`, `lore_get`, `lore_put`,
-`lore_spaces` and `lore_share` on a `lore mcp` subprocess and treats lore's spaces,
-entries, markers, confidence and origin fields as given.
+kenward owns no knowledge model. It imports `github.com/BlueHeisenberg/lore`, opens one
+store per lore home in its own process, and treats lore's spaces, entries, markers,
+confidence and origin fields as given.
 
 The hard half of a household assistant is per-person identity, cryptographic separation,
 invites and multi-device sync. That half already exists in lore, so kenward is the
@@ -106,8 +106,8 @@ everything.
 A private conversation reads shared memory because that is useful — you should be able to
 ask when the bins go out. A group conversation can never read a private space, because
 that is the entire point. Copying something out of a private space into the shared one is
-an explicit, reviewed act using `lore_share`, so that lore's own provenance survives the
-move and the member sees the full text before it is published.
+an explicit, reviewed act using lore's own copy, so that its provenance survives the move
+and the member sees the full text before it is published.
 
 Multi-space results come back grouped in the order the spaces were asked for, not globally
 re-ranked. Ranking across spaces is a policy decision that belongs to the assistant rather
@@ -119,22 +119,34 @@ not a ranking strategy.
 Established by reading lore's source rather than assuming, and listed here because several
 of these constrain the design:
 
-- `lore mcp` is stdio only and returns unstructured text, not JSON, so the client is a
-  parser tested against a golden corpus. A format change should fail loudly in one place.
-- There is no Go client package — everything in lore is under `internal/` — so the wire is
-  the only interface even though both sides are Go.
+- **lore's public Go API is the interface**, and it is a compatibility promise: typed
+  entries, typed errors, `context.Context` on everything that touches the database.
+  Everything under lore's `internal/` is explicitly not promised — sync, signing,
+  membership, the schema — and kenward reaches none of it.
+- **Search returns whole entries**, body included, with a snippet alongside and with
+  origin, timestamps and version. This was not true of `lore mcp`, which rendered the
+  snippet and discarded the entry, and kenward carried an excerpt doctrine to stay
+  honest about it. That doctrine is gone; see PROMPT.md.
+- **Space creation and init are on the API** (`lore.Init`, `Store.CreateSpace`) but
+  neither can make a space *at a chosen id*. A pod can therefore create its own store
+  and not the spaces `kenward.yaml` names.
 - **Sync is last-writer-wins per entry, not a CRDT.** The losing version is discarded
   silently, with no conflict record, and a machine with a fast clock wins every conflict.
   Household clocks should be synced, and nothing in kenward may assume a write it made is
   still there.
-- **Delete is a signed tombstone, by id, and space-scoped.** `lore_delete(id, space)`
-  stops an entry coming back from search and get, here and on every synced device;
-  deleting an already-deleted entry is a no-op. It is not a shred, and nothing kenward
-  says to a member may promise one. It is also no help after a write whose answer was
-  lost — the id was in the receipt that never arrived.
-- `lore mcp` alone never syncs; that needs a separate `lore serve`. Any deployment running
-  more than one lore instance must run both.
-- Invites are not exposed over MCP, so enrolment drives lore's CLI.
+- **Delete is a signed tombstone, by id, and space-scoped.** It stops an entry coming
+  back from search and get, here and on every synced device; deleting an already-deleted
+  entry is a no-op. It is not a shred, and nothing kenward says to a member may promise
+  one.
+- **A write's outcome is always known.** The store commits and returns, or returns an
+  error having written nothing. There is no third case, and kenward no longer carries an
+  `ErrWriteUncertain` for one — that existed because a lost MCP response left an entry
+  that might exist under an id kenward never received.
+- **Opening a store does not sync it**; that needs a separate `lore serve` process, and
+  kenward pokes it after each write (`lore.Options.NotifyOnWrite`) so the write leaves
+  the machine now rather than at the daemon's next poll. Any deployment running more than
+  one lore instance must run both.
+- Invites are not on the Go API, so enrolment drives lore's CLI.
 - `confidence` and `origin` are enforced enums, but **markers are free-form** — the
   familiar vocabulary is convention only and must not be validated against.
 - Instances isolate by `LORE_HOME`, not by machine. Several lore daemons can run on one
@@ -168,34 +180,38 @@ is the property the mode exists for. Until the sharing is wired, isolated mode's
 group has memory only in the group pod, and `deploy/compose.isolated.yml` says so in its
 header.
 
-This was found by running the mode rather than by reading it, and it is recorded rather
-than fixed because the next section moves kenward from `lore mcp` to a Go import, which may
-change what the fix looks like. Solving it twice would be the waste.
+This was found by running the mode rather than by reading it. It is not fixed by D-036
+either: `lore.CreateSpace` mints a fresh id, so a pod still cannot materialise a space
+whose id an operator already wrote into `kenward.yaml`.
 
-### Decided but not built: lore becomes an import
+### Built: lore is an import
 
-D-036 replaces the MCP seam described above with a Go package published at lore's module
-root, which kenward imports. `cmd/lore` keeps `lore mcp` for every other MCP client and
-`lore serve` for sync; what goes away is kenward's text-parsing layer, deleted rather than
-ported.
+D-036 replaced the MCP seam with lore's public Go package, imported at
+`github.com/BlueHeisenberg/lore`. `cmd/lore` keeps `lore mcp` for every other MCP client
+and `lore serve` for sync; kenward's text-parsing layer was deleted rather than ported.
 
 The seam bought two real things — a language rewrite that cost the assistant and nothing
-else, and a lore forced to have an external surface — and neither is still being paid for.
-What it costs is countable: `internal/memory/parse.go` is 500 lines mirroring lore's format
-strings, `errors.go` is 253 lines classifying error text, and `testdata/` holds 31 captured
-fixtures to keep them honest. Several properties this document attributes to lore turn out
-to be artefacts of the MCP server rather than of lore — search returns whole entries with
-origin and timestamps, and the excerpt doctrine threaded through `internal/memory` and the
-prompt exists because the server prints only the snippet.
+else, and a lore forced to have an external surface — and neither was still being paid
+for. What it cost was countable and is now gone: `internal/memory/parse.go` was 500 lines
+mirroring lore's format strings, its error classifier 253 lines matching error prose, and
+`testdata/` held 31 captured fixtures to keep them honest. Seven defects in one session
+came out of that layer.
+
+Several properties this document used to attribute to lore were artefacts of the MCP
+server. Search returns whole entries with origin and timestamps; the excerpt doctrine
+that ran through `internal/memory` and the prompt existed only because the server printed
+the snippet and dropped the body. Both are gone — see PROMPT.md.
+
+`memory.Memory` did not move. It was written as the seam and it held: roughly thirty call
+sites across `assistant`, `capture`, `setup`, `supervisor` and `cmd/kenward` are untouched
+by the change.
 
 **The never-fork rule survives unchanged.** kenward imports lore, defines no knowledge
 model, reimplements nothing.
 
-**Nothing of this is built**, and the falsifying symbol is a one-liner: a
-`github.com/BlueHeisenberg/lore` line in `go.mod`. There is none, `internal/memory` still
-speaks MCP over stdio, and everything above this section describes what the code does
-today. Two preconditions also sit on lore's side — its `go.mod` carries an absolute-path
-`replace` for agentmesh, so it builds on one machine, and it has no `LICENSE` file at all.
+What still shells out, and why: `lore serve`, because a supervised long-running daemon is
+a process and not a call. That is the whole list. `memory.lore_command` survives to locate
+that binary and nothing else — only its first element is read.
 
 ## Identity and enrolment
 
@@ -339,7 +355,7 @@ that stops letting it remember anything.
 - **Announcing a read is configurable, default on.** It is information rather than a
   control.
 
-Undo needed a delete lore did not have. It became a lore change: `lore_delete(id, space)`
+Undo needed a delete lore did not have. It became a lore change: a space-scoped delete
 writes a signed tombstone that propagates, and `internal/memory.Delete` reaches it. A
 tombstone is not the same promise as a removal, so the announcement says which — *"it
 won't come back in an answer, here or on any other device"* rather than *"erased"*.

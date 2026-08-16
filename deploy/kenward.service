@@ -34,7 +34,7 @@ ExecStart=/usr/local/bin/kenward run --config /etc/kenward/kenward.yaml --data-d
 # An EnvironmentFile= value lives in this process's environment for as long
 # as it runs: readable via /proc/<pid>/environ by anything with access to
 # that (this unit's user, or root), and automatically inherited by every
-# child process it spawns — including the `lore mcp` subprocess kenward
+# child process it spawns — including the `lore serve` subprocess kenward
 # starts, whether or not lore has any business seeing a Telegram token.
 # LoadCredential= avoids both: each credential is materialised as its own
 # read-only (mode 0400) file under $CREDENTIALS_DIRECTORY, a directory
@@ -126,7 +126,7 @@ ProtectHome=yes
 PrivateTmp=yes
 
 # --- Privilege ---
-# No process this unit starts (including the spawned `lore mcp` subprocess)
+# No process this unit starts (including the spawned `lore serve` subprocess)
 # may gain privileges it didn't start with, e.g. via a setuid binary.
 NoNewPrivileges=yes
 # Strip every Linux capability; kenward binds no privileged port and needs

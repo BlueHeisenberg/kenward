@@ -178,7 +178,6 @@ type Entry struct {
     Origin     string
     CreatedAt  time.Time
     UpdatedAt  time.Time
-    Partial    bool      // this is a search excerpt, not a whole entry
 }
 
 type Draft struct {
@@ -201,6 +200,7 @@ type Memory interface {
     Get(ctx context.Context, space SpaceID, id string) (Entry, error)
     Put(ctx context.Context, space SpaceID, d Draft) (Entry, error)
     Share(ctx context.Context, from, to SpaceID, entryID string) (Entry, error)
+    Delete(ctx context.Context, space SpaceID, entryID string) error
     Close() error
 }
 
@@ -215,19 +215,22 @@ Results from a multi-space search are returned **grouped in the order of
 `q.Spaces`**, not globally re-ranked — ranking across spaces is a policy decision that
 belongs to the assistant, not the client.
 
-`Confidence` and `Origin` carry lore's vocabularies and are checked as the client parses
-lore's output, inside `internal/memory`. `internal/config` has no say in it: the
+`Confidence` and `Origin` carry lore's vocabularies and are checked against lore's own
+typed constants inside `internal/memory`. `internal/config` has no say in it: the
 vocabularies belong to lore, not to a household's configuration, and nothing in
 `kenward.yaml` may widen or narrow them.
 
-`Partial` is the one field a caller may not infer. lore's search returns a snippet — a
-body that may be elided in the middle, with no origin and no timestamps — while `Get`
-returns the whole entry, and only the client knows which it just handled. It is a field
-rather than a heuristic because the consequence of getting it wrong is invisible:
-anything rendering an entry into a prompt must say which it has, and a model shown a
-fragment under a heading claiming completeness will answer confidently from the part it
-can see. `PROMPT.md` describes how the prompt says so; an invariant test asserts that
-every entry crossing the `Memory` interface carries the right value.
+**Every `Entry` is whole.** `Body` is the entry's whole body on every path, `Search`
+included, and `Origin`, `CreatedAt` and `UpdatedAt` are always the stored values.
+
+That has not always been true, and the struct used to carry a twelfth field —
+`Partial bool` — to say so. While kenward reached lore by parsing the text of
+`lore mcp`, a search hit was lore's twelve-token snippet with no origin and no
+timestamps, because the MCP server rendered the snippet and discarded the entry. The
+flag existed because the consequence of confusing the two is invisible: a model shown a
+fragment under a heading claiming completeness answers confidently from the part it can
+see. lore's search result embeds the entry, so there is no fragment, no flag, and no
+disclosure for the prompt to make. See `PROMPT.md`.
 
 ### `internal/transport`
 
@@ -622,12 +625,12 @@ enforce unique display names, and the rule that an entry id must never come from
 member-supplied text (§12) rests on the client being able to check which space an entry
 actually lives in. That check is worth nothing if two spaces can answer to one name.
 
-The failure mode is what makes it worth a heading rather than a footnote. lore's own
-tools accept either form, and its `lore_put` argument is lenient, so a display name here
-**writes successfully and fails on the first read**. A household would configure it,
-capture memories for a week, and discover on the first retrieval that nothing comes back
-— with the writes already permanent: they were made under a name, and a delete needs the
-id from a receipt nobody read. `kenward doctor` therefore
+The failure mode is what makes it worth a heading rather than a footnote. lore's own CLI
+accepts either form, so a name that reached a write once looks like it works. kenward
+resolves a space by id before every call and refuses a name outright (`ErrUnknownSpace`),
+which turns what would have been a household capturing memories for a week and finding
+nothing on the first retrieval into a refusal at the first call. `kenward doctor`
+therefore
 treats a name it cannot resolve to a space as a configuration fault and exits 2, telling
 the operator to run `lore spaces` and take the id column, and saying explicitly that a
 name fails only on reads.
@@ -713,7 +716,7 @@ environment is readable by every process in the container and visible in `/proc`
 member's pod holds that member's bot token — whoever holds a bot token reads every
 message ever sent to it. Under systemd, an `EnvironmentFile=` value sits in the
 process's environment for as long as it runs and is inherited by every child it spawns,
-including the `lore mcp` subprocess, which has no business seeing a Telegram token.
+including the `lore serve` subprocess, which has no business seeing a Telegram token.
 
 So a secret has three possible sources:
 
@@ -1112,8 +1115,7 @@ in a different state in each:
 | Ending | What the member gets |
 | --- | --- |
 | Delete confirmed, or the entry was already a tombstone | *"Removed … It won't come back in an answer, here or on any other device in the household."* Outcome is `OutcomeUndone`, and `Stored()` is false. |
-| lore refused the delete | *"I couldn't take that back: … is still in your private memory."* The outcome stays `OutcomeSaved`, because it is. |
-| lore never answered (`ErrWriteUncertain`) | *"I can't tell whether … was removed — the memory store didn't answer."* Both "removed" and "still there" would be guesses about the member's own memory. |
+| lore refused the delete, for any reason | *"I couldn't take that back: … is still in your private memory."* The outcome stays `OutcomeSaved`, because it is. There is no second failure row: the store writes the tombstone or returns an error, so the entry's state is never unknown. It could be while lore was a subprocess, and this table had a *"I can't tell whether … was removed"* row for it. |
 | Nobody taps; the window closes | The announcement is edited in place, keeping its text and appending *"— the undo window has closed; this is still in memory"*. |
 | The announcement itself could not be sent | A plain confirmation, saying the undo button did not go through. Silence here would be a silent write. |
 
@@ -1170,9 +1172,10 @@ Rules:
 it needs a trigger, and the trigger is the `publish` tool. The member asks; the model
 calls `publish` with the *title* of an entry, never an id.
 
-The absence of an id is the point. lore's ids are global and `lore_get` is not
-space-scoped, so an id is a capability: whoever holds one can name an entry in any
-space (§12). An id may only originate from a search performed inside the current Scope,
+The absence of an id is the point. lore's ids are global to a store, so an id names an
+entry in any space; the store refuses a read whose space does not match, but that only
+protects the space a caller claims and cannot tell a real id from an invented one (§12).
+An id may only originate from a search performed inside the current Scope,
 and the model is not such a source — everything it writes derives from what the member
 just said, so an id from the model is an id from the member. The node therefore
 resolves the title against **this turn's own retrieval**, in the space the Scope writes
@@ -1354,34 +1357,32 @@ one host would make `doctor` useless for checking a configuration before shippin
 
 **The question is "does lore answer", not "is lore installed", and the difference is
 where this was wrong first.** `exec.LookPath` on `memory.lore_command[0]` was the whole
-of the check, and it stops one step short of the failure it exists to prevent: `lore mcp`
-exits *before* the MCP handshake when `LORE_HOME` holds no account —
+of the check, and it stops one step short of the failure it exists to prevent: a lore
+home with no account in it cannot be opened —
 
 ```
-lore: load account (run `lore init` first?): no account at /home/nonroot/.lore/account.json (run `lore init`)
+memory: opening the lore store at /home/nonroot/.lore: memory: lore store is unavailable: lore: home is not initialised: no account.json in /home/nonroot/.lore (run `lore init`)
 ```
 
 — which is the state every fresh container volume is in. Measured against a real
 container, the binary was on `$PATH`, the check passed, and the node started into exactly
-the silence the check exists to prevent. So `run` now does both: the PATH lookup, whose
-refusal names the two ways to get a binary into an image, and then one bounded MCP
-handshake through the same seam `doctor` probes with, so the two cannot drift. Its
-refusal names `lore init`.
+the silence the check exists to prevent. So `run` now does both: the PATH lookup, which
+still matters because `lore serve` is a real binary this deployment has to have, and then
+one bounded open-and-search through the same seam `doctor` probes with, so the two cannot
+drift. Its refusal names `lore init`.
 
 Two lines are drawn deliberately. **Only lore failing to answer is fatal** — a space lore
 does not hold is one space's problem and `doctor`'s to report, and refusing a household
 its assistant over a mistyped space id would be a larger outage than the silent one being
 prevented. And the handshake is a **hard** refusal, bounded at thirty seconds, rather than
-a warning with a retry: `lore mcp` is a local subprocess over a local SQLite store, there
-is no network in this path, and its one transient failure — store contention — is already
-retried with backoff inside `internal/memory`. Whatever has not answered by then is not
-momentary. A node that hangs at startup is worse than one that refuses: a container
+a warning with a retry: it is a local SQLite store opened in this process, there is no
+network in this path, and its one transient failure — store contention — is already
+retried inside lore. Whatever has not answered by then is not momentary. A node that hangs at startup is worse than one that refuses: a container
 runtime restarts it either way, and only the refusal leaves a line an operator can read.
 
 The one process exempt is the **isolated host supervisor**, and not as a concession: it
-starts pods and holds no memory client, no transport and no key. Each pod spawns its own
-`lore mcp` over its own `LORE_HOME` and asks the question of its own image on its own way
-up. Demanding lore of the host too refuses every correctly-configured isolated household
+starts pods and holds no memory client, no transport and no key. Each pod opens its own
+store over its own `LORE_HOME` and asks the question of its own image on its own way up. Demanding lore of the host too refuses every correctly-configured isolated household
 on a machine whose lore lives only where it is used — which is exactly what the first
 real-podman run of this check did, refusing before a single pod was started.
 
@@ -1395,9 +1396,8 @@ for every household that had never been brought up before — which is every hou
 and it was found by driving real podman.
 
 A pod's `/work` volume is created empty and `LORE_HOME` points inside it
-(`supervisor.DefaultLoreHome`, `/work/lore`). `lore mcp` exits before the MCP handshake
-against a home with no account, so the check above refuses, correctly, and then refuses on
-every restart forever. **Nothing initialised that volume**: not the supervisor, not the
+(`supervisor.DefaultLoreHome`, `/work/lore`). A home with no account cannot be opened, so
+the check above refuses, correctly, and then refuses on every restart forever. **Nothing initialised that volume**: not the supervisor, not the
 image, not `kenward setup`, not any documented step. The compose path had an operator step
 for it and a bind-mount to reach the store with; the supervisor path had neither, because
 `sandbox.Spec` offers no route into a pod's volume and — more to the point — must not: a
@@ -1413,27 +1413,29 @@ supervisor and `kenward setup` are both the host reaching into a member's volume
 
 Four properties, each of which is a way this could have gone wrong:
 
-- **It runs a subprocess, and that is a finding rather than a preference.** lore is a
-  public Go module now, but its exported API cannot do this: package `lore` offers `Open`,
-  which *returns* `ErrNoAccount` on a home like this one, and no `Init` and no
-  `CreateSpace` at all. Account, device and space creation live in `internal/keys` and
-  `internal/store`, reachable only from `cmd/lore`. Importing lore here would add a module
-  dependency that cannot perform the one operation it was added for. D-036 is where this
-  call changes, and it can only change once lore exports one.
-- **It is idempotent by a stronger rule than "no account file".** A home that exists and
-  is non-empty is left alone, full stop — so a store missing its account but holding a
-  database is never adopted by a new account, which would be a member's store quietly
-  re-identified rather than one left alone.
-- **The recovery code is discarded.** `lore init` prints one to stdout, once. It is a KDF
-  factor for relay signup and backup, neither of which any kenward deployment configures,
-  and it is re-mintable from inside the pod with `lore recovery new` without the old one.
-  Logging it would put a member's account recovery factor into `podman logs`, which the
-  operator reads, in the one mode whose purpose is that the operator holds nothing of a
-  member's. The new account and device ids go the same way, for the same reason.
-- **It does not create the spaces `kenward.yaml` names, and cannot.** `lore init` makes an
-  account, a device and one personal space with ids it chooses; `household.shared_space`
-  and `members[].private_space` are ids an operator wrote in the file, and neither lore's
-  CLI nor its Go API can create a space at a given id. A self-initialised pod therefore
+- **It is a library call.** `lore.Init(home, deviceName)`. It was a subprocess until
+  lore exported it, because account and device generation lived behind `internal/keys`
+  and the binary was the whole of the surface for the job.
+- **Idempotence is lore's, not kenward's.** `Init` refuses a home already holding an
+  `account.json`, a `device.json` **or** a `lore.db`, returns `ErrAlreadyInitialised` and
+  writes nothing; kenward treats that as success. The rule kenward wanted was "never let
+  a new account adopt an existing store", and it used to enforce it by treating any
+  non-empty directory as taken. lore's version names the three files that would mean it
+  instead of inferring it, so kenward's copy has gone — the code that would have to do
+  the writing is the code that refuses.
+- **The recovery code is discarded.** `Init` returns one, once, and stores it nowhere. It
+  is a KDF factor for relay signup and backup, neither of which any kenward deployment
+  configures, and it is re-mintable from inside the pod with `lore recovery new` without
+  the old one. Logging it would put a member's account recovery factor into `podman
+  logs`, which the operator reads, in the one mode whose purpose is that the operator
+  holds nothing of a member's. The new account and device ids go the same way, for the
+  same reason: the returned `Identity` is discarded at the call site rather than bound to
+  a variable, so there is nothing there for a later edit to log.
+- **It does not create the spaces `kenward.yaml` names, and cannot.** `Init` makes an
+  account, a device and one personal space with ids it chooses, and `CreateSpace` mints a
+  fresh id too; `household.shared_space` and `members[].private_space` are ids an
+  operator wrote in the file, and nothing in lore can create a space *at a given id*. A
+  self-initialised pod therefore
   comes up with a lore that answers and configured spaces that are not in it, which
   `doctor` reports per space and `run` deliberately does not treat as fatal. That is the
   same gap §12 records under separate `LORE_HOME`s not converging, now reached by both
@@ -1478,14 +1480,14 @@ container runtime's bridge. mDNS is left on so no address has to be written down
 anywhere; a pod's address changes on every recreation, so a static peer list would be
 stale by the first rolling update.
 
-Membership is provisioned out of band, exactly as `lore space create` already is, and
-that is a decision rather than an omission. (`lore init` is no longer beside it: a pod
-initialises its own store, per the previous section. Creating an *account* is unavoidable
-plumbing with no decision in it; creating a space and granting membership are decisions.)
-kenward never creates a lore
-space, and lore's own embeddable API declines to expose space creation or membership at
-all — *"spaces are made out of band by a person who chose a name and a sharing posture; an
-embedder joins spaces that already exist"*. An assistant that minted its own household
+Membership is provisioned out of band, and that is a decision rather than an omission.
+(`lore init` is not beside it: a pod initialises its own store, per the previous section.
+Creating an *account* is unavoidable plumbing with no decision in it; granting membership
+is a decision.) lore's API does expose space *creation* — `Store.CreateSpace`, which the
+setup wizard and the dashboard use when a person has just named a household or a member —
+but it exposes no way to grant membership, and it cannot create a space at an id somebody
+already chose. So a pod cannot join itself to the household's space, and an assistant that
+minted its own household
 memberships would be taking a decision that is not its to take. The recipe, once per
 household and once per member, is in `deploy/compose.isolated.yml` §4b for the compose
 path; through the supervisor it is the same two commands against the pods keel named
@@ -2099,7 +2101,7 @@ unproved. This section is only the part that binds: the tests a change may not r
 
 Tests needing equipment — real Podman, a real lore, a real model — are tagged
 `//go:build integration` and excluded from the default `go test ./...`. There are four:
-`internal/e2e/live_test.go` (real `lore mcp` **and** a real endpoint, faking only
+`internal/e2e/live_test.go` (a real lore store **and** a real endpoint, faking only
 Telegram), `internal/memory/integration_test.go`, `internal/setup/spaces_lore_test.go`,
 and `internal/supervisor/isolated_integration_test.go` (also `&& linux`). Each skips when
 its equipment is absent, so a green integration run on a bare machine proves nothing.
@@ -2107,9 +2109,13 @@ its equipment is absent, so a green integration run on a bare machine proves not
 Any integration test that touches lore must create its own `LORE_HOME` under `t.TempDir`
 and its own spaces inside it. A test pointed at a persistent store accumulates its own
 writes until they crowd out the entry the run just made — a test that corrupts what it
-measures gets less trustworthy every time it runs. `lore_delete` does not change that
-rule: it is not tidy-up machinery for a suite, and a test that cleaned up after itself by
-deleting would still be one crash away from leaving the store dirtier than it found it.
+measures gets less trustworthy every time it runs. Delete does not change that rule: it
+is not tidy-up machinery for a suite, and a test that cleaned up after itself by deleting
+would still be one crash away from leaving the store dirtier than it found it.
+
+`internal/memory`'s own tests do exactly this and need no lore binary to: `lore.Init`
+makes the home and `CreateSpace` the spaces, both in-process, so the suite runs wherever
+`go test` does rather than skipping wherever lore is not installed.
 
 ---
 
@@ -2118,21 +2124,30 @@ deleting would still be one crash away from leaving the store dirtier than it fo
 Established by reading lore's source, not by assumption. These facts constrain the
 design and several of them contradict what the architecture originally supposed.
 
-- **`lore mcp` is stdio only**, exposes six tools (`lore_search`, `lore_get`,
-  `lore_put`, `lore_spaces`, `lore_share`, `lore_delete`), and returns **unstructured
-  text**, not JSON.
-  Failures arrive as `isError: true` rather than as protocol errors. The client is
-  therefore a parser, and is tested against a golden corpus so that a format change
-  fails loudly in one place.
-- **There is a Go API now, and it cannot replace the CLI for everything.**
-  `github.com/BlueHeisenberg/lore` v0.3.0 exports `lore.Open(lore.Options{Home: …})` over
-  entries, search and spaces. kenward still speaks MCP over stdio — moving is D-036 — and
-  when it moves, two jobs will not move with it: **creating an account** and **creating a
-  space**. `Open` *returns* `ErrNoAccount` on an uninitialised home and there is no `Init`
-  and no `CreateSpace` on the public surface; both live in `internal/keys` and
-  `internal/store`, reachable only from `cmd/lore`. That is why a pod initialising its own
-  store runs `lore init` as a subprocess (§8) and why a store's space ids cannot be chosen
-  by whoever configures kenward.
+- **kenward imports lore.** `github.com/BlueHeisenberg/lore` v0.4.0 is the whole of the
+  interface: `lore.Open(lore.Options{Home: …})` over entries, search and spaces, with
+  `context.Context` on every call, typed entries and a typed error contract. It is lore's
+  compatibility promise; everything under lore's `internal/` is explicitly not, and
+  kenward reaches none of it.
+
+  There is no parser, no golden corpus of lore's output and no subprocess. There used to
+  be all three — `lore mcp` returned human-readable text, so `internal/memory` carried a
+  500-line parser, a 253-line classifier of error prose and 31 captured fixtures, and
+  seven defects in one session came out of that layer.
+- **`lore.Init` and `Store.CreateSpace` exist, and neither can choose an id.**
+  Init makes an account, a device and one personal space in an empty home; CreateSpace
+  makes a shared space. Both mint their own ids. So a pod can create its own store (§8)
+  and still cannot materialise the space ids an operator wrote into `kenward.yaml`.
+
+  `Init` refuses a home already holding an `account.json`, a `device.json` or a
+  `lore.db`, returning `ErrAlreadyInitialised` and writing nothing — which is the
+  idempotence a self-initialising pod needs, so kenward makes no such check of its own.
+  `CreateSpace` refuses a name another space already holds (`ErrSpaceExists`) rather than
+  returning the existing one: this id becomes a member's private space, and a
+  get-or-create is how one member's memory becomes another's.
+- **The only remaining subprocess is `lore serve`.** It is a supervised long-running
+  daemon rather than a call, so it stays a process. `memory.lore_command` exists to
+  locate that binary and nothing else, and only its first element is read.
 - **Private memory must be a `shared`-kind space with two members.** lore's `personal`
   space never crosses accounts, so a node could not read it. This is what the
   architecture already specified, now confirmed as the only workable option rather than
@@ -2157,7 +2172,10 @@ design and several of them contradict what the architecture originally supposed.
   It is not a CRDT: the losing version is discarded silently, with no conflict record.
   A machine with a fast clock wins every conflict. Household clocks should be synced,
   and nothing in kenward may assume a write it made is still there.
-- **`lore mcp` alone never syncs.** Syncing requires a separate `lore serve`. Any
+- **Opening a store does not sync it.** Syncing requires a separate `lore serve`; a
+  write pokes it immediately (`lore.Options.NotifyOnWrite`, which kenward sets) so the
+  entry leaves the machine now rather than at the daemon's next poll, thirty seconds by
+  default. Losing that poke is silent — entries just arrive late, intermittently. Any
   deployment running more than one lore instance must run both — which in isolated mode
   is every pod, so `run` starts one itself (§8, "How the household's shared memory works
   in isolated mode").
@@ -2166,44 +2184,48 @@ design and several of them contradict what the architecture originally supposed.
   the wire exchange is over *blinded* space ids, so a store cannot even name a space it
   is not in. That is what makes one lore per pod safe, and it is lore's guarantee rather
   than kenward's.
-- **Invites are not exposed over MCP.** Enrolment drives the lore CLI, which has
+- **Invites are not on the Go API.** Enrolment drives the lore CLI, which has
   non-interactive flags but emits no JSON.
-- **Delete exists, by tombstone, and only by id.** `lore_delete(id, space)` writes a
-  signed tombstone that propagates to every synced device; the entry then stops coming
-  back from `lore_search` and `lore_get`. It is space-scoped — unlike `lore_get`, and by
-  comparing space *ids* rather than the display names kenward's own check falls back on,
-  so it is the stronger of the two guards. Deleting an already-deleted entry is a no-op
-  lore reports rather than an error.
+- **Delete exists, by tombstone, and only by id.** It writes a signed tombstone that
+  propagates to every synced device; the entry then stops coming back from search and
+  from get, and a tombstone is never returned to a reader on any path. Deleting an
+  already-deleted entry is a no-op lore reports rather than an error. It is not a shred,
+  and nothing kenward says to a member may promise one.
+- **Every read that names both an id and a space is scoped.** Entry ids are global to a
+  store, so an id names an entry in any space; `GetEntryIn`, `DeleteEntry` and kenward's
+  `Share` all compare the entry's space *id* to the one asked for and refuse a mismatch.
+  That replaced a display-name comparison that was only as strong as lore's naming.
 
-  What it does not give kenward is a way to clean up after a write whose answer was
-  lost. The id comes back in the receipt, so a write with no receipt leaves nothing to
-  name, and the uncertain-write rule below is unchanged by it.
-- **`lore_get` and `lore_share` are not space-scoped.** Entry ids are global, so an id is
-  effectively a capability to read an entry in any space. The client verifies the fetched
-  entry's space and returns `ErrNotFound` on a mismatch, but that verification resolves
-  spaces by display name and lore does not enforce uniqueness on names. The primary
-  defence is therefore upstream: **an entry id must never be taken from member-supplied
-  text.** Ids originate from a search performed within the current Scope, or from a
-  promotion flow that already resolved one.
-- **`Search` returns a snippet, not a body**, with no origin and no timestamps, and
-  `CreatedAt` can never be populated because lore's MCP surface exposes it on no tool.
-  Prompt rendering must not imply it holds a full entry when it holds a snippet.
-- **A write whose answer is lost is never replayed.** A `lore_put` may have landed even
-  though the client reported failure, and the id that would let kenward delete it was in
-  the answer that never arrived, so a retry that duplicates it is permanent. Report
-  uncertainty to the member rather than silently retrying.
+  It is still not the primary defence, because it only protects the space a caller
+  *claims*: **an entry id must never be taken from member-supplied text.** Ids originate
+  from a search performed within the current Scope, or from a promotion flow that already
+  resolved one.
+- **Search returns whole entries.** `store.SearchResult` embeds the entry — the complete
+  body — and adds the snippet alongside, with origin, timestamps and version. kenward
+  ignores the snippet and uses the body.
 
-  `Delete` is issued as a write for the same reason, even though repeating a tombstone
-  is harmless: the flag also decides whether a lost answer comes back wrapped in
-  `ErrWriteUncertain`, and after an undo the difference between *"it is still there"* and
-  *"I cannot tell"* is the entire message the member gets. Buying one free retry by
-  giving that distinction up is the wrong trade.
+  This document used to say the opposite, and the opposite was true of `lore mcp`, whose
+  handler rendered the snippet and threw the entry away. kenward's whole excerpt doctrine
+  — `Entry.Partial`, the "Excerpts from …" heading, the paragraph explaining what an
+  excerpt was — existed for that and has been deleted with it.
+- **A write's outcome is always known.** The store commits and returns, or returns an
+  error having written nothing; there is no third case. kenward therefore has no
+  `ErrWriteUncertain`, and no message telling a member their entry may or may not exist.
+
+  It had both while lore was a subprocess: a lost MCP response left an entry that might
+  have landed under an id kenward never received and so could never delete, which made a
+  blind retry a permanent duplicate. That hazard is gone with the transport that caused
+  it.
 - `confidence` ∈ {experimental, provisional, validated, hardened} and `origin` ∈
   {evidence, directive, convention, constraint}, both enforced by lore. **Markers are
   free-form strings** — the familiar vocabulary is convention only, so kenward must not
   validate against it.
 - lore's SQLite runs WAL with a single connection and a 5s busy timeout, so concurrent
-  calls contend. Client concurrency is bounded and busy errors are retried.
+  calls contend — `lore serve` and any `lore` command an operator runs open the same
+  file. lore retries a contended call itself and reports `ErrBusy` when its budget is
+  exhausted, so kenward's own retry loop and backoff are gone. Every method on a
+  `*lore.Store` is safe to call from any number of goroutines, which is the whole
+  concurrency promise and does not say reads run in parallel.
 
 ## 13. Non-goals
 

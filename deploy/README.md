@@ -58,10 +58,10 @@ bind-mounted file, rather than `environment:`.
 For the container paths you also need a `lore` binary on the host to
 bind-mount in — see the Dockerfile's note on why it isn't baked into the
 image — and its store has to be **initialised**, once per `LORE_HOME`.
-Supplying only the binary is not enough: `lore mcp` exits immediately against
-an empty store ("no account at …/account.json"), and kenward refuses to serve
-without memory, checking both halves before it starts — the binary on `$PATH`,
-then one MCP handshake with it.
+Supplying only the binary is not enough: a home with no account in it cannot be
+opened, and kenward refuses to serve without memory, checking both halves before
+it starts — the binary on `$PATH`, which `lore serve` needs, and then the store
+itself.
 
 Who does that initialising differs by mode, and the difference is not
 cosmetic. **In isolated mode each container does it for itself** on first
