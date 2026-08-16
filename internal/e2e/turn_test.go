@@ -23,7 +23,10 @@ func TestDirectMessageRoundTripsAndPromptCarriesBothMemories(t *testing.T) {
 	})
 
 	h.start()
-	h.tr.InjectText(davidChatID, davidTelegramID, "when do the bins go out?", false)
+	// A member's question, filler words and all: the query kenward builds from it
+	// has to reach both entries even though neither contains "when" or "do".
+	const asked = "when do the bins go out, and what is the side gate code?"
+	h.tr.InjectText(davidChatID, davidTelegramID, asked, false)
 	sent := h.waitForReply(davidChatID, 1)
 
 	if got := sent[0].Text; got != "Recycling goes out Tuesday night." {
@@ -72,7 +75,7 @@ func TestDirectMessageRoundTripsAndPromptCarriesBothMemories(t *testing.T) {
 	if strings.Contains(system, "Appointment on the 3rd.") {
 		t.Errorf("system prompt carries an entry from %s, which this scope never searched", meiSpace)
 	}
-	if req.UserText() != "when do the bins go out?" {
+	if req.UserText() != asked {
 		t.Errorf("user message = %q, want the member's own words", req.UserText())
 	}
 	// A direct conversation is offered both tools: remember, and publish for the

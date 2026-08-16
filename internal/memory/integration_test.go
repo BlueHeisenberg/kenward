@@ -5,20 +5,26 @@ package memory
 import (
 	"context"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 )
 
-// This file is the only test that needs a real lore. Everything else runs
-// against a scripted fake, so `go test ./...` never requires lore to be
+// This file is the only test in this package that needs a real lore. Everything
+// else runs against a scripted fake, so `go test ./...` never requires lore to be
 // installed. Run it with:
 //
 //	KENWARD_LORE_BIN=/path/to/lore \
-//	KENWARD_LORE_HOME=/path/to/an/initialised/lore/home \
-//	KENWARD_LORE_SPACE=<space_id> \
 //	go test -tags integration ./internal/memory/...
+//
+// The store is not configured. This test used to be pointed at a home and a space
+// kept for the purpose, and it wrote an entry into that space on every run and
+// removed nothing, because lore has no delete — see newLoreStore in
+// internal/e2e/live_test.go for the same defect and the same reasoning. It now
+// initialises a home under t.TempDir() and creates its own space there.
 //
 // It exists to catch the two things a fake cannot: that lore's actual output
 // still matches the golden corpus, and that the MCP handshake this SDK performs
@@ -27,10 +33,30 @@ import (
 // handshake; lore is built on mark3labs/mcp-go v0.20.1, which predates it.
 func TestIntegrationRoundTrip(t *testing.T) {
 	bin := os.Getenv("KENWARD_LORE_BIN")
-	home := os.Getenv("KENWARD_LORE_HOME")
-	space := domain.SpaceID(os.Getenv("KENWARD_LORE_SPACE"))
-	if bin == "" || home == "" || space == "" {
-		t.Skip("set KENWARD_LORE_BIN, KENWARD_LORE_HOME and KENWARD_LORE_SPACE (a space id from `lore spaces`, not a display name)")
+	if bin == "" {
+		t.Skip("set KENWARD_LORE_BIN to the lore binary; the store it runs against is created by this test")
+	}
+	home := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(bin, args...)
+		cmd.Env = append(os.Environ(), "LORE_HOME="+home)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("lore %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return string(out)
+	}
+	run("init", "--yes-i-saved-it", "--name", "kenward-integration")
+	var space domain.SpaceID
+	for _, f := range strings.Fields(run("space", "create", "kenward-integration")) {
+		if len(f) == 36 && strings.Count(f, "-") == 4 {
+			space = domain.SpaceID(f)
+			break
+		}
+	}
+	if space == "" {
+		t.Fatal("`lore space create` printed no space id")
 	}
 
 	c, err := NewClient(Config{

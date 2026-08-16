@@ -233,7 +233,7 @@ The tool schema:
   "description": "Propose storing something in memory. The member confirms before anything is written.",
   "input_schema": {
     "type": "object",
-    "required": ["title", "body", "target"],
+    "required": ["title", "body", "domain", "target"],
     "properties": {
       "title":      {"type": "string", "description": "Short, specific, and searchable later."},
       "body":       {"type": "string", "description": "The fact itself, stated plainly and out of context — it will be read a year from now with none of this conversation around it."},

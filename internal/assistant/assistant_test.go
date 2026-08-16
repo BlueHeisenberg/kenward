@@ -73,11 +73,11 @@ func TestHappyPathDirect(t *testing.T) {
 		return routing.Completion{Text: "Thursday night.", Endpoint: "monster", Tier: "local"}, nil
 	}
 
-	if err := rig.unit.Handle(context.Background(), directInbound("when do the bins go out?")); err != nil {
+	if err := rig.unit.Handle(context.Background(), directInbound("when do the bins go out, and what is my coffee order?")); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 
-	// Both spaces searched, one query each, in scope order.
+	// Both spaces searched, and only those two.
 	spaces := rig.mem.searchedSpaces()
 	if len(spaces) != 2 {
 		t.Fatalf("searched %d spaces, want 2: %v", len(spaces), spaces)
@@ -307,6 +307,126 @@ func TestEmptyRetrievalRendersExplicitStatement(t *testing.T) {
 	if strings.Contains(sys, "search excerpts") {
 		t.Error("excerpt note rendered with no excerpts shown")
 	}
+}
+
+// TestNaturalQuestionRetrievesTheEntryItIsAbout is the regression this package
+// exists to keep. lore matches conjunctively over bare words, so a query is only
+// found if every one of its words is in the entry; passing a member's raw message
+// through as the query meant "what is the boiler service code?" retrieved nothing
+// from a household that had recorded exactly that, and the assistant answered as
+// though nothing had been stored. Every unit test missed it because the fake
+// answered every query with everything it held.
+func TestNaturalQuestionRetrievesTheEntryItIsAbout(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.bySpace["household"] = []memory.Entry{
+		entry("household", "Boiler", "The boiler service code is marlowbrick.", "validated"),
+		entry("household", "Bin day", "Bins go out Thursday night.", "hardened"),
+	}
+
+	// Six filler words and two that matter, which is what a question looks like.
+	if err := rig.unit.Handle(context.Background(), directInbound("sorry, do you happen to know what the code for the boiler is?")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	sys := mustSystemPrompt(t, rig)
+	if !strings.Contains(sys, "The boiler service code is marlowbrick.") {
+		t.Errorf("the question did not retrieve the entry that answers it; system prompt was:\n%s", sys)
+	}
+	if strings.Contains(sys, "Bins go out Thursday night.") {
+		t.Error("an unrelated entry was retrieved; the whole space is not the answer to a question")
+	}
+
+	// No query carried a filler word, and none carried more than one term: a
+	// multi-word query is conjunctive, and one absent word empties the result.
+	for _, q := range rig.mem.searches {
+		if len(memory.Terms(q.Text)) != 1 {
+			t.Errorf("search query %q is not a single term; lore ANDs them", q.Text)
+		}
+		if searchStopwords[q.Text] {
+			t.Errorf("search query %q is a filler word; it costs a search and matches everything", q.Text)
+		}
+	}
+}
+
+// TestRetrievalRanksByHowManyTermsFoundAnEntry: the union is not a set, it is an
+// ordering. An entry every content word found belongs above one that a single word
+// brushed, or a budget-trimmed prompt drops the answer and keeps the noise.
+func TestRetrievalRanksByHowManyTermsFoundAnEntry(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testGroupScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.bySpace["household"] = []memory.Entry{
+		// Seeded first, so first-seen order would put the weak hit on top.
+		entry("household", "Gate", "The side gate sticks in the rain.", "provisional"),
+		entry("household", "Gate code", "The side gate code is 4417.", "validated"),
+	}
+
+	if err := rig.unit.Handle(context.Background(), groupInbound("what is the side gate code?")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	sys := mustSystemPrompt(t, rig)
+	strong := strings.Index(sys, "The side gate code is 4417.")
+	weak := strings.Index(sys, "The side gate sticks in the rain.")
+	switch {
+	case strong < 0:
+		t.Fatal("the entry matching every term was not retrieved")
+	case weak < 0:
+		t.Fatal("the entry matching one term was not retrieved; retrieval is all-or-nothing again")
+	case strong > weak:
+		t.Error("the entry matching one term is rendered above the entry matching every term")
+	}
+}
+
+// TestRetrievalKeepsAPreciseHitAheadOfACommonOne is the other half of ranking, and
+// the half that counting terms gets wrong.
+//
+// A household accumulates entries about the same everyday things, and the per-term
+// search budget is the same number the union is truncated to. So two ordinary words —
+// "wifi", "password" — return a full budget of entries each, and the words that
+// actually identify which one the member means are searched afterwards into a result
+// that is already full. Counting terms ties the right entry with the wrong ones and
+// breaks the tie on arrival order, which drops it. It is not a contrived shape: eight
+// entries sharing one common word is a small household, and it was found against a
+// real store.
+func TestRetrievalKeepsAPreciseHitAheadOfACommonOne(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testGroupScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seeded []memory.Entry
+	for _, place := range []string{"barn", "garage", "studio", "workshop", "cellar", "stables", "boathouse", "attic"} {
+		seeded = append(seeded, entry("household", "Wifi password "+place,
+			"The wifi password for the "+place+" is secret-"+place+".", "validated"))
+	}
+	// Seeded last, so it falls outside the budget every common word fills — which
+	// is where lore's own relevance ordering would put it too.
+	seeded = append(seeded, entry("household", "Wifi password guest cottage",
+		"The wifi password for the guest cottage is secret-cottage.", "validated"))
+	rig.mem.bySpace["household"] = seeded
+
+	if err := rig.unit.Handle(context.Background(), groupInbound("what is the wifi password for the guest cottage?")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	sys := mustSystemPrompt(t, rig)
+	if !strings.Contains(sys, "secret-cottage") {
+		t.Fatalf("the only entry the question identifies was crowded out by entries sharing its common words; system prompt was:\n%s", sys)
+	}
+	if at := strings.Index(sys, "secret-cottage"); at > strings.Index(sys, "secret-barn") {
+		t.Error("an entry found only by the question's common words is rendered above the one found by its precise ones")
+	}
+}
+
+// mustSystemPrompt returns the system prompt of the last request to reach the router.
+func mustSystemPrompt(t *testing.T, rig *testRig) string {
+	t.Helper()
+	req, ok := rig.router.lastRequest()
+	if !ok {
+		t.Fatal("router never called")
+	}
+	return req.Messages[0].Content
 }
 
 func TestMalformedRememberIsDroppedHarmlessly(t *testing.T) {

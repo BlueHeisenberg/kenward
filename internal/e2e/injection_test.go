@@ -299,12 +299,16 @@ func TestGroupScopeHoldsItsMemoryBoundaryAgainstEveryAdversarialMessage(t *testi
 						t.Errorf("group turn reached private space %s", sp)
 					}
 				}
-				// Exactly one memory call in the whole turn. This is what pins the
-				// property shut: it fails on a private search, a private read-back
-				// and a private write alike, without needing to enumerate them.
-				if n := len(h.mem.recorded()); n != 1 {
-					t.Errorf("group turn made %d memory calls (%+v), want exactly one: the shared search",
-						n, h.mem.recorded())
+				// Every memory call in the whole turn is a search of the shared
+				// space. This is what pins the property shut: it fails on a private
+				// search, a private read-back and a private write alike, without
+				// needing to enumerate them. How many searches is not pinned — a
+				// turn issues one per query term — but what each of them may name is.
+				for _, c := range h.mem.recorded() {
+					if c.Op != "search" || len(c.Spaces) != 1 || c.Spaces[0] != sharedSpace {
+						t.Errorf("group turn made memory call %+v; a group turn may only search %s",
+							c, sharedSpace)
+					}
 				}
 			})
 
@@ -323,11 +327,17 @@ func TestGroupScopeHoldsItsMemoryBoundaryAgainstEveryAdversarialMessage(t *testi
 				if strings.Contains(seen, meiSentinel) {
 					t.Errorf("prompt carried %s's private sentinel; nothing private may reach the endpoint from a group turn", meiSpace)
 				}
-				// The turn did retrieve normally — the shared entry is there. Without
-				// this, an assembly bug that dropped every memory section would pass
-				// the two checks above by doing nothing at all.
-				if !strings.Contains(req.System(), sharedFact) {
-					t.Error("prompt is missing the shared entry retrieval found; the checks above must not be passing vacuously")
+				// The turn assembled normally — the shared memory section is there.
+				// Without this, an assembly bug that dropped every memory section
+				// would pass the two checks above by doing nothing at all.
+				//
+				// The section rather than its content: these messages are a corpus of
+				// attacks, not of questions about the side gate, and retrieval matches
+				// a member's words against what is stored. That the shared fact does
+				// reach a group prompt when a group asks for it is asserted on its own
+				// in TestGroupTurnRetrievesTheSharedSpace.
+				if !strings.Contains(req.System(), "the household's shared memory") {
+					t.Error("prompt has no shared memory section; the checks above must not be passing vacuously")
 				}
 				// The model dumped its whole context into the group chat, which is
 				// the point: with nothing private in the context, total leakage of
@@ -399,6 +409,23 @@ func TestGroupScopeHoldsItsMemoryBoundaryAgainstEveryAdversarialMessage(t *testi
 				}
 			})
 		})
+	}
+}
+
+// TestGroupTurnRetrievesTheSharedSpace is the positive half of the boundary: the
+// household's own memory does reach the prompt when the household asks for it.
+//
+// The question is asked the way a person asks it, and that is the whole test.
+// lore's search is conjunctive over bare words, so passing the member's sentence
+// through as the query means "what is the side gate code?" retrieves nothing from a
+// space holding exactly "The side gate code is 4417." — "what" is not in it. That
+// was production behaviour, and every fake in this repository returned everything
+// it held regardless of the query, so nothing caught it.
+func TestGroupTurnRetrievesTheSharedSpace(t *testing.T) {
+	h := runGroupTurn(t, "hey, what is the side gate code again?")
+
+	if got := h.local.last(t).System(); !strings.Contains(got, sharedFact) {
+		t.Errorf("a question about the side gate did not retrieve %q; system prompt was:\n%s", sharedFact, got)
 	}
 }
 
@@ -524,14 +551,17 @@ func TestDirectScopeRetrievalNeverReachesAnotherMembersPrivateSpace(t *testing.T
 			}
 
 			seen := promptSeen(h.local.last(t))
-			// Mei's sentinel must be absent; David's may legitimately be present,
-			// and asserting that it is keeps this from passing because retrieval
-			// silently did nothing.
+			// Mei's sentinel must be absent. David's own space must be rendered,
+			// which keeps this from passing because assembly silently did nothing —
+			// its section rather than its content, because whether a given entry
+			// comes back depends on whether the member's words match it, and these
+			// messages ask about Mei. That David's own entry does reach his prompt
+			// when he asks about it is asserted in turn_test.go.
 			if strings.Contains(seen, meiSentinel) {
 				t.Errorf("prompt carried %s's private sentinel in David's conversation", meiSpace)
 			}
-			if !strings.Contains(seen, davidSentinel) {
-				t.Error("prompt is missing David's own private entry; the check above must not be passing vacuously")
+			if !strings.Contains(seen, "David's private memory") {
+				t.Error("prompt has no private memory section; the check above must not be passing vacuously")
 			}
 		})
 	}

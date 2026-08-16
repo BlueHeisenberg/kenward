@@ -21,10 +21,12 @@
 package assistant
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -568,27 +570,200 @@ type spaceGroup struct {
 	err     error
 }
 
-// retrieve runs one memory.Search per space in sc.Read, concurrently, and returns
-// the results grouped in scope order. A failed search degrades that group rather
-// than failing the turn; the prompt says the space could not be read, because an
-// error rendered as "nothing found" would be a lie the member might act on.
+// retrieve searches every space in sc.Read, concurrently, and returns the results
+// grouped in scope order. A failed search degrades that group rather than failing
+// the turn; the prompt says the space could not be read, because an error rendered
+// as "nothing found" would be a lie the member might act on.
+//
+// The member's message is not the query. lore matches conjunctively over bare words
+// (memory.Terms), so "what is the boiler service code" retrieves nothing from a store
+// whose entry reads "the boiler service code is ..." — "what" is not in it. That is
+// not an edge case, it is how people ask questions, and a node that answers "the
+// household has not recorded that" while holding the answer is worse than one that
+// says nothing.
+//
+// So each content word is searched on its own and the hits are unioned here, ranked by
+// how many of them found an entry. Retrieval then degrades instead of failing outright:
+// one relevant word among six filler ones still finds the entry, and the entry every
+// word found still sorts above it. Nothing is re-ranked across spaces — the groups stay
+// grouped, in scope order — because that remains a policy decision, and this is not it.
 func (u *Unit) retrieve(ctx context.Context, sc domain.Scope, text string) []spaceGroup {
+	terms := searchTerms(text)
 	groups := make([]spaceGroup, len(sc.Read))
 	var wg sync.WaitGroup
 	for i, sp := range sc.Read {
 		wg.Add(1)
 		go func(i int, sp domain.SpaceID) {
 			defer wg.Done()
-			entries, err := u.deps.Memory.Search(ctx, memory.SearchQuery{
-				Text:   text,
-				Spaces: []domain.SpaceID{sp},
-				Limit:  u.opts.SearchLimit,
-			})
-			groups[i] = spaceGroup{space: sp, entries: entries, err: err}
+			groups[i] = u.searchSpace(ctx, sp, terms)
 		}(i, sp)
 	}
 	wg.Wait()
 	return groups
+}
+
+// searchSpace runs one search per term against one space and unions the hits.
+//
+// Any term failing fails the group. A union assembled from the searches that happened
+// to succeed is a narrower answer presented as a complete one, which is the same lie
+// as rendering an error as "nothing found".
+func (u *Unit) searchSpace(ctx context.Context, sp domain.SpaceID, terms []string) spaceGroup {
+	hits := make([][]memory.Entry, len(terms))
+	errs := make([]error, len(terms))
+	var wg sync.WaitGroup
+	for i, term := range terms {
+		wg.Add(1)
+		go func(i int, term string) {
+			defer wg.Done()
+			hits[i], errs[i] = u.deps.Memory.Search(ctx, memory.SearchQuery{
+				Text:   term,
+				Spaces: []domain.SpaceID{sp},
+				Limit:  u.opts.SearchLimit,
+			})
+		}(i, term)
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return spaceGroup{space: sp, err: err}
+	}
+	return spaceGroup{space: sp, entries: rankUnion(hits, u.opts.SearchLimit)}
+}
+
+// maxSearchTerms bounds the searches one turn may make per space.
+//
+// It has been suspected of costing recall once, when the live suite's store had
+// accumulated nine near-identical entries and the one term that told them apart sat
+// seventh in the question. Measured against a real store, raising the cap fixed
+// nothing: the discriminating terms were being searched and their hits discarded, in
+// rankUnion, which is where the fix went. The cap stays where it is until something
+// measured argues otherwise.
+//
+// ponytail: fixed cap, and it is the first terms that survive — a question's subject
+// is usually near its start. A message longer than this is searched on its opening
+// words only, and the same measurement showed three of six slots going to "hey",
+// "kenward" and "remind", which found nothing at all. Widening searchStopwords buys
+// those slots back for a longer question, if one is ever shown to need them.
+const maxSearchTerms = 6
+
+// searchStopwords are the words dropped before searching.
+//
+// They are not dropped because lore ignores them — lore has none, and treats "the" as
+// a word an entry must contain like any other. They are dropped because each one costs
+// a search and buys hits on every entry that happens to contain it, which is noise the
+// ranking then has to out-vote.
+//
+// ponytail: hand-written English list, and a household speaking anything else gets no
+// benefit from it (correctness is unaffected — a stopword that survives is just a
+// wasted search). A real stopword source, or scoring by term rarity, when that matters.
+var searchStopwords = map[string]bool{
+	"a": true, "about": true, "am": true, "an": true, "and": true, "any": true,
+	"are": true, "as": true, "at": true, "be": true, "been": true, "but": true,
+	"by": true, "can": true, "could": true, "did": true, "do": true, "does": true,
+	"for": true, "from": true, "get": true, "had": true, "has": true, "have": true,
+	"how": true, "i": true, "if": true, "in": true, "is": true, "it": true,
+	"its": true, "just": true, "know": true, "me": true, "my": true, "of": true,
+	"on": true, "or": true, "our": true, "please": true, "s": true, "she": true,
+	"should": true, "so": true, "such": true, "tell": true, "than": true,
+	"that": true, "the": true, "their": true, "them": true, "then": true,
+	"there": true, "these": true, "they": true, "this": true, "to": true,
+	"us": true, "was": true, "we": true, "were": true, "what": true, "when": true,
+	"where": true, "which": true, "who": true, "why": true, "will": true,
+	"with": true, "would": true, "you": true, "your": true,
+}
+
+// searchTerms picks the words from a member's message that are worth a search:
+// lore's own tokens, minus stopwords, minus repeats, capped.
+//
+// A message with nothing left — a greeting, an emoji — yields no terms and therefore
+// no searches, which is the honest result. Searching for "hi" would only find entries
+// that say "hi".
+func searchTerms(text string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, w := range memory.Terms(text) {
+		// Single characters are dropped with the stopwords: no entry is found by
+		// "a" that is not found better by the word next to it.
+		if len(w) < 2 || searchStopwords[w] || seen[w] {
+			continue
+		}
+		seen[w] = true
+		if out = append(out, w); len(out) == maxSearchTerms {
+			break
+		}
+	}
+	return out
+}
+
+// rankUnion merges one space's per-term hits into a single result, best first, and
+// truncates to limit.
+//
+// A term is worth what it narrowed down. Counting terms alone — one point per term
+// that found an entry — sounds right and measurably loses the answer, because the
+// per-term search budget is the same limit this function truncates to: a word the
+// store holds many entries for returns that whole budget by itself, and two such
+// words fill every slot before a precise word is looked at. Measured against a real
+// lore store holding a household's worth of entries, "hey kenward, can you remind me
+// what the wifi password for the guest cottage is?" put twelve wifi entries in front
+// of the searches for "guest" and "cottage", each of which found the guest cottage
+// entry and nothing else. Under term counting the right entry scored two, the eight
+// wrong ones also scored two, the tie broke on arrival order, and the one entry that
+// answered the question was the one cut. Raising the term cap does not touch this;
+// the discriminating terms were searched and their answer was discarded.
+//
+// So each term contributes 1/(entries it found) instead of 1. A word that matched one
+// entry is worth a whole point to it; a word that filled the budget is worth an eighth
+// to each of them. An entry every word found still outranks an entry one word brushed,
+// because the weights sum. The count of hits is already in hand, so this costs a
+// division and no extra search.
+//
+// ponytail: hit count within one space is a crude rarity proxy — it saturates at the
+// search limit, so "found in 8" and "found in 800" weigh the same, and it says nothing
+// about the store as a whole. Real inverse document frequency, if the saturation
+// starts mattering. Ties keep the order they arrived in, which is lore's own relevance
+// ordering for the earliest term that found them. Entries are identified by id; lore
+// always gives one, and an entry without one is treated as its own hit rather than
+// silently merged with a stranger that shares a title.
+func rankUnion(hits [][]memory.Entry, limit int) []memory.Entry {
+	type ranked struct {
+		entry memory.Entry
+		score float64
+	}
+	var out []*ranked
+	index := make(map[string]*ranked)
+	for _, group := range hits {
+		if len(group) == 0 {
+			continue
+		}
+		weight := 1 / float64(len(group))
+		// One term matching an entry twice is still one term, so each search's
+		// contribution to a score is counted once.
+		counted := make(map[string]bool)
+		for _, e := range group {
+			key := e.ID
+			if key == "" {
+				key = "\x00" + e.Title + "\x00" + e.Body
+			}
+			r, ok := index[key]
+			if !ok {
+				r = &ranked{entry: e}
+				index[key] = r
+				out = append(out, r)
+			}
+			if !counted[key] {
+				counted[key] = true
+				r.score += weight
+			}
+		}
+	}
+	slices.SortStableFunc(out, func(a, b *ranked) int { return cmp.Compare(b.score, a.score) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	entries := make([]memory.Entry, len(out))
+	for i, r := range out {
+		entries[i] = r.entry
+	}
+	return entries
 }
 
 // send delivers one outbound message in this scope. Group replies quote the message

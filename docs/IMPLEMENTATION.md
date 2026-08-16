@@ -605,8 +605,25 @@ it is needed. Until the accessors are plumbed through the supervisor, `bot_token
    return `ErrNotEnrolled`; the caller drops it silently, sending nothing. Never reply
    "you are not authorised" — that confirms the bot exists to a stranger.
 2. **Ensure session.** If locked → prompt for unlock and stop.
-3. **Retrieve.** One `memory.Search` per space in `scope.Read`, concurrently, results
-   kept grouped in scope order. Budget: `memory.search_limit` per space.
+3. **Retrieve.** The member's message is reduced to its content words — lore's own
+   tokens, minus a stopword list, capped at six — and each word is searched on its own
+   in every space in `scope.Read`, concurrently. Each space's hits are unioned and
+   ranked by what each word narrowed down — a word contributes `1/(entries it found)`
+   to each of them, so an entry every word found still outranks one a single word
+   brushed, and a precise word outranks two ordinary ones. Ranking by a plain count of
+   words instead loses the answer: the per-word budget is the same `memory.search_limit`
+   the union is truncated to, so two everyday words fill every slot before a precise
+   word is looked at, and the tie breaks against the one entry that answers the
+   question. Results stay grouped in scope order and are never re-ranked across spaces.
+   Budget: `memory.search_limit` per space.
+
+   The message is **not** the query, and that is not a refinement. lore's search is a
+   conjunctive full-text match over bare words: no stemming, no operators, no prefixes,
+   and every term must be present. "what is the boiler service code?" therefore
+   retrieves nothing from a household that recorded exactly that sentence, because
+   "what" is not in it — and the node then answers as though nothing had been stored.
+   Searching word by word makes retrieval degrade instead of failing outright: one
+   relevant word among six filler ones still finds the entry.
 4. **Assemble.** System prompt + retrieved entries (rendered with their markers and
    confidence) + the last N turns from the unit-local history ring.
 5. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an

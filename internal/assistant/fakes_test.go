@@ -2,6 +2,8 @@ package assistant
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +44,13 @@ func newFakeMemory() *fakeMemory {
 	}
 }
 
+// Search matches the query text the way lore does, conjunctively.
+//
+// It used to return everything seeded in the space and ignore q.Text, and that is
+// why every test here passed while retrieval was dead in production: a fake that
+// cannot miss cannot fail the way the real store fails. Same reasoning as the fake
+// that once accepted lore space display names — a fake is only worth having if it
+// refuses what production refuses.
 func (f *fakeMemory) Search(ctx context.Context, q memory.SearchQuery) ([]memory.Entry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -49,10 +58,46 @@ func (f *fakeMemory) Search(ctx context.Context, q memory.SearchQuery) ([]memory
 	if len(q.Spaces) != 1 {
 		return nil, memory.ErrEmptySpaceSet
 	}
+	if strings.TrimSpace(q.Text) == "" {
+		// The real client refuses an empty query rather than returning the space.
+		return nil, memory.ErrInvalidArgument
+	}
 	if err := f.errFor[q.Spaces[0]]; err != nil {
 		return nil, err
 	}
-	return f.bySpace[q.Spaces[0]], nil
+	var out []memory.Entry
+	for _, e := range f.bySpace[q.Spaces[0]] {
+		if loreMatch(e, q.Text) {
+			out = append(out, e)
+		}
+	}
+	// The limit is honoured, because it is load-bearing: the caller sets it to the
+	// same budget it later truncates the union to, so a word the store holds many
+	// entries for returns that whole budget by itself and leaves no room for a
+	// precise word's hit. A fake that returns every match makes that impossible to
+	// reproduce, which is the same way this file's fakes have hidden retrieval bugs
+	// before. Seeded order stands in for lore's relevance ordering.
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out, nil
+}
+
+// loreMatch reports whether an entry would come back from lore for this query:
+// every query term must appear in the entry as a whole word. Whole word, not
+// substring, because lore tokenises "quillfeather921834100" as one word and does
+// not find it by "quillfeather"; and no stemming, because lore has none.
+func loreMatch(e memory.Entry, query string) bool {
+	words := make(map[string]bool)
+	for _, w := range memory.Terms(e.Title + " " + e.Body) {
+		words[w] = true
+	}
+	for _, t := range memory.Terms(query) {
+		if !words[t] {
+			return false
+		}
+	}
+	return true
 }
 
 // Get serves whole entries out of the same canned spaces Search draws excerpts from,
@@ -71,11 +116,17 @@ func (f *fakeMemory) Get(ctx context.Context, space domain.SpaceID, id string) (
 	return memory.Entry{}, memory.ErrNotFound
 }
 
+// Put mirrors real lore's title/body/domain requirement (internal/memory.Client.Put)
+// instead of accepting anything. A fake that accepts what lore refuses hides exactly
+// this kind of defect from the test suite instead of catching it.
 func (f *fakeMemory) Put(ctx context.Context, space domain.SpaceID, d memory.Draft) (memory.Entry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.putErr != nil {
 		return memory.Entry{}, f.putErr
+	}
+	if strings.TrimSpace(d.Title) == "" || strings.TrimSpace(d.Body) == "" || strings.TrimSpace(d.Domain) == "" {
+		return memory.Entry{}, fmt.Errorf("memory: title, body and domain are required: %w", memory.ErrInvalidArgument)
 	}
 	f.puts = append(f.puts, putCall{space: space, draft: d})
 	return memory.Entry{ID: "e-1", Space: space, Title: d.Title, Body: d.Body}, nil
@@ -108,12 +159,21 @@ func (f *fakeMemory) sharedCalls() []shareCall {
 
 func (f *fakeMemory) Close() error { return nil }
 
+// searchedSpaces reports the distinct spaces searched, first use first. Distinct
+// because a turn makes one search per query term per space, and the invariant these
+// tests hold is which spaces were reachable, never how many queries it took.
 func (f *fakeMemory) searchedSpaces() []domain.SpaceID {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	seen := map[domain.SpaceID]bool{}
 	var out []domain.SpaceID
 	for _, q := range f.searches {
-		out = append(out, q.Spaces...)
+		for _, sp := range q.Spaces {
+			if !seen[sp] {
+				seen[sp] = true
+				out = append(out, sp)
+			}
+		}
 	}
 	return out
 }

@@ -1,11 +1,13 @@
 package assistant
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
+	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
 func call(name, args string) routing.ToolCall {
@@ -135,14 +137,62 @@ func TestExtractProposalDefaultsConfidence(t *testing.T) {
 	}
 }
 
+// TestExtractProposalDefaultsDomain is the regression test for the production
+// defect: a model that omits domain (declared required in the schema, but a model
+// can omit a required field too) must not lose the proposal after the member has
+// already confirmed. Real lore rejects a write with an empty domain, unrecoverably,
+// so extractProposal must never hand one downstream.
+func TestExtractProposalDefaultsDomain(t *testing.T) {
+	p, _ := extractProposal([]routing.ToolCall{call("remember", `{"title": "T", "body": "B", "target": "shared"}`)})
+	if p == nil || p.Draft.Domain == "" {
+		t.Fatalf("proposal %+v, want a non-empty domain default", p)
+	}
+}
+
+// TestRememberWithoutDomainStillWritesAfterConfirmation is the end-to-end version of
+// the same regression: a model tool call that omits domain, once the member presses
+// confirm, must still reach memory.Put successfully rather than failing unrecoverably
+// after the member has already committed. The fake memory in fakes_test.go rejects an
+// empty domain exactly as real lore does, so this fails without the defaulting fix
+// in extractProposal.
+func TestRememberWithoutDomainStillWritesAfterConfirmation(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoicePersonal, UserID: testUserID}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{
+			Text: "I'll remember that.",
+			ToolCalls: []routing.ToolCall{{
+				ID:        "tc-1",
+				Name:      "remember",
+				Arguments: json.RawMessage(`{"title": "Coffee order", "body": "David drinks oat-milk flat whites.", "target": "personal"}`),
+			}},
+			FinishReason: routing.FinishToolCalls,
+		}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("I only drink oat-milk flat whites")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if rig.mem.putCount() != 1 {
+		t.Fatalf("wrote %d entries, want 1 after the member confirmed", rig.mem.putCount())
+	}
+	if p := rig.mem.puts[0]; p.draft.Domain == "" {
+		t.Errorf("wrote draft with empty domain: %+v", p.draft)
+	}
+}
+
 func TestRememberSchemaIsValidJSON(t *testing.T) {
 	var schema map[string]any
 	if err := json.Unmarshal([]byte(rememberSchema), &schema); err != nil {
 		t.Fatalf("remember schema is not valid JSON: %v", err)
 	}
 	req, ok := schema["required"].([]any)
-	if !ok || len(req) != 3 {
-		t.Fatalf("schema required = %v, want [title body target]", schema["required"])
+	if !ok || len(req) != 4 {
+		t.Fatalf("schema required = %v, want [title body domain target]", schema["required"])
 	}
 	var pub map[string]any
 	if err := json.Unmarshal([]byte(publishSchema), &pub); err != nil {

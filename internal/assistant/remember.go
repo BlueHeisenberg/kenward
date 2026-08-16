@@ -30,7 +30,7 @@ const rememberToolName = "remember"
 // rememberSchema is the input schema from docs/PROMPT.md, verbatim.
 const rememberSchema = `{
   "type": "object",
-  "required": ["title", "body", "target"],
+  "required": ["title", "body", "domain", "target"],
   "properties": {
     "title":      {"type": "string", "description": "Short, specific, and searchable later."},
     "body":       {"type": "string", "description": "The fact itself, stated plainly and out of context — it will be read a year from now with none of this conversation around it."},
@@ -143,9 +143,20 @@ func extractProposal(calls []routing.ToolCall) (p *capture.Proposal, warn string
 		confidence = "provisional"
 	}
 
+	rememberDomain := call.Domain
+	if strings.TrimSpace(rememberDomain) == "" {
+		// lore requires domain at write time, same as confidence above: an empty
+		// value would fail after the member already pressed confirm, and domain is
+		// declared required in the schema for exactly that reason — but a model can
+		// omit a required field too, so the default is what actually prevents the
+		// failure. "household/general" follows the schema's own example shape
+		// (household/logistics) and reads as an honest "uncategorized" bucket.
+		rememberDomain = "household/general"
+	}
+
 	return &capture.Proposal{
 		Draft: memory.Draft{
-			Domain:     call.Domain,
+			Domain:     rememberDomain,
 			Title:      call.Title,
 			Body:       call.Body,
 			Confidence: confidence,

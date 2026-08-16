@@ -109,9 +109,33 @@ func (m *fakeMemory) Search(ctx context.Context, q memory.SearchQuery) ([]memory
 	m.calls = append(m.calls, memCall{Op: "search", Spaces: append([]domain.SpaceID(nil), q.Spaces...), Text: q.Text})
 	var out []memory.Entry
 	for _, sp := range q.Spaces {
-		out = append(out, m.seeded[sp]...)
+		for _, e := range m.seeded[sp] {
+			// Matched, not returned wholesale. lore's search is conjunctive over
+			// bare words — every term must be present, with no stemming and no
+			// operators — and a fake that answered every query with everything it
+			// held was how a dead retrieval path passed a full test suite.
+			if loreMatch(e, q.Text) {
+				out = append(out, e)
+			}
+		}
 	}
 	return out, nil
+}
+
+// loreMatch reports whether an entry would come back from lore for this query.
+// Whole words, because lore tokenises "quillfeather921834100" as one word and so
+// does not find it by "quillfeather".
+func loreMatch(e memory.Entry, query string) bool {
+	words := make(map[string]bool)
+	for _, w := range memory.Terms(e.Title + " " + e.Body) {
+		words[w] = true
+	}
+	for _, t := range memory.Terms(query) {
+		if !words[t] {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *fakeMemory) Get(ctx context.Context, space domain.SpaceID, id string) (memory.Entry, error) {
@@ -171,12 +195,27 @@ func (m *fakeMemory) recorded() []memCall {
 	return out
 }
 
-// searchedSpaces lists, in call order, every space a search named.
+// searchedSpaces lists the distinct spaces a search named, first use first.
+// Distinct because one turn issues a search per query term per space, and the
+// invariant asserted here is always which spaces a conversation could reach.
 func (m *fakeMemory) searchedSpaces() []domain.SpaceID {
 	var out []domain.SpaceID
 	for _, c := range m.recorded() {
 		if c.Op == "search" {
 			out = append(out, c.Spaces...)
+		}
+	}
+	return distinctSpaces(out)
+}
+
+// distinctSpaces removes repeats while preserving first-use order.
+func distinctSpaces(in []domain.SpaceID) []domain.SpaceID {
+	seen := make(map[domain.SpaceID]bool, len(in))
+	var out []domain.SpaceID
+	for _, sp := range in {
+		if !seen[sp] {
+			seen[sp] = true
+			out = append(out, sp)
 		}
 	}
 	return out

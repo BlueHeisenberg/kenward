@@ -25,7 +25,12 @@ func TestRenderedPromptDirectGolden(t *testing.T) {
 		entry("household", "Bin day", "Bins go out Thursday night.\nRecycling alternates weekly.", "hardened", "UPDATED", "CONTEXT"),
 	}
 
-	if err := rig.unit.Handle(context.Background(), directInbound("when is my dentist appointment?")); err != nil {
+	// The question is a member's, not a librarian's: it asks about two things and
+	// carries filler words that appear in neither entry. The coffee entry is seeded
+	// and not asked about, so the golden shows a retrieved prompt rather than the
+	// whole store rendered.
+	const asked = "when is my dentist appointment, and what day do the bins go out?"
+	if err := rig.unit.Handle(context.Background(), directInbound(asked)); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	req, ok := rig.router.lastRequest()
@@ -36,7 +41,7 @@ func TestRenderedPromptDirectGolden(t *testing.T) {
 
 	// The member's message is the final message, after history.
 	last := req.Messages[len(req.Messages)-1]
-	if last.Role != "user" || last.Content != "when is my dentist appointment?" {
+	if last.Role != "user" || last.Content != asked {
 		t.Errorf("final message %+v, want the member's message", last)
 	}
 }
@@ -106,7 +111,7 @@ func TestCompleteEntriesAreNotLabelledExcerpts(t *testing.T) {
 		entry("household", "Bin day", "Bins go out Thursday night.", "hardened"),
 	}
 
-	if err := rig.unit.Handle(context.Background(), directInbound("coffee?")); err != nil {
+	if err := rig.unit.Handle(context.Background(), directInbound("coffee, and when are the bins out?")); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	req, _ := rig.router.lastRequest()
@@ -144,7 +149,7 @@ func TestEntryContentCannotEscapeItsDelimiters(t *testing.T) {
 			"hardened"),
 	}
 
-	if err := rig.unit.Handle(context.Background(), directInbound("anything?")); err != nil {
+	if err := rig.unit.Handle(context.Background(), directInbound("any earlier instructions?")); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	req, _ := rig.router.lastRequest()
