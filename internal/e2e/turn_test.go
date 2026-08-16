@@ -465,7 +465,7 @@ func TestUndoRemovesTheEntryEndToEnd(t *testing.T) {
 	}
 	waitFor(t, "the removal notice", func() bool {
 		for _, o := range h.tr.Sent() {
-			if strings.Contains(o.Text, "Removed") && strings.Contains(o.Text, "Boiler serviced") {
+			if strings.Contains(o.Text, "I've removed") && strings.Contains(o.Text, "Boiler serviced") {
 				return true
 			}
 		}

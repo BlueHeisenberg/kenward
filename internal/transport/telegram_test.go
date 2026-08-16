@@ -1079,3 +1079,56 @@ func TestASendThatFailsBothWaysIsStillAnError(t *testing.T) {
 		t.Errorf("error = %v, want it to name the real fault", err)
 	}
 }
+
+// TestRetireReserveMeasuresTheQuestionsOwnLanguage. Every input to the reservation is
+// language-dependent: the two outcome phrases, the dash that introduces them, the
+// caller's retired note and every button label. A margin tuned on English is silently
+// wrong in a language whose outcome line is longer, and the failure is a 400 from
+// Telegram on a long question rather than anything a test would otherwise see.
+func TestRetireReserveMeasuresTheQuestionsOwnLanguage(t *testing.T) {
+	english := Question{Notes: OutcomeNotes{}}
+	longer := Question{Notes: OutcomeNotes{
+		Dash:      "— ",
+		Declined:  "geen antwoord, geldt als geweigerd en dan nog wat woorden erbij",
+		Withdrawn: "vraag ingetrokken",
+	}}
+	if retireReserve(longer) <= retireReserve(english) {
+		t.Errorf("a longer outcome line reserved %d units against English's %d",
+			retireReserve(longer), retireReserve(english))
+	}
+	// The reservation is what retire actually writes, so the two cannot drift.
+	if got, want := retireReserve(longer), utf16Len(declinedText(longer)); got != want {
+		t.Errorf("reserve = %d, but the declined line is %d units", got, want)
+	}
+}
+
+// TestRetireReserveCountsTelegramUnits. Telegram counts UTF-16 code units, so a
+// Chinese character is one against the 4096 budget where it is three bytes, and an
+// emoji is two where it is one rune. Counting bytes over-reserves for every non-Latin
+// script; counting runes under-reserves for the glyphs.
+func TestRetireReserveCountsTelegramUnits(t *testing.T) {
+	chinese := Question{Notes: OutcomeNotes{Dash: "——", Declined: "没有回答，视为拒绝", Withdrawn: "问题已撤回"}}
+	got := retireReserve(chinese)
+	if want := len(declinedText(chinese)); got >= want {
+		t.Errorf("reserve = %d, which is at least the byte length %d — it is counting bytes", got, want)
+	}
+	if got <= 0 {
+		t.Fatalf("reserve = %d", got)
+	}
+}
+
+// TestOutcomeNotesFallBackPerString. A caller with no language gets English, and a
+// caller that translated one line and not the other gets the line they translated
+// rather than a table that degrades wholesale.
+func TestOutcomeNotesFallBackPerString(t *testing.T) {
+	q := Question{Text: "Q", Notes: OutcomeNotes{Declined: "sin respuesta"}}
+	if got := declinedText(q); !strings.Contains(got, "sin respuesta") {
+		t.Errorf("declined = %q, want the caller's own wording", got)
+	}
+	if got := withdrawnText(q); !strings.Contains(got, "question withdrawn") {
+		t.Errorf("withdrawn = %q, want the English default for a line nobody translated", got)
+	}
+	if got := declinedText(Question{Text: "Q"}); !strings.Contains(got, "— no answer, treated as declined") {
+		t.Errorf("a question with no notes at all rendered %q", got)
+	}
+}

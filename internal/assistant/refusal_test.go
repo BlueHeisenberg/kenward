@@ -18,7 +18,7 @@ func TestRefusalGoldens(t *testing.T) {
 		{
 			name:   "direct single tier",
 			golden: "refusal_direct.golden",
-			text: refusalText(testDirectScope(), &routing.NoBackendError{
+			text: englishUnit().refusalText(testDirectScope(), &routing.NoBackendError{
 				Chain: []string{"local"},
 				Tried: []string{"monster", "5090"},
 			}),
@@ -26,7 +26,7 @@ func TestRefusalGoldens(t *testing.T) {
 		{
 			name:   "group multiple tiers",
 			golden: "refusal_group.golden",
-			text: refusalText(testGroupScope(), &routing.NoBackendError{
+			text: englishUnit().refusalText(testGroupScope(), &routing.NoBackendError{
 				Chain: []string{"local", "cloud"},
 				Tried: []string{"monster", "5090", "openrouter"},
 			}),
@@ -34,7 +34,7 @@ func TestRefusalGoldens(t *testing.T) {
 		{
 			name:   "nothing to try",
 			golden: "refusal_none_tried.golden",
-			text: refusalText(testDirectScope(), &routing.NoBackendError{
+			text: englishUnit().refusalText(testDirectScope(), &routing.NoBackendError{
 				Chain: []string{"local"},
 				Tried: nil,
 			}),
@@ -42,7 +42,7 @@ func TestRefusalGoldens(t *testing.T) {
 		{
 			name:   "empty chain",
 			golden: "refusal_empty_chain.golden",
-			text: refusalText(testDirectScope(), &routing.NoBackendError{
+			text: englishUnit().refusalText(testDirectScope(), &routing.NoBackendError{
 				Chain: nil,
 				Tried: nil,
 			}),

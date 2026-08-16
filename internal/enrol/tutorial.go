@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -152,7 +153,7 @@ func (t *Tutorial) Run(ctx context.Context) error {
 		_ = t.send(ctx, t.cur.abandoned)
 	}
 
-	for _, out := range Explanation(t.ChatID, t.cur, t.AskPrivate) {
+	for _, out := range Explanation(t.ChatID, lang.For(p.Language), t.AskPrivate) {
 		if err := t.Asker.Send(ctx, out); err != nil {
 			// The member has part of the explanation and the rest is not coming.
 			// Explained stays false, so the next start finishes the job.
@@ -447,7 +448,7 @@ func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, askPrivate
 			log.Info("supervisor: finishing an onboarding the last run did not", "member", string(id))
 		}
 		sent := true
-		for _, out := range Explanation(p.ChatID, textFor(TagFor(p.Language)), askPrivate) {
+		for _, out := range Explanation(p.ChatID, lang.For(p.Language), askPrivate) {
 			if err := a.Send(ctx, out); err != nil {
 				errs = append(errs, err)
 				sent = false

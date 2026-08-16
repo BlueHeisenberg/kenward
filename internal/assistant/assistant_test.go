@@ -616,7 +616,7 @@ func TestQueueOverflowDropsWithNotice(t *testing.T) {
 	}()
 	waitFor(t, func() bool {
 		for _, txt := range rig.tr.sentTexts() {
-			if txt == queuedText {
+			if txt == rig.unit.queued() {
 				return true
 			}
 		}
@@ -631,7 +631,7 @@ func TestQueueOverflowDropsWithNotice(t *testing.T) {
 	}
 	found := false
 	for _, txt := range rig.tr.sentTexts() {
-		if txt == droppedText {
+		if txt == enNotice(enCat.Dropped) {
 			found = true
 		}
 	}
@@ -887,7 +887,7 @@ func TestCaptureQuestionDoesNotBlockNextTurn(t *testing.T) {
 		if txt == "Thursday." {
 			answered = true
 		}
-		if txt == queuedText || txt == droppedText {
+		if txt == enNotice(enCat.Queued) || txt == enNotice(enCat.Dropped) {
 			t.Errorf("member blamed for a turn that was waiting on their own tap: %q", txt)
 		}
 	}
@@ -1163,7 +1163,7 @@ func TestPublishShareFailureIsReported(t *testing.T) {
 	if strings.Contains(got, "Everyone can see it now") {
 		t.Errorf("notice %q reads as a confirmation", got)
 	}
-	if got == noAnswerText {
+	if got == enNotice(enCat.NoAnswer) {
 		t.Errorf("the member authorised a publication and was told %q", got)
 	}
 }
@@ -1420,12 +1420,12 @@ func TestRetrievalLineReportsWhatReachedTheModel(t *testing.T) {
 	if shown == 0 || shown == 8 {
 		t.Fatalf("the budget dropped %d of 8 entries; this test needs some dropped and some kept", 8-shown)
 	}
-	// Built with readCount rather than a format string, so the assertion survives
+	// Built with the catalogue rather than a format string, so the assertion survives
 	// the budget leaving exactly one entry. It used to spell the count itself and
 	// always pluralised, which meant a prompt three lines longer — enough to drop
 	// one more entry — failed this test with "(1 entry)" against a wanted
 	// "(1 entries)": a fault in the expectation, reported as a fault in the code.
-	if want := "the household memory " + readCount(false, shown); !strings.Contains(line, want) {
+	if want := enCat.PartShared(enCat.Count(false, shown)); !strings.Contains(line, want) {
 		t.Errorf("retrieval line %q does not say %q — it is counting search hits rather than what the model saw", line, want)
 	}
 }

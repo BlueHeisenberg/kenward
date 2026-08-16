@@ -595,7 +595,7 @@ func TestTheTutorialIsMultiTurnAndTheMemberIsServedAfterIt(t *testing.T) {
 	})
 	h.tr.InjectText(meiChatID, meiTelegramID, "a bit dry, into cycling", false)
 	sent := h.waitForReply(meiChatID, onboardingMessages+1)
-	if !strings.Contains(sent[len(sent)-1].Text, "remember something") {
+	if !strings.Contains(sent[len(sent)-1].Text, "write something down") {
 		t.Errorf("the tutorial did not end with the explanation: %q", sent[len(sent)-1].Text)
 	}
 

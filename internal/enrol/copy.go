@@ -86,15 +86,17 @@ type text struct {
 	characterTooLong string
 
 	abandoned string
-
-	privateHead string
-	privateBody string
-	sharedHead  string
-	sharedBody  string
-	writesHead  string
-	writesBody  string
-	writesAsk   string
 }
+
+// The memory model itself — the three messages Explanation sends — is deliberately
+// not in this struct. It lives in internal/lang, in every language kenward speaks
+// rather than the two this tutorial's questions are written in.
+//
+// The split is not tidiness. The questions are a convenience and can honestly say
+// they are offered in two languages; the memory model is what the product is obliged
+// to say about where a member's words go and who can read them, and a member who
+// named Catalan should get that part in Catalan even though the four questions
+// before it were in English.
 
 // tables is every language the tutorial is written in, keyed by tag.
 var tables = map[string]text{
@@ -158,9 +160,10 @@ var english = text{
 	otherPrompt:   "Which language? Send me its name.",
 	otherNoted: func(named string) string {
 		return fmt.Sprintf("Noted: %s.\n\n"+
-			"I have to be straight with you: this walkthrough is only written in English "+
-			"and Spanish so far, so the rest of it will be in English. Your choice is "+
-			"saved and you can change it whenever you like.", transport.Esc(named))
+			"I have to be straight with you: these setup questions are only written in "+
+			"English and Spanish so far, so the rest of them will be in English. What I "+
+			"explain afterwards is in your language, and your choice is saved — you can "+
+			"change it whenever you like.", transport.Esc(named))
 	},
 	skip:            "Skip",
 	back:            "Back",
@@ -188,26 +191,6 @@ var english = text{
 
 	abandoned: "No rush — I've left the rest on my defaults. You can change any of it later. " +
 		"Here's how I work.",
-
-	privateHead: "This chat is private",
-	privateBody: "This chat — just you and me — is your private memory. What you tell me " +
-		"here stays in your space. Nobody else in the household can read it, and " +
-		"I won't bring it up in the group.",
-	sharedHead: "The group chat is shared",
-	sharedBody: "The household group chat is the shared memory. Whatever I remember there, " +
-		"everyone can see. Nothing crosses over on its own: if something private " +
-		"should become shared, ask me, and I'll show you the exact text before any " +
-		"of it moves.",
-	writesHead: "What happens when I remember something",
-	writesBody: "When something sounds worth keeping for your own memory, I write it " +
-		"down and then show you exactly what I wrote and which memory it went to, " +
-		"with an Undo button that takes it back. Anything for the household's " +
-		"shared memory I ask about first and write nothing until you tap Save.\n\n" +
-		"Either way you always see it. That's all of it. Just talk to me normally.",
-	writesAsk: "I never save anything by myself. When something sounds worth " +
-		"keeping I'll ask — you'll see what I'd write down and which memory it " +
-		"goes to, and you tap Save or Don't save. If you don't answer, I don't " +
-		"save it.\n\nThat's all of it. Just talk to me normally.",
 }
 
 var spanish = text{
@@ -227,9 +210,10 @@ var spanish = text{
 	otherPrompt:   "¿Cuál? Escríbeme su nombre.",
 	otherNoted: func(named string) string {
 		return fmt.Sprintf("Anotado: %s.\n\n"+
-			"Te lo digo claro: esta introducción solo está escrita en inglés y español por "+
-			"ahora, así que el resto irá en inglés. Tu elección queda guardada y puedes "+
-			"cambiarla cuando quieras.", transport.Esc(named))
+			"Te lo digo claro: estas preguntas de configuración solo están escritas en "+
+			"inglés y español por ahora, así que el resto irán en inglés. Lo que te explico "+
+			"después sí va en tu idioma, y tu elección queda guardada: puedes cambiarla "+
+			"cuando quieras.", transport.Esc(named))
 	},
 	skip:            "Saltar",
 	back:            "Atrás",
@@ -258,24 +242,4 @@ var spanish = text{
 
 	abandoned: "Sin prisa: he dejado el resto con mis valores por defecto y puedes cambiarlo " +
 		"cuando quieras. Te cuento cómo funciono.",
-
-	privateHead: "Este chat es privado",
-	privateBody: "Este chat, tú y yo y nadie más, es tu memoria privada. Lo que me cuentes " +
-		"aquí se queda en tu espacio. Nadie más de la casa puede leerlo y yo no lo saco " +
-		"en el grupo.",
-	sharedHead: "El grupo es la memoria común",
-	sharedBody: "El chat de grupo de la casa es la memoria compartida. Todo lo que recuerde " +
-		"ahí lo ve todo el mundo. Nada pasa de un lado a otro por su cuenta: si algo " +
-		"privado tiene que hacerse común, dímelo y te enseño el texto exacto antes de " +
-		"que se mueva nada.",
-	writesHead: "Qué pasa cuando recuerdo algo",
-	writesBody: "Cuando algo parece que merece guardarse en tu memoria, lo escribo y " +
-		"acto seguido te enseño exactamente qué he escrito y en qué memoria ha quedado, " +
-		"con un botón de Deshacer que lo retira. Lo que sea para la memoria compartida " +
-		"de la casa te lo pregunto antes y no escribo nada hasta que toques Guardar.\n\n" +
-		"De un modo u otro siempre lo ves. Eso es todo. Háblame con normalidad.",
-	writesAsk: "Nunca guardo nada por mi cuenta. Cuando algo parezca que merece guardarse " +
-		"te lo pregunto: verás qué escribiría y en qué memoria iría, y tú tocas Guardar " +
-		"o No guardar. Si no contestas, no lo guardo.\n\n" +
-		"Eso es todo. Háblame con normalidad.",
 }

@@ -562,7 +562,7 @@ func (t *Telegram) settle(ctx context.Context, q Question, msgID int, p *pending
 		return Answer{TimedOut: true}
 	}
 	t.ack(ctx, r.callbackID)
-	t.retire(ctx, q.ChatID, msgID, answeredText(q.Text, labelFor(p.choices, r.answer.ChoiceID)))
+	t.retire(ctx, q.ChatID, msgID, answeredText(q, labelFor(p.choices, r.answer.ChoiceID)))
 	return r.answer
 }
 
@@ -668,25 +668,28 @@ func labelFor(choices []Choice, id string) string {
 // The outcome line appended to a spent question. Italic, because it is the node
 // reporting on a button rather than more of what the question said — the same
 // mark the retrieval line carries, for the same reason.
-func answeredText(question, label string) string {
-	return question + "\n\n" + Italic("— "+label)
+//
+// The dash comes from the question's own language rather than from a literal here:
+// it is the one piece of punctuation in this file that is not the same character in
+// every language kenward speaks.
+func outcomeText(q Question, phrase string) string {
+	return q.Text + "\n\n" + Italic(q.Notes.orDefault().Dash+phrase)
 }
-func declinedText(question string) string {
-	return question + "\n\n" + Italic("— no answer, treated as declined")
-}
-func withdrawnText(question string) string {
-	return question + "\n\n" + Italic("— question withdrawn")
-}
+
+func answeredText(q Question, label string) string { return outcomeText(q, label) }
+
+func declinedText(q Question) string  { return outcomeText(q, q.Notes.orDefault().Declined) }
+func withdrawnText(q Question) string { return outcomeText(q, q.Notes.orDefault().Withdrawn) }
 
 // retiredText is the outcome line for a question that ended without a tap. def
 // supplies the default wording for this particular ending, and Question.
 // RetiredNote overrides every ending with one line — see its documentation for
 // why the two are not distinguished when a caller sets it.
-func retiredText(q Question, def func(string) string) string {
+func retiredText(q Question, def func(Question) string) string {
 	if q.RetiredNote != "" {
-		return answeredText(q.Text, q.RetiredNote)
+		return answeredText(q, q.RetiredNote)
 	}
-	return def(q.Text)
+	return def(q)
 }
 
 // retireReserve is the room a question's text must leave for the outcome line
@@ -694,18 +697,31 @@ func retiredText(q Question, def func(string) string) string {
 // be, including the longest choice label and the caller's own retired note.
 // Computed from the outcome functions themselves so the reservation cannot drift
 // from what retire actually writes.
+//
+// Every input to it is language-dependent, which is why it measures rather than
+// assumes: the outcome phrases, the dash, the retired note and every button label
+// are this conversation's, and French and Italian bodies run 15 to 25 per cent
+// longer than English while Dutch has the longest button in the set. A fixed margin
+// tuned on English would be silently wrong in half of them, and the failure is a
+// 400 from Telegram on a long question rather than anything visible in a test.
+//
+// utf16Len is the right unit and not an approximation of one. Telegram counts UTF-16
+// code units, so a Chinese character is one against the budget where it is three
+// bytes, and an emoji is two where it is one rune. Counting bytes would over-reserve
+// for every non-Latin script; counting runes would under-reserve for the glyphs.
 func retireReserve(q Question) int {
-	n := utf16Len(declinedText(""))
-	if w := utf16Len(withdrawnText("")); w > n {
+	blank := Question{Notes: q.Notes}
+	n := utf16Len(declinedText(blank))
+	if w := utf16Len(withdrawnText(blank)); w > n {
 		n = w
 	}
 	if q.RetiredNote != "" {
-		if w := utf16Len(answeredText("", q.RetiredNote)); w > n {
+		if w := utf16Len(answeredText(blank, q.RetiredNote)); w > n {
 			n = w
 		}
 	}
 	for _, c := range q.Choices {
-		if w := utf16Len(answeredText("", c.Label)); w > n {
+		if w := utf16Len(answeredText(blank, c.Label)); w > n {
 			n = w
 		}
 	}

@@ -50,16 +50,18 @@ const unremindSchema = `{
   }
 }`
 
-// Notices the unit appends to a reply after a reminder tool call. They are bracketed
-// like the retrieval line, and for the same reason: this is the node accounting for
-// what it did, not the assistant talking. They are product surface and golden-tested.
-const (
-	remindFullText    = "[you already have as many reminders as I can keep — cancel one first]"
-	remindPastText    = "[that time has already gone, so I have not set anything]"
-	remindFailedText  = "[I could not set that reminder]"
-	unremindNoneText  = "[there is no reminder with that code]"
-	unremindFailsText = "[I could not cancel that reminder]"
-)
+// The notices the unit appends to a reply after a reminder tool call live in the
+// catalogue (internal/lang, section REM).
+//
+// They are bracketed because this is the node accounting for what it did rather than
+// the assistant talking. The comment here used to say "bracketed like the retrieval
+// line"; the retrieval line stopped being bracketed when it gained italics and a
+// glyph, so the brackets are now this convention alone.
+//
+// Every one of them is appended to the model's own answer inside the same Telegram
+// message, which is why each is wrapped by Catalogue.Notice on its way out: in a
+// right-to-left language a Latin-initial answer sets the paragraph base to LTR and
+// the fragments of an unpinned notice lay out backwards relative to each other.
 
 // remindSpecs are the reminder tools, offered in every scope.
 //
@@ -109,11 +111,11 @@ func (u *Unit) applyReminders(sc domain.Scope, calls []routing.ToolCall) (notice
 
 	var notices []string
 	if cancel != "" {
-		notices = append(notices, u.cancelReminder(cancel))
+		notices = append(notices, u.cat.Notice(u.cancelReminder(cancel)))
 	}
 	if set != nil {
 		n, w := u.setReminder(sc, *set)
-		notices = append(notices, n)
+		notices = append(notices, u.cat.Notice(n))
 		warn = joinWarn(warn, w)
 	}
 	// A remind call the node could not even read is still a member who asked to be
@@ -121,7 +123,7 @@ func (u *Unit) applyReminders(sc domain.Scope, calls []routing.ToolCall) (notice
 	// find out by missing the thing it was for. setReminder says so about every
 	// failure it can see; a call that never reached it needs the same.
 	if set == nil && unusable {
-		notices = append(notices, remindFailedText)
+		notices = append(notices, u.cat.Notice(u.cat.RemindFailed))
 	}
 	return strings.Join(notices, "\n"), warn
 }
@@ -173,11 +175,11 @@ func extractReminders(calls []routing.ToolCall) (set *remindCall, cancelID strin
 func (u *Unit) setReminder(sc domain.Scope, call remindCall) (notice, warn string) {
 	hour, minute, err := parseClock(call.At)
 	if err != nil {
-		return remindFailedText, err.Error()
+		return u.cat.RemindFailed, err.Error()
 	}
 	every, err := remind.ParseEvery(call.Every)
 	if err != nil {
-		return remindFailedText, err.Error()
+		return u.cat.RemindFailed, err.Error()
 	}
 
 	weekday := time.Sunday
@@ -185,7 +187,7 @@ func (u *Unit) setReminder(sc domain.Scope, call remindCall) (notice, warn strin
 	switch every {
 	case remind.EveryWeekly:
 		if weekday, err = parseWeekday(call.On); err != nil {
-			return remindFailedText, err.Error()
+			return u.cat.RemindFailed, err.Error()
 		}
 	case remind.EveryOnce:
 		date = strings.TrimSpace(call.On)
@@ -200,21 +202,28 @@ func (u *Unit) setReminder(sc domain.Scope, call remindCall) (notice, warn strin
 	if err != nil {
 		switch {
 		case errors.Is(err, remind.ErrPast):
-			return remindPastText, err.Error()
+			return u.cat.RemindPast, err.Error()
 		default:
-			return remindFailedText, err.Error()
+			return u.cat.RemindFailed, err.Error()
 		}
 	}
 
 	stored, err := u.deps.Reminders.Add(r)
 	if err != nil {
 		if errors.Is(err, remind.ErrFull) {
-			return remindFullText, err.Error()
+			return u.cat.RemindFull, err.Error()
 		}
-		return remindFailedText, err.Error()
+		return u.cat.RemindFailed, err.Error()
 	}
-	return fmt.Sprintf("[reminder set, %s: %s — code %s]",
-		stored.When(loc), stored.Text, stored.ID), ""
+	// The member's reading of the schedule, not remind.Reminder.When's. That method
+	// serves three audiences from one place — this one, the model's system prompt
+	// and the operator's CLI — and only this one is translated. See
+	// TestReminderWhenStaysEnglishInThePrompt.
+	//
+	// stored.Text is the member's own words and is escaped by the catalogue entry:
+	// this notice rides on a message sent with a parse mode, so a reminder titled
+	// "<b>" must arrive as "<b>" rather than as markup somebody else chose.
+	return u.cat.ReminderSet(u.cat.When(stored, loc), stored.Text, stored.ID), ""
 }
 
 // cancelReminder removes one reminder and returns what to tell the member.
@@ -222,11 +231,11 @@ func (u *Unit) cancelReminder(id string) string {
 	r, err := u.deps.Reminders.Cancel(id)
 	switch {
 	case errors.Is(err, remind.ErrNoSuchReminder):
-		return unremindNoneText
+		return u.cat.UnremindNone
 	case err != nil:
-		return unremindFailsText
+		return u.cat.UnremindFails
 	}
-	return fmt.Sprintf("[reminder cancelled: %s]", r.Text)
+	return u.cat.ReminderCancelled(r.Text)
 }
 
 // parseClock reads "HH:MM". It is deliberately strict: a time this function had to

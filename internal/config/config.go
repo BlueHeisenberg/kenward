@@ -268,10 +268,20 @@ type PersonaConfig struct {
 	// household is entitled to ask for a register of a language kenward has never
 	// heard of.
 	//
-	// Empty means English. It reaches the model and nothing else: the node's own
-	// strings — onboarding, capture announcements, refusals, the retrieval line, the
-	// locked notice — are still English constants, and this setting does not move
-	// them. See docs/PROMPT.md.
+	// Empty means English. It reaches two places and they are honestly different.
+	//
+	// It is passed to the model, verbatim, which is why it is free text: a household
+	// is entitled to ask for a register of a language kenward has never heard of and
+	// the model will do its best. And it selects the node's own strings — the capture
+	// announcements, the refusals, the retrieval line, the reminder notices, the
+	// locked notice, the memory model explained at enrolment — from internal/lang,
+	// which is a closed list of languages somebody has written and read. A language
+	// outside that list still reaches the model and leaves the node's own strings in
+	// English; lang.Spoken is the predicate for which of the two a value gets.
+	//
+	// The four setup questions in the enrolment tutorial are a third, shorter list
+	// again (internal/enrol), and say so to the member's face when they cannot hold
+	// the conversation. See docs/PROMPT.md.
 	Language string `yaml:"language,omitempty" json:"language,omitempty"`
 	// Tone is the register, in a phrase: "warm", "very terse", "formal usted".
 	// Empty means the flat register docs/PROMPT.md specifies, which is the default

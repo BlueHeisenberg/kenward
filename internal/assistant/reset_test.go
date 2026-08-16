@@ -279,7 +279,7 @@ func historyTurns(t *testing.T, rig *testRig) int {
 func countNotices(rig *testRig) int {
 	n := 0
 	for _, text := range rig.tr.sentTexts() {
-		if text == resetNoticeText {
+		if text == enCat.ResetNotice {
 			n++
 		}
 	}

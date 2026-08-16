@@ -371,7 +371,7 @@ that stops letting it remember anything.
 Undo needed a delete lore did not have. It became a lore change: a space-scoped delete
 writes a signed tombstone that propagates, and `internal/memory.Delete` reaches it. A
 tombstone is not the same promise as a removal, so the announcement says which — *"it
-won't come back in an answer, here or on any other device"* rather than *"erased"*.
+won't come back in an answer, not here and not on any other device"* rather than *"erased"*.
 
 Three endings, three sentences, because the entry is in a different state in each: gone,
 still there because lore refused, or unknown because lore never answered. Reporting either

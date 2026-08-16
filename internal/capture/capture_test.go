@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
@@ -295,7 +296,7 @@ func TestOfferButtons(t *testing.T) {
 				t.Fatalf("sends = %v, want one confirmation", tr.sends)
 			}
 			if !strings.Contains(tr.sends[0].Text, "Bins go out Tuesday") ||
-				!strings.Contains(tr.sends[0].Text, destinationPhrase(tc.scope, tc.wantIn)) {
+				!strings.Contains(tr.sends[0].Text, wantDestination(tc.scope, tc.wantIn)) {
 				t.Errorf("confirmation %q lacks the title or the destination", tr.sends[0].Text)
 			}
 			// The space id is the operator's handle, not the member's. It took a
@@ -1006,7 +1007,7 @@ func TestConfirmationFailureDoesNotInviteARetry(t *testing.T) {
 		e.BeginTurn(sc, "turn-1")
 
 		out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
-		assert(t, out, err, tr, "Saved")
+		assert(t, out, err, tr, "I've saved")
 	})
 
 	t.Run("promotion", func(t *testing.T) {
@@ -1014,7 +1015,7 @@ func TestConfirmationFailureDoesNotInviteARetry(t *testing.T) {
 		m.entry, tr.sendErr = memory.Entry{Title: "Where the spare key lives"}, boom
 
 		out, err := e.OfferPromotion(context.Background(), directScope(), "entry-7", davidID)
-		assert(t, out, err, tr, "Published")
+		assert(t, out, err, tr, "I've published")
 	})
 }
 
@@ -1067,10 +1068,10 @@ func TestWrongSpaceWriteIsNotConfirmed(t *testing.T) {
 		t.Fatalf("sends = %v, want exactly the went-wrong notice", tr.sends)
 	}
 	got := tr.sends[0].Text
-	if strings.Contains(got, "Saved") || strings.Contains(got, "your private memory") {
+	if strings.Contains(got, "I've saved") || strings.Contains(got, "your private memory") {
 		t.Errorf("member told a misrouted write went where they chose: %q", got)
 	}
-	if !strings.Contains(got, "was not stored where it should have been") {
+	if !strings.Contains(got, "didn't store") {
 		t.Errorf("notice %q does not say the destination was wrong", got)
 	}
 }
@@ -1500,7 +1501,7 @@ func TestPrivateTargetIsWrittenThenAnnounced(t *testing.T) {
 	if strings.Contains(q.RetiredNote, "declined") {
 		t.Errorf("retirement note %q says declined about a write that stands", q.RetiredNote)
 	}
-	if !strings.Contains(q.RetiredNote, "still in memory") {
+	if !strings.Contains(q.RetiredNote, "still in your private memory") {
 		t.Errorf("retirement note %q does not say the entry is still there", q.RetiredNote)
 	}
 	// Nothing else is sent: the announcement is the whole of the member's traffic
@@ -1534,7 +1535,7 @@ func TestUndoDeletesTheEntryAndSaysSo(t *testing.T) {
 		t.Fatalf("sends = %v, want the one removal notice", tr.sends)
 	}
 	got := tr.sends[0].Text
-	if !strings.Contains(got, "Removed") || !strings.Contains(got, "Bins go out Tuesday") {
+	if !strings.Contains(got, "I've removed") || !strings.Contains(got, "Bins go out Tuesday") {
 		t.Errorf("removal notice %q does not say what was removed", got)
 	}
 	// lore deletes by tombstone, not by shredding, and the message may promise only
@@ -1674,7 +1675,7 @@ func TestAnnouncementFailureStillSaysItWasWritten(t *testing.T) {
 		t.Fatalf("sends = %v, want the fallback confirmation", tr.sends)
 	}
 	got := tr.sends[0].Text
-	for _, want := range []string{"Saved", "Bins go out Tuesday", "your private memory", "undo button didn't go through"} {
+	for _, want := range []string{"I've saved", "Bins go out Tuesday", "your private memory", "undo button didn't go through"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("fallback %q is missing %q", got, want)
 		}
@@ -1794,5 +1795,89 @@ func TestUndoTapFromAnotherMemberIsIgnored(t *testing.T) {
 	}
 	if len(tr.sends) != 0 {
 		t.Errorf("sends = %v, want none", tr.sends)
+	}
+}
+
+// wantDestination is the English phrase a confirmation should name, rebuilt in the
+// test rather than read from production. destinationPhrase used to be production
+// code and the test called it, which meant the test agreed with whatever the code
+// did; the phrase is a product surface and the test should hold its own copy.
+func wantDestination(sc domain.Scope, space domain.SpaceID) string {
+	if sc.AllowsPrivateCapture() && space == sc.Write {
+		return "your private memory"
+	}
+	return "the household memory"
+}
+
+// TestAnnouncementsAndButtonsFollowTheMemberLanguage. Capture is where the destination
+// slot lived: nine sentences built by dropping "your private memory" after a
+// preposition. German inflects the phrase with the preposition and Dutch changes the
+// preposition itself, so the slot is gone and each language writes its own sentence.
+func TestAnnouncementsAndButtonsFollowTheMemberLanguage(t *testing.T) {
+	de := lang.For("German")
+	e, _, tr := newEngineWith(t, Options{Language: "German", PrivateWrites: PrivateWriteAsk},
+		accept(ChoicePersonal))
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	if _, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if len(tr.asks) != 1 {
+		t.Fatalf("asks = %v, want the one question", tr.asks)
+	}
+	q := tr.asks[0].q
+	if !strings.Contains(q.Text, de.ProposalOpener) {
+		t.Errorf("question %q is not in the member's language", q.Text)
+	}
+	if got := q.Choices[0].Label; got != de.BtnSavePersonal {
+		t.Errorf("save button reads %q, want %q", got, de.BtnSavePersonal)
+	}
+	// The choice ids are stable constants and never translate: they travel through
+	// the transport as callback payloads and come back in an Answer.
+	if got := q.Choices[0].ID; got != ChoicePersonal {
+		t.Errorf("choice id %q was translated; ids are machine-readable", got)
+	}
+	// The outcome line travels with the question so the transport can size the
+	// message against this language rather than English.
+	if q.Notes.Declined != de.Declined {
+		t.Errorf("question carries the outcome line %q, want %q", q.Notes.Declined, de.Declined)
+	}
+	if len(tr.sends) != 1 {
+		t.Fatalf("sends = %v, want the one confirmation", tr.sends)
+	}
+	if !strings.Contains(tr.sends[0].Text, de.Saved(true, "Bins go out Tuesday")) {
+		t.Errorf("confirmation %q is not the German sentence", tr.sends[0].Text)
+	}
+	// The dative in deinem privaten Gedächtnis, not the accusative that schreiben
+	// governs. A shared noun-phrase slot could not produce both.
+	if !strings.Contains(tr.sends[0].Text, "in deinem privaten Gedächtnis gespeichert") {
+		t.Errorf("confirmation %q does not inflect the destination for speichern", tr.sends[0].Text)
+	}
+	if !strings.Contains(de.WrittenOpener(true), "in dein privates Gedächtnis") {
+		t.Errorf("the write announcement does not use the accusative schreiben governs: %q", de.WrittenOpener(true))
+	}
+}
+
+// TestGroupCaptureUsesTheHouseholdLanguage. The group scope has no member to ask, so
+// its notices are the household's — which is the same resolution the assistant's
+// persona makes, made once in the supervisor so the two cannot drift.
+func TestGroupCaptureUsesTheHouseholdLanguage(t *testing.T) {
+	fr := lang.For("French")
+	e, _, tr := newEngineWith(t, Options{Language: "French"}, accept(ChoiceShared))
+	sc := groupScope()
+	e.BeginTurn(sc, "turn-1")
+
+	if _, err := e.Offer(context.Background(), sc, proposal(TargetUnsure), davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if len(tr.asks) != 1 {
+		t.Fatalf("asks = %v, want the one question", tr.asks)
+	}
+	if got := tr.asks[0].q.Choices[0].Label; got != fr.BtnHousehold {
+		t.Errorf("group button reads %q, want %q", got, fr.BtnHousehold)
+	}
+	if len(tr.sends) != 1 || !strings.Contains(tr.sends[0].Text, fr.Saved(false, "Bins go out Tuesday")) {
+		t.Errorf("group confirmation %v is not the French sentence", tr.sends)
 	}
 }

@@ -421,8 +421,11 @@ func (r *runner) buildUnit(view transport.Transport, k unitKey, name string, tie
 		return nil, nil, fmt.Errorf("supervisor: opening reminders for unit %s: %w", name, err)
 	}
 	logger := r.logger.With("unit", name)
-	engine := r.captureEngine(view)
 	unitOpts := r.unitOptions(k, tiers)
+	// The capture engine and the assistant read the same language, resolved once
+	// here rather than twice: a member whose announcements arrive in Catalan and
+	// whose refusals arrive in English would be a worse product than either alone.
+	engine := r.captureEngine(view, unitOpts.Persona.Language)
 	u, err := assistant.New(assistant.Deps{
 		Resolve:   r.resolve,
 		Memory:    r.memory,
@@ -451,10 +454,15 @@ func (r *runner) buildUnit(view transport.Transport, k unitKey, name string, tie
 // the engine keeps its options private, so the only way to check that a household's
 // capture.private_writes reached it is to build one the way production does and watch
 // what it does with a proposal.
-func (r *runner) captureEngine(view transport.Transport) *capture.Engine {
+func (r *runner) captureEngine(view transport.Transport, language string) *capture.Engine {
 	opts := capture.Options{
 		MaxProposalsPerTurn: r.cfg.Capture.MaxProposalsPerTurn,
 		Shared:              domain.SpaceID(r.cfg.Household.SharedSpace),
+		// Which language this conversation's announcements and buttons are in. It
+		// is the unit's persona language, which for the group chat is the
+		// household's — the group has no member to ask, and every notice it emits
+		// is addressed to everyone.
+		Language: language,
 	}
 	// Mapped rather than shared: the configuration's spelling is an operator's
 	// vocabulary and the engine's is a Go enum, and the two packages are entitled to

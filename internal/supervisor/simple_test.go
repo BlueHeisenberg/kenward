@@ -961,7 +961,7 @@ func TestMemoryPolicyReachesTheUnits(t *testing.T) {
 			Read:   []domain.SpaceID{"david-private"},
 			ChatID: davidTelegramID,
 		}
-		engine := h.sup.run.captureEngine(transport.NewFake())
+		engine := h.sup.run.captureEngine(transport.NewFake(), "")
 		engine.BeginTurn(sc, "turn-1")
 		out, err := engine.Offer(context.Background(), sc, capture.Proposal{
 			Draft:  memory.Draft{Domain: "household", Title: "Coffee order", Body: "Oat milk."},

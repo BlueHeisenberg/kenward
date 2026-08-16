@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 )
@@ -125,15 +126,6 @@ const (
   kenward is what it has always been: English, brief, no character.`
 
 	questionPersonaLanguage = "What language should kenward answer in?"
-
-	personaLanguageNote = `  Name it the way you would to a person — Spanish, español, Brazilian Portuguese.
-  It is passed to the model, not looked up in a list.
-
-  One honest limit before you answer: this changes what the MODEL writes. kenward's
-  own messages — the setup notes, what it says when it saves something, its
-  refusals, the line naming what it read — are still English. A Spanish household
-  gets Spanish answers with English machinery around them, and that is the whole of
-  what this setting buys today.`
 
 	questionPersonaTone = "How should it write?"
 
@@ -639,3 +631,21 @@ func formatList(items []string) string {
 		return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 	}
 }
+
+// personaLanguageNote is built from the catalogue rather than typed out, because a
+// list of languages in prose and a list of languages in code drift the first time an
+// eleventh table lands — and the drift is invisible: the wizard goes on describing a
+// product that has grown past it.
+//
+// The two halves of the setting are honestly different and the note says so. The value
+// is free text because it is passed to the model, which will do its best with a
+// language nobody here has heard of; kenward's own messages come from a closed list,
+// because somebody has to have written and read them.
+var personaLanguageNote = fmt.Sprintf(`  Name it the way you would to a person — Spanish, español, Brazilian Portuguese.
+  It is passed to the model, which is why it is not a list to pick from.
+
+  It also chooses the language of kenward's own messages — what it says when it
+  saves something, its refusals, the line naming what it read, the explanation each
+  member gets when they join. Those come from a closed list: %s.
+  Name anything else and the model still answers in it; kenward's own messages stay
+  English.`, formatList(lang.EnglishNames()))
