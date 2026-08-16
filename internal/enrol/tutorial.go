@@ -75,6 +75,10 @@ type Tutorial struct {
 	// cur is the language the tutorial is currently being delivered in. It starts as
 	// the household's and changes exactly once, at the language question.
 	cur text
+	// pending is the message id of the question on screen right now, and zero between
+	// questions. Every save carries it, so what is on disk while a question is up is
+	// what the next start needs to retire it. See ask.
+	pending int
 	// answered is what the member has settled on, kept so the caller can read it
 	// once Run has returned. See Answered.
 	answered Persona
@@ -125,6 +129,7 @@ func (t *Tutorial) Run(ctx context.Context) error {
 	// delivered: the one thing the product owes rather than asks. It is not a second
 	// writer of the record — it is the same save, one question earlier — so
 	// config.Binder still owns the state file and its clone-write-swap alone.
+	t.answered = p
 	t.save(ctx, p)
 
 	steps := t.steps()
@@ -352,7 +357,17 @@ func (t *Tutorial) ask(ctx context.Context, q string, choices []transport.Choice
 		AllowedUserID: t.Member.TelegramID,
 		Timeout:       t.timeout(),
 		RetiredNote:   t.cur.retired,
+		// Written down while the keyboard is live, because that is the only moment
+		// this process is sure of it. Ask retires its own message on every ending it
+		// can see; the one it cannot see is the node being killed, and then the id is
+		// all the next start has to work with. Posted runs on this goroutine before
+		// any answer can arrive, so the write is ordered before the read below.
+		Posted: func(id int) {
+			t.pending = id
+			t.save(ctx, t.answered)
+		},
 	})
+	t.pending = 0
 	switch {
 	case err != nil:
 		t.log("supervisor: tutorial question failed", "error", err)
@@ -425,6 +440,7 @@ func (t *Tutorial) save(ctx context.Context, p Persona) {
 	if t.Personas == nil {
 		return
 	}
+	p.QuestionMsg = t.pending
 	// Detached from ctx: this runs on the way out of a cancelled tutorial too, and
 	// losing the answers a member did give because the node is shutting down would
 	// be the one failure this write exists to prevent.
@@ -449,6 +465,17 @@ func (t *Tutorial) log(msg string, args ...any) {
 // downstream has to remember to.
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// keyboardRetirer is the part of a transport that can strip the buttons off a
+// question an earlier process asked. transport.Telegram has it, and so do a Mux view
+// and the Fake; an Asker without it leaves the keyboard where it is, which is what
+// happened to every interrupted member before this.
+//
+// It is asserted for rather than added to Asker because Asker is implemented by
+// fakes in several packages, and none of them has an onboarding to clean up after.
+type keyboardRetirer interface {
+	RetireKeyboard(ctx context.Context, chatID int64, messageID int) error
 }
 
 // FinishInterrupted sends the explanation to every member whose tutorial started but
@@ -482,8 +509,29 @@ func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, household 
 		if log != nil {
 			log.Info("supervisor: finishing an onboarding the last run did not", "member", string(id))
 		}
+		spoken := cmp.Or(p.Language, household)
+		cur := textFor(TagFor(spoken))
+
+		// The keyboard the killed process could not retire. Its token died with that
+		// process, so it answers nothing at all when it is tapped while still looking
+		// live; retiring it here is the same thing Ask does on every ending it can
+		// see. Best effort, and never a reason to withhold the explanation: a failure
+		// leaves a dead keyboard, and returning early would leave the member with the
+		// dead keyboard and no memory model either.
+		if r, ok := a.(keyboardRetirer); ok && p.QuestionMsg != 0 {
+			if err := r.RetireKeyboard(ctx, p.ChatID, p.QuestionMsg); err != nil && log != nil {
+				log.Warn("supervisor: could not retire the question the last run left on screen",
+					"member", string(id), "error", err)
+			}
+		}
+		p.QuestionMsg = 0
+
 		sent := true
-		for _, out := range Explanation(p.ChatID, lang.For(cmp.Or(p.Language, household)), askPrivate) {
+		// Said first, as Run says it: a member coming back to three messages of memory
+		// model is owed the reason the questions stopped.
+		msgs := append([]transport.Outbound{{ChatID: p.ChatID, Text: cur.abandoned}},
+			Explanation(p.ChatID, lang.For(spoken), askPrivate)...)
+		for _, out := range msgs {
 			if err := a.Send(ctx, out); err != nil {
 				errs = append(errs, err)
 				sent = false

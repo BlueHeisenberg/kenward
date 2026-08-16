@@ -75,6 +75,12 @@ type MemberPersona struct {
 	// interrupted one can be finished later without guessing a chat id from a user
 	// id. Zero means no onboarding has started.
 	TutorialChat int64 `json:"tutorial_chat,omitempty"`
+	// TutorialQuestion is the message id of the question left on screen with its
+	// buttons still on it, or zero if none is. A node killed while a question is up
+	// cannot retire its own keyboard, and the token behind those buttons dies with
+	// the process — so without this the next start finds a keyboard that still looks
+	// live and answers nothing when it is tapped.
+	TutorialQuestion int `json:"tutorial_question,omitempty"`
 	// Explained records that the memory-model explanation reached this member. It is
 	// the one thing kenward owes them rather than asks of them, so a node that died
 	// between the greeting and it has to know to send it on the next start.

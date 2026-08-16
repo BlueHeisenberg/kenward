@@ -437,9 +437,69 @@ func (a *parkedAsker) Send(ctx context.Context, o transport.Outbound) error {
 }
 
 func (a *parkedAsker) Ask(ctx context.Context, q transport.Question) (transport.Answer, error) {
+	if q.Posted != nil {
+		q.Posted(questionMsgID)
+	}
 	close(a.posted)
 	<-ctx.Done()
 	return transport.Answer{}, ctx.Err()
+}
+
+// questionMsgID is the message the parked question is posted as.
+const questionMsgID = 77
+
+// retiringAsker is a scriptedAsker that can also strip a keyboard, which is what the
+// transport a real sweep is handed can do.
+type retiringAsker struct {
+	scriptedAsker
+	retired []transport.Retired
+}
+
+func (a *retiringAsker) RetireKeyboard(ctx context.Context, chatID int64, messageID int) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.retired = append(a.retired, transport.Retired{ChatID: chatID, MessageID: messageID})
+	return nil
+}
+
+// TestRestartRetiresTheKeyboardItLeftOnScreen. A question killed mid-flight keeps its
+// buttons, and the token behind them died with the process: tapping one produced no
+// outcome line, no acknowledgement and not a single log line, on a keyboard that
+// still looked live. The timeout path retires its message; so must the next start.
+func TestRestartRetiresTheKeyboardItLeftOnScreen(t *testing.T) {
+	ps := newPersonas()
+	a := &parkedAsker{posted: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	tu := tutorialFor(t, a, ps, nil, nil)
+	tu.Timeout = time.Minute
+	done := make(chan struct{})
+	go func() { defer close(done); _ = tu.Run(ctx) }()
+	<-a.posted
+	// The node dies with the first question on screen.
+	t.Cleanup(func() { cancel(); <-done })
+
+	if got := ps.get("david").QuestionMsg; got != questionMsgID {
+		t.Fatalf("the killed tutorial recorded keyboard %d, want the one it left on screen (%d)", got, questionMsgID)
+	}
+
+	second := &retiringAsker{}
+	if err := FinishInterrupted(context.Background(), second, ps, LangEnglish, false, nil); err != nil {
+		t.Fatalf("FinishInterrupted: %v", err)
+	}
+	want := transport.Retired{ChatID: 500, MessageID: questionMsgID}
+	if len(second.retired) != 1 || second.retired[0] != want {
+		t.Errorf("the restart retired %+v, want exactly %+v", second.retired, want)
+	}
+	// And it says what it left them on, which is what the timeout path writes onto
+	// the message it retires.
+	if all := second.transcript(); !strings.Contains(all, english.abandoned) {
+		t.Errorf("the restart retired the keyboard and said nothing about it:\n%s", all)
+	}
+	// Nothing left in the record pointing at a keyboard that is no longer there.
+	if got := ps.get("david").QuestionMsg; got != 0 {
+		t.Errorf("the record still points at retired keyboard %d", got)
+	}
 }
 
 // TestTutorialKilledBeforeTheFirstAnswerIsStillExplainedTo is the one path where the

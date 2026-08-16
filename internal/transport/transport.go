@@ -66,6 +66,16 @@ type Question struct {
 	// Empty keeps the defaults. It is a note, not a whole text: it is appended
 	// after the question exactly as a chosen label is.
 	RetiredNote string
+	// Posted, if set, is called with the message id of the question as soon as it is
+	// on screen and before the wait begins.
+	//
+	// It exists for a caller that has to be able to retire this keyboard from a
+	// later process. Ask retires its own message on every ending it can see, but the
+	// id is only knowable from inside Ask, and a node killed while the question is up
+	// never sees Ask return — so the caller that wants to clean up on the next start
+	// has to be handed the id while the question is still live. It runs on the
+	// goroutine that called Ask, before any answer can arrive.
+	Posted func(messageID int)
 	// Notes is what this conversation's language calls a question nobody answered.
 	//
 	// The words travel on the question rather than being looked up here, because

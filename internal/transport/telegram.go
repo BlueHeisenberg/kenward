@@ -371,6 +371,9 @@ func (t *Telegram) Ask(ctx context.Context, q Question) (Answer, error) {
 	if err != nil {
 		return Answer{}, fmt.Errorf("transport: ask: %w", err)
 	}
+	if q.Posted != nil {
+		q.Posted(msg.ID)
+	}
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -611,6 +614,41 @@ func (t *Telegram) retire(ctx context.Context, chatID int64, msgID int, text str
 	if err != nil {
 		t.log(slog.LevelWarn, "could not retire question keyboard", "chat_id", chatID, "err", redactToken(err, t.token))
 	}
+}
+
+// RetireKeyboard strips the buttons from a question this process did not ask.
+//
+// Ask retires its own message on every ending it can see — a tap, a timeout, a
+// cancelled context, a transport closing — which covers everything except the ending
+// it cannot see: the node being killed while the question is on screen. The keyboard
+// outlives the process and the token behind it does not, so the next start finds a
+// message that still looks live and answers nothing at all when it is tapped. This is
+// how a caller that wrote the message id down clears it afterwards.
+//
+// A message whose keyboard is already gone — the run that died retired it and was
+// killed before it could say so — comes back "message is not modified", which is an
+// error saying nothing needed doing. The caller treats a failure here as tidying that
+// did not happen, never as a reason to withhold what it was about to say.
+//
+// The text is left alone. The id is the only thing worth carrying across a restart,
+// and rewriting a question this process never composed would mean keeping its copy in
+// a state file; the caller says what it left the member on in a message of its own,
+// which it knows and this package does not.
+func (t *Telegram) RetireKeyboard(ctx context.Context, chatID int64, messageID int) error {
+	if err := t.state(); err != nil {
+		return err
+	}
+	if chatID == 0 || messageID == 0 {
+		return errors.New("transport: retire without a message")
+	}
+	return t.call(ctx, func(ctx context.Context) error {
+		_, err := t.api.EditMessageReplyMarkup(ctx, &bot.EditMessageReplyMarkupParams{
+			ChatID:      chatID,
+			MessageID:   messageID,
+			ReplyMarkup: emptyKeyboard(),
+		})
+		return err
+	})
 }
 
 // keyboardFor lays the choices out one per row, so a long label is never clipped
