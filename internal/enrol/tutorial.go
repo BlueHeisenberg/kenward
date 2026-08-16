@@ -1,6 +1,7 @@
 package enrol
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -74,6 +75,10 @@ type Tutorial struct {
 	// cur is the language the tutorial is currently being delivered in. It starts as
 	// the household's and changes exactly once, at the language question.
 	cur text
+	// pending is the message id of the question on screen right now, and zero between
+	// questions. Every save carries it, so what is on disk while a question is up is
+	// what the next start needs to retire it. See ask.
+	pending int
 	// answered is what the member has settled on, kept so the caller can read it
 	// once Run has returned. See Answered.
 	answered Persona
@@ -115,11 +120,19 @@ func (t *Tutorial) Run(ctx context.Context) error {
 	t.cur = textFor(t.Household)
 	p := Persona{ChatID: t.ChatID}
 
-	steps := []func(context.Context, *Persona) outcome{t.askLanguage}
-	if t.OneEach {
-		steps = append(steps, t.askName)
-	}
-	steps = append(steps, t.askRegister, t.askCharacter)
+	// Written before the first question rather than after the first answer.
+	//
+	// It is the one fact the sweep needs to find this member again — which chat to
+	// finish in — and a member who is killed before they tap anything has no answers
+	// to carry it. Recorded after the first answer instead, that member had no row at
+	// all, FinishInterrupted skipped them for ever, and the memory model was never
+	// delivered: the one thing the product owes rather than asks. It is not a second
+	// writer of the record — it is the same save, one question earlier — so
+	// config.Binder still owns the state file and its clone-write-swap alone.
+	t.answered = p
+	t.save(ctx, p)
+
+	steps := t.steps()
 
 	gone := false
 	for i := 0; i < len(steps); {
@@ -153,7 +166,7 @@ func (t *Tutorial) Run(ctx context.Context) error {
 		_ = t.send(ctx, t.cur.abandoned)
 	}
 
-	for _, out := range Explanation(t.ChatID, lang.For(p.Language), t.AskPrivate) {
+	for _, out := range Explanation(t.ChatID, lang.For(cmp.Or(p.Language, t.Household)), t.AskPrivate) {
 		if err := t.Asker.Send(ctx, out); err != nil {
 			// The member has part of the explanation and the rest is not coming.
 			// Explained stays false, so the next start finishes the job.
@@ -165,6 +178,25 @@ func (t *Tutorial) Run(ctx context.Context) error {
 	t.save(ctx, p)
 	return nil
 }
+
+// steps is the questions this tutorial will ask, in order.
+//
+// It is a method rather than a literal inside Run because the greeting promises how
+// many there are before Run exists, and a number written out twice is a number that
+// drifts — it already had, and every member enrolled under one agent per household
+// was promised four questions and asked three.
+func (t *Tutorial) steps() []func(context.Context, *Persona) outcome {
+	steps := []func(context.Context, *Persona) outcome{t.askLanguage}
+	if t.OneEach {
+		// Nothing to name when the household shares one agent.
+		steps = append(steps, t.askName)
+	}
+	return append(steps, t.askRegister, t.askCharacter)
+}
+
+// questionCount is how many questions a member of this household will be asked. It
+// is the greeting's promise, counted from the step list itself.
+func questionCount(oneEach bool) int { return len((&Tutorial{OneEach: oneEach}).steps()) }
 
 // askLanguage is question one, and everything after it is delivered in the answer.
 //
@@ -303,7 +335,10 @@ func (t *Tutorial) askCharacter(ctx context.Context, p *Persona) outcome {
 		return retry
 	}
 	p.Character = desc
-	return advance
+	// Acknowledged like the name is. Without it a member who has just written a
+	// sentence about themselves goes straight into three messages of memory model
+	// with nothing to say the sentence landed.
+	return t.confirm(ctx, t.cur.characterNoted)
 }
 
 // skipped is the outcome of a typed answer that was the skip word. It is not one of
@@ -322,7 +357,17 @@ func (t *Tutorial) ask(ctx context.Context, q string, choices []transport.Choice
 		AllowedUserID: t.Member.TelegramID,
 		Timeout:       t.timeout(),
 		RetiredNote:   t.cur.retired,
+		// Written down while the keyboard is live, because that is the only moment
+		// this process is sure of it. Ask retires its own message on every ending it
+		// can see; the one it cannot see is the node being killed, and then the id is
+		// all the next start has to work with. Posted runs on this goroutine before
+		// any answer can arrive, so the write is ordered before the read below.
+		Posted: func(id int) {
+			t.pending = id
+			t.save(ctx, t.answered)
+		},
 	})
+	t.pending = 0
 	switch {
 	case err != nil:
 		t.log("supervisor: tutorial question failed", "error", err)
@@ -395,6 +440,7 @@ func (t *Tutorial) save(ctx context.Context, p Persona) {
 	if t.Personas == nil {
 		return
 	}
+	p.QuestionMsg = t.pending
 	// Detached from ctx: this runs on the way out of a cancelled tutorial too, and
 	// losing the answers a member did give because the node is shutting down would
 	// be the one failure this write exists to prevent.
@@ -421,6 +467,17 @@ func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// keyboardRetirer is the part of a transport that can strip the buttons off a
+// question an earlier process asked. transport.Telegram has it, and so do a Mux view
+// and the Fake; an Asker without it leaves the keyboard where it is, which is what
+// happened to every interrupted member before this.
+//
+// It is asserted for rather than added to Asker because Asker is implemented by
+// fakes in several packages, and none of them has an onboarding to clean up after.
+type keyboardRetirer interface {
+	RetireKeyboard(ctx context.Context, chatID int64, messageID int) error
+}
+
 // FinishInterrupted sends the explanation to every member whose tutorial started but
 // never reached it, and marks them done.
 //
@@ -431,7 +488,12 @@ func oneLine(s string) string {
 // asks of them, and nothing else would ever send it. A member enrolled before
 // personas existed has no record here and is not swept; they were explained to
 // under the old one-shot onboarding.
-func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, askPrivate bool, log *slog.Logger) error {
+//
+// household is the language to explain in for a member who never reached the
+// language question, which is exactly the member this sweep exists for. Their
+// persona's language is empty because empty means "the household's", and reading it
+// as English would explain the memory model in a language nobody here asked for.
+func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, household string, askPrivate bool, log *slog.Logger) error {
 	if a == nil || ps == nil {
 		return nil
 	}
@@ -447,8 +509,29 @@ func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, askPrivate
 		if log != nil {
 			log.Info("supervisor: finishing an onboarding the last run did not", "member", string(id))
 		}
+		spoken := cmp.Or(p.Language, household)
+		cur := textFor(TagFor(spoken))
+
+		// The keyboard the killed process could not retire. Its token died with that
+		// process, so it answers nothing at all when it is tapped while still looking
+		// live; retiring it here is the same thing Ask does on every ending it can
+		// see. Best effort, and never a reason to withhold the explanation: a failure
+		// leaves a dead keyboard, and returning early would leave the member with the
+		// dead keyboard and no memory model either.
+		if r, ok := a.(keyboardRetirer); ok && p.QuestionMsg != 0 {
+			if err := r.RetireKeyboard(ctx, p.ChatID, p.QuestionMsg); err != nil && log != nil {
+				log.Warn("supervisor: could not retire the question the last run left on screen",
+					"member", string(id), "error", err)
+			}
+		}
+		p.QuestionMsg = 0
+
 		sent := true
-		for _, out := range Explanation(p.ChatID, lang.For(p.Language), askPrivate) {
+		// Said first, as Run says it: a member coming back to three messages of memory
+		// model is owed the reason the questions stopped.
+		msgs := append([]transport.Outbound{{ChatID: p.ChatID, Text: cur.abandoned}},
+			Explanation(p.ChatID, lang.For(spoken), askPrivate)...)
+		for _, out := range msgs {
 			if err := a.Send(ctx, out); err != nil {
 				errs = append(errs, err)
 				sent = false

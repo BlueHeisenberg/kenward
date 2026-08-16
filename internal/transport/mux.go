@@ -269,6 +269,23 @@ func (v *muxView) Ask(ctx context.Context, q Question) (Answer, error) {
 	return v.mux.t.Ask(ctx, q)
 }
 
+// RetireKeyboard passes straight through to the shared bot, if it can do it at all.
+//
+// A transport that cannot is not an error: retiring a keyboard an earlier process
+// left behind is tidying up, and a caller must not fail an onboarding over it.
+func (v *muxView) RetireKeyboard(ctx context.Context, chatID int64, messageID int) error {
+	if err := v.state(); err != nil {
+		return err
+	}
+	r, ok := v.mux.t.(interface {
+		RetireKeyboard(context.Context, int64, int) error
+	})
+	if !ok {
+		return nil
+	}
+	return r.RetireKeyboard(ctx, chatID, messageID)
+}
+
 // Close detaches this view. It never closes the shared bot, so one member's unit
 // shutting down cannot take the household off the air. It is idempotent.
 func (v *muxView) Close() error {

@@ -12,8 +12,12 @@ import (
 // choosing it is the first question and this arrives before it. It goes out in the
 // household's language, which the admin set in the wizard, on the reasoning in
 // IDENTITY.md: kenward's language seeds the default for new members.
-func Greeting(chatID int64, member string, t text) transport.Outbound {
-	return transport.Outbound{ChatID: chatID, Text: t.greeting(member)}
+//
+// questions is how many are actually coming, counted from the tutorial's own step
+// list rather than written into the sentence: a household with one agent for
+// everybody has nothing to name, so it is asked three and was told four.
+func Greeting(chatID int64, member string, t text, questions int) transport.Outbound {
+	return transport.Outbound{ChatID: chatID, Text: t.greeting(member, t.number(questions))}
 }
 
 // Explanation is what a member reads once the setup questions are done.

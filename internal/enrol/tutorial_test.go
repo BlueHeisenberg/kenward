@@ -386,7 +386,7 @@ func TestTutorialSurvivesARestartMidQuestion(t *testing.T) {
 
 	// Second run: a fresh process sweeps for onboardings that never finished.
 	second := &scriptedAsker{}
-	if err := FinishInterrupted(context.Background(), second, ps, false, nil); err != nil {
+	if err := FinishInterrupted(context.Background(), second, ps, LangSpanish, false, nil); err != nil {
 		t.Fatalf("FinishInterrupted: %v", err)
 	}
 	all := second.transcript()
@@ -407,11 +407,224 @@ func TestTutorialSurvivesARestartMidQuestion(t *testing.T) {
 
 	// And it is not sent twice.
 	third := &scriptedAsker{}
-	if err := FinishInterrupted(context.Background(), third, ps, false, nil); err != nil {
+	if err := FinishInterrupted(context.Background(), third, ps, LangSpanish, false, nil); err != nil {
 		t.Fatalf("FinishInterrupted (second sweep): %v", err)
 	}
 	if got := len(third.sentTexts()); got != 0 {
 		t.Errorf("a second sweep sent %d messages to a member already explained to", got)
+	}
+}
+
+// parkedAsker posts the first question and then never comes back, which is what a
+// node killed while a question is on screen looks like from the store's side: no
+// line of the tutorial after that Ask ever runs, so nothing after it is ever
+// written. Cancelling the context instead would let Run's ending — and its writes —
+// happen, which is a graceful shutdown and a different test.
+type parkedAsker struct {
+	mu     sync.Mutex
+	sent   []transport.Outbound
+	posted chan struct{}
+}
+
+func (a *parkedAsker) Send(ctx context.Context, o transport.Outbound) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sent = append(a.sent, o)
+	return nil
+}
+
+func (a *parkedAsker) Ask(ctx context.Context, q transport.Question) (transport.Answer, error) {
+	if q.Posted != nil {
+		q.Posted(questionMsgID)
+	}
+	close(a.posted)
+	<-ctx.Done()
+	return transport.Answer{}, ctx.Err()
+}
+
+// questionMsgID is the message the parked question is posted as.
+const questionMsgID = 77
+
+// retiringAsker is a scriptedAsker that can also strip a keyboard, which is what the
+// transport a real sweep is handed can do.
+type retiringAsker struct {
+	scriptedAsker
+	retired []transport.Retired
+}
+
+func (a *retiringAsker) RetireKeyboard(ctx context.Context, chatID int64, messageID int) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.retired = append(a.retired, transport.Retired{ChatID: chatID, MessageID: messageID})
+	return nil
+}
+
+// TestRestartRetiresTheKeyboardItLeftOnScreen. A question killed mid-flight keeps its
+// buttons, and the token behind them died with the process: tapping one produced no
+// outcome line, no acknowledgement and not a single log line, on a keyboard that
+// still looked live. The timeout path retires its message; so must the next start.
+func TestRestartRetiresTheKeyboardItLeftOnScreen(t *testing.T) {
+	ps := newPersonas()
+	a := &parkedAsker{posted: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	tu := tutorialFor(t, a, ps, nil, nil)
+	tu.Timeout = time.Minute
+	done := make(chan struct{})
+	go func() { defer close(done); _ = tu.Run(ctx) }()
+	<-a.posted
+	// The node dies with the first question on screen.
+	t.Cleanup(func() { cancel(); <-done })
+
+	if got := ps.get("david").QuestionMsg; got != questionMsgID {
+		t.Fatalf("the killed tutorial recorded keyboard %d, want the one it left on screen (%d)", got, questionMsgID)
+	}
+
+	second := &retiringAsker{}
+	if err := FinishInterrupted(context.Background(), second, ps, LangEnglish, false, nil); err != nil {
+		t.Fatalf("FinishInterrupted: %v", err)
+	}
+	want := transport.Retired{ChatID: 500, MessageID: questionMsgID}
+	if len(second.retired) != 1 || second.retired[0] != want {
+		t.Errorf("the restart retired %+v, want exactly %+v", second.retired, want)
+	}
+	// And it says what it left them on, which is what the timeout path writes onto
+	// the message it retires.
+	if all := second.transcript(); !strings.Contains(all, english.abandoned) {
+		t.Errorf("the restart retired the keyboard and said nothing about it:\n%s", all)
+	}
+	// Nothing left in the record pointing at a keyboard that is no longer there.
+	if got := ps.get("david").QuestionMsg; got != 0 {
+		t.Errorf("the record still points at retired keyboard %d", got)
+	}
+}
+
+// TestTutorialKilledBeforeTheFirstAnswerIsStillExplainedTo is the one path where the
+// part kenward owes a member could be silently never paid.
+//
+// A member who taps nothing has no answers to record, so before this the store held
+// no row for them at all, and a sweep that skips members with no chat to write to
+// skipped them for ever. Restarting again never fixed it: there was nothing to find.
+func TestTutorialKilledBeforeTheFirstAnswerIsStillExplainedTo(t *testing.T) {
+	ps := newPersonas()
+	a := &parkedAsker{posted: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	tu := tutorialFor(t, a, ps, nil, func(tu *Tutorial) { tu.Household = LangSpanish })
+	tu.Timeout = time.Minute // the ending here is a kill, not a timeout
+	done := make(chan struct{})
+	go func() { defer close(done); _ = tu.Run(ctx) }()
+	<-a.posted
+	// The node dies here. Everything below is the next start.
+	t.Cleanup(func() { cancel(); <-done })
+
+	killed := ps.get("david")
+	if killed.ChatID != 500 {
+		t.Fatalf("a tutorial killed before the first answer left no chat to finish in: %+v", killed)
+	}
+	if killed.Explained {
+		t.Fatal("a tutorial that never reached the explanation recorded it as sent")
+	}
+
+	second := &scriptedAsker{}
+	if err := FinishInterrupted(context.Background(), second, ps, LangSpanish, false, nil); err != nil {
+		t.Fatalf("FinishInterrupted: %v", err)
+	}
+	all := second.transcript()
+	// In the household's language: the member never got as far as choosing one, and
+	// falling back to English would explain the memory model in a language nobody in
+	// this house asked for.
+	es := lang.For(spanish.name)
+	for _, want := range []string{es.EnrolPrivateBody, es.EnrolGroupBody, es.EnrolMemoryBodyDefault} {
+		if !strings.Contains(all, want) {
+			t.Errorf("the member who answered nothing was never told how memory works; missing %q in:\n%s", want, all)
+		}
+	}
+	for _, o := range second.sent {
+		if o.ChatID != 500 {
+			t.Errorf("the explanation went to chat %d, not the one the tutorial ran in", o.ChatID)
+		}
+	}
+
+	// Exactly once: a sweep that sent it again on every start would be its own defect.
+	third := &scriptedAsker{}
+	if err := FinishInterrupted(context.Background(), third, ps, LangSpanish, false, nil); err != nil {
+		t.Fatalf("FinishInterrupted (second sweep): %v", err)
+	}
+	if got := len(third.sentTexts()); got != 0 {
+		t.Errorf("a second sweep sent %d messages to a member already explained to", got)
+	}
+}
+
+// TestGreetingPromisesTheQuestionsItWillAsk. The greeting said "four" whatever the
+// household had chosen, and under one agent for the whole household there is nothing
+// to name, so three are asked. A member counting them is owed the right number.
+func TestGreetingPromisesTheQuestionsItWillAsk(t *testing.T) {
+	// The step list is language, register and character, plus the agent name only
+	// when each member has an agent of their own to name.
+	words := map[string]map[bool]string{
+		LangEnglish: {false: "Three", true: "Four"},
+		LangSpanish: {false: "Tres", true: "Cuatro"},
+	}
+	ctx := context.Background()
+	for tag := range tables {
+		for _, oneEach := range []bool{false, true} {
+			opts := []Option{WithLanguage(tag)}
+			if oneEach {
+				opts = append(opts, WithOneEach())
+			}
+			h := newHarness(t, nil, opts...)
+			code, err := h.claimer.Mint(ctx, "David", 0)
+			if err != nil {
+				t.Fatalf("Mint: %v", err)
+			}
+			res, err := h.claimer.Handle(ctx, claim(500, 42, "/start "+code))
+			if err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			got := res.Messages[0].Text
+			if want := words[tag][oneEach]; !strings.Contains(got, want) {
+				t.Errorf("%s one_each=%v: greeting does not promise %q:\n%s", tag, oneEach, want, got)
+			}
+			if wrong := words[tag][!oneEach]; strings.Contains(got, wrong) {
+				t.Errorf("%s one_each=%v: greeting promises %q questions, which is not what it asks:\n%s",
+					tag, oneEach, wrong, got)
+			}
+		}
+	}
+}
+
+// TestTutorialConfirmsWhatTheMemberWrote. The name question says "Bruno it is." and
+// the last question said nothing at all: a member typed a sentence about themselves
+// and the next thing they saw was the memory model, with no sign it had landed.
+func TestTutorialConfirmsWhatTheMemberWrote(t *testing.T) {
+	a := &scriptedAsker{script: []string{choiceLangEnglish, choiceToneFlat}}
+	mustRun(t, tutorialFor(t, a, newPersonas(), []string{"a bit dry, into cycling"}, nil))
+
+	sent := a.sentTexts()
+	asked, noted, explained := -1, -1, -1
+	for i, s := range sent {
+		switch {
+		case strings.Contains(s, "Anything else about how"):
+			asked = i
+		case strings.Contains(s, "Noted."):
+			noted = i
+		case strings.Contains(s, "This chat is private"):
+			explained = i
+		}
+	}
+	if asked < 0 || explained < 0 {
+		t.Fatalf("the tutorial did not run as expected:\n%s", strings.Join(sent, "\n---\n"))
+	}
+	if noted < 0 {
+		t.Fatalf("the character answer got no acknowledgement:\n%s", strings.Join(sent, "\n---\n"))
+	}
+	if noted < asked || noted > explained {
+		t.Errorf("the acknowledgement arrived at %d, not between the question (%d) and the explanation (%d)",
+			noted, asked, explained)
 	}
 }
 
@@ -553,10 +766,10 @@ func TestTutorialTransportFailureStillReports(t *testing.T) {
 // TestGreetingIsInTheHouseholdLanguage: the one message that arrives before a member
 // can say anything follows the household's choice, per IDENTITY.md.
 func TestGreetingIsInTheHouseholdLanguage(t *testing.T) {
-	if got := Greeting(500, "David", textFor(LangSpanish)); !strings.Contains(got.Text, "Ya estás dentro") {
+	if got := Greeting(500, "David", textFor(LangSpanish), 4); !strings.Contains(got.Text, "Ya estás dentro") {
 		t.Errorf("greeting = %q, want the Spanish one", got.Text)
 	}
-	if got := Greeting(500, "David", textFor("fr")); !strings.Contains(got.Text, "You're in") {
+	if got := Greeting(500, "David", textFor("fr"), 4); !strings.Contains(got.Text, "You're in") {
 		t.Errorf("an unheld language did not fall back to English: %q", got.Text)
 	}
 }
@@ -580,14 +793,24 @@ func TestEveryLanguageIsComplete(t *testing.T) {
 			"registerQ": tbl.registerQ, "registerFlat": tbl.registerFlat,
 			"registerWarm": tbl.registerWarm, "registerPlayful": tbl.registerPlayful,
 			"characterQ": tbl.characterQ, "characterTooLong": tbl.characterTooLong,
-			"abandoned": tbl.abandoned,
+			"characterNoted": tbl.characterNoted,
+			"abandoned":      tbl.abandoned,
 		} {
 			if strings.TrimSpace(s) == "" {
 				t.Errorf("table %q has no %s", tag, name)
 			}
 		}
-		if tbl.greeting("David") == "" || tbl.otherNoted("X") == "" || tbl.nameSet("X") == "" {
+		if tbl.greeting("David", tbl.number(4)) == "" || tbl.otherNoted("X") == "" || tbl.nameSet("X") == "" {
 			t.Errorf("table %q builds an empty message", tag)
+		}
+		// Every count the step list can produce has a word in this language. The
+		// fallback to digits exists so nothing is ever blank, not so a table can
+		// leave the number out.
+		for _, oneEach := range []bool{false, true} {
+			n := questionCount(oneEach)
+			if _, ok := tbl.numbers[n]; !ok {
+				t.Errorf("table %q has no word for %d, the number of questions it will ask", tag, n)
+			}
 		}
 	}
 }

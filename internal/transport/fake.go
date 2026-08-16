@@ -35,6 +35,9 @@ type Fake struct {
 	sent    []Outbound
 	asked   []Question
 	ignored int
+	// retired is every keyboard RetireKeyboard was asked to strip, as chat and
+	// message id. A test asserting that a restart cleaned up after itself reads it.
+	retired []Retired
 
 	scripted  []Answer
 	answerFn  func(Question) Answer
@@ -201,6 +204,7 @@ func (f *Fake) Reset() {
 	f.sent = nil
 	f.asked = nil
 	f.ignored = 0
+	f.retired = nil
 }
 
 // --- Transport -------------------------------------------------------------
@@ -279,6 +283,14 @@ func (f *Fake) Ask(ctx context.Context, q Question) (Answer, error) {
 		return Answer{}, err
 	}
 	f.asked = append(f.asked, q)
+	if q.Posted != nil {
+		// Message ids are one-based and in the order the questions were asked, which
+		// is enough for a test to tell one question's keyboard from another's.
+		posted, n := q.Posted, len(f.asked)
+		f.mu.Unlock()
+		posted(n)
+		f.mu.Lock()
+	}
 
 	var ans Answer
 	switch {
@@ -316,6 +328,34 @@ func (f *Fake) Ask(ctx context.Context, q Question) (Answer, error) {
 		}
 	}
 	return ans, nil
+}
+
+// Retired is one keyboard RetireKeyboard was asked to strip.
+type Retired struct {
+	ChatID    int64
+	MessageID int
+}
+
+// RetireKeyboard records the request. See Telegram.RetireKeyboard for what it does
+// against the real thing.
+func (f *Fake) RetireKeyboard(ctx context.Context, chatID int64, messageID int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return ErrClosed
+	}
+	f.retired = append(f.retired, Retired{ChatID: chatID, MessageID: messageID})
+	return nil
+}
+
+// RetiredKeyboards returns every keyboard this Fake was asked to strip, in order.
+func (f *Fake) RetiredKeyboards() []Retired {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Retired(nil), f.retired...)
 }
 
 // Close releases the Fake. It is idempotent; afterwards every call returns

@@ -53,6 +53,11 @@ type Persona struct {
 	// ChatID is the private chat the tutorial ran in, kept so an interrupted one can
 	// be finished later without guessing at a chat id from a user id.
 	ChatID int64
+	// QuestionMsg is the message id of a question still on screen with live-looking
+	// buttons, and zero when there is none. See Tutorial.ask: it is written when the
+	// question is posted and cleared when it ends, so a value here on the next start
+	// is a keyboard the killed process never got to retire.
+	QuestionMsg int
 	// Explained records that the memory-model explanation reached this member.
 	//
 	// It is not a persona setting; it is the only piece of tutorial progress worth
@@ -94,9 +99,10 @@ type binderPersonas struct{ binder *config.Binder }
 
 func (p binderPersonas) SetPersona(ctx context.Context, id domain.MemberID, per Persona) error {
 	return p.binder.SetMemberPersona(ctx, id, config.MemberPersona{
-		Persona:      per.PersonaConfig,
-		TutorialChat: per.ChatID,
-		Explained:    per.Explained,
+		Persona:          per.PersonaConfig,
+		TutorialChat:     per.ChatID,
+		TutorialQuestion: per.QuestionMsg,
+		Explained:        per.Explained,
 	})
 }
 
@@ -107,7 +113,12 @@ func (p binderPersonas) Personas(ctx context.Context) (map[domain.MemberID]Perso
 	}
 	out := make(map[domain.MemberID]Persona, len(held))
 	for id, mp := range held {
-		out[id] = Persona{PersonaConfig: mp.Persona, ChatID: mp.TutorialChat, Explained: mp.Explained}
+		out[id] = Persona{
+			PersonaConfig: mp.Persona,
+			ChatID:        mp.TutorialChat,
+			QuestionMsg:   mp.TutorialQuestion,
+			Explained:     mp.Explained,
+		}
 	}
 	return out, nil
 }
