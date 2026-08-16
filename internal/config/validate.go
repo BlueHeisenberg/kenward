@@ -204,6 +204,7 @@ func (c *Config) ValidateForUnit(s *Secrets, scope UnitScope) error {
 	c.validateMemory(p)
 	c.validateLimits(p)
 	c.validateUpdate(p)
+	c.validateDashboard(p)
 	c.validateScope(p, scope)
 	c.validateSecrets(p, s, scope)
 

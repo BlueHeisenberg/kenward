@@ -1,0 +1,31 @@
+{{define "content"}}
+{{$d := .Data}}
+<p>This household has no admin account yet, so there is no password to ask for. The
+process that started kenward printed a one-time setup token; paste it below.</p>
+
+{{if not $d.Outstanding}}
+<div class="msg warn" role="status">
+  <p>There is no setup token outstanding. Run <code>kenward setup-token</code> on this
+  machine to issue one — it prints a fresh token and voids any previous one.</p>
+</div>
+{{end}}
+
+<form method="post" action="/setup">
+  <label for="token">Setup token
+    <span class="hint">It works once, and expires 30 minutes after it was issued.</span>
+  </label>
+  <input type="text" id="token" name="token" autocomplete="off" autofocus required
+         spellcheck="false" inputmode="text">
+  <div class="actions"><button type="submit">Continue</button></div>
+</form>
+
+<section class="panel">
+  <h2>Why a token and not a password</h2>
+  <p>There is nothing to authenticate against until you have made an account, and the
+  first thing this wizard is going to do is ask you to make one. Until then the only
+  secret in existence is the one this machine printed where you started it — which means
+  reaching this page requires already being able to see that terminal.</p>
+  <p>Setup happens on <code>127.0.0.1</code>. Nothing on your network can reach this page
+  while it exists, and it stops existing the moment the account does.</p>
+</section>
+{{end}}

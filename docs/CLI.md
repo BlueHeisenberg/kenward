@@ -11,8 +11,9 @@ byte-exact except where marked golden.
 
 ## `kenward setup`
 
-The first-run wizard. Interactive, writes `kenward.yaml`, and is the only place the
-mode is chosen.
+The first-run wizard at a terminal. Interactive, writes `kenward.yaml`, and is one of the
+two places the mode is chosen — the other is the admin dashboard's own wizard, which asks
+the same questions through the same code.
 
 It asks, in order:
 
@@ -93,6 +94,66 @@ Details the first draft of this document left out, settled during implementation
 already there and says why: a household's configuration is full of decisions somebody
 made once, and overwriting it because a wizard was run twice is not recoverable from the
 file that no longer exists. The refusal is a usage error, so a script notices.
+
+There are two first-run wizards, and this is the one at a terminal. The other is the
+admin dashboard's, below; they ask the same questions in the same words, because the
+dashboard collects its answers into the same `internal/setup` types and finishes by
+running this wizard's own scripted path. Two wizards writing two dialects of one file is
+how the second one comes to promise something the first does not.
+
+---
+
+## `kenward dashboard [--config PATH] [--data-dir PATH] [--bind ADDR]`
+
+Serves the admin dashboard on its own, without running the household.
+
+This is how a first run is done in a browser. It works with no configuration at all,
+which is precisely why it is a separate command: `kenward run` refuses to start without
+one, and the point of the wizard is that there is not one yet.
+
+On the way up it prints where it is listening, and — if this household has no admin
+account — a single-use setup token:
+
+```
+kenward dashboard listening on http://127.0.0.1:8770
+
+This household has no admin account yet. Open the dashboard and paste this token:
+
+    1p3JcC0BdEuG-jHVJHhOB7uT4YRl9DAKZOr0dCGrb4M
+
+It works once and expires in 30m0s. Reissue with `kenward setup-token`.
+Setup happens on loopback: nothing on your network can reach that page.
+```
+
+The token goes to stdout and nowhere else. It is not logged, because a log is a file, and
+a live credential in a file a service manager rotates into somebody's journal is a
+credential with a longer life than thirty minutes.
+
+`--bind` overrides the address for this run. It cannot be used to make a claim: binding
+somewhere that is not loopback while the configuration says `exposure: loopback` is
+refused, with the reason — exposure is chosen in the dashboard, under Access, on loopback,
+after the account that protects it exists. Opening the port first and deciding afterwards
+is the order this refuses.
+
+Once a household is configured, `kenward run` serves the same dashboard from inside the
+node when `dashboard.enabled` is set — same package, same routes, same account. This
+command is for the times something is wrong enough that the node will not start.
+
+---
+
+## `kenward setup-token [--config PATH] [--data-dir PATH]`
+
+Reissues the first-run token and prints it. Whatever was outstanding stops working:
+there is one token.
+
+It exists because the token lives thirty minutes and the process that printed the first
+one may have been started hours ago, or by a service manager whose output nobody kept.
+
+It refuses, as a usage error, once an admin account exists. There is nothing a setup
+token could be for at that point, and minting one would be minting a way past the
+password. If the password is lost, delete `dashboard/admin.json` under the data directory
+from a shell on the machine — that is the whole recovery procedure, and it requires the
+access an attacker would need anyway.
 
 ---
 
@@ -396,6 +457,37 @@ says so where it happens:
   only unreachable machines is refused rather than sent somewhere else.
 ```
 
+The **Access** section, immediately after Configuration, is the dashboard's bind address
+and exposure as a first-class line:
+
+```
+Access
+  ✓ admin dashboard: off — no port is opened
+      nothing listens; kenward is configured and operated from this machine's
+      own shell
+```
+
+or, on a household that has opened one:
+
+```
+Access
+  ! admin dashboard: lan on https://192.168.1.20:8770
+      every device on your own network can reach the admin login
+      the certificate is self-signed; check its fingerprint against the
+      browser's once
+      a tailnet or VPN is the better way in from another machine
+```
+
+It is a section rather than a line under Configuration because it is the only thing in
+this report that says who can reach *this machine*; everything else answers whether the
+node works. Nothing in it changes the exit code — see below — and a configuration that is
+genuinely unsafe (LAN with no TLS, an exposure that contradicts its own bind) never gets
+this far: it is refused at load and appears as the parse failure it is.
+
+The privacy block gains a second paragraph, from the same `internal/privacy` the first
+one comes from, saying what the listener means. "Whoever runs the machine" stopped being
+the whole truth the moment a port could be open.
+
 `doctor` exits non-zero only on configuration faults, an unreachable lore, or a Telegram
 authorisation failure. This matters beyond tidiness: the container's `HEALTHCHECK` runs
 `doctor`, so treating a sleeping GPU box as unhealthy would put a perfectly good
@@ -472,3 +564,6 @@ inherits.
   out, or the contents of anyone's memory.
 - `--json` on `doctor` and `version` for scripting. Not on the others; there is nothing
   to parse.
+- A setup token is printed to stdout by `kenward dashboard` and `kenward setup-token` and
+  is never logged. It is the one secret this binary ever prints besides a claim code, and
+  like a claim code it exists in the clear exactly once.

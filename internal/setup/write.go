@@ -103,6 +103,11 @@ type document struct {
 	Session   sessionDoc    `yaml:"session"`
 	Capture   captureDoc    `yaml:"capture"`
 	Update    updateDoc     `yaml:"update"`
+	// Dashboard is a pointer so that the block is omitted entirely from a household
+	// that has never opened the admin dashboard. An absent block is off, and a file
+	// that spells out "enabled: false" invites somebody to flip it without reading
+	// what exposure means. See dashboarddoc.go.
+	Dashboard *dashboardDoc `yaml:"dashboard,omitempty"`
 }
 
 type householdDoc struct {
@@ -187,6 +192,7 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 			CheckInterval: cfg.Update.CheckInterval,
 		},
 	}
+	doc.Dashboard = dashboardDocFor(cfg.Dashboard)
 	// data_dir is written only when somebody asked for one. Left out, kenward uses
 	// the platform's own state location, which is the right answer on every machine
 	// the file might be copied to; written out, it is one absolute path that is

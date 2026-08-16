@@ -1,0 +1,94 @@
+{{define "content"}}
+{{$d := .Data}}
+
+{{if $d.Fingerprint}}
+<section class="panel">
+  <h2>Check this fingerprint, once</h2>
+  <code class="code-block">{{$d.Fingerprint}}</code>
+  <p>A certificate was generated for this machine and signed by this machine, so your
+  browser will warn you the first time you reach the new address. That warning is
+  correct: nothing outside this house has vouched for the certificate.</p>
+  <p>What makes it safe to click through is that you are reading this fingerprint over a
+  connection you already trust. Open the browser's certificate viewer at the new address,
+  compare the SHA-256 against the line above, and if they match you are talking to this
+  machine and not to something that answered instead of it. If they do not match, stop.</p>
+</section>
+{{end}}
+
+{{if $d.Restart}}
+<div class="msg warn" role="status">
+  <p>Written. The listener does not move until kenward restarts — this page is still
+  being served on <code>{{$d.Current}}</code>.</p>
+</div>
+{{end}}
+
+<pre class="statement">{{$d.Note}}</pre>
+
+<form method="post" action="/exposure">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+
+<fieldset>
+  <legend>Who can reach this dashboard</legend>
+
+  <div class="choice">
+    <input type="radio" id="x-loopback" name="exposure" value="loopback"
+           {{if eq (printf "%s" $d.Cfg.ExposureOrDefault) "loopback"}}checked{{end}}>
+    <label for="x-loopback">This machine only
+      <span class="hint">127.0.0.1. Nothing on your network can reach it. This is the
+      default and it needs no certificate.</span>
+    </label>
+  </div>
+
+  <div class="choice">
+    <input type="radio" id="x-tailnet" name="exposure" value="tailnet"
+           {{if eq (printf "%s" $d.Cfg.ExposureOrDefault) "tailnet"}}checked{{end}}>
+    <label for="x-tailnet">Over a tailnet or VPN — recommended
+      <span class="hint">The network underneath has already authenticated and encrypted
+      the connection before kenward sees it, which is a stronger guarantee than a
+      certificate this machine signed for itself. If you want to reach this from
+      elsewhere, this is the way to do it.</span>
+    </label>
+  </div>
+
+  <div class="choice">
+    <input type="radio" id="x-lan" name="exposure" value="lan"
+           {{if eq (printf "%s" $d.Cfg.ExposureOrDefault) "lan"}}checked{{end}}>
+    <label for="x-lan">On your own network
+      <span class="hint">Everyone on your wifi can reach the login page — a guest, a smart
+      TV, anything that has ever had the password. TLS is required and a self-signed
+      certificate is generated when you choose this; its fingerprint is shown once.</span>
+    </label>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>Which address</legend>
+  <p class="hint">Only used by the last two. Pick the interface you mean rather than
+  every one of them: a dashboard on <code>0.0.0.0</code> is a dashboard on the network
+  you forgot about.</p>
+  {{range $i, $o := $d.Interfaces}}
+  <div class="choice">
+    <input type="radio" id="addr-{{$i}}" name="address" value="{{$o.Addr}}" {{if $o.Tailnet}}checked{{end}}>
+    <label for="addr-{{$i}}"><span class="mono">{{$o.Addr}}</span>
+      <span class="hint">{{$o.Name}} — {{$o.Kind}}</span>
+    </label>
+  </div>
+  {{else}}
+  <p class="muted">No non-loopback addresses were found on this machine.</p>
+  {{end}}
+  <label for="port">Port</label>
+  <input type="text" id="port" name="port" value="" placeholder="8770">
+</fieldset>
+
+<div class="actions"><button type="submit">Write it</button></div>
+</form>
+
+<section class="panel">
+  <h2>What is listening now</h2>
+  <table>
+    <tr><th scope="row">Configured</th><td class="mono">{{$d.Cfg.BindAddr}} ({{$d.Cfg.ExposureOrDefault}})</td></tr>
+    <tr><th scope="row">Actually bound</th><td class="mono">{{if $d.Current}}{{$d.Current}}{{else}}not listening{{end}}</td></tr>
+    <tr><th scope="row">TLS</th><td>{{yesno $d.Cfg.TLS}}</td></tr>
+  </table>
+</section>
+{{end}}

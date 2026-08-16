@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/dashboard"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/version"
@@ -57,16 +58,30 @@ type doctorReport struct {
 	// being the mode working, so it is on the report rather than left to be inferred.
 	Unit string `json:"unit,omitempty"`
 
-	Configuration []check          `json:"configuration"`
-	Memory        []check          `json:"memory"`
-	Sessions      []check          `json:"sessions"`
-	Transport     []check          `json:"transport"`
-	Endpoints     []endpointReport `json:"endpoints"`
+	Configuration []check `json:"configuration"`
+	// Access is where the admin dashboard is listening, and how far that reaches. It
+	// is a section of its own rather than a line under Configuration because it is
+	// the one fact on this report that is about who can reach this machine rather
+	// than about what this machine can reach — and because "a port is open" belongs
+	// where somebody scanning the output will see it.
+	Access    []check          `json:"access"`
+	Memory    []check          `json:"memory"`
+	Sessions  []check          `json:"sessions"`
+	Transport []check          `json:"transport"`
+	Endpoints []endpointReport `json:"endpoints"`
 
 	// Statement is internal/privacy's statement for this mode, verbatim. It is not
 	// composed here and must never be: two copies of this claim is how one of them
 	// drifts into promising more than the mode delivers.
 	Statement string `json:"privacy_statement"`
+	// Exposure is internal/privacy's paragraph about the admin dashboard's listener,
+	// verbatim, and it is printed with the statement rather than beside it.
+	//
+	// "Whoever runs the machine" stopped being the whole truth the moment a port
+	// could be open. The statement above cannot know a household's configuration and
+	// must not vary with it; this can and does, which is why it is a second string
+	// from the same package rather than a paragraph spliced into the first.
+	Exposure string `json:"privacy_exposure"`
 	// TierNotes are privacy.TierNote's lines, one per conversation.
 	TierNotes []string `json:"tier_notes"`
 
@@ -196,14 +211,87 @@ func runDoctor(e *env, path, dataDir string, sel unitSelection) doctorReport {
 		rep.Configuration = append(rep.Configuration, check{Status: statusOK, Text: text})
 	}
 
+	rep.Access = doctorAccess(e, cfg)
 	rep.Memory = doctorMemory(ctx, e, cfg, scope, &rep)
 	rep.Sessions = doctorSessions(ctx, e, cfg, scope)
 	rep.Transport = doctorTransport(ctx, e, cfg, secrets, scope, &rep)
 	rep.Transport = append(rep.Transport, doctorEndpointKeys(cfg, secrets, scope, &rep)...)
 	rep.Endpoints = doctorEndpoints(ctx, e, cfg)
 	rep.Statement = privacy.Statement(privacyModeFor(cfg.Mode))
+	rep.Exposure = privacy.DashboardNote(dashboard.ReachFor(cfg.Dashboard), dashboard.URLFor(cfg.Dashboard), cfg.Dashboard.TLS())
 	rep.TierNotes = tierNotes(cfg, scope)
 	return rep
+}
+
+// doctorAccess reports the dashboard's bind address and exposure, as a first-class line.
+//
+// It is first-class because it is the only thing in this report that says who can reach
+// this machine. Everything else answers "does this node work"; this answers "and who
+// else can get at it", which is the question a household running a box full of everyone's
+// private memory has the strongest interest in and the least visibility of.
+//
+// Nothing here exits non-zero. docs/CLI.md names three things doctor fails for and this
+// is not one of them, and it must not become one: the container's HEALTHCHECK runs this
+// command, and a household that has deliberately put its dashboard on a tailnet is not
+// unhealthy. A configuration that is actually unsafe — LAN without TLS, an exposure that
+// contradicts its own bind — is refused by config.validateDashboard long before here,
+// and shows up in the Configuration section as the parse failure it is.
+func doctorAccess(e *env, cfg *config.Config) []check {
+	d := cfg.Dashboard
+	if !d.Enabled {
+		return []check{{
+			Status: statusOK,
+			Text:   d.DashboardSummary(),
+			Detail: []string{"nothing listens; kenward is configured and operated from this machine's own shell"},
+		}}
+	}
+
+	c := check{Status: statusOK, Text: d.DashboardSummary()}
+	switch d.ExposureOrDefault() {
+	case config.ExposureLoopback:
+		c.Detail = []string{"this machine only: nothing on your network can reach the admin login"}
+	case config.ExposureTailnet:
+		c.Detail = []string{
+			"anyone already on that tailnet or VPN can reach the admin login, and the " +
+				"admin password is the only thing between them and every setting in this household",
+		}
+	case config.ExposureLAN:
+		// A warning, and it stays one however correct the configuration is. Every
+		// device on a household's wifi can reach this login page, which is a fact
+		// worth reading once a month rather than deciding once and forgetting.
+		c.Status = statusWarn
+		c.Detail = []string{
+			"every device on your own network can reach the admin login",
+			"the certificate is self-signed; check its fingerprint against the browser's once",
+			"a tailnet or VPN is the better way in from another machine",
+		}
+	}
+
+	dir := cfg.DataDir
+	if !dashboard.NewAdminStore(dir).Exists() {
+		c2 := check{
+			Status: statusWarn,
+			Text:   "the admin dashboard has no account yet",
+			Detail: []string{"run `kenward setup-token` and open the dashboard; setup happens on loopback"},
+		}
+		if !d.Loopback() {
+			// A listener off this machine with no account on it is a wizard
+			// anybody who can reach the port can complete.
+			c2.Status = statusFail
+			c2.Detail = append(c2.Detail,
+				"this listener is not loopback and has no account behind it: anyone who can reach "+
+					"it and holds the setup token can configure this household")
+		}
+		return []check{c, c2}
+	}
+	if dashboard.NewSetupTokenStore(dir).Outstanding(e.clock()) {
+		return []check{c, {
+			Status: statusWarn,
+			Text:   "a setup token is outstanding and there is already an admin account",
+			Detail: []string{"it cannot be used — the setup pages do not exist once an account does — but it should not be there; it is removed on the next start"},
+		}}
+	}
+	return []check{c}
 }
 
 // doctorMemory checks that lore answers and that every configured space is there.
@@ -571,6 +659,7 @@ func renderDoctor(r doctorReport) string {
 	b.WriteString("\n")
 
 	writeSection(&b, "Configuration", r.Configuration)
+	writeSection(&b, "Access", r.Access)
 	writeSection(&b, "Memory", r.Memory)
 	writeSection(&b, "Sessions", r.Sessions)
 	writeSection(&b, "Transport", r.Transport)
@@ -609,6 +698,11 @@ func renderDoctor(r doctorReport) string {
 		// only worth anything if the two strings are identical.
 		b.WriteString(r.Statement)
 		b.WriteString("\n")
+		if r.Exposure != "" {
+			b.WriteString("\n")
+			b.WriteString(r.Exposure)
+			b.WriteString("\n")
+		}
 	}
 	if len(r.TierNotes) > 0 {
 		b.WriteString("\nWhere each conversation may go\n\n")

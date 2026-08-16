@@ -309,3 +309,53 @@ update:
   # kenward never applies more than one release at a time regardless of how often it
   # looks.
   check_interval: 6h
+
+# dashboard configures the admin dashboard: one HTTP server, one account, and no port
+# opened at all unless this block says otherwise.
+#
+# Leaving the whole block out is the same as enabled: false, and that is what every
+# configuration written before the dashboard existed means. It is spelled out here
+# because a household that does not know the dashboard exists cannot decide it does not
+# want one.
+dashboard:
+  # enabled turns the listener on. Off, `kenward run` opens no socket at all. `kenward
+  # dashboard` runs one anyway — that command exists so a first run is reachable on a
+  # machine with no configuration on it — but this key is what decides whether the node
+  # itself serves it.
+  enabled: true
+  # bind is the host:port the listener takes. The default is 127.0.0.1:8770, and this
+  # example states it rather than relying on it because it is the line somebody reads
+  # when they want to know whether anything off this machine can reach the box.
+  bind: 127.0.0.1:8770
+  # exposure is what the household was told, and it is checked against bind rather than
+  # derived from it. One of loopback, tailnet or lan.
+  #
+  #   loopback: this machine only. The default, and the only one that needs no further
+  #             decision. A bind that is not a loopback address under this exposure is a
+  #             refusal to start rather than a warning: a household told its dashboard
+  #             is unreachable while it listens on every interface is a household with
+  #             an admin login on the network and no idea.
+  #   tailnet:  one interface of a tailnet or VPN, and the recommended way in from
+  #             another machine. The network underneath has already authenticated and
+  #             encrypted the connection before kenward sees it, which is a stronger
+  #             guarantee than a certificate this machine signed for itself.
+  #   lan:      the household's own network, where nothing has. It requires TLS and
+  #             validation refuses it without: a LAN is not a trust boundary, and the
+  #             password that unlocks every member's private memory is the one thing
+  #             that must not cross one in the clear.
+  #
+  # Exposure is chosen in the dashboard itself, under Access, after the admin account
+  # exists — never before, and never during first-run setup, which always happens on
+  # loopback because there is no account to protect that page with yet.
+  exposure: loopback
+  # tls_cert_file and tls_key_file are the PEM pair the listener serves HTTPS from.
+  # Absent here, because this is a loopback dashboard and needs none.
+  #
+  # They are not normally written by hand. Choosing lan exposure in the dashboard
+  # generates a self-signed pair under the data directory, writes these two keys, and
+  # shows the certificate's SHA-256 fingerprint once so it can be checked against the
+  # browser's own warning — which is the entire ceremony that makes a self-signed
+  # certificate worth anything. Stating one without the other is a validation error.
+  #
+  # tls_cert_file: /var/lib/kenward/dashboard/cert.pem
+  # tls_key_file: /var/lib/kenward/dashboard/key.pem

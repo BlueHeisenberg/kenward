@@ -34,7 +34,8 @@ Companion documents: `ARCHITECTURE.md` (why), this file (what and how).
 ## 1. Package tree
 
 ```
-cmd/kenward/            entrypoint: run, setup, invite, revoke, doctor, update, version
+cmd/kenward/            entrypoint: run, setup, dashboard, setup-token, invite, revoke,
+                        doctor, update, version
 cmd/kenward-release/    release tooling: signing keys, manifests, sign, verify.
                         Never shipped in the image or the release artifacts.
 internal/domain/        core types. Depends on nothing.
@@ -50,7 +51,10 @@ internal/assistant/     the per-member Unit: one turn, end to end
 internal/supervisor/    simple (goroutines) | isolated (pods)
 internal/updater/       update checks, health gating, rollback, consent
 internal/privacy/       the per-mode privacy statements, stated once
-internal/setup/         first-run wizard
+internal/setup/         first-run wizard at the terminal
+internal/dashboard/     the admin dashboard: HTTP server, one account, server-rendered
+                        HTML. Off unless configured. Reuses internal/setup for every
+                        question it asks and for writing the file.
 internal/version/       build metadata
 internal/e2e/           tests only, no production code: whole messages through
                         the real wiring, faked only at the three outer edges
@@ -74,7 +78,14 @@ Third-party dependencies, fixed:
 | `github.com/modelcontextprotocol/go-sdk` | v1.7.0 | `memory` |
 | `gopkg.in/yaml.v3` | v3.0.1 | `config` |
 | `golang.org/x/sys` | v0.47.0 | `setup` (terminal echo suppression) |
-| `github.com/BlueHeisenberg/keel` | v0.5.4 | `routing` and `assistant` (llm), `session` (vault), `supervisor` (sandbox), `updater`, `cmd/kenward` and `cmd/kenward-release` (update) |
+| `github.com/BlueHeisenberg/keel` | v0.5.4 | `routing` and `assistant` (llm), `session` and `dashboard` (vault), `supervisor` (sandbox), `updater`, `cmd/kenward` and `cmd/kenward-release` (update) |
+
+`internal/dashboard` adds nothing to this table, and that is a constraint it was built
+to rather than a happy accident. Its HTML is `html/template` and `embed`; its
+certificate generation is `crypto/x509`; its admin password is Argon2id through
+`keel/vault`, the same code path that already wraps every member's session key. A web
+dashboard is where a dependency list goes to die, so the rule for this one is that a
+Node toolchain must never be needed to fix a form on it.
 
 Note: the MCP SDK requires Go 1.25, which is why the module targets it.
 
@@ -526,6 +537,17 @@ capture:
 update:
   channel: stable             # stable | edge | off
   check_interval: 6h
+
+# Absent means off, which is what every configuration written before the dashboard
+# existed means. See §14.
+dashboard:
+  enabled: true
+  bind: 127.0.0.1:8770        # what the socket does
+  exposure: loopback          # loopback | tailnet | lan — what the household was told
+  # Required under `lan` and generated there; absent on loopback. Naming one without
+  # the other is an error.
+  # tls_cert_file: /var/lib/kenward/dashboard/cert.pem
+  # tls_key_file: /var/lib/kenward/dashboard/key.pem
 ```
 
 `data_dir` holds only what kenward writes about itself, and is not where lore keeps its
@@ -543,6 +565,9 @@ that decides how the directory is backed up, mounted and permissioned:
 | `invites.json` | the **hashed** claim codes not yet redeemed | yes |
 | `invites/<id>.json` | isolated mode only: one member's outstanding codes, for their pod | yes |
 | `revocations/<id>.json` | isolated mode only: that one member was revoked, and when | no |
+| `dashboard/admin.json` | the admin account's **wrapped key**, which is the password verifier | yes |
+| `dashboard/setup-token.json` | the **digest** of the outstanding first-run token, and its expiry | yes |
+| `dashboard/cert.pem`, `key.pem` | the self-signed pair, present only under `lan` exposure | the key, yes |
 
 The per-member files under `invites/` are derived from `invites.json` by `kenward invite`,
 and exist because the process that redeems a code in isolated mode is not the process that
@@ -556,7 +581,18 @@ is the one file here that is world-readable, so the compose deployment can mount
 container that runs as a different account. See §8, "How a revocation reaches the pod that
 holds the binding".
 
-Neither sensitive file holds a plaintext secret: a wrapped key needs the passphrase and a
+`dashboard/` is the admin dashboard's own directory, and nothing in it holds a plaintext
+secret either: `admin.json` is a `keel/vault` key record — the same shape as a member's
+wrapped key, and the same Argon2id cost in front of it — and the setup token file holds a
+SHA-256 digest and an expiry, so a copy of it is useless for getting in. The TLS private
+key is the one plaintext secret here, and it is written `0600`, `chmod`ed after the write
+because the mode argument only applies when the file is created.
+
+Deleting `dashboard/admin.json` from a shell is how a lost admin password is recovered.
+That is the whole recovery procedure, deliberately: there is no reset flow, and the access
+it requires is the access an attacker would need anyway.
+
+No sensitive file here holds a plaintext secret: a wrapped key needs the passphrase and a
 claim code is stored only as a digest. But a wrapped key is worth exactly one offline
 guessing campaign to whoever copies it, which is why `sessions.json` is written `0600`
 inside a `0700` directory, and why this directory is not a thing to sync somewhere
@@ -1777,7 +1813,209 @@ design and several of them contradict what the architecture originally supposed.
 
 ## 13. Non-goals
 
-Not built, and not designed around: billing, tenant orchestration, a web dashboard, a
-control plane, SSO, organisations and teams, usage quotas, automatic memory writing
-without confirmation, and any multi-tenant runtime. One container per household is what
-makes all of these bolt-on rather than structural.
+Not built, and not designed around: billing, tenant orchestration, a control plane, SSO,
+organisations and teams, usage quotas, and any multi-tenant runtime. One container per
+household is what makes all of these bolt-on rather than structural.
+
+An admin dashboard was on this list and is not any more. The premise that changed is
+that the operator is no longer assumed to be the author: configuring kenward meant
+hand-editing YAML and creating lore spaces from a command line, and that is a wall in
+front of the only person the product is for. What it is *not* is a control plane — it is
+one account on one household's own machine, off unless configured, loopback unless
+somebody chose otherwise. See §14.
+
+---
+
+## 14. The admin dashboard — `internal/dashboard`
+
+One HTTP server, one account, and no port at all unless `dashboard.enabled` says
+otherwise. It is served two ways from the same package: `kenward dashboard` runs it on
+its own, which is how a first run happens on a machine with no configuration; and
+`kenward run` brings it up beside the household and takes it down with the drain.
+
+### The account
+
+There is one, and it is the operator's. Household members are unchanged — a Telegram id
+bound by a claim code, no login, no password, no reset flow — and nothing in this package
+issues a member a credential.
+
+The password is not hashed by anything written here. The account **is** a `keel/vault`
+vault whose data key is wrapped under the passphrase, exactly as every member's session
+key already is (§3, `internal/session`); checking a password is unwrapping it. That buys
+Argon2id at RFC 9106's second profile, the parameters travelling in the record so raising
+the cost later is a rotation rather than a migration, and a decoy derivation on the
+absent-account path so "there is no account here" and "wrong password" take comparable
+time and return the identical error.
+
+There is deliberately no reset. Nothing here knows an email address for the operator, and
+the Telegram accounts it does know belong to members. Losing the password means deleting
+`dashboard/admin.json` from a shell on the machine — which is the access an attacker
+would need anyway, so it costs nothing that was being protected.
+
+### First run
+
+Setup happens before an account exists, which means it happens behind something else: a
+single-use token the process prints where the person who started it can see it, with a
+30-minute life, reissued by `kenward setup-token`. Only the digest is stored, so a stolen
+copy of the file is worth nothing. Presenting it exchanges it for a session and **removes
+the file inside the same call** — a wrong guess removes nothing, because a token an
+attacker can invalidate by guessing once is a way to lock a household out of its own
+first run.
+
+Setup always happens on loopback. Exposure is chosen afterwards, from the dashboard,
+with the account already in place.
+
+The wizard's steps are: install → **admin account** → Telegram → endpoints → trust model →
+advanced (collapsed) → review. The account is second on purpose: every question after it
+is one an unauthenticated caller must not be able to answer. At the moment it is created,
+in this order — the account is written, the setup token is discarded, *every* setup
+session is destroyed, and a brand new admin session is issued. Nothing is promoted in
+place, so the id the browser had before that request is never the id it has after it.
+
+Steps past the account are refused before it exists, by the handler and not only by the
+ordering: a URL is a way of skipping to a question.
+
+### It asks internal/setup's questions, not its own
+
+The wizard collects answers into `setup.Answers` and finishes by running the real
+`setup.Wizard` in its scripted mode. That is not tidiness. What member ids are derived
+from, what a tier chain defaults to, which endpoints count as being in the house, and
+what the written file looks like are load-bearing privacy behaviour — and a second
+implementation of them behind a web form would be a second answer to "does david's chain
+reach a provider". The same applies to the privacy statement, which is rendered from
+`internal/privacy` verbatim, and to `setup.WriteConfig`, which is the same projection
+`kenward setup` writes through (guarded by `TestDocumentCoversTheWholeSchema`).
+
+Three rules that were only in the terminal wizard are now exported so there is one copy
+each: `setup.HostIsLocal`, `setup.LocalTiers` and `setup.StaysHome`. `cmd/kenward/tiers.go`
+used to carry a duplicate with a comment saying exporting was the right fix; the
+dashboard would have been the third copy, so the fix was taken.
+
+### Endpoints tell the dashboard their own context window
+
+vLLM publishes `max_model_len` on every entry of `/v1/models`, and it is the number that
+binds: `--max-model-len` is routinely far below what a model card advertises, and it is
+the server that refuses the request. `setup.DefaultModelsProbe` reads it.
+
+It is a **second** probe, not a replacement for `setup.DefaultProbe`. The reachability
+probe is a bare TCP connect made while somebody is still typing an address; this is an
+HTTP request with a credential on it, made only against an address they have confirmed.
+Collapsing them would send an authenticated request to whatever host a typo names.
+A server that publishes no window — llama.cpp, ollama — is not a failure.
+
+### Members
+
+Adding somebody is one action that does three things: creates their lore space, writes
+them into `kenward.yaml`, and mints their claim code. They used to be three commands, and
+the ordinary failure was a member declared against a space that did not exist, found
+weeks later when their first retrieval came back empty. The space is created **first**, so
+a lore that is not there leaves the configuration untouched.
+
+There is no default tier chain on that form and there must never be one. A chain is that
+member's privacy policy, and a web form with an empty checkbox group is exactly where
+somebody reaches for "well, use the household's".
+
+Minting and revoking are handed to the package as functions by `cmd/kenward`, not
+reimplemented. Both are mode-dependent and both fail *silently* when the mode-dependent
+half is skipped: in isolated mode a code that is not exported to the member's seed file
+reaches a pod that has never heard of it, and a revocation the pod never reads leaves it
+serving the account. See `mintClaimCode` and `revokeMember`.
+
+### kenward cannot create a lore space, so this one shells out
+
+lore's MCP server has five tools — search, get, put, share, spaces — and none of them
+creates anything. Space creation exists only on lore's command line. `memory.CreateSpace`
+therefore runs `lore space create <name>` as a one-shot subprocess against the same
+binary and the same `LORE_HOME` the MCP client uses, seamed through `memory.Config.RunCLI`
+so no test spawns a process.
+
+The new space's id comes from **diffing the listing**, not from parsing the command's
+output: list, create, list again, take the id that was not there before. This package
+already carries five parsers for lore's prose and each is a hostage to a wording change;
+the diff costs one extra tool call on an operation performed once per household member
+and cannot be broken by rewording. Zero new spaces, or more than one, is reported rather
+than guessed at — that id becomes somebody's private space.
+
+This is marked `ponytail:` in the source. Replace the exec with a tool call or a library
+call the moment lore offers either; nothing above `CreateSpace` knows which it got.
+
+### Exposure
+
+`dashboard.exposure` is what the household was told and `dashboard.bind` is what the
+socket does, and they are **checked against each other** rather than derived. A bind that
+is not loopback under `exposure: loopback` is a refusal to start: a household told its
+dashboard is unreachable while it listens on every interface is a household with an admin
+login on the network and no idea.
+
+| exposure | means | requires |
+| --- | --- | --- |
+| `loopback` | this machine only; the default | nothing |
+| `tailnet` | one tailnet or VPN interface; **recommended** for reaching it from elsewhere | an address, not a wildcard |
+| `lan` | the household's own network | TLS, and validation refuses it without |
+
+LAN requires TLS because a LAN is not a trust boundary, and the password that unlocks
+every member's private memory is the one thing that must not cross one in the clear. The
+certificate is generated at the moment that exposure is chosen — P-256, self-signed, 825
+days, IP and DNS SANs including loopback — and its SHA-256 fingerprint is shown once, in
+the browser's own colon-separated form. That showing is the entire ceremony: a self-signed
+certificate whose fingerprint was never checked is a warning clicked through, and what
+makes it worth anything is that the operator read the fingerprint over a connection they
+already trusted.
+
+The UI does not present the three as equal. Tailnet is labelled recommended, and LAN
+states what it costs.
+
+Changing exposure writes the configuration and asks for a restart; it does not rebind
+underneath the request that asked for it. Marked `ponytail:` — rebinding in place is the
+upgrade if this ever stops being a once-a-year action.
+
+### What the server assumes
+
+That an attacker can reach the port. Concretely:
+
+- Every route but `/login` and the first-run pages requires a session; a `GET` without one
+  redirects and a `POST` without one is a 401 with no page in it.
+- Every mutating route is method-qualified in the mux, so a `GET` to one is a 405 rather
+  than a mutation. A `GET` that changes something is a change any `<img>` tag in the
+  browser can make, whatever the CSRF token says.
+- Every mutating request carries a per-session CSRF token, compared with
+  `subtle.ConstantTimeCompare` against server-side state — not a double-submit cookie,
+  which accepts anything an attacker can also set.
+- Sessions live in memory, so a restart signs everybody out. Persisting them would be a
+  second store of live credentials on the same disk as the thing they unlock.
+- Cookies are `HttpOnly`, `SameSite=Lax`, `Secure` whenever the listener is TLS, and have
+  no `Max-Age`.
+- Login is rate limited and locks out — five failures in fifteen minutes, locked for
+  fifteen — **whatever the bind address is**, not only off loopback. A branch whose false
+  arm is exercised only in the configuration nobody attacks is how the true arm rots.
+  The counter is per-account rather than per-address, because there is one account and an
+  attacker has as many addresses as they like; the cost is a fifteen-minute
+  denial-of-service for anyone who can reach the port, which is what loopback-by-default
+  bounds. Marked `ponytail:`.
+- Content-Security-Policy is `default-src 'none'` with `style-src 'self'`, which the page
+  can keep because it inlines no script and loads nothing from anywhere.
+  `Cache-Control: no-store` on every page.
+- Nothing secret is ever put in a URL. A claim code is rendered on the page that minted
+  it and never redirected with — it exists in the clear exactly once.
+
+`internal/dashboard`'s tests are written from the outside, by somebody who wants what is
+behind the port: the unauthenticated and CSRF sweeps walk a list of routes so a route
+added without a guard fails the suite rather than being noticed later.
+
+### The privacy statement gains an exposure paragraph
+
+`privacy.DashboardNote` is a second string from `internal/privacy`, printed by
+`kenward doctor` under the mode statement and by the dashboard's own overview. It is
+separate from `Statement` because `Statement` is a fact about the mode and must not vary
+with a household's settings, where this varies with exactly one setting.
+
+It exists because "whoever runs the machine" stopped being the whole truth the moment a
+port could be open. It says the true thing for every reach, including the one kenward
+refuses to start with — a blank where a warning belongs is how somebody concludes there
+is nothing to warn about.
+
+`kenward doctor` also gains an **Access** section, before Memory, carrying the bind
+address and the exposure as a first-class line. Nothing in it exits non-zero: the
+container's HEALTHCHECK runs `doctor`, and a household that deliberately put its dashboard
+on a tailnet is not unhealthy. A configuration that is actually unsafe is refused by
+`config.validateDashboard` and shows up as the parse failure it is.

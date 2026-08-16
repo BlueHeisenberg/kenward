@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} — kenward</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+{{if .SignedIn}}
+<header>
+  <p class="brand">kenward</p>
+  <nav aria-label="Sections">
+    <ul>
+      <li><a href="/overview"{{if eq .Nav "overview"}} aria-current="page"{{end}}>Overview</a></li>
+      <li><a href="/members"{{if eq .Nav "members"}} aria-current="page"{{end}}>Members</a></li>
+      <li><a href="/settings"{{if eq .Nav "settings"}} aria-current="page"{{end}}>Settings</a></li>
+      <li><a href="/exposure"{{if eq .Nav "exposure"}} aria-current="page"{{end}}>Access</a></li>
+      <li><a href="/password"{{if eq .Nav "password"}} aria-current="page"{{end}}>Password</a></li>
+    </ul>
+  </nav>
+  <form method="post" action="/logout" class="logout">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit">Sign out</button>
+  </form>
+</header>
+{{end}}
+<main id="main">
+<h1>{{.Title}}</h1>
+{{if .Error}}<div class="msg error" role="alert"><p>{{.Error}}</p></div>{{end}}
+{{if .Flash}}<div class="msg ok" role="status"><p>{{.Flash}}</p></div>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>

@@ -1,0 +1,240 @@
+{{define "content"}}
+{{$d := .Data}}{{$st := $d.State}}
+
+<ol class="steps" aria-label="Setup progress">
+  {{range $i, $s := $d.Steps}}
+  <li{{if eq $i $d.Current}} aria-current="step"{{end}}>{{$s.Short}}</li>
+  {{end}}
+</ol>
+
+{{if $d.Problems}}
+<div class="msg error" role="alert">
+  <ul>{{range $d.Problems}}<li>{{.}}</li>{{end}}</ul>
+</div>
+{{end}}
+
+<form method="post" action="/setup/{{$d.Slug}}">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+
+{{if eq $d.Slug "install"}}
+  <p>Two things to settle before anything else: where kenward is running, and who lives
+  here.</p>
+
+  <fieldset>
+    <legend>Where this runs</legend>
+    <div class="choice">
+      <input type="radio" id="i-host" name="install" value="host" {{if not $st.Container}}checked{{end}}>
+      <label for="i-host">On this machine
+        <span class="hint">kenward keeps its state in the usual place for this operating system.</span>
+      </label>
+    </div>
+    <div class="choice">
+      <input type="radio" id="i-container" name="install" value="container" {{if $st.Container}}checked{{end}}>
+      <label for="i-container">In a container
+        <span class="hint">A container's home directory is not where anyone expects state to
+        survive a restart, so a <code>data_dir</code> is written into the file.</span>
+      </label>
+    </div>
+    <label for="data_dir">Data directory <span class="hint">Leave blank for the default.</span></label>
+    <input type="text" id="data_dir" name="data_dir" value="{{$st.DataDir}}" placeholder="/var/lib/kenward">
+  </fieldset>
+
+  <label for="household_name">What this household is called
+    <span class="hint">A display label. It appears in reports and in the names of the lore
+    spaces this wizard creates.</span>
+  </label>
+  <input type="text" id="household_name" name="household_name" value="{{$st.HouseholdName}}" required>
+
+  <label for="members">Who lives here
+    <span class="hint">One name per line, as they are known in the house. A private lore
+    space is created for each of them, and you can add more people afterwards.</span>
+  </label>
+  <textarea id="members" name="members" required>{{range $st.MemberNames}}{{.}}
+{{end}}</textarea>
+
+{{else if eq $d.Slug "admin"}}
+  <p>This is the only account. It is yours, it is not a member's, and there is no reset
+  flow — if it is lost, the file on disk is edited by hand and a new account made.</p>
+
+  {{if $d.ExistingConfig}}
+  <div class="msg warn" role="status">
+    <p>There is already a configuration at <code>{{$d.ExistingConfig}}</code>. Making the
+    account will not touch it: you will land on the overview rather than continuing
+    through this wizard.</p>
+  </div>
+  {{end}}
+
+  <label for="password">Admin password
+    <span class="hint">At least {{$d.MinPassword}} characters. No composition rules —
+    length is the only thing that buys anything. It is stored the way every member's key
+    already is: Argon2id, through keel/vault.</span>
+  </label>
+  <input type="password" id="password" name="password" autocomplete="new-password"
+         minlength="{{$d.MinPassword}}" required autofocus>
+  <label for="password2">And again</label>
+  <input type="password" id="password2" name="password2" autocomplete="new-password"
+         minlength="{{$d.MinPassword}}" required>
+
+{{else if eq $d.Slug "telegram"}}
+  <p>kenward talks to the household over Telegram. Message
+  <strong>@BotFather</strong>, send <code>/newbot</code>, and paste the token it gives
+  you.</p>
+
+  <label for="bot_token">Bot token
+    <span class="hint">It is never written into kenward.yaml. It goes into a
+    <code>.env</code> file beside it, readable only by you.</span>
+  </label>
+  <input type="password" id="bot_token" name="bot_token" autocomplete="off" value="{{$st.BotToken}}">
+
+  <label for="bot_token_env">The variable it is read from</label>
+  <input type="text" id="bot_token_env" name="bot_token_env" value="{{$st.BotTokenEnv}}">
+
+  <div class="choice">
+    <input type="checkbox" id="write_env_file" name="write_env_file" value="1" {{if $st.WriteEnvile}}checked{{end}}>
+    <label for="write_env_file">Write it to a <code>.env</code> file for me
+      <span class="hint">If a <code>.env</code> is already there it is left alone and you
+      are told what to add.</span>
+    </label>
+  </div>
+  <div class="choice">
+    <input type="checkbox" id="anyway" name="anyway" value="1">
+    <label for="anyway">Use the token even if it does not look like one
+      <span class="hint">Telegram's format is theirs to change; this is a check, not a rule.</span>
+    </label>
+  </div>
+
+{{else if eq $d.Slug "endpoints"}}
+  <p>The machines that run the model. Give each one a label, its OpenAI-compatible
+  address, and the model name the server itself uses.</p>
+  <p class="muted">"Ask each machine" connects to every address and, where the server
+  publishes one, reads its context window off <code>/v1/models</code> rather than making
+  you look it up. vLLM publishes it; llama.cpp and ollama do not.</p>
+
+  {{range $i, $e := $st.Endpoints}}
+  <fieldset>
+    <legend>Endpoint {{$i}}</legend>
+    <label for="ep{{$i}}-name">Label</label>
+    <input type="text" id="ep{{$i}}-name" name="endpoint.{{$i}}.name" value="{{$e.Name}}">
+    <label for="ep{{$i}}-url">Address</label>
+    <input type="text" id="ep{{$i}}-url" name="endpoint.{{$i}}.base_url" value="{{$e.BaseURL}}"
+           placeholder="http://monster.tail:8000/v1">
+    <label for="ep{{$i}}-model">Model</label>
+    <input type="text" id="ep{{$i}}-model" name="endpoint.{{$i}}.model" value="{{$e.Model}}">
+    <label for="ep{{$i}}-tiers">Tiers <span class="hint">Comma separated. A tier chain names these.</span></label>
+    <input type="text" id="ep{{$i}}-tiers" name="endpoint.{{$i}}.tiers" value="{{$e.Tiers}}" placeholder="local">
+    <label for="ep{{$i}}-keyenv">API key variable <span class="hint">Blank for a machine that needs none.</span></label>
+    <input type="text" id="ep{{$i}}-keyenv" name="endpoint.{{$i}}.api_key_env" value="{{$e.APIKeyEnv}}">
+    <label for="ep{{$i}}-key">API key <span class="hint">Goes to the .env file, never to kenward.yaml.</span></label>
+    <input type="password" id="ep{{$i}}-key" name="endpoint.{{$i}}.api_key" value="{{$e.APIKey}}" autocomplete="off">
+    <label for="ep{{$i}}-window">Context window
+      <span class="hint">Read from the server where it publishes one. Blank takes kenward's
+      own default, which is deliberately modest.</span>
+    </label>
+    {{/* Blank rather than 0 when nothing is known. A zero in this box reads as a claim
+         about the machine, and it is the opposite of one. */}}
+    <input type="number" id="ep{{$i}}-window" name="endpoint.{{$i}}.context_window"
+           value="{{if $e.ContextWindow}}{{$e.ContextWindow}}{{end}}" min="0">
+    {{if $e.Reach}}<p class="muted">{{$e.Reach}}</p>{{end}}
+    {{if $e.Learned}}<p class="muted">{{$e.Learned}}</p>{{end}}
+  </fieldset>
+  {{end}}
+
+  <div class="actions">
+    <button type="submit" name="action" value="add" class="secondary">Add another</button>
+    <button type="submit" name="action" value="probe" class="secondary">Ask each machine</button>
+  </div>
+
+{{else if eq $d.Slug "trust"}}
+  <p>Does everyone in this household trust whoever runs this machine to be able to read
+  their private conversations?</p>
+
+  <fieldset>
+    <legend>Choose one</legend>
+    <div class="choice">
+      <input type="radio" id="m-simple" name="mode" value="simple" {{if eq (printf "%s" $st.Mode) "simple"}}checked{{end}}>
+      <label for="m-simple">Yes — one process for the whole household
+        <span class="hint">Simplest to run. Members are separated from each other, but not
+        from the operator.</span>
+      </label>
+    </div>
+    <div class="choice">
+      <input type="radio" id="m-isolated" name="mode" value="isolated" {{if eq (printf "%s" $st.Mode) "isolated"}}checked{{end}}>
+      <label for="m-isolated">No — give each person a sealed process of their own
+        <span class="hint">Each member gets their own container, key and bot. Linux with
+        Podman or Docker only.</span>
+      </label>
+    </div>
+  </fieldset>
+
+  <h2>What each answer means, in full</h2>
+  <pre class="statement">{{$d.Statement}}</pre>
+  <p class="muted">This is the same text <code>kenward doctor</code> prints, in the same
+  words. Change the choice above and submit to see the other one.</p>
+
+{{else if eq $d.Slug "advanced"}}
+  <p>Everything below already has an answer. Change one only if you know why.</p>
+
+  <details>
+    <summary>Retrieval and capture</summary>
+    <label for="search_limit">Entries retrieved per space per turn</label>
+    <input type="number" id="search_limit" name="search_limit" value="{{$st.SearchLimit}}" min="0">
+    <label for="max_proposals">Times per turn the assistant may ask to remember something</label>
+    <input type="number" id="max_proposals" name="max_proposals" value="{{$st.MaxProposals}}" min="0">
+  </details>
+
+  <details>
+    <summary>Keys and updates</summary>
+    <label for="idle_timeout">Unlocked keys expire after
+      <span class="hint">0s is off, and off is the default. Turning it on means an
+      assistant that stops answering after a quiet spell until somebody unlocks it at the
+      machine — a passphrase never travels over Telegram.</span>
+    </label>
+    <input type="text" id="idle_timeout" name="idle_timeout" value="{{$st.IdleTimeout}}">
+    <label for="update_channel">Update channel</label>
+    <select id="update_channel" name="update_channel">
+      <option value="stable" {{if eq $st.UpdateChannel "stable"}}selected{{end}}>stable</option>
+      <option value="edge" {{if eq $st.UpdateChannel "edge"}}selected{{end}}>edge</option>
+      <option value="off" {{if eq $st.UpdateChannel "off"}}selected{{end}}>off — never update</option>
+    </select>
+  </details>
+
+  <details>
+    <summary>Let conversations reach a provider</summary>
+    <p>By default every conversation this wizard writes stays on the machines you listed
+    that are in the house: when none of them answers, kenward refuses the turn rather
+    than reaching further. Ticking this widens every chain — the household's and every
+    member's — to include the tiers that leave.</p>
+    <div class="choice">
+      <input type="checkbox" id="cloud_everyone" name="cloud_everyone" value="1" {{if $st.CloudEveryone}}checked{{end}}>
+      <label for="cloud_everyone">Allow every conversation to reach a provider
+        <span class="hint">You can set this per person afterwards, which is the better
+        way round: it is decided per member, not per household.</span>
+      </label>
+    </div>
+  </details>
+
+{{else if eq $d.Slug "review"}}
+  <p>Submitting this creates a lore space for the household and one for each person, then
+  writes <code>{{$d.ConfigPath}}</code>. Creating a space cannot be undone: lore has no
+  way to remove one.</p>
+
+  <table>
+    <tr><th scope="row">Household</th><td>{{$st.HouseholdName}}</td></tr>
+    <tr><th scope="row">People</th><td>{{join $st.MemberNames ", "}}</td></tr>
+    <tr><th scope="row">Mode</th><td>{{$st.Mode}}</td></tr>
+    <tr><th scope="row">Endpoints</th><td>
+      {{range $st.Endpoints}}{{.Name}} — {{.BaseURL}} ({{.Model}})<br>{{end}}
+    </td></tr>
+    <tr><th scope="row">Bot token</th><td>{{if $st.BotToken}}given, going to the .env file{{else}}you will export {{$st.BotTokenEnv}} yourself{{end}}</td></tr>
+    <tr><th scope="row">Reaches a provider</th><td>{{yesno $st.CloudEveryone}}</td></tr>
+  </table>
+
+  <h2>What this household will be told</h2>
+  <pre class="statement">{{$d.Statement}}</pre>
+{{end}}
+
+<div class="actions">
+  <button type="submit">{{if eq $d.Slug "review"}}Create the spaces and write it{{else}}Continue{{end}}</button>
+</div>
+</form>
+{{end}}

@@ -5,6 +5,11 @@ Configuration
       <CONFIG>
   ✓ every secret the configuration names can be read
 
+Access
+  ✓ admin dashboard: off — no port is opened
+      nothing listens; kenward is configured and operated from this machine's
+      own shell
+
 Memory
   ✓ lore mcp responds
   ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
@@ -54,6 +59,9 @@ names only machines in the house never reaches a provider: when none of them
 answers, kenward refuses rather than reaching further, and there is no setting
 that changes that. And nothing is written to memory without the member seeing
 the exact words first and saying yes.
+
+The admin dashboard is off. No port is open, and the only way to change
+anything here is at this machine, as whoever runs it.
 
 Where each conversation may go
 

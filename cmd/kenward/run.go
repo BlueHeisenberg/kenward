@@ -12,6 +12,7 @@ import (
 	keelupdate "github.com/BlueHeisenberg/keel/update"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/dashboard"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 	"github.com/BlueHeisenberg/kenward/internal/updater"
@@ -175,7 +176,69 @@ func cmdRun(e *env, args []string) int {
 		return code
 	}
 
-	return serve(e, sup, sched, restart, logger)
+	// The dashboard comes up beside the household and goes down with it. It is never
+	// allowed to prevent kenward starting: a port already taken is a dashboard the
+	// operator cannot reach, and a household with no assistant is worse.
+	dash := startDashboard(e, cfg, path, logger)
+
+	code := serve(e, sup, sched, restart, logger)
+	stopDashboard(e, dash, logger)
+	return code
+}
+
+// startDashboard brings the admin dashboard up if this household has one. It returns nil
+// when the dashboard is off, which is what a configuration that has never mentioned it
+// means, and nil is safe to hand to stopDashboard.
+func startDashboard(e *env, cfg *config.Config, path string, logger *slog.Logger) *dashboard.Server {
+	if !cfg.Dashboard.Enabled {
+		return nil
+	}
+	srv, err := dashboard.New(dashboardDeps(e, path, cfg.DataDir, logger), cfg.Dashboard)
+	if err != nil {
+		logger.Warn("kenward", "event", "dashboard", "detail", "the admin dashboard is off for this run", "err", err.Error())
+		return nil
+	}
+	if err := srv.Listen(); err != nil {
+		logger.Warn("kenward", "event", "dashboard", "detail", "the admin dashboard could not take its port; the household is unaffected", "err", err.Error())
+		return nil
+	}
+
+	// Printed rather than logged, and printed only when it is needed. A household
+	// that has already made an account gets a line saying where the dashboard is; one
+	// that has not gets the token, because the alternative is a listener nobody can
+	// get into.
+	token, err := srv.SetupTokenIfNeeded()
+	if err != nil {
+		logger.Warn("kenward", "event", "dashboard", "detail", "no setup token could be issued", "err", err.Error())
+	}
+	if token != "" {
+		fmt.Fprint(e.stdout, "\n"+renderSetupToken(token)+"\n")
+	}
+	logger.Info("kenward", "event", "dashboard",
+		"url", srv.URL(),
+		"exposure", string(cfg.Dashboard.ExposureOrDefault()),
+		"tls", cfg.Dashboard.TLS())
+
+	go func() {
+		if err := srv.Serve(); err != nil {
+			logger.Warn("kenward", "event", "dashboard", "detail", "the admin dashboard stopped", "err", err.Error())
+		}
+	}()
+	return srv
+}
+
+// stopDashboard drains the dashboard on the way down, on a context of its own: the
+// signal context is already cancelled by the time this runs, and a shutdown that
+// inherits a cancelled context finishes nothing.
+func stopDashboard(e *env, srv *dashboard.Server, logger *slog.Logger) {
+	if srv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(e.context()), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.Warn("kenward", "event", "dashboard", "detail", "the admin dashboard did not stop cleanly", "err", err.Error())
+	}
 }
 
 // checkLore refuses to serve unless lore actually answers on this machine. It returns

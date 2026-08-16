@@ -258,6 +258,15 @@ var allowedZeroFields = map[string]string{
 	"Endpoints[0].APIKeyFile":   "monster is a local endpoint with no key in front of it",
 	"Endpoints[1].APIKeyFile":   "battlestation is a local endpoint with no key in front of it",
 	"Endpoints[2].APIKeyFile":   "api_key_env is the source here; stating both is a validation error",
+
+	// The dashboard's certificate pair is generated at the moment LAN exposure is
+	// chosen, and this example is a loopback dashboard. Putting paths here to satisfy
+	// this test would mean shipping an example whose two most consequential lines
+	// point at files that do not exist — and, worse, would model TLS as something a
+	// household configures by hand when the whole design is that it is generated and
+	// its fingerprint shown once. The keys are documented in a comment in the example.
+	"Dashboard.TLSCertFile": "generated when LAN exposure is chosen; this example is loopback and needs none",
+	"Dashboard.TLSKeyFile":  "generated when LAN exposure is chosen; this example is loopback and needs none",
 }
 
 // TestExampleExercisesEveryField reflects over the loaded configuration and fails if any

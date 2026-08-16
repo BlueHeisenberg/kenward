@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -51,51 +52,10 @@ func cmdInvite(e *env, args []string) int {
 		return exitUsage
 	}
 
-	// Minting needs no Binder: `kenward invite` writes a digest and never enrols
-	// anyone. Handing it one would give a command that only prints a code the
-	// ability to change who is served.
-	claimer, err := enrol.New(inviteStore(cfg), nil, enrol.WithTTL(*ttl))
+	code, err := mintClaimCode(e.context(), e, cfg, member.ID, member.Name, *ttl)
 	if err != nil {
 		e.errorf("%v", err)
 		return exitFailure
-	}
-	// Against the declared member's own id, not one derived from the name that found
-	// them. `--name Jordan` may find `id: jordy`, and a code recorded as "jordan" is a
-	// code the Binder refuses to redeem because no such member is declared. See
-	// enrol.MintFor.
-	code, err := claimer.MintFor(e.context(), member.ID, member.Name, *ttl)
-	if err != nil {
-		e.errorf("minting a claim code: %v", err)
-		return exitFailure
-	}
-
-	// And now the digest has to reach the process that will be asked to redeem it. In
-	// simple mode that is this machine's own store, already written. In isolated mode
-	// it is the member's pod, which reads its own store on its own volume and has no
-	// sight of this one, so the digest is exported to that member's seed file for the
-	// deployment to carry in — see inviteSeedDirName. Without it the operator hands
-	// over a code the pod has never heard of and the claim is refused in silence,
-	// which is the one failure mode enrolment cannot explain to the person hitting it.
-	if cfg.Mode == config.ModeIsolated {
-		seed := inviteSeedStore(inviteSeedDir(cfg), member.ID)
-		now := e.now()
-		// One id for one person: MintFor recorded the configured id above, and that is
-		// also what the file is named for and what the supervisor and the compose file
-		// look up. It was briefly two — Mint derived a second from the name — and
-		// filtering on either one alone wrote an empty seed and reported success.
-		_, err := copyInvites(e.context(), seed, inviteStore(cfg), func(c enrol.Code) bool {
-			return c.Live(now) && c.MemberID == member.ID
-		})
-		if err != nil {
-			// The code exists in this node's store and will not reach the pod, so it
-			// is useless. Say so rather than printing it: an unusable code handed to a
-			// person fails in their chat, where nobody can see why.
-			e.errorf("the code was minted but could not be written to %s, so %s's pod will\n"+
-				"never see it: %v\n\n"+
-				"Fix the path and run this again. The unusable code expires on its own.",
-				seed.Path(), member.Name, err)
-			return exitFailure
-		}
 	}
 
 	fmt.Fprint(e.stdout, renderInvite(member.Name, code, *ttl))
@@ -103,6 +63,57 @@ func cmdInvite(e *env, args []string) int {
 		fmt.Fprint(e.stdout, renderIsolatedDelivery(member.ID))
 	}
 	return exitOK
+}
+
+// mintClaimCode mints a code for a member the configuration already declares, and gets
+// the digest to whichever store will be asked to redeem it.
+//
+// It is shared by `kenward invite` and the admin dashboard rather than reimplemented for
+// each, because in isolated mode minting is not one call and the second half is the half
+// that goes wrong silently. The store this writes to is the host's; the store the claim
+// is redeemed against is inside the member's pod, on its own volume, and nothing crosses
+// between them by itself. Without the export the operator hands over a code the pod has
+// never heard of, and the claim is refused with no reply at all — the one failure mode
+// enrolment cannot explain to the person hitting it.
+func mintClaimCode(ctx context.Context, e *env, cfg *config.Config, id domain.MemberID, name string, ttl time.Duration) (string, error) {
+	// Minting needs no Binder: this writes a digest and never enrols anyone. Handing
+	// it one would give a path that only produces a code the ability to change who is
+	// served.
+	claimer, err := enrol.New(inviteStore(cfg), nil, enrol.WithTTL(ttl))
+	if err != nil {
+		return "", err
+	}
+	// Against the declared member's own id, not one derived from the name that found
+	// them. `--name Jordan` may find `id: jordy`, and a code recorded as "jordan" is a
+	// code the Binder refuses to redeem because no such member is declared. See
+	// enrol.MintFor.
+	code, err := claimer.MintFor(ctx, id, name, ttl)
+	if err != nil {
+		return "", fmt.Errorf("minting a claim code: %w", err)
+	}
+
+	if cfg.Mode != config.ModeIsolated {
+		return code, nil
+	}
+
+	seed := inviteSeedStore(inviteSeedDir(cfg), id)
+	now := e.now()
+	// One id for one person: MintFor recorded the configured id above, and that is
+	// also what the file is named for and what the supervisor and the compose file
+	// look up. It was briefly two — Mint derived a second from the name — and
+	// filtering on either one alone wrote an empty seed and reported success.
+	if _, err := copyInvites(ctx, seed, inviteStore(cfg), func(c enrol.Code) bool {
+		return c.Live(now) && c.MemberID == id
+	}); err != nil {
+		// The code exists in this node's store and will not reach the pod, so it is
+		// useless. Say so rather than returning it: an unusable code handed to a
+		// person fails in their chat, where nobody can see why.
+		return "", fmt.Errorf("the code was minted but could not be written to %s, so %s's pod will\n"+
+			"never see it: %w\n\n"+
+			"Fix the path and try again. The unusable code expires on its own.",
+			seed.Path(), name, err)
+	}
+	return code, nil
 }
 
 // renderIsolatedDelivery is the extra line isolated mode needs.
