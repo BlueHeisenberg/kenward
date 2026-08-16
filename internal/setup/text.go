@@ -226,6 +226,38 @@ not quietly reach further.`
   add a machine on your own network, and run setup again.`
 )
 
+// historyIntro introduces the one question about the conversation's own lifetime.
+//
+// It spends most of its words on what the reset does *not* do, because that is the
+// misunderstanding it would otherwise cause. Somebody reading "clear the conversation"
+// in a wizard for an assistant that advertises memory will reasonably assume the
+// memory is what gets cleared, and the person who wanted the opposite of that will
+// answer no to the question they thought they were being asked.
+const historyIntro = `How long a conversation stays in mind
+
+kenward keeps the last few messages of each conversation so it can follow a thread.
+That is all it is: a few minutes of chat, held in memory, gone whenever kenward
+restarts. It is not what kenward remembers about your household — nothing here
+touches that, and nothing here is ever deleted from it.
+
+You can have that thread dropped on a schedule, so a conversation does not carry
+last Tuesday's tangent into this morning. Times are counted from midnight, so "6h"
+means midnight, six, noon and six. Whoever is talking is told when it happens.
+
+Leave it off and each conversation runs until kenward restarts.`
+
+// historyQuestion is the question itself. "off" is offered rather than "0s" because
+// off is the answer, and a person who has to be told the answer is a duration has
+// been asked the wrong question.
+const historyQuestion = `Drop each conversation's recent messages on a schedule? (off, or how often: 6h, 24h)`
+
+// badHistoryReset is what a value the parser will not take gets back. It names both
+// forms because the answer is either a word or a duration and nothing else.
+func badHistoryReset(answer string) string {
+	return fmt.Sprintf("  %q is neither \"off\" nor a length of time. Write off, or something like 6h or 24h (at most %s).",
+		answer, config.MaxHistoryReset)
+}
+
 // privateDefaultNote states what the local-only default means, for one member, in
 // the words the member would use.
 func privateDefaultNote(name string, chain []string) string {

@@ -58,6 +58,16 @@ It asks, in order:
 6. **Tier chains.** Per member and for the group, defaulting to local-only for private
    spaces and offering to add a cloud tier explicitly. The default is the private one;
    opting into cloud is a deliberate act.
+7. **How long a conversation stays in mind** — `history.reset_every`. Off, or how often
+   the last few turns of each conversation are dropped: `6h`, `24h`, up to a day, counted
+   from midnight. Off is the default and pressing Enter takes it.
+
+   It is asked rather than left to the file for one reason: the symptom of this setting
+   is an assistant that has lost the thread, which is indistinguishable from a fault, so
+   somebody who was never shown the question has no reason to believe the behaviour is
+   theirs to choose. Most of the question's words are spent on what it does *not* clear
+   — a person who came here for an assistant that remembers things will otherwise read
+   "clear the conversation" and answer the question they think they were asked.
 
 It finishes by printing the privacy statement for the chosen mode — the honest one, in
 full, from `internal/privacy`, which is the same text `doctor` prints — and the path it
@@ -388,6 +398,8 @@ Memory
   ! this lore store does not sync on its own
       run `lore serve` on the same LORE_HOME if this store should reach another
       machine
+  ✓ conversations keep their recent turns until the node restarts
+    (history.reset_every is off)
 
 Sessions
   ✓ key custody: simple mode. One node passphrase, held by the operator, wraps

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/setup"
@@ -61,6 +62,7 @@ func TestFirstRunWritesAHouseholdThatKenwardWillLoad(t *testing.T) {
 	step("/setup/advanced", url.Values{
 		"search_limit":   {"8"},
 		"max_proposals":  {"1"},
+		"history_reset":  {"6h"},
 		"idle_timeout":   {"0s"},
 		"update_channel": {"stable"},
 	})
@@ -113,6 +115,19 @@ func TestFirstRunWritesAHouseholdThatKenwardWillLoad(t *testing.T) {
 		if !setup.StaysHome(local, m.Tiers) {
 			t.Errorf("%s's chain %v reaches a provider, and nobody asked for that", m.ID, m.Tiers)
 		}
+	}
+
+	// The advanced step's conversation reset reached the file. It is the one answer
+	// on that page whose effect a member sees in a chat rather than an operator sees
+	// in a log, so a form field that quietly went nowhere would be found by the
+	// household rather than by anybody here.
+	if got, want := cfg.History.ResetEvery.Duration(), 6*time.Hour; got != want {
+		t.Errorf("history.reset_every = %v, want %v: the advanced step's answer did not reach the file", got, want)
+	}
+	// And it did not land on the neighbouring duration, which would stop David's
+	// assistant answering rather than shorten his conversation.
+	if got := cfg.Session.IdleTimeout.Duration(); got != 0 {
+		t.Errorf("session.idle_timeout = %v, want 0: the conversation reset was written to the wrong key", got)
 	}
 
 	// The dashboard turned itself on, on loopback, and nothing wider.

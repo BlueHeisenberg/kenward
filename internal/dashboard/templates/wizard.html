@@ -183,6 +183,19 @@
   </details>
 
   <details>
+    <summary>How long a conversation stays in mind</summary>
+    <label for="history_reset">Drop each conversation's recent messages every
+      <span class="hint">0s is off, and off is the default. This is the last few
+      messages of chat, held in memory so kenward can follow a thread — not what it
+      remembers about your household, which is never dropped by this. Counted from
+      midnight, so 6h means midnight, six, noon and six; at most 24h. It happens on
+      the next message after the time passes, never mid-answer, and whoever is
+      talking is told.</span>
+    </label>
+    <input type="text" id="history_reset" name="history_reset" value="{{$st.HistoryReset}}">
+  </details>
+
+  <details>
     <summary>Keys and updates</summary>
     <label for="idle_timeout">Unlocked keys expire after
       <span class="hint">0s is off, and off is the default. Turning it on means an

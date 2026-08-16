@@ -1479,6 +1479,83 @@ endpoints:
 	}
 }
 
+// TestHistoryResetIsOffUnlessAskedFor is the compatibility guarantee for the scheduled
+// conversation reset, and the assertion that it is a separate thing from the setting it
+// most resembles.
+//
+// A file written before history.reset_every existed has to keep behaving as it did: a
+// conversation that runs until the node restarts. That means zero, and it means zero
+// surviving ApplyDefaults rather than being rewritten into "a sensible daily reset",
+// which is the exact mistake session.idle_timeout had to be rescued from.
+func TestHistoryResetIsOffUnlessAskedFor(t *testing.T) {
+	const silent = `
+mode: simple
+household: {shared_space: household, tiers: [local]}
+telegram: {bot_token_env: TOKEN}
+members:
+  - {id: david, private_space: dp, tiers: [local]}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`
+	cfg, err := config.ParseWithEnv(strings.NewReader(silent), env(map[string]string{"TOKEN": "t"}))
+	if err != nil {
+		t.Fatalf("ParseWithEnv() error: %v", err)
+	}
+	if got := cfg.History.ResetEvery.Duration(); got != 0 {
+		t.Errorf("history.reset_every = %v for a file that does not mention it; want 0, meaning a conversation runs until the node restarts", got)
+	}
+	if config.DefaultHistoryReset != 0 {
+		t.Errorf("config.DefaultHistoryReset = %v, want 0: an existing household's conversations may not start being cleared because it upgraded", config.DefaultHistoryReset)
+	}
+
+	// It is not session.idle_timeout, and setting one must not move the other. They
+	// are both durations, both off by default, and adjacent in the file; the only
+	// thing keeping them apart is that they are separate fields, so that is what is
+	// asserted.
+	chosen, err := config.Decode(strings.NewReader("history:\n  reset_every: 6h\n"))
+	if err != nil {
+		t.Fatalf("Decode() error: %v", err)
+	}
+	if got, want := chosen.History.ResetEvery.Duration(), 6*time.Hour; got != want {
+		t.Errorf("history.reset_every = %v, want %v", got, want)
+	}
+	if got := chosen.Session.IdleTimeout.Duration(); got != 0 {
+		t.Errorf("asking for a conversation reset also set session.idle_timeout to %v, which would stop the member's assistant answering", got)
+	}
+}
+
+// TestHistoryResetLongerThanADayIsRefused holds the anchor honest.
+//
+// Boundaries are counted from local midnight, so an interval longer than a day cannot
+// be kept: the node would reset once per midnight while the file said 48h. Refusing is
+// the only outcome that does not leave a file claiming something untrue about the
+// running system.
+func TestHistoryResetLongerThanADayIsRefused(t *testing.T) {
+	base := `
+mode: simple
+household: {shared_space: household, tiers: [local]}
+telegram: {bot_token_env: TOKEN}
+members:
+  - {id: david, private_space: dp, tiers: [local]}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+history: {reset_every: %s}
+`
+	lookup := env(map[string]string{"TOKEN": "t"})
+
+	if _, err := config.ParseWithEnv(strings.NewReader(fmt.Sprintf(base, "24h")), lookup); err != nil {
+		t.Errorf("24h is the longest honourable interval and must load: %v", err)
+	}
+
+	_, err := config.ParseWithEnv(strings.NewReader(fmt.Sprintf(base, "48h")), lookup)
+	if err == nil {
+		t.Fatal("48h loaded; it cannot be honoured, because boundaries are counted from midnight")
+	}
+	if !strings.Contains(err.Error(), "history.reset_every") {
+		t.Errorf("the error does not name the key an operator has to edit: %v", err)
+	}
+}
+
 // TestMemberByTelegramIDIsFailClosed: two members bound to one Telegram account is a
 // configuration Load rejects, but this lookup is what scope.Resolve authorises with, and
 // Resolve is documented as being handed configurations nobody validated — a Config built

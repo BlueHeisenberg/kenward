@@ -113,6 +113,7 @@ func TestTheWizardWritesTheEnvFormOfEverySecret(t *testing.T) {
 		"monster", "http://monster.tail:8000/v1", "q", "n", "local", "y",
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud", "n",
 		"n", "n",
+		"", // conversation reset: off
 	}
 	if _, _, io, err := runWizard(t, "linux", Options{ConfigPath: path}, answers...); err != nil {
 		t.Fatalf("run: %v\n%s", err, io.Transcript())

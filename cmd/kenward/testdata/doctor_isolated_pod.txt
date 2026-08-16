@@ -19,6 +19,8 @@ Memory
       last sync round finished 2026-08-16T10:50:25Z
       the daemon reports instances it can reach, not which of them are in the
       household's space; what is in that memory is not this command's to report
+  ✓ conversations keep their recent turns until the node restarts
+    (history.reset_every is off)
 
 Sessions
   ✓ key custody: isolated mode. Each member's key (members: david, jordan) is

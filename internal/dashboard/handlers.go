@@ -248,6 +248,7 @@ func (s *Server) handleWizardSubmit(w http.ResponseWriter, r *http.Request, sess
 	case "advanced":
 		st.SearchLimit = atoi(r.PostFormValue("search_limit"), config.DefaultSearchLimit)
 		st.MaxProposals = atoi(r.PostFormValue("max_proposals"), config.DefaultMaxProposalsPerTurn)
+		st.HistoryReset = strings.TrimSpace(r.PostFormValue("history_reset"))
 		st.IdleTimeout = strings.TrimSpace(r.PostFormValue("idle_timeout"))
 		st.UpdateChannel = strings.TrimSpace(r.PostFormValue("update_channel"))
 		st.CloudEveryone = r.PostFormValue("cloud_everyone") != ""
