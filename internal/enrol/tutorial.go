@@ -120,6 +120,12 @@ func (t *Tutorial) Run(ctx context.Context) error {
 		case abandon:
 			gone = true
 			i = len(steps)
+		default:
+			// skipped, which a step is expected to have turned into one of the four
+			// above because what skipping means differs per question. Reaching here
+			// is a bug, and moving on is the only ending that is not an infinite
+			// loop in front of a member.
+			i++
 		}
 		t.save(ctx, p)
 	}
