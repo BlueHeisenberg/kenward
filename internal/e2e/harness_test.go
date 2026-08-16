@@ -21,6 +21,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/session"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
+	"github.com/BlueHeisenberg/kenward/internal/transport/telegramtest"
 )
 
 // The household these tests serve. The ids are arbitrary but fixed, so an
@@ -47,6 +48,11 @@ const (
 	botTokenEnv = "KENWARD_BOT_TOKEN"
 	cloudKeyEnv = "KENWARD_CLOUD_KEY"
 	passphrase  = "correct horse battery staple"
+	// testBotToken is the household's bot token throughout this package. It is
+	// not a real one and never reaches Telegram; telegramtest.Server refuses any
+	// other, so a harness driving the real transport proves the token was carried
+	// rather than assumed.
+	testBotToken = "123456:telegram-token"
 )
 
 // waitTimeout bounds every poll in this package. Turns here are loopback HTTP
@@ -482,6 +488,11 @@ type harnessOptions struct {
 	// only way to tell state that was persisted from state that only ever lived in
 	// the first supervisor's memory.
 	dataDir string
+	// telegramAPI, when set, runs the household over the real transport.Telegram
+	// pointed at this local Bot API server instead of transport.Fake. h.tr is nil
+	// then: a test that drives the real transport reads what the server received,
+	// not what a fake recorded.
+	telegramAPI *telegramtest.Server
 }
 
 // harness is one running household: real configuration, real supervisor, real
@@ -490,9 +501,13 @@ type harness struct {
 	t *testing.T
 	// dir is this household's data directory, which a second harness can be
 	// pointed at to prove something outlived the first supervisor.
-	dir      string
-	cfg      *config.Config
-	tr       *transport.Fake
+	dir string
+	cfg *config.Config
+	// tr is the scripted transport, and is nil when opts.telegramAPI put the real
+	// one in its place.
+	tr *transport.Fake
+	// tg is the real Telegram transport, and is nil unless opts.telegramAPI was set.
+	tg       *transport.Telegram
 	mem      *fakeMemory
 	local    *fakeProvider
 	cloud    *fakeProvider
@@ -537,7 +552,7 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 	}
 
 	lookupEnv := fakeEnv(map[string]string{
-		botTokenEnv: "123456:telegram-token",
+		botTokenEnv: testBotToken,
 		cloudKeyEnv: "sk-not-a-real-key",
 	})
 
@@ -566,7 +581,31 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		}
 	}
 
-	tr := transport.NewFake()
+	// The household's one bot. Either the scripted stand-in, or — when a test
+	// supplies a local Bot API server — the production transport, unmodified,
+	// with only its API root redirected. Nothing below this line can tell which.
+	var (
+		tr   transport.Transport
+		fake *transport.Fake
+		tg   *transport.Telegram
+	)
+	if opts.telegramAPI != nil {
+		var err error
+		tg, err = transport.NewTelegram(testBotToken,
+			transport.WithAPIServer(opts.telegramAPI.URL()),
+			// Shorter than the production minute so a poll in flight at shutdown is
+			// not the slowest thing in the test. What is under test here — offsets,
+			// keyboards, encoding — does not depend on how long one call may hang.
+			transport.WithPollTimeout(2*time.Second),
+		)
+		if err != nil {
+			t.Fatalf("building the telegram transport: %v", err)
+		}
+		tr = tg
+	} else {
+		fake = transport.NewFake()
+		tr = fake
+	}
 	mem := newFakeMemory()
 
 	var claimer *enrol.Claimer
@@ -592,7 +631,8 @@ func newHarness(t *testing.T, opts harnessOptions) *harness {
 		t:        t,
 		dir:      dir,
 		cfg:      cfg,
-		tr:       tr,
+		tr:       fake,
+		tg:       tg,
 		mem:      mem,
 		local:    local,
 		cloud:    cloud,

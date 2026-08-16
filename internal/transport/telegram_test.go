@@ -8,11 +8,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BlueHeisenberg/kenward/internal/transport/telegramtest"
 )
 
 const testToken = "123456:AAH-not-a-real-token"
 
-func newTestTelegram(t *testing.T, api *fakeAPI, opts ...Option) *Telegram {
+func newTestTelegram(t *testing.T, api *telegramtest.Server, opts ...Option) *Telegram {
 	t.Helper()
 	base := []Option{
 		WithAPIServer(api.URL()),
@@ -34,7 +36,7 @@ func TestNewTelegramRejectsEmptyToken(t *testing.T) {
 
 // A member's stream carries text from private chats and groups, and nothing else.
 func TestUpdatesDeliversOnlyConversation(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -45,13 +47,13 @@ func TestUpdatesDeliversOnlyConversation(t *testing.T) {
 		t.Fatalf("Updates: %v", err)
 	}
 
-	api.push(photoUpdate(100, 7))
-	api.push(textUpdate(100, 7, "private", "kettle needs descaling"))
-	api.push(channelPostUpdate(-500, "broadcast"))
-	api.push(botTextUpdate(100, 9, "i am a bot"))
-	api.push(textUpdate(-200, 8, "supergroup", "who is cooking"))
-	api.push(callbackUpdate("cb", 7, 100, 1, "unknown:0"))
-	api.push(textUpdate(100, 7, "private", "last"))
+	api.Push(telegramtest.PhotoUpdate(100, 7))
+	api.Push(telegramtest.TextUpdate(100, 7, "private", "kettle needs descaling"))
+	api.Push(telegramtest.ChannelPostUpdate(-500, "broadcast"))
+	api.Push(telegramtest.BotTextUpdate(100, 9, "i am a bot"))
+	api.Push(telegramtest.TextUpdate(-200, 8, "supergroup", "who is cooking"))
+	api.Push(telegramtest.CallbackUpdate("cb", 7, 100, 1, "unknown:0"))
+	api.Push(telegramtest.TextUpdate(100, 7, "private", "last"))
 
 	want := []struct {
 		chat  int64
@@ -89,7 +91,7 @@ func TestUpdatesDeliversOnlyConversation(t *testing.T) {
 }
 
 func TestUpdatesIsSingleReader(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -104,7 +106,7 @@ func TestUpdatesIsSingleReader(t *testing.T) {
 }
 
 func TestUpdatesChannelClosesOnContextCancel(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	client := &http.Client{Timeout: 12 * time.Second}
 	tg := newTestTelegram(t, api, WithHTTPClient(client))
 
@@ -138,7 +140,7 @@ func TestUpdatesChannelClosesOnContextCancel(t *testing.T) {
 }
 
 func TestSendSplitsOnParagraphs(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api, WithMaxMessageLength(40))
 
 	text := strings.Join([]string{
@@ -151,7 +153,7 @@ func TestSendSplitsOnParagraphs(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	calls := api.callsFor("sendMessage")
+	calls := api.CallsFor("sendMessage")
 	if len(calls) != 3 {
 		t.Fatalf("sendMessage called %d times, want 3", len(calls))
 	}
@@ -169,7 +171,7 @@ func TestSendSplitsOnParagraphs(t *testing.T) {
 }
 
 func TestSendNeverTruncatesAnUnbreakableRun(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api, WithMaxMessageLength(10))
 
 	text := strings.Repeat("x", 35)
@@ -178,7 +180,7 @@ func TestSendNeverTruncatesAnUnbreakableRun(t *testing.T) {
 	}
 
 	var got string
-	for _, c := range api.callsFor("sendMessage") {
+	for _, c := range api.CallsFor("sendMessage") {
 		part := c.Form.Get("text")
 		if utf16Len(part) > 10 {
 			t.Fatalf("part over the limit: %q", part)
@@ -191,7 +193,7 @@ func TestSendNeverTruncatesAnUnbreakableRun(t *testing.T) {
 }
 
 func TestSendRepliesOnlyOnTheFirstPart(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api, WithMaxMessageLength(20))
 
 	err := tg.Send(context.Background(), Outbound{
@@ -203,7 +205,7 @@ func TestSendRepliesOnlyOnTheFirstPart(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	calls := api.callsFor("sendMessage")
+	calls := api.CallsFor("sendMessage")
 	if len(calls) < 2 {
 		t.Fatalf("expected the message to be split, got %d parts", len(calls))
 	}
@@ -218,19 +220,19 @@ func TestSendRepliesOnlyOnTheFirstPart(t *testing.T) {
 }
 
 func TestSendRejectsEmptyText(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	if err := tg.Send(context.Background(), Outbound{ChatID: 1, Text: "   "}); !errors.Is(err, ErrEmptyText) {
 		t.Fatalf("Send error = %v, want ErrEmptyText", err)
 	}
-	if n := api.countFor("sendMessage"); n != 0 {
+	if n := api.CountFor("sendMessage"); n != 0 {
 		t.Fatalf("empty text still hit the API %d times", n)
 	}
 }
 
 func TestSendHonoursRetryAfter(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	var sawRetryAfter int
@@ -239,7 +241,7 @@ func TestSendHonoursRetryAfter(t *testing.T) {
 		return time.Millisecond
 	}
 
-	api.script("sendMessage",
+	api.Script("sendMessage",
 		`{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":7}}`)
 
 	if err := tg.Send(context.Background(), Outbound{ChatID: 100, Text: "hello"}); err != nil {
@@ -248,18 +250,18 @@ func TestSendHonoursRetryAfter(t *testing.T) {
 	if sawRetryAfter != 7 {
 		t.Fatalf("retry_after honoured = %d, want 7", sawRetryAfter)
 	}
-	if n := api.countFor("sendMessage"); n != 2 {
+	if n := api.CountFor("sendMessage"); n != 2 {
 		t.Fatalf("sendMessage attempted %d times, want 2", n)
 	}
 }
 
 func TestSendGivesUpAfterRetryBudget(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api, WithRateLimitRetries(1))
 	tg.retryDelay = func(int) time.Duration { return time.Millisecond }
 
 	for i := 0; i < 4; i++ {
-		api.script("sendMessage",
+		api.Script("sendMessage",
 			`{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":1}}`)
 	}
 
@@ -267,14 +269,14 @@ func TestSendGivesUpAfterRetryBudget(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected the rate limit to surface once the budget ran out")
 	}
-	if n := api.countFor("sendMessage"); n != 2 {
+	if n := api.CountFor("sendMessage"); n != 2 {
 		t.Fatalf("sendMessage attempted %d times, want 2 (one try, one retry)", n)
 	}
 }
 
 // askInFlight starts an Ask and returns the question's callback token prefix and
 // a channel carrying the result.
-func askInFlight(t *testing.T, api *fakeAPI, tg *Telegram, q Question) (data []string, result chan askResult) {
+func askInFlight(t *testing.T, api *telegramtest.Server, tg *Telegram, q Question) (data []string, result chan askResult) {
 	t.Helper()
 	result = make(chan askResult, 1)
 	go func() {
@@ -282,11 +284,11 @@ func askInFlight(t *testing.T, api *fakeAPI, tg *Telegram, q Question) (data []s
 		result <- askResult{a, err}
 	}()
 
-	sent := api.waitCall(t, "sendMessage", 1)
+	sent := api.WaitCall(t, "sendMessage", 1)
 	if got := sent.Form.Get("text"); got != q.Text {
 		t.Fatalf("question text = %q, want %q", got, q.Text)
 	}
-	rows := keyboardFromForm(t, sent)
+	rows := telegramtest.Keyboard(t, sent)
 	if len(rows) != len(q.Choices) {
 		t.Fatalf("keyboard has %d rows, want %d", len(rows), len(q.Choices))
 	}
@@ -302,7 +304,7 @@ type askResult struct {
 }
 
 func TestAskReturnsTheChoiceTheMemberTapped(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -320,7 +322,7 @@ func TestAskReturnsTheChoiceTheMemberTapped(t *testing.T) {
 	}
 	data, result := askInFlight(t, api, tg, q)
 
-	api.push(callbackUpdate("cb1", 7, 100, 1001, data[1]))
+	api.Push(telegramtest.CallbackUpdate("cb1", 7, 100, 1001, data[1]))
 
 	select {
 	case r := <-result:
@@ -334,10 +336,10 @@ func TestAskReturnsTheChoiceTheMemberTapped(t *testing.T) {
 		t.Fatal("Ask did not return after the member tapped")
 	}
 
-	if n := api.countFor("answerCallbackQuery"); n != 1 {
+	if n := api.CountFor("answerCallbackQuery"); n != 1 {
 		t.Fatalf("answerCallbackQuery called %d times, want 1", n)
 	}
-	edit := api.waitCall(t, "editMessageText", 1)
+	edit := api.WaitCall(t, "editMessageText", 1)
 	if !strings.Contains(edit.Form.Get("text"), "Household") {
 		t.Fatalf("edited message %q does not show the outcome", edit.Form.Get("text"))
 	}
@@ -349,7 +351,7 @@ func TestAskReturnsTheChoiceTheMemberTapped(t *testing.T) {
 // The security case: in a group chat everyone can see the keyboard. A tap from
 // anyone but the addressed member must change nothing at all.
 func TestAskIgnoresTapsFromOtherMembers(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -368,8 +370,8 @@ func TestAskIgnoresTapsFromOtherMembers(t *testing.T) {
 	data, result := askInFlight(t, api, tg, q)
 
 	// Somebody else in the group taps both buttons.
-	api.push(callbackUpdate("cb-intruder-1", 8, -200, 1001, data[0]))
-	api.push(callbackUpdate("cb-intruder-2", 999, -200, 1001, data[1]))
+	api.Push(telegramtest.CallbackUpdate("cb-intruder-1", 8, -200, 1001, data[0]))
+	api.Push(telegramtest.CallbackUpdate("cb-intruder-2", 999, -200, 1001, data[1]))
 
 	select {
 	case r := <-result:
@@ -377,15 +379,15 @@ func TestAskIgnoresTapsFromOtherMembers(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 
-	if n := api.countFor("answerCallbackQuery"); n != 0 {
+	if n := api.CountFor("answerCallbackQuery"); n != 0 {
 		t.Fatalf("an intruder's tap was acknowledged %d times, want 0", n)
 	}
-	if n := api.countFor("editMessageText"); n != 0 {
+	if n := api.CountFor("editMessageText"); n != 0 {
 		t.Fatalf("an intruder's tap edited the question %d times, want 0", n)
 	}
 
 	// The addressed member's tap still works.
-	api.push(callbackUpdate("cb-owner", 7, -200, 1001, data[0]))
+	api.Push(telegramtest.CallbackUpdate("cb-owner", 7, -200, 1001, data[0]))
 	select {
 	case r := <-result:
 		if r.err != nil {
@@ -401,7 +403,7 @@ func TestAskIgnoresTapsFromOtherMembers(t *testing.T) {
 
 // A question only the wrong people touch times out, and a timeout is a decline.
 func TestAskTimesOutWhenOnlyTheWrongMemberTaps(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -418,7 +420,7 @@ func TestAskTimesOutWhenOnlyTheWrongMemberTaps(t *testing.T) {
 		Timeout:       400 * time.Millisecond,
 	}
 	data, result := askInFlight(t, api, tg, q)
-	api.push(callbackUpdate("cb-intruder", 8, -200, 1001, data[0]))
+	api.Push(telegramtest.CallbackUpdate("cb-intruder", 8, -200, 1001, data[0]))
 
 	select {
 	case r := <-result:
@@ -435,17 +437,17 @@ func TestAskTimesOutWhenOnlyTheWrongMemberTaps(t *testing.T) {
 		t.Fatal("Ask never timed out")
 	}
 
-	if n := api.countFor("answerCallbackQuery"); n != 0 {
+	if n := api.CountFor("answerCallbackQuery"); n != 0 {
 		t.Fatalf("the intruder's tap was acknowledged %d times, want 0", n)
 	}
-	edit := api.waitCall(t, "editMessageText", 1)
+	edit := api.WaitCall(t, "editMessageText", 1)
 	if !strings.Contains(edit.Form.Get("text"), "declined") {
 		t.Fatalf("timed-out question reads %q, want it to say it was declined", edit.Form.Get("text"))
 	}
 }
 
 func TestAskTimeoutRemovesTheKeyboard(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -468,7 +470,7 @@ func TestAskTimeoutRemovesTheKeyboard(t *testing.T) {
 	if !answer.TimedOut {
 		t.Fatalf("answer = %+v, want a timeout", answer)
 	}
-	edit := api.waitCall(t, "editMessageText", 1)
+	edit := api.WaitCall(t, "editMessageText", 1)
 	if got := edit.Form.Get("reply_markup"); !strings.Contains(got, `"inline_keyboard":[]`) {
 		t.Fatalf("keyboard not removed on timeout: %q", got)
 	}
@@ -476,7 +478,7 @@ func TestAskTimeoutRemovesTheKeyboard(t *testing.T) {
 
 // A keyboard left on screen must not be tappable twice.
 func TestAskIgnoresASecondTap(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -494,7 +496,7 @@ func TestAskIgnoresASecondTap(t *testing.T) {
 	}
 	data, result := askInFlight(t, api, tg, q)
 
-	api.push(callbackUpdate("cb1", 7, 100, 1001, data[0]))
+	api.Push(telegramtest.CallbackUpdate("cb1", 7, 100, 1001, data[0]))
 	select {
 	case r := <-result:
 		if r.err != nil || r.answer.ChoiceID != "yes" {
@@ -504,20 +506,20 @@ func TestAskIgnoresASecondTap(t *testing.T) {
 		t.Fatal("Ask did not return")
 	}
 
-	api.waitCall(t, "editMessageText", 1)
-	api.push(callbackUpdate("cb2", 7, 100, 1001, data[1]))
+	api.WaitCall(t, "editMessageText", 1)
+	api.Push(telegramtest.CallbackUpdate("cb2", 7, 100, 1001, data[1]))
 	time.Sleep(200 * time.Millisecond)
 
-	if n := api.countFor("answerCallbackQuery"); n != 1 {
+	if n := api.CountFor("answerCallbackQuery"); n != 1 {
 		t.Fatalf("answerCallbackQuery called %d times, want 1", n)
 	}
-	if n := api.countFor("editMessageText"); n != 1 {
+	if n := api.CountFor("editMessageText"); n != 1 {
 		t.Fatalf("editMessageText called %d times, want 1", n)
 	}
 }
 
 func TestAskValidates(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api, WithMaxMessageLength(100))
 
 	cases := []struct {
@@ -541,13 +543,13 @@ func TestAskValidates(t *testing.T) {
 			}
 		})
 	}
-	if n := api.countFor("sendMessage"); n != 0 {
+	if n := api.CountFor("sendMessage"); n != 0 {
 		t.Fatalf("an invalid question still reached Telegram %d times", n)
 	}
 }
 
 func TestAskUnblocksOnClose(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	result := make(chan askResult, 1)
@@ -562,7 +564,7 @@ func TestAskUnblocksOnClose(t *testing.T) {
 		result <- askResult{a, err}
 	}()
 
-	api.waitCall(t, "sendMessage", 1)
+	api.WaitCall(t, "sendMessage", 1)
 	if err := tg.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -578,7 +580,7 @@ func TestAskUnblocksOnClose(t *testing.T) {
 }
 
 func TestAskRespectsContextCancellation(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -594,7 +596,7 @@ func TestAskRespectsContextCancellation(t *testing.T) {
 		result <- askResult{a, err}
 	}()
 
-	api.waitCall(t, "sendMessage", 1)
+	api.WaitCall(t, "sendMessage", 1)
 	cancel()
 
 	select {
@@ -606,11 +608,11 @@ func TestAskRespectsContextCancellation(t *testing.T) {
 		t.Fatal("Ask did not unblock on cancellation")
 	}
 	// The keyboard is still withdrawn, on a context of its own.
-	api.waitCall(t, "editMessageText", 1)
+	api.WaitCall(t, "editMessageText", 1)
 }
 
 func TestCloseIsIdempotentAndFinal(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	if err := tg.Close(); err != nil {
@@ -630,28 +632,53 @@ func TestCloseIsIdempotentAndFinal(t *testing.T) {
 	}
 }
 
+// pumpRegistrationWindow is how long the gate below watches for a WaitGroup that
+// has already fallen to zero. It is one-sided: a correct transport can never
+// close the channel during it, because nothing has been cancelled yet and the
+// poll pump will not exit, so the test cannot flake. A broken one closes it in
+// microseconds — the goroutine only has to reach a Wait that returns at once.
+const pumpRegistrationWindow = 200 * time.Millisecond
+
 // The Updates/Close WaitGroup race: Close must never return while pumps it did
-// not wait for are about to start. The gate runs at the exact point the old code
-// had released the lock, so this interleaving is forced, not hoped for.
+// not wait for are about to start. Updates therefore does wg.Add(2) under t.mu,
+// which Close also takes, so Close either loses the started check at the top or
+// finds a counter of 2.
+//
+// This test needs the updatesGate seam, and the seam had to move under the lock
+// to earn its keep. The broken window — between the unlock and wg.Add(2) — is a
+// few instructions on one goroutine with nothing blocking inside it, so a racing
+// Close loses essentially every time: repetition, scheduling pressure and -race
+// all pass on the bug, which is exactly how the previous version of this test
+// came to guard nothing. The only place the two orderings differ observably is
+// the instant t.mu is released, so that is where the gate looks, and what it
+// asks is whether wg.Wait() would return there.
 func TestUpdatesRegistersPumpsBeforeCloseCanWait(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	gateRan := false
 	tg.updatesGate = func() {
+		// Called with t.mu held, immediately before Updates releases it. A Close
+		// blocked on that lock resumes from here, so this is where the WaitGroup
+		// must already be non-zero.
 		gateRan = true
-		if err := tg.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-		// Close returned; if it waited for the pumps as it must, the poll pump
-		// has already run to completion and closed the queue. Under the old
-		// ordering the pumps were not yet registered here, Close saw a zero
-		// counter, and the queue was still open.
-		tg.queue.mu.Lock()
-		closed := tg.queue.closed
-		tg.queue.mu.Unlock()
-		if !closed {
-			t.Fatal("Close returned while the pumps had not been waited for")
+
+		waitReturned := make(chan struct{})
+		go func() {
+			tg.wg.Wait()
+			close(waitReturned)
+		}()
+
+		select {
+		case <-waitReturned:
+			// Not t.Fatal: Goexit here would strand t.mu and deadlock the
+			// cleanup Close.
+			t.Error("Updates was about to release t.mu with a zero WaitGroup: " +
+				"a Close taking the lock next would wait for nothing and return " +
+				"while both pumps ran behind its back")
+		case <-time.After(pumpRegistrationWindow):
+			// Still counted, as it must be: nothing has been cancelled and the
+			// poll pump is polling, so Wait cannot legitimately return here.
 		}
 	}
 
@@ -662,14 +689,20 @@ func TestUpdatesRegistersPumpsBeforeCloseCanWait(t *testing.T) {
 	if !gateRan {
 		t.Fatal("the gate never ran")
 	}
+
+	// And the property the registration exists for: Close waits for both pumps,
+	// so the stream is closed and drained by the time it returns.
+	if err := tg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 	select {
 	case _, ok := <-updates:
 		if ok {
 			for range updates {
 			}
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("updates channel was not closed after Close")
+	default:
+		t.Fatal("Close returned with the updates channel still open")
 	}
 }
 
@@ -677,7 +710,7 @@ func TestUpdatesRegistersPumpsBeforeCloseCanWait(t *testing.T) {
 // AllowedUserID was left zero by a buggy caller — and must never crash the poll
 // goroutine, which runs handlers synchronously.
 func TestCallbackWithoutSenderIsIgnored(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -695,7 +728,7 @@ func TestCallbackWithoutSenderIsIgnored(t *testing.T) {
 	}
 	data, result := askInFlight(t, api, tg, q)
 
-	api.push(callbackUpdateNoFrom("cb-nofrom", 100, 1001, data[0]))
+	api.Push(telegramtest.CallbackUpdateNoFrom("cb-nofrom", 100, 1001, data[0]))
 
 	select {
 	case r := <-result:
@@ -708,7 +741,7 @@ func TestCallbackWithoutSenderIsIgnored(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Ask never returned")
 	}
-	if n := api.countFor("answerCallbackQuery"); n != 0 {
+	if n := api.CountFor("answerCallbackQuery"); n != 0 {
 		t.Fatalf("a sender-less callback was acknowledged %d times, want 0", n)
 	}
 }
@@ -716,7 +749,7 @@ func TestCallbackWithoutSenderIsIgnored(t *testing.T) {
 // The length check must reserve room for the outcome line actually appended on
 // retirement, including the longest choice label.
 func TestAskReservesRoomForTheOutcomeLine(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api, WithMaxMessageLength(100))
 
 	// 30 units of text passes a flat reserve, but the 80-unit label pushes the
@@ -731,7 +764,7 @@ func TestAskReservesRoomForTheOutcomeLine(t *testing.T) {
 	if _, err := tg.Ask(context.Background(), long); !errors.Is(err, ErrTextTooLong) {
 		t.Fatalf("Ask with an oversized label = %v, want ErrTextTooLong", err)
 	}
-	if n := api.countFor("sendMessage"); n != 0 {
+	if n := api.CountFor("sendMessage"); n != 0 {
 		t.Fatalf("an oversized question still reached Telegram %d times", n)
 	}
 
@@ -756,9 +789,9 @@ func TestAskReservesRoomForTheOutcomeLine(t *testing.T) {
 // After Close, an in-flight Ask's cleanup edit must be bounded rather than
 // hanging on the caller's live context for the full HTTP client timeout.
 func TestCloseBoundsAskCleanup(t *testing.T) {
-	api := newFakeAPI(t)
+	api := telegramtest.New(t, testToken)
 	tg := newTestTelegram(t, api)
-	release := api.holdMethod("editMessageText")
+	release := api.Hold("editMessageText")
 	defer release()
 
 	result := make(chan askResult, 1)
@@ -773,7 +806,7 @@ func TestCloseBoundsAskCleanup(t *testing.T) {
 		result <- askResult{a, err}
 	}()
 
-	api.waitCall(t, "sendMessage", 1)
+	api.WaitCall(t, "sendMessage", 1)
 	start := time.Now()
 	if err := tg.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -836,5 +869,26 @@ func TestParseCallbackData(t *testing.T) {
 			t.Fatalf("parseCallbackData(%q) = %q, %d, %v; want %q, %d, %v",
 				tc.in, token, idx, ok, tc.token, tc.idx, tc.ok)
 		}
+	}
+}
+
+// assertNoGoroutineLeak fails if the goroutine count has not returned to base.
+// It retries, because a goroutine that is on its way out has not always left by
+// the time the test asks.
+func assertNoGoroutineLeak(t *testing.T, base int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		runtime.Gosched()
+		now := runtime.NumGoroutine()
+		if now <= base {
+			return
+		}
+		if time.Now().After(deadline) {
+			buf := make([]byte, 1<<16)
+			n := runtime.Stack(buf, true)
+			t.Fatalf("goroutine leak: %d at start, %d now\n%s", base, now, buf[:n])
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
