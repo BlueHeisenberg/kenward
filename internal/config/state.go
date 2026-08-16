@@ -207,8 +207,10 @@ func (c *Config) StatePath() string {
 	return filepath.Join(dir, StateFileName)
 }
 
-// RemindersPath is where one unit keeps its reminders. group selects the household
-// group's unit and ignores member.
+// RemindersPath is where one unit keeps its reminders. The two arguments name the
+// unit between them: group alone is the household group's, member alone is that
+// member's own assistant, and both together is their private conversation with
+// kenward, which is a third conversation and needs a third file.
 //
 // One file per unit, never one file keyed by member. That is not tidiness: a member's
 // unit is isolated from every other by construction, which is what lets the same code
@@ -221,16 +223,19 @@ func (c *Config) RemindersPath(member domain.MemberID, group bool) string {
 	if dir == "" {
 		dir = DefaultDataDir()
 	}
+	// Through sanitizeMemberID, which is the function that already decides what a
+	// member id looks like as a name on a filesystem — it is how pods are named.
+	// A member id is operator-written and otherwise unconstrained, so putting a
+	// raw one in a path would let "../../etc/x" out of the data directory; and
+	// reusing this one rather than writing a second sanitiser means the
+	// uniqueness validateMembers already enforces over pod names holds over these
+	// filenames too, for free.
 	name := "reminders-group.json"
-	if !group {
-		// Through sanitizeMemberID, which is the function that already decides what a
-		// member id looks like as a name on a filesystem — it is how pods are named.
-		// A member id is operator-written and otherwise unconstrained, so putting a
-		// raw one in a path would let "../../etc/x" out of the data directory; and
-		// reusing this one rather than writing a second sanitiser means the
-		// uniqueness validateMembers already enforces over pod names holds over these
-		// filenames too, for free.
+	switch {
+	case !group:
 		name = "reminders-member-" + sanitizeMemberID(string(member)) + ".json"
+	case member != "":
+		name = "reminders-household-" + sanitizeMemberID(string(member)) + ".json"
 	}
 	return filepath.Join(dir, name)
 }

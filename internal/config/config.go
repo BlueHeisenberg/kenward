@@ -186,9 +186,30 @@ type Config struct {
 	Dashboard DashboardConfig `yaml:"dashboard"`
 }
 
+// Agents is household.agents: whether the household has one assistant or one each.
+type Agents string
+
+const (
+	// AgentsOne is the default and today's behaviour: there is kenward and nothing
+	// else. Everyone talks to it, in their private chats and in the group.
+	AgentsOne Agents = "one"
+	// AgentsPerMember gives every member an agent of their own, with kenward
+	// alongside as the household's. It is what makes a private conversation with
+	// kenward a distinct thing rather than a duplicate of a member's own.
+	AgentsPerMember Agents = "one_each"
+)
+
 // HouseholdConfig describes the group itself.
 type HouseholdConfig struct {
 	Name string `yaml:"name"`
+	// Agents is "one" — kenward and nothing else — or "one_each", where every
+	// member has their own named agent and kenward is the household's. Empty means
+	// AgentsOne, which is what every configuration written before this key existed
+	// means.
+	//
+	// It is a presentation choice and not a security one: it says nothing about who
+	// can read what, which is `mode`'s question and is asked separately.
+	Agents Agents `yaml:"agents"`
 	// SharedSpace is the lore space every member can read and the group chat writes
 	// to. It may never coincide with a member's private space.
 	SharedSpace string `yaml:"shared_space"`

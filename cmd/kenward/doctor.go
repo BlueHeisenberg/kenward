@@ -219,6 +219,8 @@ func runDoctor(e *env, path, dataDir string, sel unitSelection) doctorReport {
 		rep.Configuration = append(rep.Configuration, check{Status: statusOK, Text: text})
 	}
 
+	rep.Configuration = append(rep.Configuration, agentsCheck(cfg))
+
 	rep.Access = doctorAccess(e, cfg)
 	rep.Memory = doctorMemory(ctx, e, cfg, scope, &rep)
 	// The one line in this report about what the node forgets on purpose. It goes
@@ -236,6 +238,51 @@ func runDoctor(e *env, path, dataDir string, sel unitSelection) doctorReport {
 	rep.Exposure = privacy.DashboardNote(dashboard.ReachFor(cfg.Dashboard), dashboard.URLFor(cfg.Dashboard), cfg.Dashboard.TLS())
 	rep.TierNotes = tierNotes(cfg, scope)
 	return rep
+}
+
+// agentsCheck says which conversations this household has, which is household.agents'
+// only visible consequence and is otherwise something an operator can only find out by
+// messaging the bots.
+//
+// The third conversation is the one worth naming out loud. "kenward is reachable in a
+// private chat" is a claim about where a member's words go, and a member who does not
+// know it exists cannot be surprised by it — but an operator who does not know it
+// exists cannot answer for it either, and this report is the place they look.
+func agentsCheck(cfg *config.Config) check {
+	if cfg.Household.Agents != config.AgentsPerMember {
+		return check{
+			Status: statusOK,
+			Text:   "one assistant for this household: kenward answers every private chat and the group",
+		}
+	}
+	if !cfg.AgentPerMember() {
+		// Refused by validation, which has already said so with the reason. Repeated
+		// here because the line above would otherwise be the report's only word on
+		// the subject and would describe a household this file does not ask for.
+		return check{
+			Status: statusFail,
+			Text:   fmt.Sprintf("household.agents is %q and mode is %s, which cannot be delivered", config.AgentsPerMember, cfg.Mode),
+			Detail: []string{"one agent each needs a bot for each member; simple mode runs one bot for the whole household"},
+		}
+	}
+	if cfg.Household.GroupChatID == 0 {
+		return check{
+			Status: statusWarn,
+			Text:   "one agent each, but kenward has no chat of its own: household.group_chat_id is unset",
+			Detail: []string{
+				"the household bot is what runs the group conversation, and nothing runs it until a group chat is configured",
+				"until then kenward cannot be reached privately either, and members have only their own assistants",
+			},
+		}
+	}
+	return check{
+		Status: statusOK,
+		Text:   "one agent each: every member has their own assistant, and kenward is the household's",
+		Detail: []string{
+			"kenward is also reachable in a private chat, on the household bot",
+			"that conversation reads and writes the household's shared memory only, and never a member's private memory",
+		},
+	}
 }
 
 // doctorAccess reports the dashboard's bind address and exposure, as a first-class line.

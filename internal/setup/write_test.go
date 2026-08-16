@@ -64,6 +64,12 @@ var notWritten = map[string]string{
 	"reminders.max_per_day":     "the default is right until a household has lived with reminders long enough to disagree",
 	"reminders.catch_up_window": "as reminders.max_per_day",
 	"reminders.max_stored":      "as reminders.max_per_day",
+	// household.agents is the identity question — one assistant for the household,
+	// or one each — and the wizard is the right place to ask it. It is not asked
+	// yet. Empty means AgentsOne, which is today's behaviour and what every
+	// configuration written before the key existed means, so a generated file is
+	// correct without it; this entry goes away when the wizard asks.
+	"household.agents": "the wizard does not ask the identity question yet; empty means one assistant for the household, which is the default",
 }
 
 // TestDocumentCoversTheWholeSchema is the guard on the one shortcut this package

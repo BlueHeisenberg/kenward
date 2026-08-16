@@ -58,6 +58,25 @@ member's private memory in this conversation, and you must not speculate about w
 might be in one. If someone asks you about something only their private memory would
 know, tell them to ask you directly instead.`
 
+// householdDisclosureText is the scope disclosure for a member's private chat with
+// kenward, verbatim. Like the other two it is rendered from the resolved scope and
+// never from configuration.
+//
+// It has to say two true things that pull in opposite directions, which is why it is
+// its own string rather than either of the others reused. The chat is private —
+// nobody else sees it, and the whole point is that a member can add to the household's
+// memory without an announcement in the group — and the memory is not: everything
+// remembered here is the household's, readable by everyone, and the member did not
+// come here to be told that afterwards.
+const householdDisclosureText = `This is a private conversation between you and {{.MemberName}}. Nobody else can see it.
+
+Here you are the {{.HouseholdName}} household's assistant, not {{.MemberName}}'s own.
+You can read the household's shared memory and nothing else. You cannot see
+{{.MemberName}}'s private memory in this conversation — they have their own assistant
+for that — and you must not speculate about what might be in it. Anything remembered
+here goes to the household's shared memory, where everyone in {{.HouseholdName}} can
+read it.`
+
 // confidenceText explains how to weigh lore's vocabulary, verbatim. Confidence and
 // markers are passed through unchanged; kenward does not reinterpret them.
 const confidenceText = `Memory entries carry a confidence: experimental, provisional, validated or hardened.
@@ -145,6 +164,16 @@ confirm with a button first, and publishing cannot be undone.`
 const captureGroupText = `This is a group conversation, so anything remembered here goes to the household's shared
 memory. You cannot propose storing anything in a private memory from here. Nothing is
 written there unless the member who asked says yes to it first.`
+
+// captureHouseholdText is what a member's private chat with kenward adds, verbatim.
+// It is captureGroupText's rule — one destination, the shared one, never written
+// without being asked — for the scope where the member might reasonably expect
+// otherwise, since they are alone in the chat.
+const captureHouseholdText = `Anything remembered in this conversation goes to the household's shared memory, where
+everyone can read it. You cannot propose storing anything in a private memory from
+here, even though this chat is private: a member's own assistant is where their private
+memory lives. Nothing is written to the household's memory unless {{.MemberName}} says
+yes to it first.`
 
 // remindText is the reminder instruction block, verbatim from docs/PROMPT.md.
 //
@@ -286,8 +315,13 @@ func (u *Unit) request(sc domain.Scope, msgs []routing.Message) routing.Request 
 }
 
 // promptInput maps retrieval groups onto the prompt's two memory sections using the
-// scope, and only the scope: in a direct scope Read is private first then shared, in
-// a group scope Read is the shared space alone.
+// scope, and only the scope: a scope that touches private memory has Read as private
+// first then shared, and every other scope has the shared space alone.
+//
+// The two questions are asked separately on purpose. Whose name the prompt speaks is
+// not the same question as which memories it may render, and conflating them is what
+// a private chat with kenward breaks: it knows exactly who is asking and has no
+// private section to put anything in.
 func (u *Unit) promptInput(sc domain.Scope, groups []spaceGroup) promptInput {
 	inp := promptInput{
 		scope:         sc,
@@ -296,8 +330,11 @@ func (u *Unit) promptInput(sc domain.Scope, groups []spaceGroup) promptInput {
 		reminders:     u.deps.Reminders.List(),
 		loc:           u.deps.Reminders.Location(),
 	}
-	if sc.Kind == domain.ScopeDirect && sc.Member != nil {
+	inp.memberName = groupMemberPhrase
+	if sc.Member != nil {
 		inp.memberName = sc.Member.Name
+	}
+	if sc.TouchesPrivateMemory() && sc.Member != nil {
 		if len(groups) > 0 {
 			inp.hasPrivate = true
 			inp.private = groups[0].entries
@@ -310,7 +347,6 @@ func (u *Unit) promptInput(sc domain.Scope, groups []spaceGroup) promptInput {
 		}
 		return inp
 	}
-	inp.memberName = groupMemberPhrase
 	if len(groups) > 0 {
 		inp.hasShared = true
 		inp.shared = groups[0].entries
@@ -323,6 +359,11 @@ func (u *Unit) promptInput(sc domain.Scope, groups []spaceGroup) promptInput {
 // scope disclosure, retrieved memory, capture instructions.
 func renderSystem(inp promptInput) string {
 	group := inp.scope.Kind == domain.ScopeGroup
+	// Who the assistant is talking to, and what it may touch, are separate
+	// decisions. A private chat with kenward is addressed to one person and has the
+	// household's memory in it, so it takes the personal identity line and the
+	// shared-only disclosure — which no single boolean can express.
+	private := inp.scope.TouchesPrivateMemory()
 
 	identityName := inp.memberName
 	if group {
@@ -341,10 +382,13 @@ func renderSystem(inp promptInput) string {
 		"{{.HouseholdName}}", inp.householdName,
 	).Replace(identityText))
 
-	if group {
+	switch {
+	case group:
 		sections = append(sections, fill.Replace(groupDisclosureText))
-	} else {
+	case private:
 		sections = append(sections, fill.Replace(directDisclosureText))
+	default:
+		sections = append(sections, fill.Replace(householdDisclosureText))
 	}
 
 	if inp.hasPrivate {
@@ -366,11 +410,14 @@ func renderSystem(inp promptInput) string {
 	sections = append(sections, confidence)
 
 	captureSection := fill.Replace(captureText)
-	if group {
+	switch {
+	case group:
 		captureSection += "\n\n" + captureGroupText
-	} else {
+	case private:
 		captureSection += "\n\n" + fill.Replace(captureDirectText)
 		captureSection += "\n\n" + fill.Replace(publishText)
+	default:
+		captureSection += "\n\n" + fill.Replace(captureHouseholdText)
 	}
 	sections = append(sections, captureSection)
 	sections = append(sections, renderReminders(inp))

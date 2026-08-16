@@ -65,6 +65,82 @@ func TestRenderedPromptGroupGolden(t *testing.T) {
 	golden(t, "prompt_group.golden", req.Messages[0].Content)
 }
 
+// TestRenderedPromptHouseholdGolden pins the third prompt: a member's private chat
+// with kenward.
+//
+// Its two halves are what the golden is for. The identity line names David, because
+// kenward is talking to one person and knows which; the disclosure and the capture
+// block are the shared-only ones, because the memory in this conversation is the
+// household's. A renderer that decided both from one boolean would get one of them
+// wrong, and the golden is where that shows up as a diff rather than as a member
+// being told something untrue about what the assistant can see.
+func TestRenderedPromptHouseholdGolden(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testHouseholdScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.mem.bySpace["household"] = []memory.Entry{
+		entry("household", "Bin day", "Bins go out Thursday night.", "hardened"),
+	}
+	// Seeded and never asked for. A prompt that rendered it would be rendering a
+	// space this scope cannot read, and the golden would show it.
+	rig.mem.bySpace["david-private"] = []memory.Entry{
+		entry("david-private", "Bin day reminder", "David sets a bin day alarm.", "validated"),
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("bins?")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	req, ok := rig.router.lastRequest()
+	if !ok {
+		t.Fatal("router never called")
+	}
+	system := req.Messages[0].Content
+	golden(t, "prompt_household.golden", system)
+
+	// Said again outside the golden, because a golden updated with -update-golden
+	// records whatever the code did. These two are the properties, and they fail
+	// on their own terms whatever the fixture says.
+	// The heading rather than the phrase: the disclosure says the words "David's
+	// private memory" on purpose, to tell the model it cannot see one.
+	if strings.Contains(system, "David sets a bin day alarm.") || strings.Contains(system, "## From David's private memory") {
+		t.Error("a private entry or its section reached the prompt of a conversation that cannot read one")
+	}
+	if !strings.Contains(system, "You are talking to David") {
+		t.Error("the prompt does not name the member; kenward must know who it is talking to here")
+	}
+}
+
+// TestHouseholdPromptOffersNoPublishTool is the tool half of the same boundary. The
+// publish tool moves an entry out of a member's private space, so a conversation with
+// no private space must not be told it exists — a model offered a capability it
+// cannot use will eventually call it, and the member will read the failure.
+func TestHouseholdPromptOffersNoPublishTool(t *testing.T) {
+	for _, sc := range []struct {
+		name string
+		want bool
+	}{{"direct", true}, {"household", false}, {"group", false}} {
+		t.Run(sc.name, func(t *testing.T) {
+			var scope = testDirectScope()
+			switch sc.name {
+			case "household":
+				scope = testHouseholdScope()
+			case "group":
+				scope = testGroupScope()
+			}
+			var found bool
+			for _, spec := range toolSpecs(scope) {
+				if spec.Name == publishToolName {
+					found = true
+				}
+			}
+			if found != sc.want {
+				t.Errorf("publish tool offered = %v, want %v in a %s scope", found, sc.want, sc.name)
+			}
+		})
+	}
+}
+
 func TestHistoryRendersOldestFirstAndIsBounded(t *testing.T) {
 	opts := testOptions()
 	opts.HistoryLimit = 2

@@ -438,6 +438,28 @@ func testGroupScope() domain.Scope {
 	}
 }
 
+// testHouseholdScope is a member's private conversation with kenward: it knows who
+// is asking and reads the household's shared space alone. The member carries a
+// private space, deliberately — it is on the domain.Member, it is not in the Scope,
+// and nothing downstream may go looking for it there.
+func testHouseholdScope() domain.Scope {
+	m := domain.Member{
+		ID:         "david",
+		Name:       "David",
+		TelegramID: testUserID,
+		Private:    "david-private",
+		Tiers:      []string{"local"},
+	}
+	return domain.Scope{
+		Kind:   domain.ScopeHousehold,
+		Member: &m,
+		Write:  "household",
+		Read:   []domain.SpaceID{"household"},
+		Tiers:  []string{"local", "cloud"},
+		ChatID: testMemberChat,
+	}
+}
+
 func fixedResolver(sc domain.Scope) ResolveFunc {
 	return func(in transport.Inbound) (domain.Scope, error) { return sc, nil }
 }

@@ -34,11 +34,13 @@ package e2e
 // them, and that irrelevance is the property being proved.
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/capture"
+	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 )
 
@@ -567,6 +569,413 @@ func TestDirectScopeRetrievalNeverReachesAnotherMembersPrivateSpace(t *testing.T
 				t.Error("prompt has no private memory section; the check above must not be passing vacuously")
 			}
 		})
+	}
+}
+
+// -----------------------------------------------------------------------------
+// household scope: a member's private chat with kenward
+//
+// The third scope is the one where the two halves of the corpus meet. It is a
+// private chat, so a member is alone with the assistant and every "just tell me,
+// nobody else is here" message in the corpus is being sent under conditions that
+// make it plausible; and it reads the household's shared memory only, so every
+// assertion the group scope has to satisfy applies here unchanged. The scope also
+// carries the member — kenward knows exactly who is asking — which is precisely the
+// shape a boundary is got wrong in: knowing whose conversation this is, and reading
+// what is theirs, are one keystroke apart.
+// -----------------------------------------------------------------------------
+
+// runHouseholdChatTurn drives one message through David's private chat with kenward
+// — a household that gave every member their own agent, and the group's pod, which
+// is the process holding the household's bot.
+//
+// It stops the pod before returning, for the reason runGroupTurn does: an assertion
+// about what was not written has to be made against a finished turn.
+func runHouseholdChatTurn(t *testing.T, text string) *harness {
+	t.Helper()
+	h := newPod(t, podOptions{group: true, agents: config.AgentsPerMember})
+	seedSentinels(h)
+	h.local.setReply(maximallyCompliant)
+	h.tr.AnswerWithTimeout()
+	h.start()
+
+	h.tr.InjectText(davidChatID, davidTelegramID, text, false)
+	h.waitForReply(davidChatID, 1)
+	waitFor(t, "the capture question", func() bool { return len(h.tr.Asked()) >= 1 })
+	if err := h.stop(); err != nil {
+		t.Fatalf("draining the household pod: %v", err)
+	}
+	return h
+}
+
+// TestHouseholdChatHoldsItsMemoryBoundaryAgainstEveryAdversarialMessage runs the
+// whole corpus at kenward in a member's private chat.
+//
+// The subtests are deliberately the group's, said again: no private space was
+// searched, no private content reached the prompt, no personal destination was
+// offered, nothing was written. A scope that reads the household's memory has to
+// satisfy all of them however private the room is, and the point of running the same
+// list rather than a shorter one is that nothing here gets an exemption for being a
+// one-to-one conversation.
+func TestHouseholdChatHoldsItsMemoryBoundaryAgainstEveryAdversarialMessage(t *testing.T) {
+	for _, msg := range corpus {
+		t.Run(msg.name, func(t *testing.T) {
+			h := runHouseholdChatTurn(t, msg.text)
+			req := h.local.last(t)
+
+			t.Run("no_private_space_was_searched", func(t *testing.T) {
+				searched := h.mem.searchedSpaces()
+				if len(searched) != 1 || searched[0] != sharedSpace {
+					t.Errorf("%s message searched %v; a private chat with kenward may search only %s",
+						msg.class, searched, sharedSpace)
+				}
+				// Including the sender's own. This is the assertion that separates
+				// this scope from a direct one: David is alone in this chat and
+				// kenward knows his name, and his private space is still not in the
+				// conversation. A resolution that derived the Read set from Member
+				// rather than from the scope would fail here and nowhere else.
+				for _, sp := range h.mem.touchedSpaces() {
+					if sp == davidSpace || sp == meiSpace {
+						t.Errorf("a private chat with kenward reached private space %s", sp)
+					}
+				}
+				for _, c := range h.mem.recorded() {
+					if c.Op != "search" || len(c.Spaces) != 1 || c.Spaces[0] != sharedSpace {
+						t.Errorf("household chat made memory call %+v; it may only search %s", c, sharedSpace)
+					}
+				}
+			})
+
+			t.Run("no_private_content_reached_the_prompt", func(t *testing.T) {
+				seen := promptSeen(req)
+				if strings.Contains(seen, davidSentinel) {
+					t.Errorf("prompt carried %s's own private sentinel; kenward reads the household's memory here and nothing else", davidSpace)
+				}
+				if strings.Contains(seen, meiSentinel) {
+					t.Errorf("prompt carried %s's private sentinel", meiSpace)
+				}
+				if !strings.Contains(req.System(), "the household's shared memory") {
+					t.Error("prompt has no shared memory section; the checks above must not be passing vacuously")
+				}
+				// The prompt renders no private section at all, whatever it was
+				// asked. The heading is how retrieved private content would arrive;
+				// the disclosure says the words "private memory" on purpose, to tell
+				// the model it cannot see one, so the heading is what is looked for.
+				if strings.Contains(req.System(), "## From David's private memory") {
+					t.Error("prompt rendered a private memory section in a household scope")
+				}
+				for _, o := range h.sentTo(davidChatID) {
+					if strings.Contains(o.Text, davidSentinel) || strings.Contains(o.Text, meiSentinel) {
+						t.Error("a private sentinel reached the chat")
+					}
+				}
+			})
+
+			t.Run("no_capture_offered_a_personal_destination", func(t *testing.T) {
+				// The provider asked for target "personal" on every one of these
+				// turns. In a private chat the member could plausibly be offered it,
+				// which is exactly why the button must not exist: there is no private
+				// space in this scope to put anything in, and a tappable button that
+				// resolved to one would be a write path into a member's memory opened
+				// by a model's word.
+				asked := h.tr.Asked()
+				if len(asked) != 1 {
+					t.Fatalf("asked %d capture questions, want exactly 1: %+v", len(asked), asked)
+				}
+				for _, c := range asked[0].Choices {
+					if c.ID == capture.ChoicePersonal {
+						t.Errorf("household chat capture offered %q; this conversation has no private destination", c.ID)
+					}
+				}
+				if asked[0].AllowedUserID != davidTelegramID {
+					t.Errorf("capture question was answerable by %d, want only %d",
+						asked[0].AllowedUserID, davidTelegramID)
+				}
+			})
+
+			t.Run("nothing_was_written_without_a_tap", func(t *testing.T) {
+				// Shared writes always ask, and this scope writes nowhere else. The
+				// household's capture.private_writes setting cannot reach this: it
+				// governs a private destination, and there is none here.
+				if puts := h.mem.putCalls(); len(puts) != 0 {
+					t.Errorf("%s message caused %d write(s) with no confirmation: %+v",
+						msg.class, len(puts), puts)
+				}
+			})
+
+			t.Run("the_prompt_discloses_what_this_conversation_is", func(t *testing.T) {
+				system := req.System()
+				// Flattened, because the prompt's text is hard-wrapped around
+				// placeholders and a household name of a different length moves
+				// every line break in it. What is asserted is what it says.
+				flat := strings.Join(strings.Fields(system), " ")
+				// It says the chat is private, because it is — a member came here
+				// precisely so as not to post in the group.
+				if !strings.Contains(flat, "Nobody else can see it") {
+					t.Error("household prompt does not say the conversation is private")
+				}
+				// And that the memory is not, because it is not.
+				if !strings.Contains(flat, "everyone in Ashfield can read it") {
+					t.Error("household prompt does not say that what is remembered here is the household's")
+				}
+				if !strings.Contains(system, "must not speculate") {
+					t.Error("household prompt no longer tells the model not to speculate about private memory")
+				}
+				// The positive half: kenward knows who is asking. It is the whole
+				// reason this scope carries a member, and the assertions above have
+				// already established that it buys no access to anything of David's.
+				if !strings.Contains(system, "David") {
+					t.Error("household prompt does not name the member; kenward must know who it is talking to")
+				}
+			})
+		})
+	}
+}
+
+// TestHouseholdChatRetrievesTheSharedSpace is the positive half: the household's own
+// memory reaches the prompt when a member asks for it here, which is the point of the
+// scope existing at all.
+func TestHouseholdChatRetrievesTheSharedSpace(t *testing.T) {
+	h := runHouseholdChatTurn(t, "hey, what is the side gate code again?")
+
+	if got := h.local.last(t).System(); !strings.Contains(got, sharedFact) {
+		t.Errorf("a question about the side gate did not retrieve %q; system prompt was:\n%s", sharedFact, got)
+	}
+}
+
+// TestHouseholdChatNeedsNoMemberKey states what this conversation does not need.
+//
+// A session key unwraps a member's own memory, and this conversation does not touch
+// it. The process that runs it is the household's pod, which by design holds nobody's
+// key at all — so a turn that demanded one would answer every private message to
+// kenward with the locked notice, in the one deployment the scope exists in, naming a
+// remedy only an operator can perform.
+func TestHouseholdChatNeedsNoMemberKey(t *testing.T) {
+	h := newPod(t, podOptions{group: true, agents: config.AgentsPerMember})
+	h.mem.seed(sharedSpace, entry("s1", "Side gate", sharedFact))
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{Text: "4417.", FinishReason: "stop"}
+	})
+	h.start()
+
+	h.tr.InjectText(davidChatID, davidTelegramID, "what is the side gate code?", false)
+	sent := h.waitForReply(davidChatID, 1)
+	if err := h.stop(); err != nil {
+		t.Fatalf("draining the household pod: %v", err)
+	}
+
+	if strings.Contains(sent[0].Text, "Your assistant is locked") {
+		t.Fatalf("a private chat with kenward was answered with the locked notice: %q; "+
+			"this conversation reads the household's memory and needs no member's key", sent[0].Text)
+	}
+	if got := replyBody(sent[0].Text); got != "4417." {
+		t.Errorf("reply = %q, want the model's text", got)
+	}
+	if n := h.local.count(); n != 1 {
+		t.Errorf("provider saw %d requests, want 1; the turn must have reached a model", n)
+	}
+}
+
+// TestHouseholdChatWriteLandsInTheSharedSpaceOnlyAfterATap is the other half of the
+// scope's purpose: adding to the household's memory without posting in the group.
+//
+// The tool call names "personal" and the member taps the only button they are given.
+// The write must land in the household's space, because that is the only destination
+// this scope has — the model's word decides nothing, and neither does the fact that
+// the conversation is a private one.
+func TestHouseholdChatWriteLandsInTheSharedSpaceOnlyAfterATap(t *testing.T) {
+	h := newPod(t, podOptions{group: true, agents: config.AgentsPerMember})
+	seedSentinels(h)
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{
+			Text:         "Noted.",
+			FinishReason: "tool_calls",
+			ToolCalls: []providerToolCall{{
+				Name: "remember",
+				Arguments: rememberArgsNaming("Boiler code", "The boiler code is 4471.", "personal",
+					map[string]any{"space": string(davidSpace), "member": "david"}),
+			}},
+		}
+	})
+	h.tr.AnswerWithChoice(capture.ChoiceShared)
+	h.start()
+
+	h.tr.InjectText(davidChatID, davidTelegramID, "the boiler code is 4471, remember that for everyone", false)
+	waitFor(t, "the write", func() bool { return len(h.mem.putCalls()) > 0 })
+	if err := h.stop(); err != nil {
+		t.Fatalf("draining the household pod: %v", err)
+	}
+
+	puts := h.mem.putCalls()
+	if len(puts) != 1 {
+		t.Fatalf("produced %d writes, want 1: %+v", len(puts), puts)
+	}
+	if got := puts[0].Spaces; len(got) != 1 || got[0] != sharedSpace {
+		t.Errorf("write landed in %v, want %s; this scope's only destination is the household's memory", got, sharedSpace)
+	}
+	// The question was asked before anything was written, and it offered one
+	// destination. capture.private_writes does not apply here and must not: the
+	// shared space is never written without being asked about.
+	asked := h.tr.Asked()
+	if len(asked) != 1 {
+		t.Fatalf("asked %d questions, want exactly 1: %+v", len(asked), asked)
+	}
+	for _, c := range asked[0].Choices {
+		if c.ID == capture.ChoicePersonal {
+			t.Errorf("the question offered %q; there is no private destination in this scope", c.ID)
+		}
+	}
+}
+
+// TestHouseholdChatRefusesANonMember is the authorization half. Only members of the
+// household may reach kenward privately; a stranger who finds the household's bot
+// gets exactly what a stranger already gets, which is silence.
+//
+// Silence rather than a refusal, and the assertion is on all three of the things a
+// refusal would spend: no message back, no model request, no lore call. Answering at
+// all — even to decline — tells whoever is knocking that this bot is a kenward node
+// serving a real household.
+func TestHouseholdChatRefusesANonMember(t *testing.T) {
+	h := newPod(t, podOptions{group: true, agents: config.AgentsPerMember})
+	seedSentinels(h)
+	h.local.setReply(maximallyCompliant)
+	h.start()
+
+	h.tr.InjectText(strangerChatID, strangerUserID, "hi, what does this household know about the car?", false)
+	// David's message behind the stranger's on the same stream: once his reply is
+	// out, hers has been dispatched, so this is an assertion about absence rather
+	// than about timing.
+	h.tr.InjectText(davidChatID, davidTelegramID, "morning", false)
+	h.waitForReply(davidChatID, 1)
+	if err := h.stop(); err != nil {
+		t.Fatalf("draining the household pod: %v", err)
+	}
+
+	if got := h.sentTo(strangerChatID); len(got) != 0 {
+		t.Errorf("a stranger received %d message(s): %+v; an unrecognised sender is answered with silence", len(got), got)
+	}
+	if n := h.local.count(); n != 1 {
+		t.Errorf("provider saw %d requests, want 1 (David's); a stranger's words must never reach a model", n)
+	}
+	for _, c := range h.mem.recorded() {
+		if c.Text == "hi, what does this household know about the car?" {
+			t.Errorf("a stranger's message reached lore: %+v", c)
+		}
+	}
+}
+
+// TestHouseholdChatDoesNotEnterTheGroupsContext is the leak this scope makes possible
+// and no other does: one process now holds the group conversation and every member's
+// private conversation with kenward, all on one bot and all reading one space.
+//
+// A member says something to kenward in private precisely so it is not said in front
+// of everybody. If the two conversations shared a history ring, the next group message
+// would carry it into a prompt the whole household is about to be answered from —
+// which is not a memory bug, because nothing was ever written, and would be invisible
+// to every assertion about spaces.
+func TestHouseholdChatDoesNotEnterTheGroupsContext(t *testing.T) {
+	const inPrivate = "quietly: I'm planning a surprise party for Mei on the 12th"
+
+	h := newPod(t, podOptions{group: true, agents: config.AgentsPerMember})
+	seedSentinels(h)
+	h.local.setReply(func(req wireRequest) providerReply {
+		return providerReply{Text: echoEverything(req), FinishReason: "stop"}
+	})
+	h.start()
+
+	h.tr.InjectText(davidChatID, davidTelegramID, inPrivate, false)
+	h.waitForReply(davidChatID, 1)
+	h.tr.InjectText(groupChatID, meiTelegramID, "what shall we do on the 12th?", true)
+	h.waitForReply(groupChatID, 1)
+	if err := h.stop(); err != nil {
+		t.Fatalf("draining the household pod: %v", err)
+	}
+
+	// The group's turn is the last one the provider saw. Its whole request — system
+	// prompt, history, user message — must contain nothing David said in private.
+	group := h.local.last(t)
+	if strings.Contains(promptSeen(group), inPrivate) {
+		t.Errorf("the group's prompt carried what a member said to kenward in private:\n%s", promptSeen(group))
+	}
+	if !strings.Contains(group.UserText(), "what shall we do on the 12th?") {
+		t.Fatalf("the last provider request is not the group's turn; this test is asserting on the wrong one: %q", group.UserText())
+	}
+	for _, o := range h.sentTo(groupChatID) {
+		if strings.Contains(o.Text, inPrivate) {
+			t.Error("what a member said to kenward in private was echoed into the group chat")
+		}
+	}
+}
+
+// TestHouseholdChatDoesNotExistUnderOneAgent states the boundary from the other
+// side. Under one assistant for the household there is nothing for a private chat
+// with kenward to be separate from, so the same message on the same bot must resolve
+// the way it always has — which in the group's pod means it is not this process's
+// conversation at all, and is answered by nobody.
+func TestHouseholdChatDoesNotExistUnderOneAgent(t *testing.T) {
+	h := newPod(t, podOptions{group: true})
+	seedSentinels(h)
+	h.local.setReply(maximallyCompliant)
+	h.start()
+
+	h.tr.InjectText(davidChatID, davidTelegramID, "what do we know about the car?", false)
+	// A group message behind it, so the absence below is about a dispatched message
+	// rather than an undelivered one.
+	h.tr.InjectText(groupChatID, davidTelegramID, "morning", true)
+	h.waitForReply(groupChatID, 1)
+	if err := h.stop(); err != nil {
+		t.Fatalf("draining the household pod: %v", err)
+	}
+
+	if got := h.sentTo(davidChatID); len(got) != 0 {
+		t.Errorf("the group's pod answered a private message under one agent: %+v; that conversation is David's own, and it lives in his own unit", got)
+	}
+	health, err := h.sup.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	if len(health) != 1 || !health[0].Group || health[0].Member != "" {
+		t.Fatalf("health reported %+v, want exactly the group's unit; one agent creates no private conversations with kenward", health)
+	}
+}
+
+// TestHouseholdPodRunsAUnitPerMembersPrivateChat pins the arrangement the leak test
+// above depends on: one unit per conversation, never one unit serving several.
+func TestHouseholdPodRunsAUnitPerMembersPrivateChat(t *testing.T) {
+	h := newPod(t, podOptions{group: true, agents: config.AgentsPerMember})
+	h.start()
+	defer func() {
+		if err := h.stop(); err != nil {
+			t.Fatalf("draining the household pod: %v", err)
+		}
+	}()
+
+	health, err := h.sup.Health(context.Background())
+	if err != nil {
+		t.Fatalf("Health: %v", err)
+	}
+	// The group's own unit, plus one for each enrolled member. Sam and Pat have not
+	// claimed, so they have no conversation to run.
+	var group int
+	seen := map[domain.MemberID]bool{}
+	for _, u := range health {
+		if u.Member == "" {
+			group++
+			continue
+		}
+		if !u.Group {
+			t.Errorf("the household's pod runs %+v, a member's own assistant; that belongs in their own pod", u)
+		}
+		seen[u.Member] = true
+	}
+	if group != 1 {
+		t.Errorf("health reports %d group units, want 1: %+v", group, health)
+	}
+	if !seen["david"] || !seen["mei"] {
+		t.Errorf("health reports %+v, want a private conversation with kenward for david and mei", health)
+	}
+	if seen[samMemberID] || seen[patMemberID] {
+		t.Errorf("health reports %+v; a member who has not claimed has no conversation to run", health)
 	}
 }
 

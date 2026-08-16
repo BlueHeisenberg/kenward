@@ -138,6 +138,7 @@ const (
     ScopeUnknown ScopeKind = iota  // the zero value; never valid for a resolved Scope
     ScopeDirect
     ScopeGroup
+    ScopeHousehold                 // a private chat with kenward; household.agents: one_each only
 )
 
 // Scope is the resolved answer to "who is this, and what may this conversation touch".
@@ -145,7 +146,7 @@ const (
 // re-derives nothing.
 type Scope struct {
     Kind      ScopeKind
-    Member    *Member    // nil iff Kind == ScopeGroup
+    Member    *Member    // who is asking; nil iff Kind == ScopeGroup
     Write     SpaceID    // where captures land
     Read      []SpaceID  // ordered: primary first
     Tiers     []string   // ordered tier chain
@@ -155,13 +156,44 @@ type Scope struct {
 
 **The invariants, which are tested directly and must never be weakened:**
 
-| Kind | `Read` | `Write` | May offer "personal" capture |
-| --- | --- | --- | --- |
-| `ScopeDirect` | `[member.Private, household.Shared]` | `member.Private` | yes |
-| `ScopeGroup` | `[household.Shared]` | `household.Shared` | **no** |
+| Kind | `Read` | `Write` | `Member` | May offer "personal" capture |
+| --- | --- | --- | --- | --- |
+| `ScopeDirect` | `[member.Private, household.Shared]` | `member.Private` | the member | yes |
+| `ScopeGroup` | `[household.Shared]` | `household.Shared` | nil | **no** |
+| `ScopeHousehold` | `[household.Shared]` | `household.Shared` | the member | **no** |
 
-A group `Scope` must never contain any member's private `SpaceID` in `Read` or `Write`.
-`scope` package has a test asserting exactly this over generated configurations.
+No `Scope` but a direct one may contain any member's private `SpaceID` in `Read` or
+`Write`. The `scope` package has a test asserting exactly this over generated
+configurations and every bot they could arrive on.
+
+`ScopeHousehold` is the shape worth reading twice: it carries a member and reads the
+shared space alone. Carrying one is not access to one — kenward has to know who is
+asking in order to authorise them and to address them by name — so the predicate
+everything gates on is `Scope.TouchesPrivateMemory()`, which is true for `ScopeDirect`
+and nothing else, and never "is this the group?". `AllowsPrivateCapture()` is defined
+as `TouchesPrivateMemory()` so the two cannot drift: a conversation may offer a private
+destination exactly when it already has one.
+
+**Which bot a message arrived on is part of the decision.** `scope.Resolve` takes it as
+a `domain.MemberID` — a member's id for their own agent's bot, empty for the
+household's — because Telegram does not put it on the wire: a private chat's id is the
+member's own account id and is identical across every bot they talk to. The supervisor
+supplies it from the token it opened the transport with. Under `agents: one` the
+household's bot is also everybody's own assistant, so a direct message to it resolves
+to `ScopeDirect` as it always has; under `one_each` it is kenward alone, and the same
+message resolves to `ScopeHousehold`. A member's own bot serves that member and refuses
+everybody else, at the boundary rather than by there being no unit to hand them to.
+
+`one_each` requires isolated mode, because it needs a bot for each member and simple
+mode runs one for the whole household. Validation refuses the combination and
+`Config.AgentPerMember` returns false for it regardless, so the failure is a refusal at
+startup rather than every member's private chat silently becoming the household's.
+
+Under `one_each` the process holding the household's bot runs one unit per member's
+private conversation with kenward, alongside the group's. One unit is one conversation
+— its own history, its own turn slot, its own capture engine — and a shared one would
+put what a member said to kenward in private into the prompt the group is answered
+from.
 
 ---
 

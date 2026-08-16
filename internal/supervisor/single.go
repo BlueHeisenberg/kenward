@@ -163,6 +163,10 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 			return nil, errors.New("supervisor: group unit selected but no group chat is configured")
 		}
 		rc.group = true
+		// The household's bot, and so the empty bot identity: under one agent each
+		// this is what makes a private message here kenward's conversation rather
+		// than the sender's own.
+		rc.bot = ""
 		rc.botToken = func() (config.Secret, error) { return cfg.BotToken(secrets) }
 	default:
 		m, ok := cfg.MemberByID(opts.Member)
@@ -177,6 +181,10 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 			return nil, fmt.Errorf("supervisor: no member %q in this household", opts.Member)
 		}
 		rc.botToken = func() (config.Secret, error) { return mc.BotToken(secrets) }
+		// This pod's bot is this member's own agent. Resolution needs to know, so
+		// that a message from anyone else arriving on it is refused by the boundary
+		// rather than only by there being no unit to hand it to.
+		rc.bot = m.ID
 		// A claimed member gets their unit; one who has not claimed yet gets a
 		// claim-only process — their bot exists before they enrol, and the
 		// claim conversation happens on it, so the pod's job in that window is

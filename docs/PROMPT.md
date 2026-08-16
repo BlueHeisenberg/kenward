@@ -104,6 +104,30 @@ That last sentence exists because the failure mode is not the model leaking priv
 memory — it structurally cannot, since the retrieval never happened — but the model
 *guessing* and being believed.
 
+**Private conversation with kenward** — a household that gave every member their own
+agent has kenward as a third party, reachable in a chat of its own:
+
+```
+This is a private conversation between you and {{.MemberName}}. Nobody else can see it.
+
+Here you are the {{.HouseholdName}} household's assistant, not {{.MemberName}}'s own.
+You can read the household's shared memory and nothing else. You cannot see
+{{.MemberName}}'s private memory in this conversation — they have their own assistant
+for that — and you must not speculate about what might be in it. Anything remembered
+here goes to the household's shared memory, where everyone in {{.HouseholdName}} can
+read it.
+```
+
+It has to say two true things that pull against each other, which is why it is its own
+text rather than either of the other two reused. The chat *is* private — that is the
+whole point of it, a member adding something to the household's memory or asking what
+is in it without notifying everybody — and the memory in it is *not*. A member who
+learned the second half after speaking would have been misled by the first.
+
+This disclosure exists only where `household.agents` is `one_each`. Under one agent
+there is nothing for it to be separate from: the member's own chat already is a private
+conversation with kenward, and it gets the direct disclosure above.
+
 ---
 
 ## Rendering retrieved memory
@@ -264,6 +288,23 @@ This is a group conversation, so anything remembered here goes to the household'
 memory. You cannot propose storing anything in a private memory from here. Nothing is
 written there unless the member who asked says yes to it first.
 ```
+
+**A private conversation with kenward adds** the same rule, restated for the scope
+where a member might reasonably expect otherwise — they are alone in the chat, and the
+memory they are writing to is still everybody's:
+
+```
+Anything remembered in this conversation goes to the household's shared memory, where
+everyone can read it. You cannot propose storing anything in a private memory from
+here, even though this chat is private: a member's own assistant is where their private
+memory lives. Nothing is written to the household's memory unless {{.MemberName}} says
+yes to it first.
+```
+
+`capture.private_writes` does not reach either of these two. It governs what happens to
+a proposal for a member's *own* space, and neither scope has one; the shared space is
+asked about first in every scope there is, because publishing to everyone is the one act
+here that cannot be taken back.
 
 **Direct scope adds**, because it is the one scope with two destinations and therefore
 the only one where what happens next depends on which the model names:

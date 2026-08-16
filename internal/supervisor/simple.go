@@ -129,6 +129,11 @@ func NewSimple(cfg *config.Config, opts SimpleOptions) (*Simple, error) {
 		return nil, err
 	}
 	rc := runnerConfig{
+		// One bot for the whole household, and it is the household's. Under one
+		// agent — the only identity this mode can deliver, see
+		// Config.AgentPerMember — that bot is also every member's own assistant,
+		// which is what makes a direct message here their own conversation.
+		bot:           "",
 		transport:     opts.Transport,
 		memory:        opts.Memory,
 		router:        opts.Router,

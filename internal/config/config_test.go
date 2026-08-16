@@ -905,6 +905,54 @@ update: {channel: off}
 			want: nil, wantNone: true,
 		},
 		{
+			// One agent each needs a bot for each member, and simple mode runs one
+			// bot for the whole household. Refused rather than downgraded: the
+			// downgrade is silent and costs every member their private assistant,
+			// because their own chat would resolve to the household's.
+			name: "one agent each in simple mode",
+			yaml: `
+mode: simple
+household: {shared_space: household, tiers: [local], agents: one_each}
+telegram: {bot_token_env: T}
+members:
+  - {id: david, name: David, private_space: david-private, tiers: [local]}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			env:  map[string]string{"T": "t"},
+			want: []string{`household.agents: "one_each" needs a bot for each member`},
+		},
+		{
+			name: "an agents value that is neither choice",
+			yaml: `
+mode: isolated
+household: {shared_space: household, tiers: [local], agents: several}
+telegram: {bot_token_env: T}
+members:
+  - {id: david, name: David, private_space: david-private, tiers: [local], bot_token_env: D, passphrase_env: DP}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+`,
+			env:  map[string]string{"T": "t", "D": "d", "DP": "p"},
+			want: []string{`household.agents: "several" is not a choice`},
+		},
+		{
+			name: "one agent each in isolated mode is accepted",
+			yaml: `
+mode: isolated
+household: {shared_space: household, tiers: [local], agents: one_each, group_chat_id: -100123}
+telegram: {bot_token_env: T}
+members:
+  - {id: david, name: David, private_space: david-private, tiers: [local], bot_token_env: D, passphrase_env: DP}
+endpoints:
+  - {name: monster, base_url: http://m:1/v1, model: q, tags: [local]}
+update: {channel: off}
+`,
+			env:      map[string]string{"T": "t", "D": "d", "DP": "p"},
+			want:     nil,
+			wantNone: true,
+		},
+		{
 			name: "negative limits",
 			yaml: `
 mode: simple

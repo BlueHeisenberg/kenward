@@ -67,6 +67,24 @@ household:
   # group conversation with several members present is treated as already less private
   # than any one member's own space.
   tiers: [local, local-slow, cloud]
+  # agents says how many assistants this household has, and it is a presentation
+  # choice rather than a privacy one — who can read what is `mode`'s question, asked
+  # separately and answered above.
+  #   one:      kenward and nothing else. Everybody talks to it, in their private
+  #             chats and in the group. This is the default and what this file
+  #             configures.
+  #   one_each: every member has their own named agent, and kenward exists alongside
+  #             as the household's. It needs a Telegram bot for each member — two
+  #             agents behind one contact are one agent — so it requires isolated
+  #             mode, where each member already has their own; stating it here in
+  #             simple mode is a validation error rather than a silent downgrade.
+  #
+  # Under one_each, kenward is also reachable in a private chat, on the household bot.
+  # That conversation reads and writes shared_space and nothing else: it is where a
+  # member adds something to the household's memory, or asks what is in it, without
+  # posting in the group. It never touches their private memory — their own agent is
+  # where that lives.
+  agents: one
 
 # telegram holds the household-wide bot binding that simple mode uses. Isolated mode
 # ignores this block entirely — each member's pod carries its own token instead, named
