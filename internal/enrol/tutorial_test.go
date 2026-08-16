@@ -842,3 +842,41 @@ func TestExplanationCopyInEveryLanguage(t *testing.T) {
 		}
 	}
 }
+
+// stuckAsker blocks with the question never reaching Telegram: Posted is never called,
+// so the record D2 writes when a question posts is never written either.
+type stuckAsker struct {
+	scriptedAsker
+	entered chan struct{}
+}
+
+func (a *stuckAsker) Ask(ctx context.Context, q transport.Question) (transport.Answer, error) {
+	close(a.entered)
+	<-ctx.Done()
+	return transport.Answer{}, ctx.Err()
+}
+
+// TestTutorialKilledBeforeItsFirstQuestionPostedIsStillExplainedTo isolates the early save.
+//
+// The sibling test is satisfied by Posted, which writes the same record once the question
+// reaches Telegram — so it keeps passing with the early save removed and proves nothing
+// about it. Run's ending saves too, so an Ask that merely returns an error proves nothing
+// either. The window the early save alone covers is a node that dies while the first
+// question is still in flight: no Posted, no answer, and no ending.
+func TestTutorialKilledBeforeItsFirstQuestionPostedIsStillExplainedTo(t *testing.T) {
+	ps := newPersonas()
+	a := &stuckAsker{entered: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	tu := tutorialFor(t, a, ps, nil, func(tu *Tutorial) { tu.Household = LangSpanish })
+	tu.Timeout = time.Minute
+	go func() { _ = tu.Run(ctx) }()
+	<-a.entered
+	// The node dies here, inside Ask, before anything reached Telegram.
+
+	got := ps.get("david")
+	cancel()
+	if got.ChatID != 500 {
+		t.Fatalf("a tutorial killed before its first question posted left no chat to finish in: %+v", got)
+	}
+}
