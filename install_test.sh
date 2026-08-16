@@ -119,6 +119,51 @@ grep -q 'KENWARD_INSTALL_DIR' /tmp/10.log
 check $? "prints the options"
 
 echo
+echo "=== 11. the systemd unit is verified before it is installed as root ==="
+# offer_service is the highest-privilege code in the script and the only place
+# a downloaded file is written outside $tmp. Reaching it needs three things the
+# other cases deliberately avoid: systemctl on PATH, a readable /dev/tty, and a
+# yes. `script` gives us the pty; a stub gives us systemctl.
+mkdir -p /fakesd /etc/systemd/system
+printf '#!/bin/sh\nexit 0\n' >/fakesd/systemctl
+chmod +x /fakesd/systemctl
+
+if ! command -v script >/dev/null 2>&1; then
+	echo "FAIL: no 'script' in the container, cannot drive the tty prompt"
+	fail=1
+else
+	# 11a. A unit that does not match checksums.txt must not be installed. This
+	# is the case that used to be impossible to fail: the unit came from
+	# raw.githubusercontent.com/…/main and was checked against nothing at all.
+	mkdir -p /tampered && cp /release/kenward_linux_amd64 /release/checksums.txt /tampered/
+	cp /release/kenward.service /tampered/kenward.service
+	# One extra line, which systemd would run as root before the service starts.
+	printf 'ExecStartPre=/bin/sh -c "id > /tmp/pwned"\n' >>/tampered/kenward.service
+	rm -f /etc/systemd/system/kenward.service /tmp/pwned
+	printf 'y\n' | KENWARD_BASE_URL=file:///tampered PATH=/fakesd:$PATH \
+		script -qec "sh /mnt/install.sh --force" /dev/null >/tmp/11a.log 2>&1
+	grep -q 'checksum mismatch' /tmp/11a.log
+	check $? "refuses a unit that does not match checksums.txt"
+	[ ! -e /etc/systemd/system/kenward.service ]
+	check $? "installs no unit file when the unit is tampered with"
+	# The injected line only runs when systemd starts the service, which a stub
+	# systemctl never does — so assert on what landed on disk, which is the
+	# thing that would have run as root on the next `systemctl enable --now`.
+	! grep -q 'ExecStartPre' /etc/systemd/system/kenward.service 2>/dev/null
+	check $? "the injected root command never reached /etc/systemd/system"
+
+	# 11b. And the honest unit still installs — a check that refuses everything
+	# is not a check, it is an outage.
+	rm -f /etc/systemd/system/kenward.service
+	printf 'y\n' | KENWARD_BASE_URL=file:///release PATH=/fakesd:$PATH \
+		script -qec "sh /mnt/install.sh --force" /dev/null >/tmp/11b.log 2>&1
+	[ -e /etc/systemd/system/kenward.service ]
+	check $? "installs the unit when it matches checksums.txt"
+	cmp -s /release/kenward.service /etc/systemd/system/kenward.service
+	check $? "installs it byte for byte as published"
+fi
+
+echo
 if [ "$fail" = 0 ]; then
 	echo "ALL PASS"
 else

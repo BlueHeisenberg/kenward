@@ -96,7 +96,9 @@ matters.
 To run it as a service after a script or by-hand install, copy `deploy/kenward.service`
 into `/etc/systemd/system/`, adjust the config path, then `systemctl enable --now kenward`.
 (The installer's service offer does this for you, including pointing `ExecStart=` at
-wherever the binary actually landed.) The unit ships with hardening already applied and
+wherever the binary actually landed. It takes the unit from the release and checks it
+against `checksums.txt` before writing it, the same as the binary — a unit file names
+what runs as root, so it is not installed unverified.) The unit ships with hardening already applied and
 each line commented, so you can loosen one knowingly rather than discovering it later.
 Nothing enables or starts it for you: kenward needs a config file and a bot token first,
 and a unit that fails on install is a unit people learn to ignore.

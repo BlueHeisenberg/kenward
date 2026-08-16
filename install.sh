@@ -128,6 +128,35 @@ sha256_of() {
 	fi
 }
 
+# verify_checksum FILE ASSET_NAME
+#
+# Checks FILE against the line for ASSET_NAME in the release's checksums.txt,
+# and dies if it cannot. Every file this script writes outside $tmp goes
+# through here first — the binary and the systemd unit alike. The unit decides
+# what runs as root, so "it is only a config file" is exactly backwards: it is
+# the one file where an unverified byte becomes a root command.
+#
+# A missing entry, an absent checksums.txt and a missing hasher are all
+# refusals, never warnings: there is no version of "install it anyway" that is
+# safe here.
+verify_checksum() {
+	_file="$1"
+	_asset="$2"
+	_want="$(awk -v f="$_asset" '$2 == f || $2 == "*" f { print $1 }' "$tmp/checksums.txt")"
+	[ -n "$_want" ] || die "checksums.txt does not mention $_asset, so there is nothing
+  to check it against. Refusing to install something unverified."
+	_got="$(sha256_of "$_file")" || die "no sha256sum, shasum or openssl on this
+  machine, so the download cannot be checked. Install one of them, or verify the
+  file by hand against $BASE_URL/checksums.txt"
+	if [ "$_got" != "$_want" ]; then
+		die "checksum mismatch on $_asset.
+  expected $_want
+  got      $_got
+  Either the download was corrupted, or what was served is not what was
+  published. Nothing further was installed."
+	fi
+}
+
 if [ -z "$BASE_URL" ]; then
 	if [ "$VERSION" = latest ]; then
 		BASE_URL="https://github.com/$REPO/releases/latest/download"
@@ -144,8 +173,12 @@ if [ -n "$existing" ]; then
 	[ -n "$existing_version" ] || existing_version="a build that will not report its version"
 	say "Already installed: $existing_version"
 	say "                   at $existing"
+	# -F: a version is a literal, not a pattern. Without it "--version 1.2.3"
+	# matches "1x2x3", and "--version '.*'" matches anything at all — and the
+	# answer to a match here is "skip the install", which is the wrong way to
+	# be wrong.
 	if [ "$FORCE" != 1 ] && [ "$VERSION" != latest ] &&
-		printf '%s' "$existing_version" | grep -qw -- "$VERSION"; then
+		printf '%s' "$existing_version" | grep -qwF -- "$VERSION"; then
 		say ""
 		say "That is already $VERSION. Nothing to do — pass --force to reinstall it anyway."
 		exit 0
@@ -169,21 +202,7 @@ fetch "$BASE_URL/checksums.txt" "$tmp/checksums.txt" || die "the release has no
   checksums.txt, so the download cannot be checked. Refusing to install an
   unverified binary."
 
-want="$(awk -v f="$ASSET" '$2 == f || $2 == "*" f { print $1 }' "$tmp/checksums.txt")"
-[ -n "$want" ] || die "checksums.txt does not mention $ASSET, so there is nothing
-  to check the download against. Refusing to install an unverified binary."
-
-got="$(sha256_of "$tmp/$ASSET")" || die "no sha256sum, shasum or openssl on this
-  machine, so the download cannot be checked. Install one of them, or verify the
-  file by hand against $BASE_URL/checksums.txt"
-
-if [ "$got" != "$want" ]; then
-	die "checksum mismatch on $ASSET.
-  expected $want
-  got      $got
-  Nothing was installed. Either the download was corrupted, or what was served
-  is not what was published."
-fi
+verify_checksum "$tmp/$ASSET" "$ASSET"
 say "Checksum OK."
 
 chmod +x "$tmp/$ASSET"
@@ -267,13 +286,17 @@ offer_service() {
 	*) say "Skipped."; return 0 ;;
 	esac
 
-	ref="$VERSION"
-	if [ "$ref" = latest ]; then ref=main; fi
+	# From the release, next to the binary, and checked against the same
+	# checksums.txt. It used to come from raw.githubusercontent.com/…/main —
+	# whatever was on the branch at that instant, verified by nothing, written
+	# into /etc/systemd/system as root. A unit file names what runs as root, so
+	# it gets the binary's treatment, not a config file's.
 	unit="$tmp/kenward.service"
-	fetch "$RAW_BASE/$ref/deploy/kenward.service" "$unit" || {
+	fetch "$BASE_URL/kenward.service" "$unit" || {
 		warn "could not download the unit file; copy deploy/kenward.service by hand."
 		return 0
 	}
+	verify_checksum "$unit" kenward.service
 	# The unit ships with the default install path baked in. If the binary went
 	# somewhere else, a unit pointing at /usr/local/bin fails on the first start
 	# with a message about a missing executable.

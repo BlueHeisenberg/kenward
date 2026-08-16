@@ -82,7 +82,11 @@ That is the only command that starts a release. `.github/workflows/release.yml` 
 - builds six binaries (linux, darwin, windows × amd64, arm64) with `CGO_ENABLED=0`,
   `GOWORK=off` and `-trimpath`, stamping `internal/version` from the tag;
 - publishes them, plus `.tar.gz`/`.zip` archives, `.deb` and `.rpm` packages,
-  `checksums.txt` and `install.sh`, to a **draft** GitHub release;
+  `kenward.service`, `checksums.txt` and `install.sh`, to a **draft** GitHub release.
+  `kenward.service` has a line in `checksums.txt` and is published for one reason:
+  `install.sh` writes it into `/etc/systemd/system` as root, so it must be verifiable
+  the same way the binary is. It used to be fetched from the tip of `main` and checked
+  against nothing;
 - pushes `ghcr.io/blueheisenberg/kenward:v0.2.0` (and `:latest`, unless the tag carries a
   hyphen and is therefore a prerelease) for linux/amd64 and linux/arm64.
 
