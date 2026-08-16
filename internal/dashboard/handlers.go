@@ -114,6 +114,10 @@ type wizardData struct {
 	// Statement is the privacy claim for the mode currently chosen, shown on the
 	// trust step and again on review. It comes from internal/privacy verbatim.
 	Statement string
+	// Back is the slug of the step the Back control returns to, or empty on the first
+	// one. Without it the only way back through this wizard was editing the URL, which
+	// made every refusal that says "go back and choose the other thing" unfollowable.
+	Back string
 	// Problems are the validation faults the review step found.
 	Problems []string
 	// MinPassword is what the account step asks for, stated in the label rather than
@@ -154,6 +158,7 @@ func (s *Server) renderWizard(w http.ResponseWriter, status int, sess *session, 
 		Steps:          wizardSteps,
 		Current:        idx,
 		Slug:           wizardSteps[idx].Slug,
+		Back:           backStep(idx),
 		State:          st,
 		ConfigPath:     s.deps.ConfigPath,
 		ExistingConfig: existing,
@@ -200,19 +205,34 @@ func (s *Server) handleWizardSubmit(w http.ResponseWriter, r *http.Request, sess
 
 	case "telegram":
 		token := strings.TrimSpace(r.PostFormValue("bot_token"))
+		// Assigned before anything is judged, so a refused token is still in the box
+		// when the page comes back.
+		st.BotToken = token
 		st.BotTokenEnv = strings.TrimSpace(r.PostFormValue("bot_token_env"))
 		if st.BotTokenEnv == "" {
 			st.BotTokenEnv = setup.DefaultBotTokenEnv
 		}
 		st.WriteEnvile = r.PostFormValue("write_env_file") != ""
 		if token != "" && !setup.LooksLikeBotToken(token) && r.PostFormValue("anyway") == "" {
-			st.BotToken = token
 			s.wizardError(w, sess, idx,
 				"That does not look like a bot token: BotFather hands out a number, a colon, "+
 					"then a long run of letters and digits. Check it, or tick the box below to use it anyway.")
 			return
 		}
-		st.BotToken = token
+		// Bot privacy mode, asked of Telegram at the one moment it can be fixed
+		// cheaply: the token is in hand and the bot is not in any group yet. With
+		// privacy mode on — which is Telegram's default for every new bot — the bot
+		// receives nothing at all in a group chat, and there is no symptom: nothing
+		// arrives, so nothing is logged and the household is simply ignored.
+		//
+		// A probe that cannot reach Telegram does not stop anybody: the token may be
+		// perfectly good and the connection down, and `kenward doctor` asks again.
+		if token != "" && r.PostFormValue("no_group") == "" {
+			if info, err := s.deps.telegram()(r.Context(), token); err == nil && !info.ReadsGroupMessages {
+				s.wizardError(w, sess, idx, botPrivacyRefusal(info.Username))
+				return
+			}
+		}
 
 	case "endpoints":
 		st.Endpoints = parseEndpointRows(r)
@@ -246,24 +266,17 @@ func (s *Server) handleWizardSubmit(w http.ResponseWriter, r *http.Request, sess
 		st.Mode = mode
 
 	case "advanced":
-		agents, err := checkAgents(r.PostFormValue("agents"), st.Mode)
-		if err != nil {
-			s.wizardError(w, sess, idx, err.Error())
-			return
-		}
-		st.Agents = agents
+		// Everything the operator typed is recorded before anything is judged, so a
+		// refusal re-renders the form they submitted rather than the form they
+		// started from. The telegram step does the same with a rejected token, and
+		// for the same reason: an answer thrown away by the page that refused it is
+		// an answer given twice, or given up on.
+		st.Agents = config.Agents(strings.TrimSpace(r.PostFormValue("agents")))
+		st.GroupChatID = strings.TrimSpace(r.PostFormValue("group_chat_id"))
 		st.Persona = config.PersonaConfig{
 			Language:  strings.TrimSpace(r.PostFormValue("persona_language")),
 			Tone:      strings.TrimSpace(r.PostFormValue("persona_tone")),
 			Character: strings.TrimSpace(r.PostFormValue("persona_character")),
-		}
-		// Said here rather than left to config.Validate, which would answer somebody
-		// looking at a text box with a field path. The limit is real: persona text
-		// rides in every prompt and is the one part of it the context budget never
-		// trims, so a long one is paid for out of retrieved memory.
-		if err := checkPersonaLengths(st.Persona); err != nil {
-			s.wizardError(w, sess, idx, err.Error())
-			return
 		}
 		st.SearchLimit = atoi(r.PostFormValue("search_limit"), config.DefaultSearchLimit)
 		st.MaxProposals = atoi(r.PostFormValue("max_proposals"), config.DefaultMaxProposalsPerTurn)
@@ -272,12 +285,48 @@ func (s *Server) handleWizardSubmit(w http.ResponseWriter, r *http.Request, sess
 		st.UpdateChannel = strings.TrimSpace(r.PostFormValue("update_channel"))
 		st.CloudEveryone = r.PostFormValue("cloud_everyone") != ""
 
+		agents, err := checkAgents(string(st.Agents), st.Mode, wizardModeRemedy)
+		if err != nil {
+			s.wizardError(w, sess, idx, err.Error())
+			return
+		}
+		st.Agents = agents
+		// Said here rather than left to config.Validate, which would answer somebody
+		// looking at a text box with a field path. The limit is real: persona text
+		// rides in every prompt and is the one part of it the context budget never
+		// trims, so a long one is paid for out of retrieved memory.
+		if err := checkPersonaLengths(st.Persona); err != nil {
+			s.wizardError(w, sess, idx, err.Error())
+			return
+		}
+		if _, err := checkGroupChat(st.Agents, st.GroupChatID); err != nil {
+			s.wizardError(w, sess, idx, err.Error())
+			return
+		}
+
 	case "review":
 		s.finishWizard(w, r, sess)
 		return
 	}
 
 	http.Redirect(w, r, "/setup/"+wizardSteps[idx+1].Slug, http.StatusSeeOther)
+}
+
+// backStep is where the Back control on step idx goes.
+//
+// It steps over the account step rather than offering it, because that step is not
+// re-enterable: the account exists by the time anything after it is on screen, there is
+// no reset flow, and re-submitting the form is a 409. Everything else in the wizard is
+// a form that can be filled in again.
+func backStep(idx int) string {
+	prev := idx - 1
+	if prev >= 0 && wizardSteps[prev].Slug == "admin" {
+		prev--
+	}
+	if prev < 0 {
+		return ""
+	}
+	return wizardSteps[prev].Slug
 }
 
 func (s *Server) wizardError(w http.ResponseWriter, sess *session, idx int, msg string) {

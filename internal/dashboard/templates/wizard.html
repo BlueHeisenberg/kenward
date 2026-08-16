@@ -80,6 +80,13 @@
   <strong>@BotFather</strong>, send <code>/newbot</code>, and paste the token it gives
   you.</p>
 
+  <p>Then, in the same chat, send <code>/setprivacy</code>, choose the bot you just made
+  and choose <strong>Disable</strong>. Do it before the bot is in any group: Telegram
+  turns privacy mode on for every new bot, and with it on the bot cannot see a single
+  message sent in a group chat — no error, no log line, it simply ignores everyone. The
+  change applies only to groups the bot joins afterwards, so doing it now saves removing
+  it from the group and adding it again later. This page checks.</p>
+
   <label for="bot_token">Bot token
     <span class="hint">It is never written into kenward.yaml. It goes into a
     <code>.env</code> file beside it, readable only by you.</span>
@@ -100,6 +107,13 @@
     <input type="checkbox" id="anyway" name="anyway" value="1">
     <label for="anyway">Use the token even if it does not look like one
       <span class="hint">Telegram's format is theirs to change; this is a check, not a rule.</span>
+    </label>
+  </div>
+  <div class="choice">
+    <input type="checkbox" id="no_group" name="no_group" value="1">
+    <label for="no_group">This household will not use a group chat
+      <span class="hint">Skips the privacy-mode check. Private chats work either way; only
+      the group needs it.</span>
     </label>
   </div>
 
@@ -172,10 +186,10 @@
   words. Change the choice above and submit to see the other one.</p>
 
 {{else if eq $d.Slug "advanced"}}
-  <p>Everything below already has an answer. Change one only if you know why.</p>
+  <p>One question worth reading, and then a set of settings that already have answers.</p>
 
-  <details open>
-    <summary>Who kenward is</summary>
+  <section>
+    <h2>Who kenward is</h2>
     <p>This is not the question you answered a moment ago. That one was about security —
     whether everyone here trusts whoever runs this machine. This one is about how many
     assistants the household has. It costs nothing, it needs no containers, and either
@@ -198,7 +212,20 @@
         memory unless this household is also in isolated mode.</span>
       </label>
     </div>
-  </details>
+
+    <label for="group_chat_id">The household group's Telegram chat id
+      <span class="hint">Needed for <strong>one each</strong>, and only for it: kenward
+      itself then lives in the group chat and nowhere else, because every private chat
+      belongs to somebody's own assistant. Without this there is no kenward anywhere.
+      Add the bot to the group, send a message there, open
+      <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> and copy the
+      negative number after <code>"chat":{"id":</code>.</span>
+    </label>
+    <input type="text" id="group_chat_id" name="group_chat_id" value="{{$st.GroupChatID}}"
+           placeholder="-1001234567890" class="mono">
+  </section>
+
+  <p>Everything below already has an answer. Change one only if you know why.</p>
 
   <details open>
     <summary>How kenward writes</summary>
@@ -289,6 +316,23 @@
     <tr><th scope="row">Household</th><td>{{$st.HouseholdName}}</td></tr>
     <tr><th scope="row">People</th><td>{{join $st.MemberNames ", "}}</td></tr>
     <tr><th scope="row">Mode</th><td>{{$st.Mode}}</td></tr>
+    {{/* The identity answer decides how many Telegram bots this household has to
+         create, so it is restated before it is committed rather than only asked. */}}
+    <tr><th scope="row">Assistants</th><td>
+      {{if eq $st.Agents "per_member"}}per_member — one each, and kenward for the group
+        {{if $st.GroupChatID}}(chat {{$st.GroupChatID}}){{end}}<br>
+        <span class="hint">Every person makes a bot of their own when they enrol.</span>
+      {{else}}shared — one assistant, kenward, for everybody
+        <span class="hint">One bot, the one above.</span>{{end}}
+    </td></tr>
+    <tr><th scope="row">How kenward writes</th><td>
+      {{if $st.Persona.IsZero}}as it always has — English, brief, no character
+      {{else}}
+        {{if $st.Persona.Language}}language: {{$st.Persona.Language}}<br>{{end}}
+        {{if $st.Persona.Tone}}tone: {{$st.Persona.Tone}}<br>{{end}}
+        {{if $st.Persona.Character}}character: {{$st.Persona.Character}}{{end}}
+      {{end}}
+    </td></tr>
     <tr><th scope="row">Endpoints</th><td>
       {{range $st.Endpoints}}{{.Name}} — {{.BaseURL}} ({{.Model}})<br>{{end}}
     </td></tr>
@@ -301,6 +345,10 @@
 {{end}}
 
 <div class="actions">
+  {{/* A link rather than a button: going back is a GET of the earlier step, and every
+       answer already lives on the session, so nothing has to be resubmitted to reach
+       it. The account step is skipped over — it cannot be re-entered. */}}
+  {{if $d.Back}}<a class="secondary" href="/setup/{{$d.Back}}">Back</a>{{end}}
   <button type="submit">{{if eq $d.Slug "review"}}Create the spaces and write it{{else}}Continue{{end}}</button>
 </div>
 </form>

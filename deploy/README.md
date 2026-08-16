@@ -56,8 +56,9 @@ with a secret mounted read-only at 0600, e.g. a Docker/Podman secret or a
 bind-mounted file, rather than `environment:`.
 
 For the container paths you also need a `lore` binary on the host to
-bind-mount in — see the Dockerfile's note on why it isn't baked into the
-image — and its store has to be **initialised**, once per `LORE_HOME`.
+bind-mount in, built with `CGO_ENABLED=0` for the image's platform — see the
+Dockerfile's note on why it isn't baked into the image and why the static build
+is not optional — and its store has to be **initialised**, once per `LORE_HOME`.
 Supplying only the binary is not enough: a home with no account in it cannot be
 opened, and kenward refuses to serve without memory, checking both halves before
 it starts — the binary on `$PATH`, which `lore serve` needs, and then the store

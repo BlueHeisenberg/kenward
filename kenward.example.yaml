@@ -112,8 +112,22 @@ household:
   # group_chat_id is the Telegram chat id kenward maps to shared_space. It is the
   # negative id Telegram assigns a supergroup, found by adding the bot to the group and
   # checking kenward doctor or the bot API. Zero means no group is configured yet, which
-  # is a valid first-run state: no chat resolves to the group scope until this is set,
-  # so group messages are simply not served rather than misrouted somewhere else.
+  # is a valid first-run state UNDER agents: shared: no chat resolves to the group scope
+  # until this is set, so group messages are simply not served rather than misrouted
+  # somewhere else, and kenward still answers every private chat.
+  #
+  # UNDER agents: per_member IT IS REQUIRED, and both wizards refuse to write a
+  # per_member household without one. There, every private chat belongs to that member's
+  # own agent and kenward speaks only in the group — the supervisor creates the group's
+  # pod only when this is set — so a per_member household with no group chat id has no
+  # kenward in it at all, in the group or anywhere.
+  #
+  # The bot also has to be able to HEAR the group. Telegram turns bot privacy mode on
+  # for every new bot, and with it on the bot receives nothing sent in a group: not
+  # plain messages, not a reply to it, not an @mention, and nothing is logged because
+  # nothing arrives. Send /setprivacy to @BotFather, choose the bot, choose Disable —
+  # then remove it from the group and add it again, because Telegram applies the change
+  # only to groups the bot joins afterwards. kenward doctor reports this.
   group_chat_id: -1001234567890
   # tiers is the ordered endpoint tier chain the group conversation may use, tried in
   # the order written until one answers. It must be stated explicitly — see the long

@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -36,7 +37,11 @@ var wizardSteps = []wizardStep{
 	{Slug: "telegram", Title: "The Telegram bot", Short: "Telegram"},
 	{Slug: "endpoints", Title: "The machines that answer", Short: "Endpoints"},
 	{Slug: "trust", Title: "Who can read what", Short: "Trust"},
-	{Slug: "advanced", Title: "Everything else", Short: "Details"},
+	// Named for the question that leads it rather than for the settings under it. The
+	// identity question decides how many Telegram bots this household has to make;
+	// filing it under "Everything else", beneath "everything below already has an
+	// answer", told exactly the reader it is aimed at to skip it.
+	{Slug: "advanced", Title: "Who kenward is, and everything else", Short: "Identity"},
 	{Slug: "review", Title: "Check, then write it", Short: "Write"},
 }
 
@@ -100,6 +105,11 @@ type wizardState struct {
 	// presentation question that costs nothing, and putting them on one screen is
 	// how a household comes to believe a bot of their own sealed their memory.
 	Agents config.Agents
+	// GroupChatID is the household group's Telegram id, held as the operator typed it
+	// so that a rejected answer survives the re-render. Required under one assistant
+	// each: kenward speaks only in the group there, so a household without one has no
+	// kenward in it.
+	GroupChatID string
 	// Persona is the household's, never a member's. A member's own is written by the
 	// member in Telegram, and there is no form here that could ask on their behalf.
 	Persona config.PersonaConfig
@@ -193,9 +203,11 @@ func parseEndpointRows(r *http.Request) []wizardEndpoint {
 //
 // spaces maps the household and each member id onto the lore space created for them.
 func (st *wizardState) answers(spaces map[string]string) *setup.Answers {
+	groupChat, _ := parseGroupChatID(st.GroupChatID)
 	a := &setup.Answers{
 		Mode:          st.Mode,
 		Agents:        st.Agents,
+		GroupChatID:   groupChat,
 		Persona:       st.Persona,
 		HouseholdName: st.HouseholdName,
 		SharedSpace:   spaces[householdSpaceKey],
@@ -390,6 +402,20 @@ func checkPersonaLengths(p config.PersonaConfig) error {
 	return nil
 }
 
+// The two remedies for one agent each in simple mode. They differ because the two pages
+// offer different controls, and advice that cannot be followed from where it is given is
+// worse than none: the wizard has a Back control that reaches the trust step, and the
+// settings page has no mode field at all and is not going to grow one — changing a
+// household's mode moves every member's key and there is no migration.
+const (
+	wizardModeRemedy = "go Back to \"Who can read what\" and seal the household in isolated mode, " +
+		"where each member already has a bot of their own"
+	settingsModeRemedy = "change the mode — which is not editable here, and not by accident: it decides " +
+		"where every member's key lives, so it is chosen when the household is set up. Changing " +
+		"it afterwards means editing `mode:` in kenward.yaml by hand, restarting, and re-enrolling " +
+		"each member with a bot of their own"
+)
+
 // checkAgents maps the identity question's answer onto a value.
 //
 // It refuses per_member in simple mode rather than downgrading it, and it says why in
@@ -401,8 +427,13 @@ func checkPersonaLengths(p config.PersonaConfig) error {
 // The reason is a counting one and is deliberately not a privacy one: an agent is a
 // Telegram contact, simple mode runs one bot for the whole household, and two agents
 // behind one contact are one agent. The trust question is asked on its own step and
-// this is not it.
-func checkAgents(raw string, mode config.Mode) (config.Agents, error) {
+// this is not it. That sentence leads, in a sentence of its own — it used to be buried
+// in the middle of one sixty-word sentence carrying the arithmetic, both remedies and
+// the definition of an agent at once.
+//
+// remedy is the caller's, because only the caller knows what the reader can actually do
+// from the page they are looking at.
+func checkAgents(raw string, mode config.Mode, remedy string) (config.Agents, error) {
 	switch agents := config.Agents(strings.TrimSpace(raw)); agents {
 	case "":
 		return config.DefaultAgents, nil
@@ -410,12 +441,85 @@ func checkAgents(raw string, mode config.Mode) (config.Agents, error) {
 		return agents, nil
 	case config.AgentsPerMember:
 		if mode == config.ModeSimple {
-			return "", fmt.Errorf("One assistant each needs a Telegram bot for each person, and simple mode runs one bot for the whole household — two agents behind one contact are one agent. Choose one assistant for everybody, or seal the household in isolated mode, where each member already has a bot of their own")
+			return "", fmt.Errorf("In simple mode, two agents behind one contact are one agent. "+
+				"One assistant each needs a Telegram bot for each person, and simple mode runs one bot "+
+				"for the whole household. Choose one assistant for everybody, or %s.", remedy)
 		}
 		return agents, nil
 	default:
 		return "", fmt.Errorf("%q is not an answer to how many assistants this household has; it is shared or per_member", agents)
 	}
+}
+
+// botPrivacyRefusal is what a bot with Telegram's privacy mode still on gets.
+//
+// The consequence goes first, because it is the part that is invisible. There is no
+// error to search for and no log line to find: with privacy mode on the bot receives
+// nothing sent in a group — not plain messages, not a reply to it, not an @mention — so
+// the household adds it to their family group and it ignores everyone, forever, in
+// silence.
+//
+// The re-add sentence is not a detail. Telegram applies the change only to groups the
+// bot joins afterwards, so an operator who flips the setting, goes back to the group they
+// already added the bot to and sees nothing happen will conclude the fix did not work.
+func botPrivacyRefusal(username string) string {
+	name := "this bot"
+	if username != "" {
+		name = "@" + username
+	}
+	return fmt.Sprintf("%s cannot see messages in a group chat: Telegram's bot privacy mode is on, "+
+		"which is the default for every new bot. With it on the bot receives nothing sent in a group "+
+		"— not plain messages, not a reply to it, not an @mention — so the group conversation never "+
+		"reaches kenward and nothing anywhere reports an error. Fix it in Telegram: send /setprivacy "+
+		"to @BotFather, choose %s, choose Disable, then submit this page again. If the bot is already "+
+		"in the group, remove it and add it again afterwards — Telegram applies the change only to "+
+		"groups the bot joins after it, so the setting alone will look as though it did nothing.",
+		name, name)
+}
+
+// checkGroupChat reads the household group's Telegram id, and refuses to leave it out
+// under one assistant each.
+//
+// Under `agents: per_member` every private chat belongs to somebody's own assistant and
+// kenward speaks only in the group, so a household with no group chat id has no kenward
+// in it at all — the supervisor creates the group's pod only when household.group_chat_id
+// is set. `kenward doctor` warns about it after the fact, which is where this used to be
+// caught and is not good enough: nothing in either wizard told anybody to run doctor.
+//
+// Any non-zero whole number is accepted. The shape is a question rather than a rule, for
+// the same reason the bot token's is: Telegram's numbering is theirs to change.
+func checkGroupChat(agents config.Agents, raw string) (int64, error) {
+	id, ok := parseGroupChatID(raw)
+	switch {
+	case ok:
+		return id, nil
+	case agents != config.AgentsPerMember:
+		// Optional with one shared assistant, which answers every private chat
+		// whether or not a group is mapped. Blank is a household that has not made
+		// its group yet, and the settings page maps one later.
+		if strings.TrimSpace(raw) == "" {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("%q is not a Telegram chat id: it is a whole number, and a group's is negative — like -1001234567890", raw)
+	case strings.TrimSpace(raw) == "":
+		return 0, errors.New("One assistant each needs the household's own group. kenward itself lives in " +
+			"that group chat and nowhere else — every private chat belongs to somebody's own assistant — " +
+			"so without its id this household has no kenward in it at all, in the group or anywhere. " +
+			"Add the bot to the group, send a message there, and read the id off " +
+			"https://api.telegram.org/bot<TOKEN>/getUpdates: it is the negative number after \"chat\":{\"id\":")
+	default:
+		return 0, fmt.Errorf("%q is not a Telegram chat id: it is a whole number, and a group's is negative — like -1001234567890", raw)
+	}
+}
+
+// parseGroupChatID reads a chat id. Zero is not one: it is the value that means no group
+// is configured, which is exactly what checkGroupChat refuses to write under one each.
+func parseGroupChatID(raw string) (int64, bool) {
+	id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil || id == 0 {
+		return 0, false
+	}
+	return id, true
 }
 
 // splitList turns a comma-separated field into a list, dropping blanks and repeats.

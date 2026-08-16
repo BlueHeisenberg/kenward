@@ -2,12 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/BlueHeisenberg/lore"
@@ -234,68 +229,27 @@ type telegramResult struct {
 	// Username is the bot the token belongs to, without the leading @. It is the
 	// one thing that tells an operator they are pointed at the bot they meant.
 	Username string
-	Err      error
+	// ReadsGroupMessages is getMe's can_read_all_group_messages: false means bot
+	// privacy mode is on, and a bot with it on receives nothing at all in a group
+	// chat — not plain messages, not even an @mention. It is on by default for every
+	// new bot, and its failure has no symptom: nothing arrives, so nothing is logged
+	// and nothing anywhere says why the family group is being ignored.
+	ReadsGroupMessages bool
+	Err                error
 }
 
-// telegramAPIBase is the Bot API root. It is a variable so a test can point the
-// production probe at a local server; nothing else changes it.
-var telegramAPIBase = "https://api.telegram.org"
-
-// probeTelegram authorises the bot token and reports which bot it is.
+// probeTelegram authorises the bot token and reports what Telegram says about it.
 //
-// It calls getMe directly rather than through internal/transport because the
-// transport does not expose the bot's identity — it verifies the token at
-// construction and discards the answer — and `✓ Telegram authorises as @name` is the
-// line that catches a household pointed at last month's test bot. The token is put in
-// the URL path, which is where the Bot API wants it, and is scrubbed out of every
-// error before it can reach a terminal or a log.
+// The call itself is internal/setup's, and deliberately: the wizard asks the same
+// question at the moment the token is typed, and two getMe implementations would
+// eventually give a household two answers about whether its bot can hear the group.
+// This is the adapter onto the shape the doctor report already renders.
 func probeTelegram(ctx context.Context, token string) telegramResult {
-	if token == "" {
-		return telegramResult{Err: errors.New("the bot token variable is empty")}
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	endpoint := telegramAPIBase + "/bot" + url.PathEscape(token) + "/getMe"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	info, err := setup.DefaultTelegramProbe(ctx, token)
 	if err != nil {
-		return telegramResult{Err: scrubToken(err, token)}
+		return telegramResult{Err: err}
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return telegramResult{Err: scrubToken(err, token)}
-	}
-	defer resp.Body.Close()
-
-	var body struct {
-		OK          bool   `json:"ok"`
-		Description string `json:"description"`
-		Result      struct {
-			Username string `json:"username"`
-		} `json:"result"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return telegramResult{Err: fmt.Errorf("telegram answered %s with something that is not a getMe response", resp.Status)}
-	}
-	if !body.OK {
-		if body.Description != "" {
-			return telegramResult{Err: fmt.Errorf("telegram refused the token: %s", body.Description)}
-		}
-		return telegramResult{Err: fmt.Errorf("telegram refused the token (%s)", resp.Status)}
-	}
-	return telegramResult{Username: body.Result.Username}
-}
-
-// scrubToken removes a bot token from an error before it is shown to anyone. net/url
-// and net/http both quote the full URL in their errors, and that URL carries the
-// token.
-func scrubToken(err error, token string) error {
-	if err == nil || token == "" {
-		return err
-	}
-	msg := strings.ReplaceAll(err.Error(), token, "<bot token>")
-	msg = strings.ReplaceAll(msg, url.PathEscape(token), "<bot token>")
-	return errors.New(msg)
+	return telegramResult{Username: info.Username, ReadsGroupMessages: info.ReadsGroupMessages}
 }
 
 // endpointResult is what one endpoint probe found.

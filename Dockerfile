@@ -25,8 +25,19 @@
 #   2. Build a derived image: `FROM ghcr.io/blueheisenberg/kenward:<tag>` and
 #      `COPY` a `lore` binary to /usr/local/bin/lore.
 # Either way the binary must match this image's platform (linux/amd64 or
-# linux/arm64) — a host-built lore binary will not run unmodified inside the
-# container.
+# linux/arm64) AND be statically linked:
+#
+#     CGO_ENABLED=0 GOOS=linux GOARCH=<amd64|arm64> go build -o lore ./cmd/lore
+#
+# CGO_ENABLED=0 is not optional and is not belt-and-braces. The final stage below
+# is gcr.io/distroless/static-debian12, which has no dynamic loader at all, so a
+# stock `go build -o lore ./cmd/lore` produces a dynamically linked binary that
+# matches the platform, is executable, and still dies as:
+#
+#     exec /usr/local/bin/lore: no such file or directory
+#
+# naming a file that is plainly there. Measured, both ways: default build ->
+# dynamically linked -> that error; CGO_ENABLED=0 -> static -> works.
 #
 # Remedy 1 is not available to a pod started by `kenward run` in isolated mode:
 # keel's sandbox.Spec has no host bind-mount, so the host supervisor has nothing
@@ -127,6 +138,24 @@ VOLUME ["/var/lib/kenward"]
 # Absolute path, not a bare "kenward": distroless's PATH is not guaranteed to
 # include /usr/local/bin, and exec-form HEALTHCHECK/ENTRYPOINT do no shell
 # lookup to fall back on.
+#
+# PODMAN: this instruction is Docker-format only, and podman's default output
+# format is OCI, which has no place to put it. A `podman build` of this file
+# prints, once per stage:
+#
+#     HEALTHCHECK is not supported for OCI image format and will be ignored
+#
+# and produces an image with no healthcheck at all. Isolated mode supports both
+# runtimes, so say what to do rather than let half the supported surface run
+# unchecked:
+#
+#   * building with podman: pass `--format docker` and the healthcheck is kept.
+#   * running an OCI image anyway: `podman run --health-cmd=...` supplies one
+#     per container, and deploy/compose.*.yml declare their own `healthcheck:`
+#     so a compose deployment is covered on either runtime.
+#   * pods started by `kenward run` in isolated mode use none of this: the host
+#     supervisor health-checks its own pods (internal/supervisor/health.go), and
+#     that path is runtime-independent.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD ["/usr/local/bin/kenward", "doctor", "--config", "/etc/kenward/kenward.yaml", "--data-dir", "/var/lib/kenward"]
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/setup"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 	"github.com/BlueHeisenberg/kenward/internal/version"
 )
@@ -150,7 +151,9 @@ func TestNoCommandPrintsASecret(t *testing.T) {
 // escapes: net/http quotes the whole URL, and the Bot API puts the token in the path.
 func TestScrubTokenRemovesItFromAnError(t *testing.T) {
 	t.Parallel()
-	err := scrubToken(
+	// The scrubbing moved to internal/setup with the getMe call it protects; this
+	// still guards it from here, because this is the command that prints the error.
+	err := setup.ScrubToken(
 		errTest("Get \"https://api.telegram.org/bot"+fakeBotToken+"/getMe\": dial tcp: no route to host"),
 		fakeBotToken)
 	if strings.Contains(err.Error(), fakeBotToken) {

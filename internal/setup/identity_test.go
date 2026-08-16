@@ -15,22 +15,32 @@ func identityAnswers(identity, language, tone, character string) []string {
 	return identityAnswersIn(simpleAnswers(), identity, language, tone, character)
 }
 
+// testGroupChatID is the household group's chat id, in the shape Telegram hands out
+// for a supergroup. One agent each cannot be written without one — kenward lives in
+// the group chat and nowhere else under that answer — so every script that chooses it
+// carries this.
+const testGroupChatID = "-1001234567890"
+
 // isolatedIdentityAnswers is the same for a household that answered the trust
 // question the other way. One agent each needs a bot for each member, and only
 // isolated mode has them, so it is the only script in which choosing it gets past
 // the question.
 func isolatedIdentityAnswers(language, tone, character string) []string {
 	answers := append([]string{"2"}, simpleAnswers()[1:]...)
-	return identityAnswersIn(answers, "2", language, tone, character)
+	return identityAnswersIn(answers, "2", testGroupChatID, language, tone, character)
 }
 
-func identityAnswersIn(answers []string, identity, language, tone, character string) []string {
+// identityAnswersIn replaces the identity step's four defaults with identity followed
+// by rest. rest is variadic because one each asks one more question than one shared
+// does: the household group's chat id.
+func identityAnswersIn(answers []string, identity string, rest ...string) []string {
 	for i, a := range answers {
 		// The identity step sits between the members' spaces and the first endpoint,
 		// and simpleAnswers marks it with four empty answers in a row.
 		if a == "" && i+3 < len(answers) && answers[i+1] == "" && answers[i+2] == "" && answers[i+3] == "" {
 			out := append([]string(nil), answers[:i]...)
-			out = append(out, identity, language, tone, character)
+			out = append(out, identity)
+			out = append(out, rest...)
 			return append(out, answers[i+4:]...)
 		}
 	}

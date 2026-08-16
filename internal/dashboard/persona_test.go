@@ -292,12 +292,21 @@ func TestWizardWritesOneEach(t *testing.T) {
 	h := newHarness(t)
 	runPersonaWizard(t, h, "isolated", url.Values{
 		"agents":         {"per_member"},
+		"group_chat_id":  {"-1001234567890"},
 		"update_channel": {"stable"},
 		"idle_timeout":   {"0s"},
 	})
 	cfg := readWrittenConfig(t, h.configPath)
 	if cfg.Household.Agents != config.AgentsPerMember {
 		t.Errorf("household.agents = %q, want per_member", cfg.Household.Agents)
+	}
+	// And it is a household that can actually be reached. Under one assistant each,
+	// kenward speaks only in the group chat and the supervisor creates the group's pod
+	// only when household.group_chat_id is set, so a per_member configuration without
+	// one has no kenward in it at all.
+	if cfg.Household.GroupChatID != -1001234567890 {
+		t.Errorf("household.group_chat_id = %d: this household has one assistant each and no kenward",
+			cfg.Household.GroupChatID)
 	}
 	for _, m := range cfg.Members {
 		if !m.Persona.IsZero() {

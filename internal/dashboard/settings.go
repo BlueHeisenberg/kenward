@@ -131,15 +131,6 @@ func applySettingsForm(cfg *config.Config, r *http.Request) error {
 	cfg.Household.Name = strings.TrimSpace(r.PostFormValue("household_name"))
 	cfg.Household.SharedSpace = strings.TrimSpace(r.PostFormValue("shared_space"))
 	cfg.Household.Tiers = splitList(r.PostFormValue("household_tiers"))
-	if v := strings.TrimSpace(r.PostFormValue("group_chat_id")); v != "" {
-		id, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return fmt.Errorf("the group chat id has to be a number, and Telegram's is negative for a group: %q", v)
-		}
-		cfg.Household.GroupChatID = id
-	} else {
-		cfg.Household.GroupChatID = 0
-	}
 	cfg.Telegram.BotTokenEnv = strings.TrimSpace(r.PostFormValue("bot_token_env"))
 
 	// The identity question and kenward's persona, editable here for the whole life
@@ -147,11 +138,22 @@ func applySettingsForm(cfg *config.Config, r *http.Request) error {
 	// is an answer people get wrong. A member's own persona is not on this page and
 	// must not be — it is theirs, written in Telegram, and an admin form that could
 	// overwrite it would make "your assistant is yours" false.
-	agents, err := checkAgents(r.PostFormValue("agents"), cfg.Mode)
+	agents, err := checkAgents(r.PostFormValue("agents"), cfg.Mode, settingsModeRemedy)
 	if err != nil {
 		return err
 	}
 	cfg.Household.Agents = agents
+	// Read after the identity answer, because whether a blank one is allowed depends on
+	// it. The same refusal both wizards make, from the same rule, on the one page where
+	// the remedy is a field the reader is already looking at: under one assistant each
+	// kenward speaks only in the group chat, so a household with no group chat id has
+	// no kenward in it. Blank is still how a group is unmapped under one shared
+	// assistant, which answers every private chat either way.
+	groupChat, err := checkGroupChat(cfg.Household.Agents, r.PostFormValue("group_chat_id"))
+	if err != nil {
+		return err
+	}
+	cfg.Household.GroupChatID = groupChat
 	cfg.Household.Persona = config.PersonaConfig{
 		Language:  strings.TrimSpace(r.PostFormValue("persona_language")),
 		Tone:      strings.TrimSpace(r.PostFormValue("persona_tone")),

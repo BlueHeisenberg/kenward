@@ -165,6 +165,12 @@ func dialAddress(baseURL string) (string, error) {
 func (r ProbeResult) describe() string {
 	switch r.State {
 	case Answered:
+		// A machine on the household's own network answers in well under a
+		// millisecond, and "answered in 0ms" reads as though nothing was tried —
+		// which is the opposite of what just happened.
+		if r.Elapsed < time.Millisecond {
+			return "  answered in under a millisecond."
+		}
 		return fmt.Sprintf("  answered in %dms.", r.Elapsed.Milliseconds())
 	case Unresolved:
 		return fmt.Sprintf("  the name in %s could not be looked up. That is usually a typo, so it\n"+

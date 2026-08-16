@@ -15,6 +15,21 @@ two prompts, and keep the token it gives you. It looks like
 `123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`. That token is a password — anyone
 holding it can read every message sent to the bot.
 
+**Then, in the same chat, send `/setprivacy`, choose that bot, and choose Disable.** This
+is not optional if the household is going to use a group chat, and it is the one step
+whose omission has no symptom. Telegram turns *bot privacy mode* on for every new bot,
+and with it on the bot receives **nothing** sent in a group — not plain messages, not a
+reply to it, not even an @mention. Only `/start@thebot` is delivered. So the bot sits in
+the family group and ignores everyone, with no error, no warning and no log line
+anywhere, because nothing ever arrives to log.
+
+Do it **before** adding the bot to any group. Telegram applies the change only to groups
+the bot joins afterwards, so a bot that is already in the group has to be removed and
+added again — and somebody who flips the setting and then tests in the group it is
+already in will see nothing change and conclude the fix did not work. `kenward setup` and
+the dashboard wizard both check this the moment they have the token, and `kenward doctor`
+reports it afterwards.
+
 **[lore](https://github.com/BlueHeisenberg/lore), running.** kenward owns no memory of
 its own; it talks to lore over MCP. You need lore installed, initialised, and holding a
 shared space for the household plus one private space per member. **Create them in lore
@@ -269,7 +284,9 @@ docker compose -f deploy/compose.isolated.yml up -d
 
 Each member creates their own bot with BotFather and supplies that token to their own
 pod. It is five extra minutes per person, and it is what stops the operator's single
-token being able to read everyone's private conversations.
+token being able to read everyone's private conversations. A member's own bot serves
+their private chat and never speaks in the group, so it needs no `/setprivacy` — the
+household group's bot is the one that does.
 
 The shipped `compose.isolated.yml` is a worked two-member example with comments showing
 how to add a third. The services must not share a data volume; that sharing is exactly
@@ -286,7 +303,11 @@ kenward run --config kenward.yaml --image localhost/kenward-with-lore:dev
 `--image` is not optional in practice. The published image deliberately carries no lore,
 and this path has no bind-mount to add one with, so build a derived image —
 `FROM ghcr.io/blueheisenberg/kenward:<tag>` plus a `COPY` of a `lore` binary for that
-image's OS and architecture — and name it here. Everything else is handled: the volumes,
+image's OS and architecture — and name it here. Build that binary with
+`CGO_ENABLED=0 GOOS=linux GOARCH=<amd64|arm64> go build -o lore ./cmd/lore`: the base is
+distroless static and has no dynamic loader, so a default `go build` produces a binary
+for the right platform that still fails as `exec /usr/local/bin/lore: no such file or
+directory`, naming a file that is plainly there. Everything else is handled: the volumes,
 the per-member secrets, each pod's own lore store, and rolling every pod onto a new image
 after an update.
 
