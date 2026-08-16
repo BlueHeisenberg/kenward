@@ -1389,8 +1389,11 @@ func TestRetrievalLineReportsWhatReachedTheModel(t *testing.T) {
 	// Room for the prompt and a little else, so the budget loop has to drop some of
 	// the shared group but not all of it. The number tracks the size of the fixed
 	// prompt: it was raised when the reminders section was added, because with the
-	// old budget only one entry survived and the assertion below needs a plural.
-	opts.ContextBudget = 1700
+	// old budget only one entry survived and the assertion below needs a plural, and
+	// again when the capture block gained the paragraph saying a tool call is not a
+	// write and the identity section gained the plain-prose rule, which between them
+	// left no room for any entry at all.
+	opts.ContextBudget = 2000
 	opts.MaxTokens = 128
 	rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
 	if err != nil {
@@ -1569,5 +1572,79 @@ func TestRetrievalLineStaysOutOfHistory(t *testing.T) {
 		if strings.Contains(m.Content, "🔍 searched ") {
 			t.Fatalf("the retrieval line reached the model as a %s message: %q", m.Role, m.Content)
 		}
+	}
+}
+
+// TestTypingIndicatorCoversTheWaitAndStops.
+//
+// Every turn of the live run against a real model took fifteen to twenty seconds, with
+// nothing on screen for any of it. In a family group chat that is not a slow assistant,
+// it is a broken one: people re-send, then stop using it. Telegram's answer is
+// sendChatAction, and the whole of the requirement is that it starts before the wait
+// and stops when the wait ends.
+//
+// The router blocks until an indicator has been seen, which makes the first half an
+// assertion rather than a race. The second half is assertable at all because the turn
+// waits for the indicator's goroutine before returning: once Handle is back, nothing
+// can send another action, so a count taken afterwards is final.
+func TestTypingIndicatorCoversTheWaitAndStops(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	typed := make(chan struct{})
+	rig.tr.typed = typed
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		// The fifteen seconds, in the only form a unit test can hold: the model does
+		// not answer until the member has been shown something.
+		select {
+		case <-typed:
+		case <-ctx.Done():
+			return routing.Completion{}, ctx.Err()
+		case <-time.After(5 * time.Second):
+			return routing.Completion{}, errors.New("no typing indicator while the member waited")
+		}
+		return routing.Completion{Text: "Under the stairs.", Endpoint: "fake", Tier: "local"}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("where is the stopcock?")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	if got := rig.tr.typingCount(testMemberChat); got == 0 {
+		t.Fatal("the member waited on the model with no typing indicator at all")
+	}
+	if got := rig.tr.typingCount(testGroupChat); got != 0 {
+		t.Errorf("a chat nobody was waiting in got %d typing indicators", got)
+	}
+	// Every indicator went out before the reply did. The count of messages sent as
+	// of the last indicator is zero, so nothing was still typing once there was
+	// something to read.
+	if got := rig.tr.sendsWhenTypingStopped(); got != 0 {
+		t.Errorf("the last typing indicator went out after %d message(s) had been sent; it must stop when the reply lands", got)
+	}
+	settled := rig.tr.typingCount(testMemberChat)
+	time.Sleep(20 * time.Millisecond)
+	if got := rig.tr.typingCount(testMemberChat); got != settled {
+		t.Errorf("typing count went from %d to %d after the turn returned; the indicator outlived the turn", settled, got)
+	}
+}
+
+// TestLockedConversationShowsNoTypingIndicator: a locked member gets one notice and
+// nothing else. An indicator there would be the node claiming to be working on an
+// answer it has already decided not to produce — and it would keep the "…is typing"
+// header up over a chat that is going to stay silent.
+func TestLockedConversationShowsNoTypingIndicator(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.sessions.Lock("david")
+
+	if err := rig.unit.Handle(context.Background(), directInbound("where is the stopcock?")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := rig.tr.typingCount(testMemberChat); got != 0 {
+		t.Errorf("a locked conversation showed %d typing indicators; the turn stops at the notice", got)
 	}
 }

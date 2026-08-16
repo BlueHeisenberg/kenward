@@ -183,6 +183,8 @@ var catalan = Catalogue{
 		return "He publicat " + transport.Bold(title) + " a la memòria de la llar. Ara ho pot veure tothom."
 	},
 
+	OnlyOneProposal: "Només pregunto per una cosa cada vegada; no s'ha desat res més d'aquell missatge.",
+
 	ProposalOpener: "Puc apuntar això:",
 	ProposalNoDest: "On ho deso?",
 	ProposalWithDest: func(private bool) string {

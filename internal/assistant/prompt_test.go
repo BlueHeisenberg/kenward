@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 )
 
@@ -279,5 +280,113 @@ func TestRetrievalErrorRendersUnreadableNotEmpty(t *testing.T) {
 	shared := sys[strings.Index(sys, "## From the household's shared memory"):]
 	if strings.Contains(strings.Split(shared, "\n\n")[0], emptyGroupText) {
 		t.Error("failed retrieval rendered as (nothing relevant found)")
+	}
+}
+
+// everyScopeShape renders the system prompt for every scope kenward has, with and
+// without a persona, so a rule that has to hold everywhere can be asserted everywhere
+// rather than in whichever scope a test happened to pick.
+//
+// It renders through renderSystem rather than through a turn because the properties
+// below are about the prompt and not about retrieval, and because a persona cannot be
+// reached from the rig without building a second Unit for it.
+func everyScopeShape(t *testing.T) map[string]string {
+	t.Helper()
+	base := func(sc domain.Scope, member string) promptInput {
+		return promptInput{
+			scope:         sc,
+			memberName:    member,
+			householdName: "Home",
+			date:          "Friday, 14 August 2026",
+			hasShared:     true,
+		}
+	}
+	direct := base(testDirectScope(), "David")
+	direct.hasPrivate = true
+	household := base(testHouseholdScope(), "David")
+	group := base(testGroupScope(), groupMemberPhrase)
+
+	withPersona := direct
+	withPersona.persona = Persona{
+		Name:      "Bosun",
+		Language:  "Spanish",
+		Tone:      "warm and wry",
+		Character: "a retired ship's captain who answers everything as though it were weather",
+	}
+
+	return map[string]string{
+		"direct":         renderSystem(direct),
+		"household":      renderSystem(household),
+		"group":          renderSystem(group),
+		"direct+persona": renderSystem(withPersona),
+	}
+}
+
+// TestPromptSaysARememberCallIsNotAWrite is the prompt half of the defect that made
+// this rule necessary, and it is the strongest deterministic statement of it there is.
+//
+// A member's private chat with kenward — the one scope where every single write waits
+// on a tap — was told two facts in one message and answered:
+//
+//	Both saved to the household's shared memory: the stopcock's location under the
+//	stairs, and the fenwick-2260 key tag — so anyone in Test House can find them.
+//
+// Nothing had been saved. The capture question for one of the two had not been asked
+// yet, and the second had been dropped for the per-turn budget and never would be. The
+// mechanism was correct at every step; the sentence the member read was not, and the
+// sentence is the entire product surface of every honesty guarantee in this codebase.
+//
+// Whether a given model obeys the paragraph is a question only a real model can answer,
+// and TestCaptureJudgement asks it. What can be held here is that no scope is ever sent
+// a prompt without it — which is precisely what was wrong: the rule existed nowhere, in
+// any scope, and each scope's capture block read as though the destination were already
+// settled.
+func TestPromptSaysARememberCallIsNotAWrite(t *testing.T) {
+	// The sentences, not the paragraph: a golden already pins the paragraph, and a
+	// golden updated with -update records whatever the code did. These fail on their
+	// own terms whatever the fixture says.
+	// Flattened on both sides: the constants are hard-wrapped, so a sentence the
+	// model reads as one line spans two in the source, and a test that could be
+	// broken by rewrapping is a test somebody will delete.
+	want := []string{
+		"Calling that tool is a request, not a write.",
+		"never say or imply in a reply that anything has been saved",
+		"never say which memory it went to",
+	}
+	for name, sys := range everyScopeShape(t) {
+		sys = flattened(sys)
+		for _, w := range want {
+			if !strings.Contains(sys, w) {
+				t.Errorf("the %s prompt does not tell the model that %q; a model that believes its tool call is the write will narrate one that never happened", name, w)
+			}
+		}
+	}
+}
+
+// TestPromptAsksForPlainProse is D2's half of the same file.
+//
+// Escaping was mistaken for a formatting policy. It is not one: a reply written as
+// **bold** survives transport.Esc unchanged and reaches the member as asterisks, which
+// is what six replies across two scopes did in a live run. Nothing told the model
+// otherwise, so nothing was going to change.
+//
+// The persona case is the one worth having. A persona is the only member-written text
+// that legitimately instructs the model about how to write, so the rule about the
+// channel has to survive one — which it does by being rendered after it.
+func TestPromptAsksForPlainProse(t *testing.T) {
+	for name, sys := range everyScopeShape(t) {
+		if !strings.Contains(sys, formattingText) {
+			t.Errorf("the %s prompt never asks for plain prose, so nothing stops the model emitting Markdown that Telegram's HTML mode renders as literal asterisks", name)
+		}
+		if !strings.Contains(sys, "**bold**") {
+			t.Errorf("the %s prompt describes the rule without showing the characters; \"do not use Markdown\" is a rule about a word, and the characters are what the model emits", name)
+		}
+	}
+	// After the persona, not before it: a character is a preference about wording and
+	// this is a property of the channel, so it must not read as something a persona
+	// may relax.
+	sys := everyScopeShape(t)["direct+persona"]
+	if strings.Index(sys, formattingText) < strings.Index(sys, personaClose) {
+		t.Error("the plain-prose rule is rendered before the persona block; it must come after, where a persona cannot read as relaxing it")
 	}
 }

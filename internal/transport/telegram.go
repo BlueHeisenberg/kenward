@@ -318,6 +318,33 @@ func (t *Telegram) Send(ctx context.Context, o Outbound) error {
 	return nil
 }
 
+// SendTyping shows the "typing…" indicator in the chat.
+//
+// Telegram expires it after about five seconds and offers no way to cancel or extend
+// one, so covering a real wait means repeating it; see KeepTyping. It goes through
+// t.call like every other request, so a 429 is honoured rather than hammered — but
+// unlike a message, an indicator nobody sees costs the member nothing, so the caller
+// is expected to ignore the error.
+func (t *Telegram) SendTyping(ctx context.Context, chatID int64) error {
+	if err := t.state(); err != nil {
+		return err
+	}
+	if chatID == 0 {
+		return errors.New("transport: typing indicator without a chat id")
+	}
+	err := t.call(ctx, func(ctx context.Context) error {
+		_, err := t.api.SendChatAction(ctx, &bot.SendChatActionParams{
+			ChatID: chatID,
+			Action: models.ChatActionTyping,
+		})
+		return err
+	})
+	if err != nil {
+		return redactToken(err, t.token)
+	}
+	return nil
+}
+
 // Ask puts a question with buttons in the chat and blocks until the allowed user
 // taps one, the question times out, or ctx is done.
 //

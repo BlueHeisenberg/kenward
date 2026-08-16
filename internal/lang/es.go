@@ -195,6 +195,8 @@ var spanish = Catalogue{
 		return "He publicado " + transport.Bold(title) + " en la memoria del hogar. Ahora puede verlo todo el mundo."
 	},
 
+	OnlyOneProposal: "Solo pregunto por una cosa cada vez; no se guardó nada más de ese mensaje.",
+
 	ProposalOpener: "Puedo anotar esto:",
 	ProposalNoDest: "¿Dónde lo guardo?",
 	ProposalWithDest: func(private bool) string {

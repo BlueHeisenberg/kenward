@@ -171,6 +171,8 @@ var portuguese = Catalogue{
 		return "Publiquei " + transport.Bold(title) + " na memória da casa. Agora toda a gente pode ver."
 	},
 
+	OnlyOneProposal: "Só pergunto por uma coisa de cada vez; não foi guardado mais nada dessa mensagem.",
+
 	ProposalOpener: "Posso apontar isto:",
 	ProposalNoDest: "Onde guardo isto?",
 	ProposalWithDest: func(private bool) string {

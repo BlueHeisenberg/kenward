@@ -241,6 +241,14 @@ type fakeTransport struct {
 	asked   []transport.Question
 	answer  transport.Answer
 	askGate chan struct{}
+	// typing counts indicators per chat, and typed is closed the first time one
+	// arrives so a test can wait for the indicator instead of sleeping for it.
+	typing map[int64]int
+	typed  chan struct{}
+	// sendsAfterTyping is how many messages had been sent when the last indicator
+	// went out. The typing indicator's contract is that it stops when the reply
+	// lands, and this is what makes that assertable rather than a matter of timing.
+	sendsAfterTyping int
 }
 
 func (f *fakeTransport) Updates(ctx context.Context) (<-chan transport.Inbound, error) {
@@ -268,6 +276,38 @@ func (f *fakeTransport) Ask(ctx context.Context, q transport.Question) (transpor
 		}
 	}
 	return answer, nil
+}
+
+func (f *fakeTransport) SendTyping(ctx context.Context, chatID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.typing == nil {
+		f.typing = map[int64]int{}
+	}
+	f.typing[chatID]++
+	f.sendsAfterTyping = len(f.sent)
+	if f.typed != nil {
+		select {
+		case <-f.typed:
+		default:
+			close(f.typed)
+		}
+	}
+	return nil
+}
+
+func (f *fakeTransport) typingCount(chatID int64) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.typing[chatID]
+}
+
+// sendsWhenTypingStopped is how many messages had gone out by the time the last
+// indicator was sent. Zero means the indicator only ever ran before the reply.
+func (f *fakeTransport) sendsWhenTypingStopped() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sendsAfterTyping
 }
 
 func (f *fakeTransport) Close() error { return nil }

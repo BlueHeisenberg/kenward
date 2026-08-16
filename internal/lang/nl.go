@@ -177,6 +177,8 @@ var dutch = Catalogue{
 		return "Ik heb " + transport.Bold(title) + " gepubliceerd in het huishoudgeheugen. Iedereen in het huishouden kan het nu zien."
 	},
 
+	OnlyOneProposal: "Ik vraag maar naar één ding tegelijk; er is verder niets uit dat bericht opgeslagen.",
+
 	ProposalOpener: "Dit kan ik opschrijven:",
 	ProposalNoDest: "Waar moet ik het opslaan?",
 	ProposalWithDest: func(private bool) string {

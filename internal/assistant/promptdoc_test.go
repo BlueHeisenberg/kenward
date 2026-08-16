@@ -77,6 +77,109 @@ func TestToolSpecsMatchPromptDoc(t *testing.T) {
 	}
 }
 
+// TestPromptTextMatchesPromptDoc holds prompt.go's other claim — that its text
+// constants are "copied from [docs/PROMPT.md] verbatim, placeholders included" — to
+// being actually true.
+//
+// Until this test, only the two JSON schemas were checked. Everything the model is
+// actually told in prose was two literals in two files kept equal by somebody
+// remembering, which is the arrangement the test above exists because it drifts. The
+// prose is the larger half: the schemas say what the tools take, and the paragraphs say
+// what the assistant may claim to have done.
+//
+// A constant is required to appear verbatim inside a fenced block, not merely somewhere
+// in the document. Prose about the prompt quotes fragments of it constantly; a match
+// against the whole file would be satisfied by the commentary explaining a paragraph
+// that had already been deleted from the block above it.
+//
+// Placeholders are compared unexpanded, because that is how both sides hold them.
+// Whitespace is flattened on both sides before comparison, because rewrapping a
+// paragraph at a different column changes no word the model reads and a guard that
+// fired on it would be turned off within a month. A block may hold more than one
+// constant — the reminder block holds the instructions, an example list and the cancel
+// line — so a constant has to appear inside a block rather than to be one.
+func TestPromptTextMatchesPromptDoc(t *testing.T) {
+	path := filepath.Join("..", "..", "docs", "PROMPT.md")
+	doc, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("docs/PROMPT.md must be readable: prompt.go claims its text comes from it, and that claim cannot be checked without it: %v", err)
+	}
+	blocks := promptDocBlocks(t, string(doc))
+
+	// Every constant prompt.go renders. A new one that is not added here has its
+	// doc-versus-code equality asserted by nothing at all — which is the hole this
+	// test was written to close, so leaving a second one open would be a poor joke.
+	for _, c := range []struct{ name, text string }{
+		{"identityText", identityText},
+		{"flatRegisterText", flatRegisterText},
+		{"dateText", dateText},
+		{"formattingText", formattingText},
+		{"personaGuardText", personaGuardText},
+		{"directDisclosureText", directDisclosureText},
+		{"groupDisclosureText", groupDisclosureText},
+		{"householdDisclosureText", householdDisclosureText},
+		{"confidenceText", confidenceText},
+		{"untrustedEntryNote", untrustedEntryNote},
+		{"captureText", captureText},
+		{"captureDirectText", captureDirectText},
+		{"captureGroupText", captureGroupText},
+		{"captureHouseholdText", captureHouseholdText},
+		{"publishText", publishText},
+		{"remindText", remindText},
+		{"remindCancelText", remindCancelText},
+	} {
+		want := flattened(c.text)
+		found := false
+		for _, b := range blocks {
+			if strings.Contains(b, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s is not in any fenced block of docs/PROMPT.md.\n\n--- internal/assistant ---\n%s\n\nOne of the two was edited without the other. The document is the contract; fix whichever is wrong, deliberately.",
+				c.name, strings.TrimSpace(c.text))
+		}
+	}
+}
+
+// flattened reduces text to its words, so that a paragraph rewrapped at a different
+// column still compares equal.
+func flattened(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+// promptDocBlocks is every fenced block in the document that is not a ```json tool
+// definition, flattened.
+func promptDocBlocks(t *testing.T, doc string) []string {
+	t.Helper()
+	var blocks []string
+	rest := doc
+	for {
+		open := strings.Index(rest, "\n```")
+		if open < 0 {
+			break
+		}
+		rest = rest[open+len("\n```"):]
+		// The info string, if any: ```json blocks are the tool definitions and are
+		// the other test's business.
+		lang, body, ok := strings.Cut(rest, "\n")
+		if !ok {
+			t.Fatalf("docs/PROMPT.md has an unclosed fence")
+		}
+		end := strings.Index(body, "\n```")
+		if end < 0 {
+			t.Fatalf("docs/PROMPT.md has an unclosed ``` fence after a %q info string", lang)
+		}
+		if strings.TrimSpace(lang) == "" {
+			blocks = append(blocks, flattened(body[:end]))
+		}
+		rest = body[end+len("\n```"):]
+	}
+	if len(blocks) == 0 {
+		t.Fatalf("docs/PROMPT.md contains no unlabelled fenced blocks; prompt.go's text has nothing to be verbatim from")
+	}
+	return blocks
+}
+
 // promptDocTools parses every ```json fence in PROMPT.md and keeps the ones that
 // look like a tool definition, keyed by name. Selecting by shape rather than by
 // position means reordering the document, or adding a JSON example beside them,

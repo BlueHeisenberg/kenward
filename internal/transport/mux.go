@@ -269,6 +269,16 @@ func (v *muxView) Ask(ctx context.Context, q Question) (Answer, error) {
 	return v.mux.t.Ask(ctx, q)
 }
 
+// SendTyping passes straight through to the shared bot. The indicator belongs to a
+// chat, and a view is a slice of one bot's stream rather than a separate connection,
+// so there is nothing here to route it by.
+func (v *muxView) SendTyping(ctx context.Context, chatID int64) error {
+	if err := v.state(); err != nil {
+		return err
+	}
+	return v.mux.t.SendTyping(ctx, chatID)
+}
+
 // RetireKeyboard passes straight through to the shared bot, if it can do it at all.
 //
 // A transport that cannot is not an error: retiring a keyboard an earlier process

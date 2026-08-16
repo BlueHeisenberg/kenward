@@ -76,6 +76,33 @@ Then, always:
 Today is {{.Date}}. The household is {{.HouseholdName}}.
 ```
 
+Then, last in the section — **after** any persona, because it is a fact about the
+channel rather than a preference about wording:
+
+```
+Write plain prose. Your reply is shown exactly as you write it, so Markdown is not
+formatting here: **bold**, *italic*, `code`, # headings and fenced code blocks all reach
+the member as the characters you typed. Use none of them.
+```
+
+**This paragraph exists because escaping is not the defence it looked like.** Everything
+kenward sends is Telegram HTML and the model's reply is escaped rather than parsed (see
+[Message formatting](#message-formatting)), which stops a reply forging structure and
+does nothing whatever about a model writing `**bold**` — asterisks are not markup in HTML
+mode, so they arrive as asterisks. A live run produced them in six replies across two
+scopes: *The garden gate code is \*\*marlowbrick-4417\*\**.
+
+The examples are spelled out rather than described. "Do not use Markdown" is a rule about
+a word; the characters are what the model actually emits, and a model that would not call
+`**` Markdown will still recognise it written down.
+
+The alternative — converting `**x**` to `<b>x</b>`, or stripping it — was rejected. It
+puts a second markup parser on the path of text that quotes members and entries, where a
+member's own asterisks are legitimate content, and that is precisely the fragility the
+choice of HTML over MarkdownV2 exists to avoid. An instruction cannot corrupt a quotation.
+If measurement ever shows models ignoring this paragraph often enough to matter, a
+conversion is the fallback, not the first move.
+
 Rationale for the flat register: the assistant is read on a phone, mid-task, by people
 who are cooking or leaving the house. Length is a cost paid by the reader. **That is
 still the default and is still the argument for it.**
@@ -337,7 +364,16 @@ in brackets are notes from whoever recorded the entry; honour them.
 ```
 If this conversation contains something worth remembering — a durable fact, a
 preference, a decision, something the household will want recalled later — you may
-propose storing it by calling the remember tool.
+propose storing it by calling the remember tool. Write its title and body in English
+whatever language you are answering in, and put the member's own words for what it is
+about in aliases, so they can find it again in the language they said it in.
+
+Calling that tool is a request, not a write. Nothing is stored because you asked for
+it, you are never told what became of the request, and what actually happened is
+reported to the member separately, afterwards, and only when it is true. So never say
+or imply in a reply that anything has been saved, stored, recorded, noted down or
+added to a memory, and never say which memory it went to. If you mention it at all,
+say only that you have proposed it.
 
 Before you propose anything, ask whether it will still be true a year from now.
 This week's arrangements and today's mood will not be, however useful they are
@@ -350,7 +386,32 @@ has already declined.
 
 ```
 
-**The middle paragraph is there because the list below it was not enough**, and it
+**The second paragraph is the truthfulness rule, and it is in every scope on purpose.**
+It reads as redundant in the two scopes where every write already waits on a tap, and the
+household scope — one of those two — is where it was found missing. A live run put two
+facts to kenward in a member's private chat with it and got back:
+
+> 🔍 *searched the household memory (nothing)*
+> **Both saved to the household's shared memory**: the stopcock's location under the
+> stairs, and the fenwick-2260 key tag — so anyone in Test House can find them.
+
+The capture question for one of the two arrived *after* that message. Neither fact was in
+the store; the second had been dropped for the per-turn proposal budget and was never
+proposed at all. This was three messages after the tutorial promised nothing is written
+without a tap.
+
+**Nothing in the mechanism was wrong.** No write happened, the question was correct, the
+budget behaved as specified. What was wrong was the prose, and the prose is the whole of
+what the member has. A model narrating a tool call as a completed act is the single
+failure this product cannot survive, because every other honesty guarantee here is
+delivered to the member as a sentence.
+
+It names the verbs — *saved, stored, recorded, noted down* — rather than stating the
+principle, for the same reason the paragraph below it was rewritten: a rule stated
+abstractly is one the model agrees with and then does not apply to the sentence it is
+writing.
+
+**The paragraph after it is there because the list below it was not enough**, and it
 is the only paragraph in this document that was written from a measurement rather
 than from an argument.
 
@@ -454,6 +515,7 @@ The tool schema:
       "domain":     {"type": "string", "description": "A coarse category, e.g. household/logistics."},
       "confidence": {"type": "string", "enum": ["experimental", "provisional", "validated", "hardened"]},
       "markers":    {"type": "array", "items": {"type": "string"}},
+      "aliases":    {"type": "array", "items": {"type": "string"}, "description": "The member's own words for what this is about, in the language they are speaking, when that is not English."},
       "target":     {"type": "string", "enum": ["personal", "shared", "unsure"]}
     }
   }
@@ -463,6 +525,19 @@ The tool schema:
 `body` written "out of context" is the single most important instruction in the schema.
 The characteristic failure of assistant memory is entries that only make sense inside
 the conversation that produced them, which is exactly when they are useless.
+
+`aliases` is why the paragraph above tells the model to write the entry in English while
+answering in the member's language, which reads like a contradiction and is not one.
+lore's search is a conjunctive lexical match with no stemming and no translation, so an
+entry is found only by words it literally contains: a household that chose Spanish asked
+for the garden gate code in Spanish and was told the household had no record of it, forty
+seconds after recording it. Writing the entry in the member's language is the naive fix
+and it breaks the shared space — the group scope has no member's language to write in, a
+household with a Spanish and a German member gets a memory half-invisible to each of
+them, and everything written before a language switch stops being retrievable by anyone.
+English stays the one language every entry is guaranteed to hold; the member's own words
+ride alongside it, folded into the stored body by `internal/capture` as one labelled
+line. See [IMPLEMENTATION.md](IMPLEMENTATION.md).
 
 The second tool, offered in a direct conversation only — publishing *from* the group is
 meaningless, and a tool whose every call must be refused only teaches the model to call
@@ -649,6 +724,14 @@ the four marks that apply it. A member who titles a note `<b>` reads back a note
 `<b>`; nothing from outside the node gets to forge the structure it sits in, which is
 the same rule `oneLine` keeps when rendering entries *into* the prompt.
 
+That is a rule about markup the node did not write, and it is not a formatting policy for
+the model: a reply written in Markdown passes through escaping untouched and lands on the
+member's screen as asterisks. The prompt is where that is dealt with — see
+[Identity and character](#identity-and-character) — and it stays there, because a
+converter or a stripper would be a second markup parser reading text that quotes members
+and their entries, in a file whose opening argument is that the smaller escaping surface
+is the one that cannot be missed.
+
 Four marks, because there are four kinds of thing in these messages that are not prose:
 
 | Mark | Used for |
@@ -688,10 +771,14 @@ unstyled.
 
 - **No instruction to be concise "when appropriate".** Conditional style instructions
   are ignored under load. The register is flat and stated once.
-- **No emoji policy.** Nothing in the prompt asks for a glyph, and the model's reply is
-  escaped rather than parsed as markup, so it cannot introduce formatting of its own
-  either. It is not a rule about the node's own messages — see
-  [Message formatting](#message-formatting).
+- **No emoji policy.** Nothing in the prompt asks for a glyph. It is not a rule about the
+  node's own messages — see [Message formatting](#message-formatting).
+
+  This bullet used to go on to say that the model "cannot introduce formatting of its own
+  either", because its reply is escaped rather than parsed. That was half true and the
+  wrong half was load-bearing: escaping stops a reply forging HTML, and leaves a reply
+  full of literal asterisks looking exactly as the model typed it. The prompt now asks for
+  plain prose in so many words — see [Identity and character](#identity-and-character).
 - **No persona and no name, unless somebody asked for one.** This bullet used to be
   absolute, and it is not any more: see [Persona](#persona) for what changed, and why the
   flat register is still the default. What survives of the original argument is that

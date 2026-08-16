@@ -185,6 +185,8 @@ var german = Catalogue{
 		return "Ich habe " + transport.Bold(title) + " im Haushaltsgedächtnis veröffentlicht. Jetzt können es alle im Haushalt sehen."
 	},
 
+	OnlyOneProposal: "Ich frage immer nur nach einer Sache; sonst wurde aus dieser Nachricht nichts gespeichert.",
+
 	ProposalOpener: "Das kann ich aufschreiben:",
 	ProposalNoDest: "Wo soll ich es speichern?",
 	ProposalWithDest: func(private bool) string {

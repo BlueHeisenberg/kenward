@@ -305,6 +305,8 @@ var arabic = Catalogue{
 		return "نشرت " + arAny(transport.Bold(title)) + " في ذاكرة المنزل. يمكن للجميع في المنزل رؤيته الآن."
 	},
 
+	OnlyOneProposal: "أسأل عن شيء واحد في كل مرة؛ ولم يُحفظ شيء آخر من تلك الرسالة.",
+
 	ProposalOpener: "يمكنني أن أدوّن هذا:",
 	ProposalNoDest: "أين أحفظه؟",
 	ProposalWithDest: func(private bool) string {

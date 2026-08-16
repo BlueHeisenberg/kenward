@@ -185,6 +185,8 @@ var french = Catalogue{
 		return "J'ai publié " + transport.Bold(title) + " dans la mémoire du foyer. Tout le foyer y a accès maintenant."
 	},
 
+	OnlyOneProposal: "Je ne pose la question que pour une chose à la fois" + nbsp + "; rien d'autre de ce message n'a été enregistré.",
+
 	ProposalOpener: "Je peux noter ceci" + nbsp + ":",
 	ProposalNoDest: "Où faut-il l'enregistrer" + nbsp + "?",
 	ProposalWithDest: func(private bool) string {

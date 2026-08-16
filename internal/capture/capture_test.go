@@ -62,6 +62,11 @@ func (t *stubTransport) Ask(_ context.Context, q transport.Question) (transport.
 	return a, nil
 }
 
+// SendTyping is inert here. The capture engine waits on a member, not on a model,
+// so nothing in this package ever shows an indicator; the method exists because the
+// engine holds a transport.Transport.
+func (t *stubTransport) SendTyping(context.Context, int64) error { return nil }
+
 func (t *stubTransport) Close() error { return nil }
 
 func (t *stubTransport) lastChoiceIDs() []string {

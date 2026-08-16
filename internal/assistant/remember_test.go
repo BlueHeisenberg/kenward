@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/capture"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
@@ -260,5 +262,90 @@ func TestSanitizeReplyStripsStrayBlocks(t *testing.T) {
 				t.Errorf("warn %q, wantWarn=%v", warn, tc.wantWarn)
 			}
 		})
+	}
+}
+
+// TestSecondRememberCallIsToldToTheMember is the second half of the defect the
+// truthfulness paragraph fixes, and it is the half no prompt can reach.
+//
+// In the live run that produced it, a member's private chat with kenward was sent two
+// facts in one message. The model made two remember calls; extractProposal kept the
+// first and logged "model made more than one remember call; using the first"; the
+// member was asked about one thing and never told about the other, which was never
+// proposed, never written, and never mentioned again. From inside the chat that turn is
+// indistinguishable from a turn about one fact — the silent version of exactly the
+// misunderstanding the prompt change is there to prevent.
+//
+// One question per turn is the right rule and is not what changes here. What changes is
+// that the drop is now something the member can see.
+func TestSecondRememberCallIsToldToTheMember(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testHouseholdScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.tr.answer = transport.Answer{TimedOut: true}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{
+			Text: "Noted.",
+			ToolCalls: []routing.ToolCall{
+				call("remember", `{"title": "Stopcock", "body": "The stopcock is under the stairs.", "domain": "household/logistics", "target": "shared"}`),
+				call("remember", `{"title": "Key tag", "body": "The spare key tag reads fenwick-2260.", "domain": "household/logistics", "target": "shared"}`),
+			},
+			FinishReason: routing.FinishToolCalls,
+		}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("the stopcock is under the stairs, and the spare key tag says fenwick-2260")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	// One question, as the budget says. The rule is not what is under test.
+	if got := rig.tr.askCount(); got != 1 {
+		t.Fatalf("asked %d questions, want 1: the per-turn budget is not what this test changes", got)
+	}
+	notice := lang.For("").OnlyOneProposal
+	var found bool
+	for _, s := range rig.tr.sentTextsRaw() {
+		if strings.Contains(s, notice) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the member was never told that a second proposal was dropped.\nsent: %q\nwant one of them to contain %q\n\nA turn where somebody named two things and was asked about one, with no mention of the other, is indistinguishable from a turn about one thing.",
+			rig.tr.sentTextsRaw(), notice)
+	}
+	// Nothing was written: the question timed out, which is a decline, and the
+	// dropped proposal was never a question at all. The notice must never be read as
+	// an announcement that something landed.
+	if got := rig.mem.putCount(); got != 0 {
+		t.Errorf("wrote %d entries; nothing was confirmed, so nothing may be stored", got)
+	}
+}
+
+// TestSingleRememberCallSaysNothingExtra is the other half: the notice is for a real
+// drop and not decoration on every capture turn. A turn that proposed one thing had
+// nothing dropped, and a line saying otherwise would be its own small untruth.
+func TestSingleRememberCallSaysNothingExtra(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testHouseholdScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.tr.answer = transport.Answer{TimedOut: true}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{
+			Text:         "Noted.",
+			ToolCalls:    []routing.ToolCall{call("remember", `{"title": "Stopcock", "body": "The stopcock is under the stairs.", "domain": "household/logistics", "target": "shared"}`)},
+			FinishReason: routing.FinishToolCalls,
+		}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("the stopcock is under the stairs")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	notice := lang.For("").OnlyOneProposal
+	for _, s := range rig.tr.sentTextsRaw() {
+		if strings.Contains(s, notice) {
+			t.Errorf("a one-proposal turn told the member something was dropped: %q", s)
+		}
 	}
 }

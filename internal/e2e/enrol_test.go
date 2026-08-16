@@ -228,9 +228,14 @@ func TestStrangerWithoutACodeGetsNothingAtAll(t *testing.T) {
 	if got := h.sentTo(strangerChatID); len(got) != 0 {
 		t.Errorf("stranger received %d message(s): %+v; an unknown sender gets silence", len(got), got)
 	}
-	// A typing indicator would be an answer too. transport.Transport has no such
-	// call — Send and Ask are the only ways anything reaches a chat — so asserting
-	// both are empty for this chat is the complete statement of "nothing happened".
+	// A typing indicator is an answer too, and there is one now: the assistant shows
+	// one while a member waits on the model. It is started inside the turn, after the
+	// scope has resolved, so a stranger can never reach it — which is a claim worth
+	// asserting rather than reasoning about, because the natural place to put an
+	// indicator is the top of Handle, where it would fire for everybody.
+	if got := h.tr.TypingCount(strangerChatID); got != 0 {
+		t.Errorf("stranger's chat showed %d typing indicators; an unknown sender gets silence, and an indicator says somebody is listening", got)
+	}
 	for _, q := range h.tr.Asked() {
 		if q.ChatID == strangerChatID {
 			t.Errorf("stranger was asked %q; a question is an acknowledgement", q.Text)

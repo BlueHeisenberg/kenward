@@ -308,9 +308,18 @@ type Transport interface {
     Updates(ctx context.Context) (<-chan Inbound, error)
     Send(ctx context.Context, o Outbound) error
     Ask(ctx context.Context, q Question) (Answer, error)
+    SendTyping(ctx context.Context, chatID int64) error
     Close() error
 }
 ```
+
+`SendTyping` is the "typing…" indicator, and it is on the interface rather than probed
+for because every real transport owes a member some sign of life. Telegram's action
+expires after about five seconds and cannot be extended or cancelled, so covering a real
+wait means repeating it: `transport.KeepTyping(ctx, t, chatID, TypingInterval)` sends one
+immediately, repeats every four seconds, and **returns when `ctx` is done** — a caller
+that waits for it therefore knows the indicator has stopped rather than hoping so. A
+failure is dropped: the member loses an indicator, not an answer.
 
 `AllowedUserID` is load-bearing: in a group chat, any member can see and tap an inline
 keyboard. A tap from anyone else is ignored — not answered, not acknowledged. Without
@@ -944,10 +953,18 @@ another member's plaintext, and that one member's compromise reaches no one else
    a chat travels through Telegram, stays in the member's own history, and in simple mode
    is readable by whoever holds the bot token. Otherwise the session's idle clock is
    touched and the turn continues.
-3. **Reset the history, if a boundary has passed.** `history.reset_every`, off by
+3. **Show the member they are being answered.** From here to the end of the turn the
+   typing indicator runs in this chat, refreshed every four seconds and stopped — waited
+   for, not merely cancelled — when the reply lands or the turn fails. It starts *after*
+   scope resolution and after the session check, which is what keeps it away from a
+   stranger and away from a locked conversation: both of those end in silence or a single
+   notice, and an indicator would be the node claiming to be working on an answer it has
+   already decided not to produce. A turn against a real household model measured fifteen
+   to twenty seconds; a family group chat reads that silence as a broken assistant.
+4. **Reset the history, if a boundary has passed.** `history.reset_every`, off by
    default. See "The scheduled reset" below; when it drops anything the member is sent a
    notice before the turn goes any further, and nothing in lore is touched.
-4. **Retrieve.** The member's message is reduced to its content words — lore's own
+5. **Retrieve.** The member's message is reduced to its content words — lore's own
    tokens, minus a stopword list, capped at six — and each word is searched on its own
    in every space in `scope.Read`, concurrently. Each space's hits are unioned and
    ranked by what each word narrowed down — a word contributes `1/(entries it found)`
@@ -966,7 +983,7 @@ another member's plaintext, and that one member's compromise reaches no one else
    "what" is not in it — and the node then answers as though nothing had been stored.
    Searching word by word makes retrieval degrade instead of failing outright: one
    relevant word among six filler ones still finds the entry.
-5. **Assemble.** System prompt + retrieved entries (rendered with their markers and
+6. **Assemble.** System prompt + retrieved entries (rendered with their markers and
    confidence) + the last N turns from the unit-local history ring, trimmed to fit
    `Options.ContextBudget` with `Options.MaxTokens` reserved out of it for the completion.
    `MaxTokens >= ContextBudget` is a construction error, not a runtime surprise: it leaves
@@ -1005,12 +1022,12 @@ another member's plaintext, and that one member's compromise reaches no one else
    emitting any content, and a cap sized for a plain instruct model makes it return a full
    reasoning trace, no content, and `finish_reason: stop` — which reaches the member as the
    §10 "no usable answer" notice from a model that is working perfectly.
-6. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
+7. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
    explicit refusal naming the tiers tried — never a silent fallback. Any other router
    failure becomes one of the notices in §10; a turn never ends in silence.
-7. **Reply**, prefixed with the retrieval line.
-8. **Capture.** If the model proposed a memory write, run the capture state machine.
-9. **Record** the turn in the unit-local history ring — the reply alone, without the
+8. **Reply**, prefixed with the retrieval line.
+9. **Capture.** If the model proposed a memory write, run the capture state machine.
+10. **Record** the turn in the unit-local history ring — the reply alone, without the
    retrieval line.
 
 ### The member is told what was read
@@ -1053,6 +1070,15 @@ itself — at which point a member cannot tell a real accounting from a fabricat
 `memory.announce_reads` turns it off; it defaults to on. That is a setting where the
 write announcement in §6 is not, and the asymmetry is the point: a read changes nothing,
 so a household that finds the line noisy loses nothing but the line.
+
+**A second proposal in one turn is reported the same way.** The prompt asks for one
+proposal per reply and `capture.max_proposals_per_turn` enforces it, so a model that
+calls `remember` twice has its second call dropped. That was a log line and nothing else,
+which meant a member who mentioned two things, was asked about one and never heard about
+the other could not tell that turn from a turn about one thing. The reply now carries an
+italic line saying so — one line, only when a call was actually dropped, and worded so it
+cannot be read as an announcement that anything landed. The rule is unchanged: one
+question per turn, and the second thing is not stored.
 
 History is unit-local, in memory, bounded (default 20 turns), and is **not** written to
 lore. lore holds distilled knowledge, not transcripts.

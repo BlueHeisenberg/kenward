@@ -189,6 +189,8 @@ var english = Catalogue{
 		return "I've published " + transport.Bold(title) + " to the household memory. Everyone in the household can see it now."
 	},
 
+	OnlyOneProposal: "I only ask about one thing at a time; nothing else from that message was saved.",
+
 	// "write down", not "remember", for the same reason as AskFailed. It is also
 	// sharper about what actually happens: a specific entry, in a specific space.
 	ProposalOpener: "I can write this down:",
