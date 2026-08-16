@@ -44,7 +44,14 @@ household:
   # every member's private space can read but never coincides with. Required: without
   # it the group conversation has nowhere to read or write, and kenward refuses to
   # start rather than silently having no shared memory.
-  shared_space: household
+  #
+  # It is a lore space ID — the id column of `lore spaces` — and NOT the display name.
+  # kenward keys spaces on ids because lore does not enforce unique names, and the check
+  # that an entry really lives in the space it claims is worthless if two spaces answer
+  # to one name. A display name here is the worst kind of wrong: lore's put accepts it,
+  # so writes appear to work, and every read comes back empty. `kenward doctor` catches
+  # it and exits 2. kenward never creates a space — make it in lore first.
+  shared_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
   # group_chat_id is the Telegram chat id kenward maps to shared_space. It is the
   # negative id Telegram assigns a supergroup, found by adding the bot to the group and
   # checking kenward doctor or the bot API. Zero means no group is configured yet, which
@@ -95,8 +102,9 @@ members:
     # private_space is this member's two-member lore space: them and the node, nobody
     # else. Required, must be unique across members, and must never equal
     # household.shared_space — a private space that is the shared space publishes
-    # everything the member says to the whole household, silently.
-    private_space: david-private
+    # everything the member says to the whole household, silently. A space id from
+    # `lore spaces`, not a display name, for the reasons under shared_space above.
+    private_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8
     # tiers is the ordered endpoint tier chain THIS MEMBER'S PRIVATE conversations may
     # use — the single most consequential setting in this file. It is that member's
     # privacy policy, stated as a fact you can read off the page rather than inferred
@@ -125,7 +133,7 @@ members:
   - id: jordan
     name: Jordan
     telegram_id: 100200302
-    private_space: jordan-private
+    private_space: 5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19
     # jordan's chain reaches the cloud tier after the local ones, so an OpenRouter model
     # answers when neither local machine is awake, instead of the turn being refused.
     # That is a deliberate, opted-into widening of what leaves this house for jordan's
