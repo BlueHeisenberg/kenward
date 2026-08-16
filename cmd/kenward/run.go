@@ -280,16 +280,31 @@ func startupSummary(cfg *config.Config, sel unitSelection) [][]any {
 	local := localTiers(cfg)
 	members := cfg.DomainMembers()
 
-	served := make([]string, 0, len(members))
-	for _, m := range members {
-		if m.Enrolled() {
-			served = append(served, string(m.ID))
+	// Scoped to what this process actually serves, same as sel governs the topology
+	// line and which per-space lines appear below: a member pod names only its own
+	// member (resolveUnitSelection and the config load already guarantee that name is
+	// real, so there is nothing left to look up), a group pod serves no individual
+	// member at all, and the household node names everyone who has claimed an invite.
+	// This one value is reused on every line below, so fixing it here fixes all of
+	// them together.
+	var servedList string
+	switch {
+	case sel.group:
+		servedList = "(none: this pod serves the household group, not individual members)"
+	case sel.member != "":
+		servedList = sel.member
+	default:
+		served := make([]string, 0, len(members))
+		for _, m := range members {
+			if m.Enrolled() {
+				served = append(served, string(m.ID))
+			}
 		}
-	}
-	sort.Strings(served)
-	servedList := strings.Join(served, ",")
-	if servedList == "" {
-		servedList = "(nobody has claimed an invite yet)"
+		sort.Strings(served)
+		servedList = strings.Join(served, ",")
+		if servedList == "" {
+			servedList = "(nobody has claimed an invite yet)"
+		}
 	}
 
 	mode := string(cfg.Mode)

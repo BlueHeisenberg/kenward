@@ -290,6 +290,42 @@ func TestStartupSummaryInAPodNamesOnlyThatUnit(t *testing.T) {
 	}
 }
 
+// TestStartupSummaryMembersServedIsScopedToTheUnit guards the defect where a member
+// pod's members_served named the whole household instead of the one member it runs:
+// jordan's pod reported "members_served=david" alongside its own
+// topology="this pod runs only member jordan". Every members_served value a pod emits
+// must name only what that pod serves.
+func TestStartupSummaryMembersServedIsScopedToTheUnit(t *testing.T) {
+	t.Parallel()
+	cfg := mustLoad(t, isolatedYAML)
+
+	member := startupSummary(cfg, unitSelection{member: "david"})
+	for _, v := range membersServedValues(member) {
+		if v != "david" {
+			t.Errorf("david's pod reports members_served=%q, want \"david\"\n%s", v, renderAttrs(member))
+		}
+	}
+
+	group := startupSummary(cfg, unitSelection{group: true})
+	for _, v := range membersServedValues(group) {
+		if strings.Contains(v, "david") || strings.Contains(v, "jordan") {
+			t.Errorf("the group pod reports members_served=%q, naming an individual member\n%s", v, renderAttrs(group))
+		}
+	}
+}
+
+func membersServedValues(lines [][]any) []string {
+	var vals []string
+	for _, line := range lines {
+		for i := 0; i+1 < len(line); i += 2 {
+			if line[i] == "members_served" {
+				vals = append(vals, line[i+1].(string))
+			}
+		}
+	}
+	return vals
+}
+
 func renderAttrs(lines [][]any) string {
 	var b strings.Builder
 	for _, line := range lines {
