@@ -691,30 +691,42 @@ func TestLive(t *testing.T) {
 		}
 	})
 
-	// 4. The assertion nothing has ever made: a confirmed capture lands in a real
-	// store. The model really proposes, the member really presses the button,
+	// 4. The write path, end to end: a confirmed capture lands in a real store.
+	// The model really emits the tool call, the member really presses the button,
 	// and a separate `lore` process — not the client under test — is asked
 	// whether the entry is there.
 	//
-	// The member's message dictates the title, body, domain and target outright.
-	// That is unusual phrasing for a household, and it is deliberate in two
-	// different ways.
+	// **The member's message dictates the tool call, so this test says nothing
+	// about the model's judgement.** It names the title, body, domain and target
+	// outright. No household talks like that; the phrasing exists to make the
+	// model emit one specific well-formed call so that everything after the call
+	// — extraction, the question, the button, the put, the row — is what is
+	// actually being measured. Whether the model decides to capture anything at
+	// all, when nobody has told it to, is a different question with a suite of
+	// its own: TestCaptureJudgement in internal/assistant, which scores that
+	// decision across thirteen conversations and reports a rate.
 	//
-	// Title, body and target are dictated because a 0.5b model asked vaguely
-	// emits a tool call with invented argument names, which kenward correctly
-	// drops. What is under test here is the path from a well-formed tool call to
-	// a row in lore, not the model's judgement about when to make one.
+	// Dictating was once the only option — a 0.5b model asked vaguely emits a
+	// tool call with invented argument names, which kenward correctly drops — and
+	// it is no longer, since a 27B on vLLM emits well-formed calls unprompted. It
+	// stays dictated anyway, and the reason is different now: this scenario waits
+	// on a real button and a real store, and it must exercise the write path on
+	// the smallest model a household might run. A test that only passes when the
+	// model volunteers a capture would be measuring judgement and reporting it as
+	// a broken write.
 	//
-	// The domain is dictated because of a defect this test found and does not
-	// paper over: the remember schema does not require `domain`, extractProposal
-	// defaults `confidence` when the model omits it but leaves `domain` empty,
-	// and real lore rejects a put with no domain — "title, body and domain are
-	// required". The member has already pressed the button by then, so the whole
-	// capture dies as "I can't confirm whether it was saved", every time, with
-	// nothing they can do about it. The fake memory.Memory accepts an empty
-	// domain, which is why nothing saw this. Dictating the domain keeps this
-	// scenario about the write landing; the defect belongs to internal/assistant.
-	t.Run("ConfirmedCaptureWritesToLore", func(t *testing.T) {
+	// The domain is dictated because of a defect this test found — and which has
+	// since been fixed, so the dictation is now belt over braces rather than the
+	// only thing holding the scenario up. A model may omit `domain` even though
+	// the schema declares it required, and real lore rejects a put without one
+	// ("title, body and domain are required"), by which point the member has
+	// already pressed the button: the capture died as "I can't confirm whether it
+	// was saved", every time, with nothing they could do about it. The fake
+	// memory.Memory accepts an empty domain, which is why no other test saw it.
+	// extractProposal now defaults an absent domain to "household/general", the
+	// same way it defaults confidence, so a real capture no longer depends on the
+	// member having named one.
+	t.Run("DictatedToolCallWritesToLore", func(t *testing.T) {
 		token := "marlowbrick" + stamp()
 		title := "Boiler service code " + token
 		body := "The boiler service code is " + token + "."
