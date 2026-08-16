@@ -760,6 +760,77 @@ func TestPromotionGetFailure(t *testing.T) {
 	}
 }
 
+// TestPromotionFailuresAlwaysSpeak: every way OfferPromotion can fail leaves the
+// member with a message and marks the error as spoken for. A publish turn is
+// routinely a bare tool call with no prose of its own, so an error path that returns
+// quietly here is a member who asked for something and got nothing back — the same
+// class of defect as the two empty-turn paths in IMPLEMENTATION.md section 10.
+func TestPromotionFailuresAlwaysSpeak(t *testing.T) {
+	stored := memory.Entry{Title: "Where the spare key lives", Body: "Under the third pot."}
+	boom := errors.New("lore is unreachable")
+
+	tests := []struct {
+		name    string
+		scope   func(domain.Scope) domain.Scope
+		setup   func(*stubMemory, *stubTransport)
+		answers []transport.Answer
+		want    string
+	}{
+		{
+			name:  "no shared space",
+			scope: func(sc domain.Scope) domain.Scope { sc.Read = []domain.SpaceID{personal}; return sc },
+			setup: func(m *stubMemory, _ *stubTransport) { m.entry = stored },
+			want:  "nothing was published",
+		},
+		{
+			name:  "read fails",
+			setup: func(m *stubMemory, _ *stubTransport) { m.entry, m.getErr = stored, boom },
+			want:  "nothing was published",
+		},
+		{
+			name:  "question fails",
+			setup: func(m *stubMemory, tr *stubTransport) { m.entry, tr.askErr = stored, boom },
+			want:  "Nothing was published",
+		},
+		{
+			// The member has already tapped Publish, so this one may not read as a
+			// flat failure: the copy may have landed and cannot be taken back.
+			name:    "publish fails after the member confirmed",
+			setup:   func(m *stubMemory, _ *stubTransport) { m.entry, m.shareErr = stored, boom },
+			answers: []transport.Answer{accept(ChoicePublish)},
+			want:    "can't confirm",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e, mem, tr := newEngine(t, tc.answers...)
+			tc.setup(mem, tr)
+			sc := directScope()
+			if tc.scope != nil {
+				sc = tc.scope(sc)
+			}
+
+			_, err := e.OfferPromotion(context.Background(), sc, "entry-7", davidID)
+			if err == nil {
+				t.Fatal("err = nil, want the failure")
+			}
+			if !errors.Is(err, ErrMemberNotified) {
+				t.Errorf("err = %v, not marked as spoken for; the caller will speak over it", err)
+			}
+			if len(tr.sends) != 1 {
+				t.Fatalf("sends = %v, want exactly one notice", tr.sends)
+			}
+			if got := tr.sends[0].Text; !strings.Contains(got, tc.want) {
+				t.Errorf("notice %q does not contain %q", got, tc.want)
+			}
+			if strings.Contains(tr.sends[0].Text, "Everyone can see it now") {
+				t.Errorf("notice %q reads as a confirmation", tr.sends[0].Text)
+			}
+		})
+	}
+}
+
 func TestAskFailurePropagates(t *testing.T) {
 	mem := &stubMemory{}
 	boom := errors.New("boom")

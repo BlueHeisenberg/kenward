@@ -153,6 +153,13 @@ var (
 	// does not allow private capture. It can only happen if a transport returns a
 	// choice that was never offered; nothing is written.
 	ErrPersonalNotAllowed = errors.New("capture: personal destination not allowed in this scope")
+	// ErrMemberNotified is joined onto every error this package returns after it has
+	// already put a notice about that failure in the chat. It is for a caller whose
+	// own fallback is a generic "no answer" notice: telling the member twice, in two
+	// different words, is worse than either message alone — and after a failed
+	// publication the generic one reads as an invitation to retry an act that cannot
+	// be taken back. Its absence means the member saw nothing and the caller speaks.
+	ErrMemberNotified = errors.New("capture: the member was told")
 )
 
 // Choice ids. They are stable and machine-readable: they travel through the transport
@@ -360,8 +367,9 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		e.refundOffer(sc, askUserID, turn)
 		// The member may have seen a question that will never resolve; the one
 		// thing they must not be left believing is that something was stored.
-		e.notify(ctx, sc, fmt.Sprintf("I meant to ask about remembering %q, but the question didn't go through. Nothing was written.", title))
-		return Outcome{}, fmt.Errorf("capture: asking the member to confirm a proposal: %w", err)
+		return Outcome{}, e.told(ctx, sc,
+			fmt.Sprintf("I meant to ask about remembering %q, but the question didn't go through. Nothing was written.", title),
+			fmt.Errorf("capture: asking the member to confirm a proposal: %w", err))
 	}
 
 	// A timeout is a decline.
@@ -382,15 +390,13 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	switch ans.ChoiceID {
 	case ChoicePersonal:
 		if !sc.AllowsPrivateCapture() {
-			e.notify(ctx, sc, "I couldn't save that — nothing was written.")
-			return Outcome{}, ErrPersonalNotAllowed
+			return Outcome{}, e.told(ctx, sc, "I couldn't save that — nothing was written.", ErrPersonalNotAllowed)
 		}
 		space = personalSpace(sc)
 	case ChoiceShared:
 		space, err = e.sharedSpace(sc)
 		if err != nil {
-			e.notify(ctx, sc, "I couldn't save that — nothing was written.")
-			return Outcome{}, err
+			return Outcome{}, e.told(ctx, sc, "I couldn't save that — nothing was written.", err)
 		}
 	default:
 		e.recordDecline(sc, askUserID, title, turn)
@@ -407,8 +413,9 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 		// retrying silently, and suppress the title so the model does not
 		// immediately re-propose the thing they were just told to verify first.
 		e.recordDecline(sc, askUserID, title, turn)
-		e.notify(ctx, sc, fmt.Sprintf("I can't confirm whether %q was saved — the memory store didn't answer. Check before saving it again; a duplicate can't be deleted.", title))
-		return Outcome{}, fmt.Errorf("capture: storing a confirmed entry in %s: %w", space, err)
+		return Outcome{}, e.told(ctx, sc,
+			fmt.Sprintf("I can't confirm whether %q was saved — the memory store didn't answer. Check before saving it again; a duplicate can't be deleted.", title),
+			fmt.Errorf("capture: storing a confirmed entry in %s: %w", space, err))
 	}
 
 	// The confirmation reports the outcome, never echoes the intention: it is
@@ -420,8 +427,9 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	// prevent, and a confirmation built from the intended space could never notice.
 	if entry.Space != space {
 		e.recordDecline(sc, askUserID, title, turn)
-		e.notify(ctx, sc, fmt.Sprintf("Something went wrong: %q was not stored where you chose. Tell whoever runs this node before saving it again.", title))
-		return Outcome{}, fmt.Errorf("capture: store reported space %s for a write confirmed to %s", entry.Space, space)
+		return Outcome{}, e.told(ctx, sc,
+			fmt.Sprintf("Something went wrong: %q was not stored where you chose. Tell whoever runs this node before saving it again.", title),
+			fmt.Errorf("capture: store reported space %s for a write confirmed to %s", entry.Space, space))
 	}
 
 	out := Outcome{Kind: OutcomeSaved, Space: entry.Space, EntryID: entry.ID, Title: title}
@@ -460,12 +468,16 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 	from := personalSpace(sc)
 	to, err := e.sharedSpace(sc)
 	if err != nil {
-		return Outcome{}, err
+		return Outcome{}, e.told(ctx, sc, "I couldn't publish that — nothing was published.", err)
 	}
 
 	entry, err := e.mem.Get(ctx, from, entryID)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("capture: reading %s from %s: %w", entryID, from, err)
+		// The member asked for this and the model's own reply is frequently a bare
+		// tool call with no prose, so a silent return here is a turn that answers
+		// nothing at all.
+		return Outcome{}, e.told(ctx, sc, "I couldn't read that entry, so nothing was published.",
+			fmt.Errorf("capture: reading %s from %s: %w", entryID, from, err))
 	}
 
 	ans, err := e.tr.Ask(ctx, transport.Question{
@@ -476,7 +488,12 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 		Timeout:       e.opts.AskTimeout,
 	})
 	if err != nil {
-		return Outcome{}, fmt.Errorf("capture: asking about publishing %s: %w", entryID, err)
+		// As in Offer: the member may be looking at a question that will never
+		// resolve, and the one thing they must not be left believing is that their
+		// private entry is now public.
+		return Outcome{}, e.told(ctx, sc,
+			fmt.Sprintf("I meant to ask about publishing %q, but the question didn't go through. Nothing was published.", entry.Title),
+			fmt.Errorf("capture: asking about publishing %s: %w", entryID, err))
 	}
 
 	switch {
@@ -488,15 +505,23 @@ func (e *Engine) OfferPromotion(ctx context.Context, sc domain.Scope, entryID st
 
 	shared, err := e.mem.Share(ctx, from, to, entryID)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("capture: publishing %s to %s: %w", entryID, to, err)
+		// The member has just authorised something irreversible, so the copy may
+		// have landed even though the store reported failure — the same reasoning as
+		// the failed Put in Offer (IMPLEMENTATION.md section 12), and worse here,
+		// because what a retry might duplicate is a private entry in the household's
+		// memory. Report the uncertainty rather than a success or a bare failure.
+		return Outcome{}, e.told(ctx, sc,
+			fmt.Sprintf("I can't confirm whether %q was published — the memory store didn't answer. Check the household memory before publishing it again; a publication can't be taken back.", entry.Title),
+			fmt.Errorf("capture: publishing %s to %s: %w", entryID, to, err))
 	}
 
 	// As with Offer, the confirmation reports where the copy actually landed, and
 	// a store reporting a different space than the one the member approved is a
 	// failure, not something to confirm.
 	if shared.Space != to {
-		e.notify(ctx, sc, fmt.Sprintf("Something went wrong: %q was not published where you chose. Tell whoever runs this node.", entry.Title))
-		return Outcome{}, fmt.Errorf("capture: store reported space %s for a publication confirmed to %s", shared.Space, to)
+		return Outcome{}, e.told(ctx, sc,
+			fmt.Sprintf("Something went wrong: %q was not published where you chose. Tell whoever runs this node.", entry.Title),
+			fmt.Errorf("capture: store reported space %s for a publication confirmed to %s", shared.Space, to))
 	}
 
 	out := Outcome{Kind: OutcomeSaved, Space: shared.Space, EntryID: shared.ID, Title: entry.Title}
@@ -648,12 +673,16 @@ func (e *Engine) refundOffer(sc domain.Scope, speaker int64, turn int) {
 	}
 }
 
-// notify tells the member what happened to their capture when the normal flow could
-// not. Delivery failure is swallowed deliberately: every caller is already returning
-// the error that matters, and a transport that cannot send will report the same
-// fault there.
-func (e *Engine) notify(ctx context.Context, sc domain.Scope, text string) {
+// told tells the member what happened to their capture when the normal flow could not,
+// and marks err as already spoken for so a caller can tell whether the failure reached
+// them (see ErrMemberNotified). Every error path that the member could be waiting on
+// goes through here; that is the whole discipline of this file.
+//
+// Delivery failure is swallowed deliberately: every caller is already returning the
+// error that matters, and a transport that cannot send will report the same fault there.
+func (e *Engine) told(ctx context.Context, sc domain.Scope, text string, err error) error {
 	_ = e.tr.Send(ctx, transport.Outbound{ChatID: sc.ChatID, Text: text})
+	return fmt.Errorf("%w; %w", ErrMemberNotified, err)
 }
 
 // recordDecline remembers a refusal so the same title is not put to that member

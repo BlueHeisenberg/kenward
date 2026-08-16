@@ -1028,6 +1028,92 @@ func TestPublishGoesThroughShareWithARetrievedID(t *testing.T) {
 	}
 }
 
+// barePublishCompletion is a publish call with no prose beside it — which is what
+// publishText asks the model for, and therefore the shape a real publish turn has.
+func barePublishCompletion(title string) routing.Completion {
+	c := publishCompletion(title)
+	c.Text = ""
+	return c
+}
+
+// dentistNote seeds the private space with the entry both publish-failure tests
+// resolve a title against.
+func dentistNote(rig *testRig) {
+	rig.mem.bySpace["david-private"] = []memory.Entry{
+		entry("david-private", "Dentist", "Appointment on the first Monday of October.", "validated"),
+	}
+}
+
+// TestPublishReadFailureStillAnswers: the whole turn is a bare publish call, the id
+// resolves out of this turn's own search, and lore then fails the read-back that
+// builds the preview. No question is asked and nothing is published — so unless the
+// node says so, the member's message produces no message at all. Silence is the one
+// wrong answer (IMPLEMENTATION.md section 10).
+func TestPublishReadFailureStillAnswers(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dentistNote(rig)
+	rig.mem.getErr = errors.New("lore: deadline exceeded")
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return barePublishCompletion("Dentist"), nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("publish my dentist note")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if rig.tr.askCount() != 0 {
+		t.Errorf("asked %d questions about an entry that could not be read", rig.tr.askCount())
+	}
+	texts := rig.tr.sentTexts()
+	if len(texts) == 0 {
+		t.Fatal("the member's turn ended in total silence")
+	}
+	if len(texts) != 1 {
+		t.Fatalf("sent %v, want exactly one notice", texts)
+	}
+	if strings.Contains(texts[0], "Published") {
+		t.Errorf("notice %q claims a publication that did not happen", texts[0])
+	}
+}
+
+// TestPublishShareFailureReportsUncertainty: the worse half. The member saw the full
+// text, tapped Publish to household — an act that cannot be taken back — and the
+// store then failed. The copy may still have landed, so the member is told the truth
+// about what is unknown, not a success and not a bare failure. Same reasoning as the
+// failed write in capture.Offer (IMPLEMENTATION.md section 12).
+func TestPublishShareFailureReportsUncertainty(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dentistNote(rig)
+	rig.mem.shareErr = errors.New("lore is down")
+	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoicePublish, UserID: testUserID}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return publishCompletion("Dentist"), nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("publish my dentist note")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	texts := rig.tr.sentTexts()
+	if len(texts) < 2 {
+		t.Fatalf("sent %v, want the reply and a notice about the publication", texts)
+	}
+	got := texts[len(texts)-1]
+	if !strings.Contains(got, "can't confirm") || !strings.Contains(got, "can't be taken back") {
+		t.Errorf("notice %q does not report the uncertainty of an irreversible act", got)
+	}
+	if strings.Contains(got, "Everyone can see it now") {
+		t.Errorf("notice %q reads as a confirmation", got)
+	}
+	if got == noAnswerText {
+		t.Errorf("the member authorised a publication and was told %q", got)
+	}
+}
+
 // TestPublishIDNeverComesFromModelText is the provenance rule as an assertion: a
 // publish call for a title this turn's search did not return writes nothing, asks
 // nothing, and does not reach memory at all. lore's ids are global and lore_get is

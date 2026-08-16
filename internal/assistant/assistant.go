@@ -491,6 +491,17 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 				// As with capture, the engine has already spoken to the member
 				// wherever they saw anything; this is for the operator.
 				u.deps.Logger.Warn("assistant: publish failed", "error", err)
+				// Except where it has not. A publish call is routinely the model's
+				// whole turn — the prompt tells it to call the tool and say nothing —
+				// so a failure the engine did not speak for leaves the member with no
+				// message at all. The engine's own notice wins where there is one:
+				// after a failed publication this generic notice would read as an
+				// invitation to retry something that cannot be taken back.
+				if reply == "" && !errors.Is(err, capture.ErrMemberNotified) {
+					if err := u.send(fctx, sc, in, noAnswerText); err != nil {
+						u.deps.Logger.Warn("assistant: reporting an empty turn", "error", err)
+					}
+				}
 			}
 		}, nil
 	}

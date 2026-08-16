@@ -25,6 +25,12 @@ type fakeMemory struct {
 	bySpace  map[domain.SpaceID][]memory.Entry
 	errFor   map[domain.SpaceID]error
 	putErr   error
+	// getErr and shareErr make the fake fail the way lore fails. Without them no
+	// test in this package could reach the publish flow's error paths at all, which
+	// is how those paths came to be missing their member-facing half — the same
+	// pattern this file's Search comment warns about, for the fifth time.
+	getErr   error
+	shareErr error
 }
 
 type putCall struct {
@@ -107,6 +113,9 @@ func (f *fakeMemory) Get(ctx context.Context, space domain.SpaceID, id string) (
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.gets = append(f.gets, id)
+	if f.getErr != nil {
+		return memory.Entry{}, f.getErr
+	}
 	for _, e := range f.bySpace[space] {
 		if e.ID == id {
 			e.Partial = false
@@ -136,6 +145,9 @@ func (f *fakeMemory) Share(ctx context.Context, from, to domain.SpaceID, entryID
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.shares = append(f.shares, shareCall{from: from, to: to, entryID: entryID})
+	if f.shareErr != nil {
+		return memory.Entry{}, f.shareErr
+	}
 	for _, e := range f.bySpace[from] {
 		if e.ID == entryID {
 			e.Space = to
