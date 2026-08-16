@@ -1,0 +1,58 @@
+# nfpm configuration for the desktop wrapper's .deb and .rpm.
+#
+#   mkdir -p dist/nfpm && cp dist/linux_amd64/kenward{,-desktop} dist/nfpm/
+#   VERSION=0.1.0 ARCH=amd64 nfpm pkg -f packaging/linux/nfpm.yaml -p deb -t dist/
+#   VERSION=0.1.0 ARCH=amd64 nfpm pkg -f packaging/linux/nfpm.yaml -p rpm -t dist/
+#
+# dist/nfpm must hold kenward-desktop and kenward for the architecture named in ARCH.
+#
+# nfpm rather than dpkg-deb and rpmbuild: one file describes both formats, it needs no
+# Debian or Red Hat host to run on, and goreleaser embeds the same tool — so the release
+# pipeline can either shell out to this file or translate it into an `nfpms:` block and
+# get byte-identical layouts either way.
+#
+# There is deliberately no systemd unit here. deploy/kenward.service is how a household
+# runs the daemon headless as a service; this package is the desktop wrapper, which
+# supervises its own child in the user's session. Installing both would put two
+# supervisors on one household.
+
+name: kenward-desktop
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: BlueHeisenberg <2033896+BlueHeisenberg@users.noreply.github.com>
+description: |
+  Status-bar wrapper for the kenward household assistant.
+  Supervises the kenward daemon, shows its state in the system tray and opens
+  the dashboard in your own browser. The daemon itself is included; running
+  kenward headless needs none of this.
+vendor: BlueHeisenberg
+homepage: https://github.com/BlueHeisenberg/kenward
+license: BUSL-1.1
+
+# Deliberately none. The tray talks StatusNotifierItem over D-Bus in pure Go, so there
+# is no libayatana-appindicator, no GTK and no X11 to depend on — which is also why the
+# binary is built with CGO_ENABLED=0 and runs on any glibc or musl distribution.
+depends: []
+
+# A recommendation rather than a dependency: on GNOME the icon is invisible without a
+# tray extension, and there is no package that provides one on every distribution. The
+# program says the same thing in its log on startup when no StatusNotifierWatcher is on
+# the bus, because a package recommendation is not read by anyone.
+recommends:
+  - gnome-shell-extension-appindicator
+
+contents:
+  # Fixed paths, not ${BINDIR}: nfpm expands environment variables in its scalar
+  # fields but not inside content globs, so the caller stages the binaries for the
+  # architecture being packaged here and invokes nfpm once per architecture.
+  - src: dist/nfpm/kenward-desktop
+    dst: /usr/bin/kenward-desktop
+  - src: dist/nfpm/kenward
+    dst: /usr/bin/kenward
+  - src: packaging/linux/kenward-desktop.desktop
+    dst: /usr/share/applications/kenward-desktop.desktop
+  - src: packaging/kenward.png
+    dst: /usr/share/icons/hicolor/512x512/apps/kenward.png

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>kenward</string>
+	<key>CFBundleDisplayName</key>
+	<string>kenward</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.kenward.desktop</string>
+	<key>CFBundleExecutable</key>
+	<string>kenward-desktop</string>
+	<key>CFBundleIconFile</key>
+	<string>kenward.icns</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<!-- An agent application: menu bar only, no Dock tile and no window. Without
+	     this the wrapper gets a bouncing Dock icon and an application menu for a
+	     program that has no windows to manage. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
