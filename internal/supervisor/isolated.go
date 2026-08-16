@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -127,6 +129,17 @@ type IsolatedOptions struct {
 	// RollTimeout bounds how long Roll waits for one recreated pod to become
 	// healthy before stopping the roll. Defaults to DefaultRollTimeout.
 	RollTimeout time.Duration
+	// ImageStatePath is the host file recording which Image this supervisor last
+	// brought the household up on. Start compares it with Image and, when the two
+	// differ, rolls every pod onto the current one before the monitors run — see
+	// Start. Empty disables the check, and then nothing ever rolls: pods keep
+	// whatever image they were created with until an operator intervenes.
+	//
+	// A file is used because the pod's image is not observable: sandbox.Status
+	// reports liveness and endpoints, not what the container was built from. The
+	// closest honest question this supervisor can ask is "is this the image I
+	// last brought them up on", and that has to be written down to be asked.
+	ImageStatePath string
 	// Logger receives lifecycle events. Nil discards.
 	Logger *slog.Logger
 	// Secrets resolves each pod's bot token on the host, from whichever source
@@ -218,7 +231,8 @@ type pod struct {
 // Purge takes the pod's work volume with it, and the work volume is where the
 // member's lore lives.
 // After the host binary updates, Roll recreates pods on the new image, one at a
-// time — see Roll for the constraints that shape it.
+// time — see Roll for the constraints that shape it, and rollIfImageChanged for
+// what makes Start fire it.
 //
 // An Isolated is single-use: construct, Start once, Stop once.
 type Isolated struct {
@@ -511,6 +525,10 @@ func podName(prefix, suffix string) string {
 // A pod that cannot be created or started is retried on its own backoff schedule
 // rather than failing the household: the machines a pod depends on come and go,
 // and one member's trouble is never everyone's outage.
+//
+// Before the monitors run it rolls the household onto the current image when the
+// image has changed since the last start — see rollIfImageChanged, which is where
+// the host's own self-update finally reaches the pods.
 func (i *Isolated) Start(ctx context.Context) error {
 	i.mu.Lock()
 	if i.started {
@@ -527,6 +545,7 @@ func (i *Isolated) Start(ctx context.Context) error {
 	i.mu.Unlock()
 
 	i.logStartup()
+	i.rollIfImageChanged(ctx)
 
 	for _, p := range i.pods {
 		i.wg.Add(1)
@@ -558,6 +577,74 @@ func (i *Isolated) logStartup() {
 	i.logger.Info("supervisor: started",
 		"mode", privacy.ModeIsolated.String(),
 		"privacy", privacy.Statement(privacy.ModeIsolated))
+}
+
+// rollIfImageChanged brings the pods onto the current image when they are not
+// already on it. It is the whole of the wiring behind docs/IMPLEMENTATION.md §9's
+// "isolated mode updates pods one member at a time", and it runs here — in Start,
+// before the monitors — for want of any other moment that can observe the change.
+//
+// What can be observed is narrow. keel's Inspect reports whether a container runs,
+// never what it was built from, so "are the pods stale" cannot be asked of the
+// runtime. And the host does not learn it is a new build at the instant it becomes
+// one: it self-updates by swapping the binary and exiting, and the process that
+// notices is the next one, which is this one. So the question asked is the one this
+// process can answer honestly — is the image I would start pods from the image I
+// recorded last time — and the answer is written down in ImageStatePath. Without
+// this the household node upgrades itself and every member's pod keeps serving from
+// the previous image indefinitely, which is worse than not updating at all: the
+// operator has every reason to believe the update completed.
+//
+// ensureRunning cannot do this job. It starts a pod that exists and creates one that
+// does not; it never replaces a running container, and it must not — that is the
+// restart path, and a restart that recreated pods would roll a new image out to the
+// whole household at once on the first crash.
+//
+// Failures are logged and never fatal. Roll stops at the first broken pod and leaves
+// every later one on its working old image, which is the point of rolling; this
+// leaves the recorded image unchanged too, so the next start tries again rather than
+// recording a state the household is not in. The household serves throughout, on
+// whichever mixture of images it ended up with — §9's rule that nothing in the
+// update path may stop kenward serving outranks arriving at one version.
+func (i *Isolated) rollIfImageChanged(ctx context.Context) {
+	path := i.opts.ImageStatePath
+	if path == "" {
+		return
+	}
+	prev, err := os.ReadFile(path)
+	recorded := strings.TrimSpace(string(prev))
+	switch {
+	case err == nil && recorded == i.opts.Image:
+		return
+	case err != nil && !errors.Is(err, fs.ErrNotExist):
+		// Unreadable is not "unchanged": rolling on a bad read costs one round of
+		// recreations, and skipping it costs a household stuck on an old image.
+		i.logger.Warn("supervisor: could not read the recorded pod image; rolling to be sure",
+			"path", path, "error", err)
+	}
+
+	i.logger.Info("supervisor: pod image differs from the one these pods were brought up on; rolling one unit at a time",
+		"recorded", recorded, "current", i.opts.Image)
+	if err := i.Roll(ctx); err != nil {
+		i.logger.Error("supervisor: the rolling update did not finish; later pods are still on their previous image and the household keeps serving",
+			"error", err)
+		return
+	}
+	if err := writeImageRecord(path, i.opts.Image); err != nil {
+		i.logger.Warn("supervisor: the pods are on the current image but recording it failed, so the next start will roll them again",
+			"path", path, "error", err)
+	}
+}
+
+// writeImageRecord notes which image the pods are now on. It is not written
+// atomically: the worst a torn write can cause is one redundant roll on the next
+// start, and a redundant roll preserves every work volume exactly as a needed one
+// does.
+func writeImageRecord(path, image string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(image+"\n"), 0o600)
 }
 
 // recoverPump contains a panic raised by a pod-supervising goroutine itself —
@@ -828,10 +915,14 @@ func (i *Isolated) shutdown(ctx context.Context) error {
 // broken household, which is the opposite of what rolling is for. The failed
 // pod's own monitor keeps trying to bring it back on its usual backoff.
 //
+// A pod that has never been created is skipped rather than rolled: it is on no
+// image, and its own monitor creates it from the current spec.
+//
 // Recreation goes through sandbox.Backend.Recreate, which preserves the pod's
 // work volume structurally — no path through it can delete the member's lore.
 // Nothing here calls Purge, the one method that does. Only one Roll may run at
-// a time, and only on a started supervisor.
+// a time, and only on a started supervisor. Start calls it for a household whose
+// image has changed; see rollIfImageChanged.
 func (i *Isolated) Roll(ctx context.Context) error {
 	i.mu.Lock()
 	started := i.started
@@ -848,19 +939,36 @@ func (i *Isolated) Roll(ctx context.Context) error {
 	defer i.rollMu.Unlock()
 
 	for _, p := range i.pods {
-		if err := i.rollOne(ctx, p); err != nil {
+		switch err := i.rollOne(ctx, p); {
+		case errors.Is(err, errPodAbsent):
+			i.logger.Info("supervisor: no pod to roll; its monitor will create it on the current image", "pod", p.name)
+		case err != nil:
 			return &RollError{Member: p.key.member, Group: p.key.group, Err: err}
+		default:
+			i.logger.Info("supervisor: pod rolled to current image", "pod", p.name)
 		}
-		i.logger.Info("supervisor: pod rolled to current image", "pod", p.name)
 	}
 	return nil
 }
+
+// errPodAbsent reports that a pod has never been created, so there is no old
+// image to roll off. It is not a failure and must never stop a roll.
+var errPodAbsent = errors.New("supervisor: pod does not exist")
 
 // rollOne replaces one pod. It holds the pod's operation lock throughout, so the
 // monitor stands aside rather than fighting the replacement.
 func (i *Isolated) rollOne(ctx context.Context, p *pod) error {
 	p.opMu.Lock()
 	defer p.opMu.Unlock()
+
+	// A pod that has never been created is on no image at all, so there is nothing
+	// to replace: its monitor creates it from the current spec moments from now.
+	// The backend would tolerate a Recreate here and make one, but a first start
+	// would then queue every pod's creation behind the next pod's health wait for
+	// no gain.
+	if _, err := i.inspect(ctx, p.name); errors.Is(err, sandbox.ErrSandboxNotFound) {
+		return errPodAbsent
+	}
 
 	i.tracker.set(p.key, StateStarting)
 

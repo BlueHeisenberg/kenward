@@ -47,7 +47,11 @@ import (
 // isolated-mode pods "one member at a time" therefore cannot be expressed
 // from inside this package at all; it belongs to whatever owns the pods'
 // shared artifact — the image and the process that rolls it — and pretending
-// otherwise here would be sequencing theatre. See docs/IMPLEMENTATION.md §9.
+// otherwise here would be sequencing theatre. That owner is the host
+// supervisor, and supervisor.Isolated does it: on the start after this binary
+// was replaced, it finds the image it would now run differs from the one it
+// recorded and rolls the pods onto it, one at a time. See
+// docs/IMPLEMENTATION.md §9.
 func (s *Scheduler) Run(ctx context.Context) error {
 	if s == nil {
 		return nil

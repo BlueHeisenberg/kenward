@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -693,6 +694,140 @@ func TestIsolatedRollRequiresStart(t *testing.T) {
 	if err := h.sup.Roll(context.Background()); err == nil {
 		t.Fatal("Roll before Start succeeded; it must require a started supervisor")
 	}
+}
+
+// TestIsolatedRollsOnStartWhenTheImageChanged walks the three starts a household
+// actually experiences: a first one with no pods, one after the host self-updated,
+// and one that changed nothing.
+//
+// The middle one is the whole point. ensureRunning starts a pod that exists and
+// creates one that does not; it never replaces a running container. So without a
+// roll at startup the host upgrades itself, comes back on the new binary, finds
+// every member's pod running and leaves them on the previous image indefinitely.
+func TestIsolatedRollsOnStartWhenTheImageChanged(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "pod-image")
+	backend := newFakeBackend()
+	names := []string{"kenward-member-david", "kenward-member-eve", "kenward-group"}
+	onBackend := func(image string) func(*IsolatedOptions) {
+		return func(o *IsolatedOptions) {
+			o.Backend = backend
+			o.ImageStatePath = record
+			o.RollTimeout = time.Second
+			if image != "" {
+				o.Image = image
+			}
+		}
+	}
+
+	// First start. No pod exists, so there is no old image to roll off and no
+	// recreation happens — a fresh household must not serialise its first boot
+	// behind a health wait per member for nothing.
+	first := newIsolatedHarness(t, onBackend(""))
+	first.backend = backend
+	first.start(t)
+	first.waitAllReady(t)
+	if got := backend.recreations(); len(got) != 0 {
+		t.Fatalf("first start recreated %v; no pod existed to roll", got)
+	}
+	first.stop(t)
+	if got := readImageRecord(t, record); got != "example.test/kenward:dev" {
+		t.Fatalf("recorded image after the first start = %q, want the image the pods were created on", got)
+	}
+
+	volumes := make(map[string]int, len(names))
+	for _, name := range names {
+		id, ok := backend.volumeID(name)
+		if !ok {
+			t.Fatalf("pod %s has no work volume", name)
+		}
+		volumes[name] = id
+	}
+
+	// The host self-updated and came back on a new binary, so the image it starts
+	// pods from is new and every pod is a version behind.
+	second := newIsolatedHarness(t, onBackend("example.test/kenward:v2"))
+	second.backend = backend
+	second.start(t)
+	// The record is written only after the last pod came back healthy, so waiting
+	// on it waits for the whole roll rather than for the last Recreate call.
+	waitFor(t, "the household to roll onto the new image", func() bool {
+		b, err := os.ReadFile(record)
+		return err == nil && strings.TrimSpace(string(b)) == "example.test/kenward:v2"
+	})
+
+	// Members in configuration order, the group last — Roll's order, unchanged.
+	got := backend.recreations()
+	for i, want := range names {
+		if got[i] != want {
+			t.Fatalf("roll order = %v, want %v", got, names)
+		}
+	}
+	for _, name := range names {
+		spec, ok := backend.spec(name)
+		if !ok {
+			t.Fatalf("pod %s vanished", name)
+		}
+		if spec.Image != "example.test/kenward:v2" {
+			t.Fatalf("pod %s is still on %q after the host updated", name, spec.Image)
+		}
+		// The work volume is the member's lore. Recreate preserves it; Purge is
+		// the only call that would not, and nothing on this path can reach it.
+		if id, _ := backend.volumeID(name); id != volumes[name] {
+			t.Fatalf("pod %s work volume changed from %d to %d: the member's lore was lost", name, volumes[name], id)
+		}
+	}
+	if n := backend.destroyed(); n != 0 {
+		t.Fatalf("Purge called %d times during a rolling update, want never", n)
+	}
+	if got := readImageRecord(t, record); got != "example.test/kenward:v2" {
+		t.Fatalf("recorded image after the roll = %q, want the image the pods now run", got)
+	}
+	second.waitAllReady(t)
+	second.stop(t)
+
+	// Third start, nothing changed. A restart for any other reason — a crash, a
+	// configuration reload, an operator — must not churn every member's pod.
+	third := newIsolatedHarness(t, onBackend("example.test/kenward:v2"))
+	third.backend = backend
+	third.start(t)
+	third.waitAllReady(t)
+	if n := len(backend.recreations()); n != len(names) {
+		t.Fatalf("%d recreations after a start that changed nothing, want the %d from the roll", n, len(names))
+	}
+	third.stop(t)
+}
+
+// TestIsolatedNeverRollsWithoutAnImageRecord proves the check is off, not
+// defaulted on, when no path is given: an embedder with nowhere to write must get
+// the old behaviour rather than a roll on every start.
+func TestIsolatedNeverRollsWithoutAnImageRecord(t *testing.T) {
+	backend := newFakeBackend()
+	h := newIsolatedHarness(t, func(o *IsolatedOptions) { o.Backend = backend })
+	h.backend = backend
+	h.start(t)
+	h.waitAllReady(t)
+	h.stop(t)
+
+	next := newIsolatedHarness(t, func(o *IsolatedOptions) {
+		o.Backend = backend
+		o.Image = "example.test/kenward:v2"
+	})
+	next.backend = backend
+	next.start(t)
+	next.waitAllReady(t)
+	if got := backend.recreations(); len(got) != 0 {
+		t.Fatalf("recreated %v with no ImageStatePath configured, want nothing", got)
+	}
+	next.stop(t)
+}
+
+func readImageRecord(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the recorded pod image: %v", err)
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func TestIsolatedPodConfigProvisioning(t *testing.T) {

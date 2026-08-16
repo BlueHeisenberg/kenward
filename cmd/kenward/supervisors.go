@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
@@ -24,6 +25,16 @@ import (
 // --image. A `dev` build has no published tag, so it is refused rather than guessed
 // at.
 const defaultPodImageRepo = "ghcr.io/blueheisenberg/kenward"
+
+// podImageFileName is the file under the data directory recording which pod image
+// the host supervisor last brought the household up on.
+//
+// It exists because the question cannot be asked of anything else. This host
+// self-updates by swapping its own binary and exiting; the process that has to
+// notice the pods are now a version behind is the next one, and keel's Inspect
+// reports whether a container runs but never what image it runs. So the fact is
+// written down. See supervisor.IsolatedOptions.ImageStatePath.
+const podImageFileName = "pod-image"
 
 // defaultSupervisor picks the supervisor from the configuration's mode and from
 // whether this process was asked to be one unit.
@@ -98,8 +109,26 @@ func isolatedOptions(e *env, opts runOptions, logger *slog.Logger) (supervisor.I
 		}
 		image = defaultPodImageRepo + ":" + v
 	}
+	// Beside the state file and the session store, under the same data directory,
+	// because it is the same kind of thing: what this node knows about the household
+	// it is running, rather than what the operator configured. Empty only if there is
+	// no data directory at all, which config.ApplyDefaults does not permit.
+	imageState := ""
+	if opts.dataDir != "" {
+		imageState = filepath.Join(opts.dataDir, podImageFileName)
+	}
 	return supervisor.IsolatedOptions{
 		Image: image,
+		// Without this the pods never move. `ensureRunning` starts a pod that exists
+		// and creates one that does not; nothing in the restart path replaces a
+		// running container, so after this host self-updated and came back on the new
+		// binary every member's pod would keep serving from the previous image
+		// forever — the household node upgraded and its members silently did not,
+		// which is worse than not updating at all, because the operator has every
+		// reason to believe the update completed. supervisor.Roll is the one thing
+		// that fixes that and it had no caller; this is the caller. See
+		// docs/IMPLEMENTATION.md §9, "one member at a time".
+		ImageStatePath: imageState,
 		// D-022: the two isolated deployment paths must express the same thing. A
 		// non-empty ConfigFile is what makes that true — the household configuration
 		// is provisioned into every pod at supervisor.PodConfigPath and the pod is

@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
@@ -93,5 +94,75 @@ func TestHostSupervisorPassesTheConfigPathThroughUnchanged(t *testing.T) {
 	}
 	if iso.ConfigFile != "kenward.yaml" {
 		t.Errorf("ConfigFile = %q, want the resolved path unchanged, %q", iso.ConfigFile, "kenward.yaml")
+	}
+}
+
+// TestHostSupervisorRollsPodsOntoANewImage.
+//
+// D-014 and docs/IMPLEMENTATION.md §9 make it an absolute requirement that isolated
+// mode updates pods one member at a time. supervisor.Isolated.Roll implements exactly
+// that, one at a time, in configuration order, stopping at the first failure and
+// preserving every work volume — and internal/supervisor's own tests covered all of
+// it. Nothing called it. `grep -rn "\.Roll(" --include=*.go .` returned that package's
+// tests and nothing else.
+//
+// The consequence was not a missing feature but a lie. `ensureRunning` starts a pod
+// that exists and creates one that does not; it never replaces a running container.
+// So the host would self-update, restart onto the new binary, find every member's pod
+// running and leave it there — the household node upgrading itself while its members
+// silently did not, which is worse than not updating at all, because the operator has
+// every reason to believe the update completed.
+//
+// The gap was here, in the wiring, which is why the test is here. What the supervisor
+// needs is somewhere to record which image it last brought the pods up on: the pod's
+// image is not observable — keel's Inspect reports liveness, not provenance — and this
+// process does not learn it is a new build at the moment it becomes one, because the
+// build that swapped the binary has already exited. The next start comparing what it
+// would run against what it wrote down is the only honest question available.
+func TestHostSupervisorRollsPodsOntoANewImage(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, isolatedYAML, fullEnvironment())
+
+	// Taken from the command rather than assumed, for the same reason as the
+	// configuration path above: this must be the data directory `run` is serving.
+	var got runOptions
+	h.e.supervisors = func(_ *env, _ *config.Config, opts runOptions, _ *slog.Logger) (supervisor.Supervisor, error) {
+		got = opts
+		return stubSupervisor{}, nil
+	}
+	if code := h.run("run"); code != exitOK {
+		t.Fatalf("run exited %d, want 0\n%s", code, h.both())
+	}
+	if got.dataDir == "" {
+		t.Fatal("run resolved no data directory, so there is nowhere to record the pod image")
+	}
+
+	got.image = "ghcr.io/blueheisenberg/kenward:test"
+	iso, err := isolatedOptions(h.e, got, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("wiring the host supervisor: %v", err)
+	}
+	if iso.ImageStatePath == "" {
+		t.Fatal("IsolatedOptions.ImageStatePath is empty, so the host supervisor never compares the\n" +
+			"image it would start pods from against the one the pods are on, and never calls\n" +
+			"Roll. After this node self-updates and restarts, every member's pod keeps\n" +
+			"serving from the previous image forever while the operator believes the update\n" +
+			"completed. docs/IMPLEMENTATION.md §9: isolated mode updates pods one member at\n" +
+			"a time.")
+	}
+	if want := filepath.Join(got.dataDir, podImageFileName); iso.ImageStatePath != want {
+		t.Fatalf("ImageStatePath = %q, want it beside the household's other state, %q", iso.ImageStatePath, want)
+	}
+
+	// It is a file of its own, not something that would truncate state a claim or a
+	// key depends on.
+	cfg, err := loadConfig(h.config, got.dataDir, h.e.secrets())
+	if err != nil {
+		t.Fatalf("loading the configuration: %v", err)
+	}
+	for _, taken := range []string{cfg.StatePath(), sessionStorePath(cfg)} {
+		if iso.ImageStatePath == taken {
+			t.Fatalf("the pod image record shares a path with %q", taken)
+		}
 	}
 }
