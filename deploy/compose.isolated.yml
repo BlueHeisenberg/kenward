@@ -29,9 +29,54 @@
 #   3. Supply a `lore` binary per service (see ../Dockerfile's note) — each
 #      service gets its OWN copy/mount, never a shared one, since sharing the
 #      binary is fine but sharing the *instance* (same LORE_HOME) is not.
-#   4. Mint each member's claim code BEFORE bringing their service up:
-#      `kenward invite --name Jordan`. That writes `<data_dir>/invites/jordan.json`
-#      on the host — the digests of jordan's outstanding codes, and nobody
+#   4. Initialise each service's lore store ONCE, in that service's OWN volume,
+#      before its first `up` — one per service, never a shared one:
+#
+#        docker compose -f compose.isolated.yml run --rm --no-deps \
+#          --entrypoint /usr/local/bin/lore kenward-david init --name david
+#
+#      `lore mcp` refuses to start against an uninitialised LORE_HOME — "no
+#      account at /var/lib/kenward/lore/account.json (run `lore init`)" — and
+#      kenward does not notice: `run` only checks that the binary is on PATH, so
+#      the pod starts, authorises, greets, and records nothing. Only `kenward
+#      doctor` reports it, as "lore mcp did not respond". Keep each recovery code
+#      `init` prints; nothing else can recover that member's store.
+#
+#      SHARED SPACE, AND IT IS NOT SOLVED HERE: every pod resolves
+#      household.shared_space against ITS OWN lore store — a member's pod reads
+#      the shared space as well as their private one — but three separate
+#      LORE_HOMEs are three separate lore accounts, so `lore init` gives each of
+#      them a DIFFERENT set of space ids and only one store can hold the space
+#      the file names. Every other pod's `doctor` then says `space "…" is not a
+#      space this lore store holds` and that conversation reads nothing. Making
+#      one shared space real across the three is lore's own job — `lore space
+#      invite` on the owning store, `lore join` on the others, and a `lore serve`
+#      reachable between them — and this file does not set any of it up: there is
+#      no port, no peer and no daemon in any service below. Until you wire that
+#      yourself, treat isolated mode's household group as having memory only in
+#      the group pod. Each member's PRIVATE space is unaffected: it lives in that
+#      member's own store, which is the property this mode exists for.
+#   5. Mint each member's claim code BEFORE bringing their service up:
+#      `kenward invite --name Jordan --data-dir .`, run from this directory.
+#
+#      `--data-dir .` is not optional and not a style choice. `invite` writes to
+#      `<data_dir>/invites/jordan.json`, and the data_dir kenward.yaml states is
+#      `/var/lib/kenward` — the path INSIDE a container, which on the host is
+#      either somebody else's directory or nothing at all. Without the override
+#      the command prints a claim code, reports success, and writes the digest
+#      somewhere no service below mounts; `./invites/jordan.json` never appears,
+#      the mount creates a directory in its place, and jordan's pod refuses to
+#      start. The code is then unusable and there is no copy of it anywhere.
+#
+#      Note also that this command has to run somewhere holding the WHOLE
+#      household's secrets: it loads kenward.yaml unscoped, so it demands every
+#      member's bot token and passphrase. That is the host, where `.env` already
+#      is. It cannot be run as `docker compose run` against a service here — no
+#      service holds another member's secrets, which is the point of the mode, so
+#      every one of them fails this command's validation on its siblings' missing
+#      variables.
+#
+#      What that writes is the digests of jordan's outstanding codes, and nobody
 #      else's — which the service below mounts read-only. This is the whole of
 #      how a code minted on the host reaches the container that has to redeem
 #      it: the claim happens in a conversation with the member's OWN bot
@@ -44,7 +89,9 @@
 #      creates a DIRECTORY in its place, and the container then refuses to
 #      start and says so.
 #
-# TO REVOKE A MEMBER LATER: run `kenward revoke jordan` on the host, which writes
+# TO REVOKE A MEMBER LATER: run `kenward revoke jordan --data-dir .` on the host —
+# same directory and same override as `invite` in step 5, for the same reason and
+# with the same failure if it is left out. That writes
 # `<data_dir>/revocations/jordan.json`, then ADD the mount to that member's
 # service — `./revocations/jordan.json:/etc/kenward/revoked.json:ro` — and
 # `docker compose up -d kenward-jordan`. The `--revoked=` flag is already in every
@@ -278,8 +325,10 @@ services:
   #    members[].bot_token_env and to .env — never reuse another member's token
   #    variable). If the two disagree, kenward refuses to start and says so
   #    rather than quietly serving the wrong member.
-  # 3c. Run `kenward invite --name Sam` on the host BEFORE `up`, and mount the
-  #    file it writes: `./invites/sam.json:/etc/kenward/invites.json:ro`. Sam's
+  # 3c. Run `kenward invite --name Sam --data-dir .` on the host BEFORE `up` (the
+  #    override is required — see step 5 in the header), initialise sam's own lore
+  #    store the same way step 4 does, and mount the file invite writes:
+  #    `./invites/sam.json:/etc/kenward/invites.json:ro`. Sam's
   #    own file — never david's, never the shared `invites.json`. Without it
   #    sam's container comes up claim-only and refuses the code sam was handed,
   #    in silence, which is the one enrolment failure nobody can diagnose from

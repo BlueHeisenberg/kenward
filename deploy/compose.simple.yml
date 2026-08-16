@@ -11,11 +11,27 @@
 #   1. Write kenward.yaml next to this file (mode: simple) — see
 #      docs/IMPLEMENTATION.md §4 for the schema. Do NOT commit it.
 #   2. Create a `.env` file next to this compose file — also NOT committed,
-#      see deploy/README.md — defining KENWARD_BOT_TOKEN and one variable per
-#      `api_key_env` referenced by an endpoint in kenward.yaml.
+#      see deploy/README.md — defining KENWARD_BOT_TOKEN, KENWARD_PASSPHRASE,
+#      and one variable per `api_key_env` referenced by an endpoint in
+#      kenward.yaml.
 #   3. Supply a `lore` binary for kenward to spawn (`lore mcp`) — see the note
 #      at the top of ../Dockerfile. The bind mount below assumes you've built
 #      or copied one to ./bin/lore on the host.
+#   4. Initialise that lore store ONCE, and create the spaces kenward.yaml
+#      names, against the same LORE_HOME the service below sets:
+#
+#        docker compose -f compose.simple.yml run --rm \
+#          --entrypoint /usr/local/bin/lore kenward init --name kenward
+#        docker compose -f compose.simple.yml run --rm \
+#          --entrypoint /usr/local/bin/lore kenward space create home
+#
+#      then put the id `lore spaces` prints into household.shared_space and
+#      each member's private_space. `lore mcp` refuses to start against an
+#      uninitialised store — "no account at …/account.json (run `lore init`)"
+#      — and kenward does not notice: `run` only checks the binary is on PATH,
+#      so the node starts, authorises, greets, and records nothing. Only
+#      `kenward doctor` reports it, as "lore mcp did not respond". Store the
+#      recovery code `init` prints; nothing else can recover this store.
 #
 # Secrets never appear in this file: every token/key is named by environment
 # variable only, sourced from `.env`, exactly as kenward.yaml itself only ever
@@ -43,6 +59,42 @@ services:
       # Must match telegram.bot_token_env in kenward.yaml. Interpolated from
       # `.env` at compose parse time — not injected wholesale.
       KENWARD_BOT_TOKEN: ${KENWARD_BOT_TOKEN}
+      # The one node passphrase that wraps every member's key in simple mode.
+      # Not optional and not defaultable: without it kenward refuses to start
+      # and this container restart-loops on exit 2 forever, because the three
+      # ways to supply one are a systemd credential (no systemd here), this
+      # variable, and a terminal prompt (nothing is attached to answer it).
+      # kenward.service's LoadCredential=kenward-passphrase is the same secret
+      # by the better mechanism; a container has no portable equivalent, so it
+      # arrives here as an environment variable — see deploy/README.md.
+      #
+      # Lose or change this value and no member's key unwraps again: it is the
+      # wrapping secret for everything under kenward-data, not a login.
+      #
+      # A file is better than this variable if you can manage one, because an
+      # environment variable is inherited by the `lore` subprocess kenward
+      # spawns. Unlike the tokens there is no `*_file` config field for the node
+      # passphrase, but the systemd path works here too: set
+      # CREDENTIALS_DIRECTORY and mount the secret at that path as
+      # `kenward-passphrase`. Drop the line above and use instead:
+      #
+      #   environment:
+      #     CREDENTIALS_DIRECTORY: /run/secrets
+      #   volumes:
+      #     - ./kenward-passphrase:/run/secrets/kenward-passphrase:ro
+      #
+      # kenward then reports `source=/run/secrets/kenward-passphrase` at
+      # startup rather than `source=KENWARD_PASSPHRASE`, which is how you check
+      # which one it actually used.
+      KENWARD_PASSPHRASE: ${KENWARD_PASSPHRASE}
+      # Where the `lore` this container spawns keeps its store. It must be
+      # under the data volume below and it must be stated: unset, lore falls
+      # back to $HOME/.lore — /home/nonroot/.lore in this image — which is on
+      # the read_only root filesystem, so the store cannot be created, `lore
+      # mcp` exits, and kenward runs on with no memory at all. Same variable
+      # and same path as every service in compose.isolated.yml, for the same
+      # reason.
+      LORE_HOME: /var/lib/kenward/lore
       # Add one line here (and in .env) per api_key_env your endpoints
       # reference, e.g.:
       # OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
