@@ -1401,9 +1401,17 @@ Telegram bot usernames are publicly discoverable and anyone may `/start`. Theref
    `members[].persona` in `state.json`, so an abandoned tutorial and one that never
    started are the same thing downstream — unanswered fields are empty, and empty means
    "the household's". The member is served by no unit until the tutorial ends, because
-   until then their messages have to keep reaching the enrolment pump for it to read;
-   whatever they say in the group chat in that window is unrouted, which is bounded by
-   `enrol.DefaultTutorialTimeout`.
+   until then their messages have to keep reaching the enrolment pump for it to read.
+
+   **The household group is not part of that wait.** The binding is folded into the
+   running configuration the moment the code is redeemed (`runner.bound`), before the
+   tutorial starts, so `scope.Resolve` recognises the member in the group chat straight
+   away — the group unit serves the chat, not the member, and needed nothing else. It
+   used not to be, and the symptom was a silence with nothing to see: a member who
+   claimed mid-run, finished their DM and then spoke in the group got no reply and *no
+   log line*, because resolution refused them exactly as it refuses a stranger and that
+   is a `Debug` line on purpose. The only remedy was a restart. It is the same fold that
+   lets `personaAnswered` find a member the Binder created from an invited name.
 4. Codes are single-use, expiring, rate-limited (5 attempts per chat per hour) and
    compared in constant time.
 

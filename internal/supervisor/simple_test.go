@@ -975,3 +975,60 @@ func TestMemoryPolicyReachesTheUnits(t *testing.T) {
 		}
 	})
 }
+
+// TestGroupServesAMemberWhoseTutorialIsStillRunning is D4 from the second live run.
+//
+// A member claimed while the node was running. Their DM and their tutorial worked.
+// Their next message in the household group got no reply and produced no log line
+// at all, and the identical message was answered after a restart.
+//
+// The cause is not the group unit, which serves the chat and not the member: it is
+// that a claim only reaches the running configuration when the tutorial ends, and
+// scope.Resolve refuses a sender the configuration does not know. So for the whole
+// length of somebody's setup conversation — their own doing, and bounded by
+// enrol.DefaultTutorialTimeout — the household chat treats them as a stranger, and
+// treating a stranger as a stranger is silent by design. The binding exists from the
+// moment the code is redeemed; nothing was waiting on the tutorial but the fold.
+func TestGroupServesAMemberWhoseTutorialIsStillRunning(t *testing.T) {
+	claimer, err := enrol.New(enrol.NewMemStore(), testBinder{})
+	if err != nil {
+		t.Fatalf("enrol.New: %v", err)
+	}
+	code, err := claimer.Mint(context.Background(), "Ana", time.Hour)
+	if err != nil {
+		t.Fatalf("Mint: %v", err)
+	}
+
+	h := newSimpleHarness(t, simpleTestConfig(), func(o *SimpleOptions) { o.Enrol = claimer })
+
+	// The tutorial's first question is held open, so the whole test runs inside the
+	// window the live member was in.
+	held := make(chan struct{})
+	var once sync.Once
+	release := func() { once.Do(func() { close(held) }) }
+	defer release()
+	h.fake.SetAnswerFunc(func(transport.Question) transport.Answer {
+		<-held
+		return transport.Answer{TimedOut: true}
+	})
+
+	h.start(t)
+
+	const anaTelegramID = int64(333)
+	h.fake.Inject(transport.Inbound{ChatID: anaTelegramID, UserID: anaTelegramID, Text: code, MessageID: 2})
+	waitFor(t, "the tutorial is asking its first question", func() bool { return len(h.fake.Asked()) >= 1 })
+
+	before := len(h.fake.Sent())
+	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: anaTelegramID, Text: "hi all", MessageID: 3, IsGroup: true})
+	waitFor(t, "a group reply for the member who has just claimed", func() bool {
+		for _, o := range h.fake.Sent()[before:] {
+			if o.ChatID == groupChatID {
+				return true
+			}
+		}
+		return false
+	})
+
+	release()
+	h.stop(t)
+}
