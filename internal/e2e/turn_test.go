@@ -463,14 +463,23 @@ func TestUndoRemovesTheEntryEndToEnd(t *testing.T) {
 	if got := dels[0].Spaces; len(got) != 1 || got[0] != davidSpace {
 		t.Errorf("deleted from %v, want the member's own space %s", got, davidSpace)
 	}
+	// The removal is reported by rewriting the announcement that claimed the entry
+	// was written, not by a second message underneath it: the first one is the one
+	// that is now false, and it is the one a member scrolling back reads.
 	waitFor(t, "the removal notice", func() bool {
-		for _, o := range h.tr.Sent() {
-			if strings.Contains(o.Text, "I've removed") && strings.Contains(o.Text, "Boiler serviced") {
+		for _, ed := range h.tr.Edits() {
+			if strings.Contains(ed.Text, "I didn't record this") &&
+				strings.Contains(ed.Text, "<s>Boiler serviced</s>") {
 				return true
 			}
 		}
 		return false
 	})
+	for _, o := range h.tr.Sent() {
+		if strings.Contains(o.Text, "I've removed") {
+			t.Errorf("a second removal notice was sent as well: %q", o.Text)
+		}
+	}
 }
 
 // TestFailedUndoTellsTheMemberTheEntryIsStillThere. The delete is the one step of

@@ -221,7 +221,15 @@ var german = Catalogue{
 		}
 		return "Ich habe das ins Haushaltsgedächtnis geschrieben:"
 	},
-	WrittenHint:     "Der Rückgängig-Knopf entfernt es wieder.",
+	WrittenHint: "Der Rückgängig-Knopf entfernt es wieder.",
+	RemovedOpener: func(private bool) string {
+		where := "aus dem Haushaltsgedächtnis"
+		if private {
+			where = "aus deinem privaten Gedächtnis"
+		}
+		return "Ich habe das doch nicht aufgeschrieben — ich habe es " + where +
+			" entfernt. Es taucht in keiner Antwort mehr auf, weder hier noch auf einem anderen Gerät im Haushalt."
+	},
 	PromotionOpener: "Das würde genau in dieser Form im Haushalt veröffentlicht und kann nicht zurückgezogen werden:",
 	PromotionCloser: "Veröffentlichen?",
 	AlsoKnownAs:     func(words []string) string { return "Auch: " + latinList(words) },

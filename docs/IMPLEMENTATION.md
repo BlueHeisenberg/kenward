@@ -1405,13 +1405,35 @@ in a different state in each:
 
 | Ending | What the member gets |
 | --- | --- |
-| Delete confirmed, or the entry was already a tombstone | *"I've removed … It won't come back in an answer, not here and not on any other device in the household."* Outcome is `OutcomeUndone`, and `Stored()` is false. |
+| Delete confirmed, or the entry was already a tombstone | **The announcement is rewritten in place**: the entry struck through, and the line around it reading *"I didn't record this after all — I've taken it back out of your private memory. It won't come back in an answer, not here and not on any other device in the household."* Outcome is `OutcomeUndone`, and `Stored()` is false. Nothing else is sent. |
+| Delete confirmed, but the rewrite could not be made | The same sentence as a message of its own — *"I've removed … not here and not on any other device in the household."* — which is what this flow did before it edited. A message too old to edit, a transport that cannot edit, an announcement whose id never came back: none of them may cost the member the news. |
 | lore refused the delete, for any reason | *"I couldn't take that back: … is still in your private memory."* The outcome stays `OutcomeSaved`, because it is. There is no second failure row: the store writes the tombstone or returns an error, so the entry's state is never unknown. It could be while lore was a subprocess, and this table had a *"I can't tell whether … was removed"* row for it. |
 | Nobody taps; the window closes | The announcement is edited in place, keeping its text and appending *"— the undo window has closed; this is still in your private memory"*. |
 | The announcement itself could not be sent | A plain confirmation, saying the undo button did not go through. Silence here would be a silent write. |
 
 Reporting a failed or unconfirmed delete as "undone" would be the plainest lie the product
 could tell: the member asked for something to stop existing and would be told it had.
+
+**The correction lands on the message that was wrong.** The announcement says *"I've
+written this to your private memory"* and shows the entry as stored; the tap makes that
+false, and a second message underneath does not make it true again — scrolled back to a
+day later, the chat says the opposite of what happened. So a confirmed delete edits the
+announcement rather than replying to it, and the entry is **struck through rather than
+removed from the message**, because what a member needs to see afterwards is *what it was
+they rejected*. Only a rewrite that could not be made falls back to a message of its own,
+which is why `Catalogue.Removed` stays in the table alongside `RemovedOpener`.
+
+The struck entry is written with `transport.Strike`, which escapes its argument exactly as
+`Bold` and `Quote` do. A title is model-written out of what a member just said, and this
+message outlives the entry itself, so a note titled `<s>` must read as a note titled `<s>`
+rather than strike the remainder of the message. Because `Strike` escapes, it does not
+compose with the other marks: a struck entry is two struck runs, not a struck bold title
+over a struck quotation. The English gloss is dropped from the rewrite — it says the text
+above is kept in English, and the text above is not kept at all.
+
+A failed delete is left alone: the announcement still reads as a write that stands,
+appended with `— Undo`, and the *"I couldn't take that back"* notice goes out underneath
+it. That pair is accurate; the entry really is still there.
 
 The success sentence is bounded to what lore actually does. A delete is a signed tombstone
 that propagates, not a shred — the entry stops coming back from search and get, and the row

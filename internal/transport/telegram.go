@@ -651,16 +651,7 @@ func (t *Telegram) retire(ctx context.Context, chatID int64, msgID int, text str
 		defer cancel()
 	}
 	edit := func(text string, mode models.ParseMode) error {
-		return t.call(ctx, func(ctx context.Context) error {
-			_, err := t.api.EditMessageText(ctx, &bot.EditMessageTextParams{
-				ChatID:      chatID,
-				MessageID:   msgID,
-				Text:        text,
-				ParseMode:   mode,
-				ReplyMarkup: emptyKeyboard(),
-			})
-			return err
-		})
+		return t.editText(ctx, chatID, msgID, text, mode)
 	}
 	err := edit(text, parseMode)
 	if err != nil && t.sendDegraded(ctx, "question outcome", err) {
@@ -672,6 +663,55 @@ func (t *Telegram) retire(ctx context.Context, chatID int64, msgID int, text str
 	if err != nil {
 		t.log(slog.LevelWarn, "could not retire question keyboard", "chat_id", chatID, "err", redactToken(err, t.token))
 	}
+}
+
+// EditText replaces the text of a message this process sent, and takes any keyboard
+// on it with it.
+//
+// It exists for the one shape where a message stops being true after it was sent: a
+// write announcement whose entry the member has since undone. Sending a second
+// message saying so leaves the first one still claiming the entry is stored, which is
+// what the chat reads as a day later, so the correction has to land on the message
+// that was wrong. RetireKeyboard is the neighbouring case and is deliberately not
+// this one: it carries no text because a caller across a restart no longer has the
+// words it would need to rewrite.
+//
+// The unformatted retry is sendText's, for sendText's reason: a formatting fault must
+// cost the member their styling and never the correction itself. Unlike retire, the
+// error is returned rather than logged — the caller has a fallback and needs to know
+// whether to use it.
+func (t *Telegram) EditText(ctx context.Context, chatID int64, messageID int, text string) error {
+	if err := t.state(); err != nil {
+		return err
+	}
+	if chatID == 0 || messageID == 0 {
+		return errors.New("transport: edit without a message")
+	}
+	if strings.TrimSpace(text) == "" {
+		return ErrEmptyText
+	}
+	err := t.editText(ctx, chatID, messageID, text, parseMode)
+	if err != nil && t.sendDegraded(ctx, "message edit", err) {
+		err = t.editText(ctx, chatID, messageID, PlainText(text), "")
+	}
+	return redactToken(err, t.token)
+}
+
+// editText is the one call, shared by retire and EditText so that a rewrite and a
+// retirement cannot drift on whether they clear the keyboard. They both do: a
+// keyboard that still looks tappable on a decision already made is the failure both
+// of them exist to prevent.
+func (t *Telegram) editText(ctx context.Context, chatID int64, messageID int, text string, mode models.ParseMode) error {
+	return t.call(ctx, func(ctx context.Context) error {
+		_, err := t.api.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:      chatID,
+			MessageID:   messageID,
+			Text:        text,
+			ParseMode:   mode,
+			ReplyMarkup: emptyKeyboard(),
+		})
+		return err
+	})
 }
 
 // RetireKeyboard strips the buttons from a question this process did not ask.

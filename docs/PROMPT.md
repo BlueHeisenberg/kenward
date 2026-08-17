@@ -121,7 +121,7 @@ renders what is left.
 **The fear it was rejected for is answered by where it is applied, not by how well it
 parses.** The converter is called on the model's reply and on nothing else. Every piece
 of member-written text — entry titles, bodies, names — reaches a message through
-`transport.Esc` or one of the four marks, which escape and never parse, and nothing that
+`transport.Esc` or one of the five marks, which escape and never parse, and nothing that
 has been through one of them is ever handed to the converter. A member whose note
 contains an asterisk still reads an asterisk, and the ordering that would have made that
 false does not exist on any path. What the converter recognises is what models emit
@@ -994,7 +994,7 @@ message the member never receives — while Telegram's HTML needs three. A small
 escaping surface is one that cannot be missed.
 
 **Member-written text is escaped, never parsed.** Entry titles, entry bodies and member
-names all pass through `transport.Esc` or one of the four marks that apply it. A member
+names all pass through `transport.Esc` or one of the five marks that apply it. A member
 who titles a note `<b>` reads back a note titled `<b>`, and a member whose note says
 `*this*` reads `*this*`; nothing from outside the node gets to forge the structure it
 sits in, which is the same rule `oneLine` keeps when rendering entries *into* the prompt.
@@ -1006,7 +1006,7 @@ place, on exactly that string. It never sees text that has already been escaped 
 quoted. The prompt still asks for plain prose and is still doing most of the work; see
 [Identity and character](#identity-and-character) for the measurement that decided this.
 
-Four marks, because there are four kinds of thing in these messages that are not prose:
+Five marks, because there are five kinds of thing in these messages that are not prose:
 
 | Mark | Used for |
 |---|---|
@@ -1014,6 +1014,7 @@ Four marks, because there are four kinds of thing in these messages that are not
 | *italic* | the node annotating itself: the retrieval line, a spent question's outcome |
 | `code` | an identifier — a tier, a machine, an enrolment code |
 | blockquote | stored words shown back, so they read as the entry and not as kenward's sentence |
+| ~~strikethrough~~ | words that stood when the message was sent and do not now: an entry the member undid, left legible in the announcement that reported it |
 
 Six glyphs, each marking **what kind of message this is** — not decoration and not a
 voice:

@@ -38,6 +38,7 @@ func TestMarksEscapeTheirContent(t *testing.T) {
 		"Italic": Italic(hostile),
 		"Code":   Code(hostile),
 		"Quote":  Quote(hostile),
+		"Strike": Strike(hostile),
 	} {
 		if n := strings.Count(got, "<"); n != 2 {
 			t.Errorf("%s(hostile) = %q: %d angle brackets, want exactly the two of its own tags", name, got, n)
@@ -222,9 +223,10 @@ func TestMarkdownRendersWhatTheModelMeant(t *testing.T) {
 func TestMemberWrittenTextIsNeverParsed(t *testing.T) {
 	body := "she wrote *this* and **that**, in `code`, with a ``` fence"
 	for name, got := range map[string]string{
-		"Quote": Quote(body),
-		"Bold":  Bold(body),
-		"Code":  Code(body),
+		"Quote":  Quote(body),
+		"Bold":   Bold(body),
+		"Code":   Code(body),
+		"Strike": Strike(body),
 	} {
 		if PlainText(got) != body {
 			t.Errorf("%s(body) renders as %q, want the member's own %q", name, PlainText(got), body)

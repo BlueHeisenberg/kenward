@@ -1094,6 +1094,51 @@ func TestASendThatFailsBothWaysIsStillAnError(t *testing.T) {
 	}
 }
 
+// TestEditTextRewritesInPlaceAndReportsWhenItCannot.
+//
+// EditText is how a message that has stopped being true gets corrected on the screen
+// where the member read it. Two properties make that safe to rely on and both are
+// here: it clears the keyboard with the rewrite, so nothing tappable survives a
+// decision already acted on; and it returns the failure rather than logging it,
+// because a caller correcting itself has a message of its own to fall back to and
+// must not be left believing the chat was put right.
+func TestEditTextRewritesInPlaceAndReportsWhenItCannot(t *testing.T) {
+	api := telegramtest.New(t, testToken)
+	tg := newTestTelegram(t, api)
+
+	text := Strike("Bin day") + "\n" + Strike("Thursday & Friday.")
+	if err := tg.EditText(context.Background(), 100, 7, text); err != nil {
+		t.Fatalf("EditText: %v", err)
+	}
+	calls := api.CallsFor("editMessageText")
+	if len(calls) != 1 {
+		t.Fatalf("editMessageText calls = %d, want 1", len(calls))
+	}
+	if got := calls[0].Form.Get("text"); got != text {
+		t.Errorf("edit text = %q, want %q", got, text)
+	}
+	if got := calls[0].Form.Get("reply_markup"); !strings.Contains(got, `"inline_keyboard":[]`) {
+		t.Errorf("reply_markup = %q, want the keyboard emptied by the rewrite", got)
+	}
+
+	// A message Telegram will not edit — too old, gone, or from a run that has
+	// since restarted. One retry unformatted, and then the caller is told.
+	for i := 0; i < 2; i++ {
+		api.ScriptStatus("editMessageText", http.StatusBadRequest,
+			`{"ok":false,"error_code":400,"description":"Bad Request: message to edit not found"}`)
+	}
+	err := tg.EditText(context.Background(), 100, 7, text)
+	if err == nil {
+		t.Fatal("EditText returned nil; a correction that never landed must not look applied")
+	}
+	if !strings.Contains(err.Error(), "message to edit not found") {
+		t.Errorf("error = %v, want it to name the real fault", err)
+	}
+	if err := tg.EditText(context.Background(), 100, 0, text); err == nil {
+		t.Error("EditText with no message id returned nil; there is nothing to edit")
+	}
+}
+
 // TestRetireReserveMeasuresTheQuestionsOwnLanguage. Every input to the reservation is
 // language-dependent: the two outcome phrases, the dash that introduces them, the
 // caller's retired note and every button label. A margin tuned on English is silently

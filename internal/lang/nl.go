@@ -210,7 +210,17 @@ var dutch = Catalogue{
 		}
 		return "Dit heb ik weggeschreven naar het huishoudgeheugen:"
 	},
-	WrittenHint:     "De knop Ongedaan maken verwijdert het.",
+	WrittenHint: "De knop Ongedaan maken verwijdert het.",
+	// verwijderd uit, never verwijderd in: Dutch changes the preposition with the
+	// verb, which is why the destination is written out here rather than slotted.
+	RemovedOpener: func(private bool) string {
+		where := "uit het huishoudgeheugen"
+		if private {
+			where = "uit je persoonlijke geheugen"
+		}
+		return "Ik heb dit toch niet vastgelegd: ik heb het " + where +
+			" verwijderd. Het komt niet meer terug in een antwoord, niet hier en niet op een ander apparaat in het huishouden."
+	},
 	PromotionOpener: "Dit zou precies zo in het huishoudgeheugen gepubliceerd worden, en kan daarna niet meer ingetrokken worden:",
 	PromotionCloser: "Publiceren?",
 	AlsoKnownAs:     func(words []string) string { return "Ook: " + latinList(words) },

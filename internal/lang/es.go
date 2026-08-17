@@ -228,7 +228,15 @@ var spanish = Catalogue{
 		}
 		return "He escrito esto en la memoria del hogar:"
 	},
-	WrittenHint:     "El botón Deshacer lo retira.",
+	WrittenHint: "El botón Deshacer lo retira.",
+	RemovedOpener: func(private bool) string {
+		where := "de la memoria del hogar"
+		if private {
+			where = "de tu memoria privada"
+		}
+		return "Al final no he guardado esto: lo he quitado " + where +
+			". No volverá a aparecer en ninguna respuesta, ni aquí ni en ningún otro dispositivo del hogar."
+	},
 	PromotionOpener: "Esto se publicaría en el hogar tal y como está, y no se puede despublicar:",
 	PromotionCloser: "¿Lo publico?",
 	AlsoKnownAs:     func(words []string) string { return "También: " + latinList(words) },

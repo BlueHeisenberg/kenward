@@ -228,7 +228,15 @@ var italian = Catalogue{
 		}
 		return "Ho scritto questo nella memoria di casa:"
 	},
-	WrittenHint:     "Il pulsante Rimuovi lo cancella.",
+	WrittenHint: "Il pulsante Rimuovi lo cancella.",
+	RemovedOpener: func(private bool) string {
+		where := "dalla memoria di casa"
+		if private {
+			where = "dalla tua memoria privata"
+		}
+		return "Alla fine non l'ho registrato: l'ho rimosso " + where +
+			". Non tornerà più in una risposta, né qui né su nessun altro dispositivo di casa."
+	},
 	PromotionOpener: "Questo verrebbe pubblicato nella memoria di casa esattamente com'è, e non potrà più essere ritirato:",
 	PromotionCloser: "Pubblicare?",
 	AlsoKnownAs:     func(words []string) string { return "Anche: " + latinList(words) },
