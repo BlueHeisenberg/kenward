@@ -37,6 +37,11 @@ var wizardSteps = []wizardStep{
 	{Slug: "telegram", Title: "The Telegram bot", Short: "Telegram"},
 	{Slug: "endpoints", Title: "The machines that answer", Short: "Endpoints"},
 	{Slug: "trust", Title: "Who can read what", Short: "Trust"},
+	// Isolated mode only, and asked here because it cannot be asked earlier: the
+	// answer that creates these variables is the one on the step above. In simple
+	// mode there is one bot and one node passphrase and this step is not in the flow
+	// at all — see wizardStep.applies.
+	{Slug: "bots", Title: "Each member's own bot and passphrase", Short: "Bots"},
 	// Named for the question that leads it rather than for the settings under it. The
 	// identity question decides how many Telegram bots this household has to make;
 	// filing it under "Everything else", beneath "everything below already has an
@@ -52,6 +57,42 @@ func stepIndex(slug string) int {
 		}
 	}
 	return -1
+}
+
+// applies reports whether this household is asked this step at all.
+//
+// Only one step is conditional and it is conditional on a question asked before it: the
+// per-member bots exist in isolated mode and nowhere else, so in simple mode the step is
+// skipped forwards on the way in, skipped backwards by the Back control, and left out of
+// the progress list — a numbered list with a step nobody can reach in it is a wizard that
+// looks stuck.
+func (s wizardStep) applies(st *wizardState) bool {
+	return s.Slug != "bots" || st.Mode == config.ModeIsolated
+}
+
+// nextStep and prevStep walk the flow, skipping the steps this household does not have.
+//
+// prevStep steps over the account step rather than offering it, because that step is not
+// re-enterable: the account exists by the time anything after it is on screen, there is
+// no reset flow, and re-submitting the form is a 409. Everything else in the wizard is a
+// form that can be filled in again.
+func nextStep(idx int, st *wizardState) string {
+	for i := idx + 1; i < len(wizardSteps); i++ {
+		if wizardSteps[i].applies(st) {
+			return wizardSteps[i].Slug
+		}
+	}
+	return wizardSteps[len(wizardSteps)-1].Slug
+}
+
+func prevStep(idx int, st *wizardState) string {
+	for i := idx - 1; i >= 0; i-- {
+		if wizardSteps[i].Slug == "admin" || !wizardSteps[i].applies(st) {
+			continue
+		}
+		return wizardSteps[i].Slug
+	}
+	return ""
 }
 
 // wizardEndpoint is one machine as the wizard has it so far.
@@ -72,6 +113,28 @@ type wizardEndpoint struct {
 	// published. It is prose because it is advice, not a value: the operator still
 	// chooses, and an endpoint that publishes nothing is not a problem.
 	Learned string
+}
+
+// wizardMemberSecret is one member's own two secrets in isolated mode, with the
+// variables the written configuration will name them by.
+//
+// Both are shown on the form because both have to be found by a person: the token is
+// something that member creates in BotFather and hands over, and the passphrase is
+// something somebody chooses. Neither is generated here, and the passphrase in
+// particular is deliberately not: the isolated-mode statement in internal/privacy says
+// that the person who runs this machine cannot read a member's memory, and a wrapping
+// secret this wizard invented and wrote into the operator's .env would be that promise
+// broken by the screen that made it.
+type wizardMemberSecret struct {
+	ID   string
+	Name string
+	// TokenEnv and PassphraseEnv are derived from the id, by the same rule
+	// internal/setup uses, and shown so the operator can match them to the compose
+	// file or the unit they are about to write.
+	TokenEnv      string
+	PassphraseEnv string
+	Token         string
+	Passphrase    string
 }
 
 // wizardState is every answer collected so far.
@@ -97,6 +160,13 @@ type wizardState struct {
 	Endpoints []wizardEndpoint
 
 	Mode config.Mode
+
+	// MemberSecrets is each member's own bot token and passphrase, collected in
+	// isolated mode and empty in simple mode. It lives on the session for the reason
+	// the household token does, and more so: these are the secrets that make one pod
+	// unable to read another's, and one of them in a hidden field would be one of them
+	// in the browser's DOM and back/forward cache.
+	MemberSecrets []wizardMemberSecret
 
 	// Agents is the identity question — one assistant for the household, or one
 	// each — and Persona is kenward's own writing. They live on the advanced step
@@ -190,6 +260,96 @@ func parseEndpointRows(r *http.Request) []wizardEndpoint {
 	return out
 }
 
+// syncMemberSecrets brings the per-member rows into line with the people named on the
+// install step, keeping whatever has already been typed for somebody who is still in the
+// list. It is called before the step renders and before its form is read, so that going
+// Back and adding a person does not leave the form describing the old household.
+func (st *wizardState) syncMemberSecrets() {
+	was := make(map[string]wizardMemberSecret, len(st.MemberSecrets))
+	for _, ms := range st.MemberSecrets {
+		was[ms.ID] = ms
+	}
+	out := make([]wizardMemberSecret, 0, len(st.MemberNames))
+	for _, name := range st.MemberNames {
+		id := setup.Slugify(name)
+		if id == "" {
+			continue
+		}
+		ms := was[id]
+		ms.ID, ms.Name = id, name
+		ms.TokenEnv = envVarFor(setup.MemberBotTokenPrefix, id)
+		ms.PassphraseEnv = envVarFor(setup.MemberPassphrasePrefix, id)
+		out = append(out, ms)
+	}
+	st.MemberSecrets = out
+}
+
+// readMemberSecrets reads the per-member boxes back off the form. Values are recorded
+// before anything is judged, so a refusal re-renders what was typed rather than an empty
+// form — the same rule the telegram step's token and the identity step's answer follow.
+func (st *wizardState) readMemberSecrets(r *http.Request) {
+	st.syncMemberSecrets()
+	for i := range st.MemberSecrets {
+		p := "member." + st.MemberSecrets[i].ID + "."
+		st.MemberSecrets[i].Token = strings.TrimSpace(r.PostFormValue(p + "bot_token"))
+		st.MemberSecrets[i].Passphrase = r.PostFormValue(p + "passphrase")
+	}
+}
+
+// checkMemberSecrets refuses an isolated household whose members have no secrets of
+// their own, by name.
+//
+// This is the same shape as checkGroupChat and exists for the same reason. The
+// configuration this wizard writes names two variables per member — kenward reads both
+// at startup and refuses to start without either, for a member who has claimed nothing
+// yet as much as for one who has, because D-023 puts their bot up before the claim — and
+// the wizard used to name all of them and ask for none. `kenward doctor` reported it
+// afterwards, in exactly the words that would have fixed it, to an operator the wizard
+// had just told to restart and invite the household.
+//
+// Blank is refused rather than warned about because a warning is what already existed
+// and did not work. There is no "later" answer here on purpose: later is what the file
+// says when it names a variable nobody has set, and a household in that state does not
+// start at all.
+func checkMemberSecrets(st *wizardState) error {
+	if st.Mode != config.ModeIsolated {
+		return nil
+	}
+	// The .env beside the configuration is the only way this wizard can deliver a
+	// secret. Collecting four of them into a file nobody asked for would be four
+	// secrets typed and thrown away, and the household would be exactly as unstartable
+	// as it was before anybody typed them.
+	if !st.WriteEnvile {
+		return errors.New("Each person's own bot token and passphrase have nowhere to go: " +
+			"the box that writes them to a .env file beside the configuration is unticked. " +
+			"kenward.yaml never holds a secret, so that file is the only thing this wizard can " +
+			"put one in. Go Back to \"The Telegram bot\" and tick \"Write it to a .env file for " +
+			"me\", or export all of these yourself and set this household up with `kenward setup` " +
+			"at a terminal, which prints the list.")
+	}
+	var missing []string
+	for _, ms := range st.MemberSecrets {
+		if strings.TrimSpace(ms.Token) == "" {
+			missing = append(missing, ms.Name+"'s bot token")
+		}
+		if strings.TrimSpace(ms.Passphrase) == "" {
+			missing = append(missing, ms.Name+"'s passphrase")
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("Still needed: %s. In isolated mode each person has a pod of their own, "+
+		"and it serves nobody without both of these: the bot only they speak on, and the passphrase "+
+		"that unwraps their key and no other member's. The file this wizard is about to write names "+
+		"a variable for each of them, and kenward refuses to start while one has no value — before "+
+		"anybody has claimed an invite as much as after, because each person's bot has to be up "+
+		"for them to claim on. Ask each of them to make a bot with @BotFather and send you the "+
+		"token, choose a passphrase of their own with them, and paste both here. Nothing typed on "+
+		"this page reaches kenward.yaml; it goes to the .env file beside it.",
+		strings.Join(missing, ", "))
+}
+
 // answers projects the collected state onto internal/setup's own scripted-install
 // answers.
 //
@@ -220,6 +380,16 @@ func (st *wizardState) answers(spaces map[string]string) *setup.Answers {
 	for id, space := range spaces {
 		if id != householdSpaceKey {
 			a.MemberSpaces[id] = space
+		}
+	}
+	// Collected only in isolated mode, and carried through internal/setup so that
+	// they land in the same .env, under the same names, as the household's own token.
+	if len(st.MemberSecrets) > 0 {
+		a.MemberBotTokens = map[string]string{}
+		a.MemberPassphrases = map[string]string{}
+		for _, ms := range st.MemberSecrets {
+			a.MemberBotTokens[ms.ID] = ms.Token
+			a.MemberPassphrases[ms.ID] = ms.Passphrase
 		}
 	}
 	for _, e := range st.Endpoints {

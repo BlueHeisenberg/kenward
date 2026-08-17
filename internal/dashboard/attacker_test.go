@@ -586,23 +586,50 @@ func TestSecurityHeadersAreOnEveryResponse(t *testing.T) {
 	}
 }
 
-// TestGETCannotMutate: a GET to a mutating route is a 405, not a mutation.
+// TestGETCannotMutate: a GET to a mutating route changes nothing, and lands the person
+// who typed it on a page rather than on a bare status line.
 //
 // A GET that changes something is a change any <img> tag on any page in the browser can
 // make, whatever the CSRF token says, because the browser will not send a form body but
-// will send the cookie.
+// will send the cookie. That is the property being asserted, and a 303 to the page the
+// form lives on keeps it exactly as well as a 405 did: somebody who bookmarks
+// /members/add after adding a member used to get a blank white page with "Method Not
+// Allowed" on it, in the middle of a dashboard where every other route is styled.
 func TestGETCannotMutate(t *testing.T) {
 	h := newHarness(t)
 	h.createAdmin()
 	h.writeConfig()
 	h.signIn()
 
-	for _, path := range []string{"/logout", "/members/add", "/members/invite", "/members/revoke"} {
+	for path, want := range map[string]string{
+		"/logout":         "/overview",
+		"/members/add":    "/members",
+		"/members/invite": "/members",
+		"/members/revoke": "/members",
+	} {
 		resp := h.get(path)
-		code := resp.StatusCode
+		code, location := resp.StatusCode, resp.Header.Get("Location")
+		page := body(t, resp)
 		resp.Body.Close()
-		if code != http.StatusMethodNotAllowed {
-			t.Errorf("GET %s: status = %d, want 405", path, code)
+		if code != http.StatusSeeOther {
+			t.Errorf("GET %s: status = %d, want 303 to %s (a bookmark is not an attack, and 405 has no page)\n%s",
+				path, code, want, page)
+			continue
 		}
+		if location != want {
+			t.Errorf("GET %s: Location = %q, want %q", path, location, want)
+		}
+	}
+
+	// Nothing moved. The session still works and the household still has the members
+	// it had, which is the half of this that is about security rather than about a
+	// blank page.
+	resp := h.get("/members")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("a GET of /logout signed the session out: /members = %d", resp.StatusCode)
+	}
+	if cfg := h.loadConfig(); len(cfg.Members) != 0 {
+		t.Errorf("a GET of /members/add added somebody: members = %d", len(cfg.Members))
 	}
 }

@@ -808,6 +808,28 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 			return err
 		}
 		m.PrivateSpace = space
+
+		// Each member's own two secrets, where the caller has them. addMember has
+		// already recorded both variables with no value and a note saying where the
+		// value will come from; this replaces that note for the ones that arrived, so
+		// they reach the .env file and the closing block says so.
+		//
+		// In simple mode neither variable exists and a value supplied for one is
+		// dropped rather than invented into the file: one bot, one node passphrase,
+		// and nothing per member to attach it to.
+		if w.mode != config.ModeIsolated {
+			continue
+		}
+		envNote := "export it yourself before starting kenward"
+		if a.WriteEnvFile {
+			envNote = "in the .env file just written"
+		}
+		if tok := strings.TrimSpace(a.MemberBotTokens[m.ID]); tok != "" {
+			w.recordEnv(m.BotTokenEnv, fmt.Sprintf("members[%d].bot_token_env", i), envNote, tok)
+		}
+		if pass := a.MemberPassphrases[m.ID]; strings.TrimSpace(pass) != "" {
+			w.recordEnv(m.PassphraseEnv, fmt.Sprintf("members[%d].passphrase_env", i), envNote, pass)
+		}
 	}
 
 	if len(a.Endpoints) == 0 {

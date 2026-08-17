@@ -19,11 +19,27 @@
 # Isolated mode is Linux-only (docs/IMPLEMENTATION.md §8, `supervisor/isolated`).
 #
 # Before running:
-#   1. Write kenward.yaml next to this file (mode: isolated), with one
-#      `bot_token_env` AND one `passphrase_env` per member, plus one
-#      `bot_token_env` for the household group — see docs/IMPLEMENTATION.md §4.
-#      Do NOT commit it. The group needs no passphrase: it serves the shared
-#      space and holds no member's key.
+#   1. Write kenward.yaml next to this file (mode: isolated) — see
+#      docs/IMPLEMENTATION.md §4 for the schema. Do NOT commit it. Three
+#      secrets are named in it, and WHICH BLOCK each one goes in matters:
+#
+#        members:                      # one entry per person
+#          - id: david
+#            bot_token_env: KENWARD_BOT_TOKEN_DAVID
+#            passphrase_env: KENWARD_PASSPHRASE_DAVID
+#          - id: jordan
+#            bot_token_env: KENWARD_BOT_TOKEN_JORDAN
+#            passphrase_env: KENWARD_PASSPHRASE_JORDAN
+#
+#        telegram:                     # the household group's bot, ONCE
+#          bot_token_env: KENWARD_BOT_TOKEN_HOUSEHOLD
+#
+#      The group's token goes under the top-level `telegram:` block and NOT under
+#      `household:`, which has no bot_token_env and never had one — put it there
+#      and kenward answers `field bot_token_env not found in type
+#      config.HouseholdConfig`, which names a Go type nobody has and no block
+#      anybody can find. The group needs no passphrase either: it serves the
+#      shared space and holds no member's key.
 #   2. Create a `.env` file next to this compose file (NOT committed — see
 #      deploy/README.md) defining every bot token and provider key below.
 #   3. Supply a `lore` binary per service (see ../Dockerfile's note) — each

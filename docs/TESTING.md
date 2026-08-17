@@ -254,8 +254,9 @@ time:
 A temp root with no `kenward.yaml`, no data directory, no admin account and no lore store.
 A release snapshot built and installed by `install.sh` itself over `file://`, so the
 binary under test arrived the way a stranger's does. `lore init` into this run's own
-store. The first-run dashboard, and the setup token it prints. The seven wizard screens in
-a real browser, including `/v1/models` against a real vLLM. A member added from the
+store. The first-run dashboard, and the setup token it prints. The wizard screens in a
+real browser — seven in simple mode, eight in isolated, which has one more for each
+member's own bot token and passphrase — including `/v1/models` against a real vLLM. A member added from the
 Members page. Then `kenward run` against the configuration that came out, with a real bot
 token, and `curl` against the dashboard the wizard turned on. Then all of it deleted,
 failures included.
