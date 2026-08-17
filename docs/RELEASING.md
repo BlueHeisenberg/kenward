@@ -82,8 +82,12 @@ git push origin "$VERSION"
 
 That is the only command that starts a release. `.github/workflows/release.yml` then:
 
-- reruns the full gate — gofmt, vet, `go test -race` — on the exact commit the tag names,
-  because a tag can point at anything, including a commit that never saw a pull request;
+- reruns the full gate — gofmt, vet, `go build ./...`, `go test -race` — on the exact commit
+  the tag names, because a tag can point at anything, including a commit that never saw a
+  pull request. The gate runs on **Linux, macOS and Windows**, the same three platforms as
+  `ci.yml`, and the tag validation and version stamp live in a separate one-runner `stamp`
+  job ahead of it (a matrix cannot own the stamp: matrix job outputs are last-writer-wins,
+  so the version would depend on which runner finished last);
 - builds six binaries (linux, darwin, windows × amd64, arm64) with `CGO_ENABLED=0`,
   `GOWORK=off` and `-trimpath`, stamping `internal/version` from the tag;
 - publishes them, plus `.tar.gz`/`.zip` archives, `.deb` and `.rpm` packages,
@@ -111,6 +115,23 @@ household a release whose manifest 404s.
 The workflow can also be run by hand from the Actions tab on a branch: it then builds a
 snapshot, publishes nothing, and uploads the artifacts for inspection. Locally, the same
 rehearsal is `task snapshot`.
+
+#### What the three-platform gate costs
+
+Three cold builds instead of one, and — the part worth knowing before you are blocked by
+it — **every release now depends on GitHub's macOS and Windows runners being available**.
+A runner outage on either platform stops a release that would previously have gone out.
+
+That is the right trade here and it would not be everywhere: the thing at the end of this
+pipeline is a *draft* waiting on a human signature, so a release delayed by an hour costs
+nothing, while a release cut from a tree that is red on macOS costs a household. The gate
+was single-platform until two real races — one in a Telegram test fake, two `wg.Add` calls
+outside the lock in the supervisors — failed macOS and Windows for four consecutive CI runs
+while Linux stayed green. For those four runs the tree was taggable, and a tag would have
+produced a green release from it.
+
+If a runner outage is genuinely blocking a release you must cut now, the honest move is to
+wait, not to make the gate lenient again.
 
 ### 2. Sign it, attach the manifest, publish
 
