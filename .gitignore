@@ -46,3 +46,7 @@ Thumbs.db
 /tmp/
 /scratch/
 .e2e
+
+# Agent worktrees and scratch reports — never committed.
+.claude/
+report/
