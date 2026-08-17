@@ -31,6 +31,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/config"
@@ -587,7 +588,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// Retrieve, one search per space in scope order, concurrently. The groups stay
 	// grouped: ranking a private space against the shared one is a policy decision
 	// this package makes only by keeping scope order, never by re-ranking.
-	groups, searched := u.retrieve(ctx, sc, in.Text)
+	groups, searched := u.retrieve(ctx, sc, in.Text, in.Mention)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -904,8 +905,8 @@ type spaceGroup struct {
 // nothing. Anything reporting retrieval to the member has to be able to tell those two
 // apart: "searched your private memory (nothing)" about a search that never happened
 // is exactly the class of small untruth this package refuses elsewhere.
-func (u *Unit) retrieve(ctx context.Context, sc domain.Scope, text string) ([]spaceGroup, bool) {
-	terms := searchTerms(text)
+func (u *Unit) retrieve(ctx context.Context, sc domain.Scope, text, mention string) ([]spaceGroup, bool) {
+	terms := searchTerms(text, mention)
 	groups := make([]spaceGroup, len(sc.Read))
 	var wg sync.WaitGroup
 	for i, sp := range sc.Read {
@@ -1016,11 +1017,15 @@ func (u *Unit) searchSpace(ctx context.Context, sp domain.SpaceID, terms []strin
 // rankUnion, which is where the fix went. The cap stays where it is until something
 // measured argues otherwise.
 //
-// ponytail: fixed cap, and it is the first terms that survive — a question's subject
-// is usually near its start. A message longer than this is searched on its opening
-// words only, and the same measurement showed three of six slots going to "hey",
-// "kenward" and "remind", which found nothing at all. Widening searchStopwords buys
-// those slots back for a longer question, if one is ever shown to need them.
+// It is the reason the two problems below are problems at all. Six slots is plenty
+// for a question and nothing for a question plus ceremony, so anything that is not
+// what was asked — the bot's own handle, a language's function words — is not merely
+// a wasted search but a content word that never got searched.
+//
+// ponytail: fixed cap, and searching is per term per space. Raising it is the obvious
+// lever and it is not free: eight terms is eight lore queries per space per turn, and
+// it was already measured not to be the fix once. It stays at six, and the slots are
+// bought back by not wasting them — see searchTerms.
 const maxSearchTerms = 6
 
 // searchStopwords are the words dropped before searching.
@@ -1030,9 +1035,20 @@ const maxSearchTerms = 6
 // a search and buys hits on every entry that happens to contain it, which is noise the
 // ranking then has to out-vote.
 //
-// ponytail: hand-written English list, and a household speaking anything else gets no
-// benefit from it (correctness is unaffected — a stopword that survives is just a
-// wasted search). A real stopword source, or scoring by term rarity, when that matters.
+// The list is English and stays English. kenward speaks ten languages, and the honest
+// options for the other nine were: a stopword table per language, hung off
+// lang.Catalogue, which the Unit already holds; or no table at all and a rule that
+// works in every language. The tables lose. They are ten hand-written lists to keep,
+// they need the household's configured language to be the language the member is
+// actually typing in — a Spanish household asks in English constantly — and they buy
+// exactly what the length preference in searchTerms buys for free, which is slots.
+// The English list survives only because it is already written and already correct
+// for the language most of these entries are filed in.
+//
+// ponytail: an English list in a ten-language product, and a word that is a stopword
+// in one language and content in another ("or" is French for gold) is dropped for
+// everybody. A real per-language stopword source if a household is ever shown to lose
+// an answer to it; the length preference is what stops that being likely.
 var searchStopwords = map[string]bool{
 	"a": true, "about": true, "am": true, "an": true, "and": true, "any": true,
 	"are": true, "as": true, "at": true, "be": true, "been": true, "but": true,
@@ -1050,12 +1066,50 @@ var searchStopwords = map[string]bool{
 }
 
 // searchTerms picks the words from a member's message that are worth a search:
-// lore's own tokens, minus stopwords, minus repeats, capped.
+// lore's own tokens, minus the bot's own handle, minus stopwords, minus repeats,
+// capped — and when there are more than the cap allows, the longest of them.
+//
+// mention is the bot's own @mention as the member typed it, or "" (transport.Inbound).
+// Dropping it is the whole of one measured bug. In a household group an @mention is
+// now the ordinary way to address kenward, and "@kenward_hearth_e2e_bot" is four words
+// to lore's tokeniser, so of the six slots four went to the bot's own name:
+//
+//	"@kenward_hearth_e2e_bot ¿cuál es el código del portón del garaje?"
+//	  -> [kenward hearth e2e bot cuál es]
+//
+// which searched the shared memory for nothing the member asked about and answered
+// that the household had not written the gate code down. It had. The same question by
+// reply — same words, no handle — found it. Two ways of addressing the same node
+// disagreeing about what it remembers is the bug; the handle is addressing, not
+// content, and is removed before the message is read as a question.
+//
+// The length preference is the second half, and it is what makes the cap survive a
+// language other than English. Function words are short in every language this thing
+// speaks, and the cap keeps the *first* terms, so a Spanish question spends its slots
+// on "cuál es el ... del" and never reaches the noun:
+//
+//	"¿me puedes decir por favor cuál es el código?"
+//	  first six -> [puedes decir por favor cuál es]   (código never searched)
+//	  longest six -> [puedes código favor decir cuál por]
+//
+// Longest-first is a crude proxy for informative and it is deliberately crude: it
+// needs no table, no language detection, and no opinion about which language a member
+// is typing in this minute. It costs the case where a short word is the subject — a
+// question mentioning a "pin" alongside long filler can lose it — and that is a slot
+// lost, not an answer lost, because a term that is searched still has to be in the
+// entry. Ties keep the order the member said them in, so a short question, which is
+// most of them, is untouched.
 //
 // A message with nothing left — a greeting, an emoji — yields no terms and therefore
 // no searches, which is the honest result. Searching for "hi" would only find entries
 // that say "hi".
-func searchTerms(text string) []string {
+func searchTerms(text, mention string) []string {
+	if mention != "" {
+		// A space, not "": the handle sits against the next word often enough
+		// ("@kenward_bot¿cuál") and joining two words makes a term that is in no
+		// entry anywhere.
+		text = strings.ReplaceAll(text, mention, " ")
+	}
 	seen := make(map[string]bool)
 	var out []string
 	for _, w := range memory.Terms(text) {
@@ -1065,9 +1119,16 @@ func searchTerms(text string) []string {
 			continue
 		}
 		seen[w] = true
-		if out = append(out, w); len(out) == maxSearchTerms {
-			break
-		}
+		out = append(out, w)
+	}
+	if len(out) > maxSearchTerms {
+		// Runes, not bytes. "portón" is six letters and seven bytes, and every
+		// letter of Arabic and Chinese is two or three, so byte length would rank
+		// by alphabet rather than by word.
+		slices.SortStableFunc(out, func(a, b string) int {
+			return utf8.RuneCountInString(b) - utf8.RuneCountInString(a)
+		})
+		out = out[:maxSearchTerms]
 	}
 	return out
 }

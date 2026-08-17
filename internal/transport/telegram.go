@@ -522,6 +522,7 @@ func (t *Telegram) onMessage(m *models.Message) {
 		at = time.Unix(int64(m.Date), 0).UTC()
 	}
 
+	addressed, mention := addressedTo(m, t.username, t.api.ID())
 	if t.queue.push(Inbound{
 		ChatID:    m.Chat.ID,
 		UserID:    m.From.ID,
@@ -529,7 +530,8 @@ func (t *Telegram) onMessage(m *models.Message) {
 		MessageID: m.ID,
 		IsGroup:   group,
 		At:        at,
-		Addressed: addressedTo(m, t.username, t.api.ID()),
+		Addressed: addressed,
+		Mention:   mention,
 	}) {
 		t.log(slog.LevelWarn, "inbound backlog full, oldest message dropped", "chat_id", m.Chat.ID)
 	}

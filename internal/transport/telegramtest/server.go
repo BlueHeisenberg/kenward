@@ -452,6 +452,20 @@ func MentionUpdate(chatID, userID int64, text string) string {
 		messageID(), userID, chatID, text, entity)
 }
 
+// ReplyUpdate is a supergroup message replying to one of this server's bot's own
+// messages, which is the other way a member addresses it.
+//
+// The difference from MentionUpdate is the whole reason it exists: the same question
+// arrives with no handle in the text at all, so the two are what a member says when
+// they mean the same thing. Anything the bot does differently between them is a bug
+// the household will find, because a family uses both without thinking about it.
+func ReplyUpdate(chatID, userID int64, text string) string {
+	return fmt.Sprintf(
+		`{"message":{"message_id":%d,"date":1700000000,"from":{"id":%d,"is_bot":false,"first_name":"M"},"chat":{"id":%d,"type":"supergroup"},"text":%q,`+
+			`"reply_to_message":{"message_id":%d,"date":1700000000,"from":{"id":42,"is_bot":true,"first_name":"kenward","username":%q},"chat":{"id":%d,"type":"supergroup"},"text":"anything else?"}}}`,
+		messageID(), userID, chatID, text, messageID(), BotUsername, chatID)
+}
+
 // BotTextUpdate is a message sent by another bot, which must be ignored.
 func BotTextUpdate(chatID, userID int64, text string) string {
 	return fmt.Sprintf(

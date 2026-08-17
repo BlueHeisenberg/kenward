@@ -29,6 +29,14 @@ type Inbound struct {
 	// field the same way and nothing reads it there, because a chat with one member
 	// in it is addressed by definition.
 	Addressed bool
+	// Mention is this bot's own @mention exactly as it appears in Text, or "" if
+	// the member addressed it some other way — a reply, a command — or not at all.
+	//
+	// Text keeps it. This field exists so that a reader who needs the sentence
+	// without the handle can remove it without guessing where it is: the handle is
+	// how the member got kenward's attention in a group, not part of what they
+	// asked, and a tokeniser cannot tell the difference. See addressedTo.
+	Mention string
 }
 
 // Outbound is a reply.

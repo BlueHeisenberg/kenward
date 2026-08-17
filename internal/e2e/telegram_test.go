@@ -3,6 +3,7 @@ package e2e
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -524,4 +525,81 @@ func TestTelegramSharedCaptureDeclinedByARealButtonTapWritesNothing(t *testing.T
 	if got := edit.Form.Get("text"); !strings.Contains(got, "Don't save") {
 		t.Errorf("retired question reads %q; it must show that the member declined", got)
 	}
+}
+
+// TestTelegramMentionAndReplyRetrieveTheSame is the group gate's own defect, found
+// in a live Spanish household and reproduced here over the wire that produced it.
+//
+// Since kenward stopped answering unaddressed group messages, an @mention is how a
+// family addresses it. The handle then arrives inside the text — Telegram puts it
+// nowhere else — and to a tokeniser "@kenward_bot" is words, not addressing. Six
+// searchable words is all a turn gets, so the handle ate them, the shared memory was
+// searched for the bot's own name, and the household was told its gate code had never
+// been written down. Replying to kenward instead, with the same sentence, found it.
+//
+// Both halves are asserted from one conversation because the bug is the difference
+// between them: the same question addressed two ways must reach the same memory.
+//
+// The searches are compared and not only the prompts, and that is deliberate. This
+// server's bot is called @kenward_bot, which is two words to a tokeniser where the
+// live household's was four, so two of six slots survived here and the entry came
+// back anyway — the fault was visible in what was searched for before it was visible
+// in what was found. A test that asserted only on the answer would go green on a
+// household one word away from losing its memory.
+func TestTelegramMentionAndReplyRetrieveTheSame(t *testing.T) {
+	const question = "¿cuál es el código del portón del garaje?"
+
+	h, api := telegramHousehold(t, harnessOptions{})
+	h.mem.seed(sharedSpace, entry("s1",
+		"Código del portón del garaje",
+		"El código del portón del garaje es membrillo-3092."))
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{Text: "El código es membrillo-3092.", FinishReason: "stop"}
+	})
+	h.start()
+
+	api.Push(telegramtest.MentionUpdate(groupChatID, davidTelegramID, "@kenward_bot "+question))
+	waitSends(t, api, groupChatID, 1)
+	mentioned, namedTerms := h.local.last(t).System(), searchedTerms(h.mem)
+
+	// The barrier is the unit itself: it serialises its turns, so the reply turn
+	// cannot be answered until the mention turn is finished and its prompt read.
+	api.Push(telegramtest.ReplyUpdate(groupChatID, davidTelegramID, question))
+	waitSends(t, api, groupChatID, 2)
+	replied, allTerms := h.local.last(t).System(), searchedTerms(h.mem)
+	repliedTerms := allTerms[len(namedTerms):]
+
+	for _, tc := range []struct{ how, prompt string }{
+		{"named", mentioned},
+		{"replied to", replied},
+	} {
+		if !strings.Contains(tc.prompt, "membrillo-3092") {
+			t.Errorf("a question %s kenward retrieved nothing: the shared entry is not in the prompt\n%s",
+				tc.how, tc.prompt)
+		}
+	}
+
+	slices.Sort(namedTerms)
+	slices.Sort(repliedTerms)
+	if !slices.Equal(namedTerms, repliedTerms) {
+		t.Errorf("the same question searched the shared memory differently:\n named   %q\n replied %q",
+			namedTerms, repliedTerms)
+	}
+	// And what it searched for is what was asked, rather than the name it was asked by.
+	for _, term := range namedTerms {
+		if !strings.Contains(strings.ToLower(question), term) {
+			t.Errorf("the shared memory was searched for %q, which is not a word of %q", term, question)
+		}
+	}
+}
+
+// searchedTerms is every term one household has searched any space for, in order.
+func searchedTerms(m *fakeMemory) []string {
+	var out []string
+	for _, c := range m.recorded() {
+		if c.Op == "search" {
+			out = append(out, c.Text)
+		}
+	}
+	return out
 }
