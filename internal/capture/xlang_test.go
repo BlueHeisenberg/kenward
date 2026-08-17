@@ -91,6 +91,7 @@ func gardenGate() Proposal {
 		},
 		Target:  TargetPersonal,
 		Aliases: []string{"código de la puerta del jardín", "cancela"},
+		Summary: "El código de la cancela del jardín es 4821.",
 	}
 }
 
@@ -332,5 +333,125 @@ func TestANonEnglishConversationKeepsItsAliases(t *testing.T) {
 	}
 	if !findable(t, c, sc.Write, "código", "puerta", "jardín") {
 		t.Error("a Spanish conversation lost the aliases the English rule must not reach")
+	}
+}
+
+// TestTheMemberCanReadWhatTheyAreApprovingIsTheConsentHalf.
+//
+// D-058 keeps every entry's title and body English so that a household with a Spanish
+// member and a German one has one shared memory rather than two half-invisible ones.
+// The cost lands on the capture question, which is Spanish chrome around English
+// content — and that question is a consent question. The member is asked whether to
+// save this exact wording, and a live card asked a Spanish member to approve "The code
+// for the garden gate is 4821."
+//
+// What is asserted is the whole shape of the answer: the English is still there
+// unchanged, the member's own language says what it says, and the line that does so
+// says the stored text is English rather than standing in for it.
+func TestTheMemberCanReadWhatTheyAreApprovingIsTheConsentHalf(t *testing.T) {
+	c, ids := newRealStore(t, "Ana", "Test House")
+	sc := spanishScope(ids)
+
+	tr := &stubTransport{answers: []transport.Answer{{TimedOut: true}}}
+	e := New(c, tr, Options{Language: "Spanish"})
+
+	p := gardenGate()
+	if _, err := e.Offer(context.Background(), sc, p, davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if len(tr.asks) != 1 {
+		t.Fatalf("the member was asked %d times, want 1", len(tr.asks))
+	}
+	shown := tr.asks[0].q.Text
+
+	if !strings.Contains(shown, transport.Esc(p.Summary)) {
+		t.Errorf("the card does not say, in the member's language, what they are approving:\n%s", shown)
+	}
+	// And it says which of the two languages on the card is the one being stored. A
+	// reading that did not would leave the member believing the store now holds a
+	// Spanish entry, which is the belief this design cannot afford.
+	if !strings.Contains(shown, transport.Esc(lang.For("Spanish").EnglishGloss(""))) {
+		t.Errorf("the reading does not name the stored text as English:\n%s", shown)
+	}
+	// The English is untouched: the gloss is beside what will be written, never
+	// instead of it.
+	if !strings.Contains(shown, transport.Esc(p.Draft.Body)) {
+		t.Errorf("the English body left the card:\n%s", shown)
+	}
+}
+
+// TestTheGlossIsShownAndNeverStored is the boundary the fix is not allowed to cross.
+// The storage format is load-bearing — see the test above and D-058 — so a line
+// written to make a question answerable must not end up in lore, where it would be
+// indexed, retrieved, and read back to a model as part of the entry.
+func TestTheGlossIsShownAndNeverStored(t *testing.T) {
+	c, ids := newRealStore(t, "Ana", "Test House")
+	sc := spanishScope(ids)
+
+	tr := &stubTransport{answers: []transport.Answer{{TimedOut: true}}}
+	e := New(c, tr, Options{Language: "Spanish"})
+
+	p := gardenGate()
+	out, err := e.Offer(context.Background(), sc, p, davidID)
+	if err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	stored, err := c.Get(t.Context(), out.Space, out.EntryID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if strings.Contains(stored.Body, "cancela del jardín es") {
+		t.Errorf("the gloss was written into the entry:\n%q", stored.Body)
+	}
+	if strings.Contains(stored.Body, lang.For("Spanish").EnglishGloss("")) {
+		t.Errorf("the gloss label was written into the entry:\n%q", stored.Body)
+	}
+	// The alias line is still stored, because that one is retrieval and belongs in
+	// the index. The two mechanisms must not be collapsed into each other.
+	if !strings.Contains(stored.Body, "También:") {
+		t.Errorf("the alias line, which is stored on purpose, is missing:\n%q", stored.Body)
+	}
+}
+
+// TestNoGlossInAnEnglishConversation is the same rule as the alias line's, and it is
+// decided by the same field for the same reason: there is nothing to gloss, so the
+// line could only be a second copy of the body under the body.
+func TestNoGlossInAnEnglishConversation(t *testing.T) {
+	c, ids := newRealStore(t, "Ana", "Test House")
+	sc := spanishScope(ids)
+
+	tr := &stubTransport{answers: []transport.Answer{{TimedOut: true}}}
+	e := New(c, tr, Options{})
+
+	p := gardenGate()
+	p.Summary = "The code for the garden gate is 4821."
+	if _, err := e.Offer(context.Background(), sc, p, davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if len(tr.asks) != 1 {
+		t.Fatalf("the member was asked %d times, want 1", len(tr.asks))
+	}
+	if got := tr.asks[0].q.Text; strings.Contains(got, "kept in English") {
+		t.Errorf("an English conversation was told its English entry is in English:\n%s", got)
+	}
+}
+
+// TestAGlossThatIsNotOneLineIsDropped. Summary is model-written text put on a member's
+// screen, and a model asked for one line can return three paragraphs. Dropped rather
+// than trimmed: a truncated reading of an entry is a misleading one, and the English
+// it glosses is on the screen either way.
+func TestAGlossThatIsNotOneLineIsDropped(t *testing.T) {
+	e := New(nil, nil, Options{Language: "Spanish"})
+	if got := e.glossLine(""); got != "" {
+		t.Errorf("an empty summary rendered %q", got)
+	}
+	if got := e.glossLine("   \n  "); got != "" {
+		t.Errorf("a blank summary rendered %q", got)
+	}
+	if got := e.glossLine(strings.Repeat("ñ", maxSummaryRunes+1)); got != "" {
+		t.Errorf("an oversized summary rendered %q", got)
+	}
+	if got := e.glossLine("Dice\nesto"); !strings.Contains(got, "Dice esto") {
+		t.Errorf("a two-line summary was not flattened onto one line: %q", got)
 	}
 }

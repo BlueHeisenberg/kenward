@@ -27,7 +27,7 @@ func sampleReminder(every remind.Every) remind.Reminder {
 // rather than listing fields, so a field added later is covered without an edit.
 func rendered(c Catalogue) []string {
 	out := []string{
-		c.Locked, c.ContentFilter, c.Queued, c.Dropped, c.NoAnswer, c.ResetNotice,
+		c.Locked, c.ContentFilter, c.Queued, c.Dropped, c.NoAnswer, c.ToolMisfire, c.ResetNotice,
 		c.ModelBusy, c.Misconfigured, c.TurnFailed, c.ReasoningOnly, c.RefusalEmptyChain,
 		c.WhoseDirect, c.WhoseGroup,
 		c.RemindFull, c.RemindPast, c.RemindFailed, c.UnremindNone, c.UnremindFails,
@@ -47,6 +47,7 @@ func rendered(c Catalogue) []string {
 		c.WrongSpace("Title"), c.AskFailed("Title"), c.PublishAskFailed("Title"),
 		c.PublishRefused("Title"), c.PublishWrongSpace("Title"), c.Published("Title"),
 		c.Notice("x"),
+		c.EnglishGloss("what the entry says"),
 	}
 	for _, n := range []int{0, 1, 2, 3, 11, 103, 111} {
 		out = append(out, c.TierWord(n), c.Tried(names(n)), c.Count(false, n))
@@ -329,6 +330,9 @@ func TestInterpolationsSurvive(t *testing.T) {
 				t.Errorf("%s: %s dropped the title: %q", tag, name, got)
 			}
 		}
+		if got := c.EnglishGloss(title); !strings.Contains(got, title) {
+			t.Errorf("%s: EnglishGloss dropped the reading it exists to carry: %q", tag, got)
+		}
 		if got := c.ReminderSet("WHEN", "TEXT", "CODE"); !strings.Contains(got, "WHEN") ||
 			!strings.Contains(got, "TEXT") || !strings.Contains(got, "CODE") {
 			t.Errorf("%s: ReminderSet dropped a value: %q", tag, got)
@@ -423,7 +427,7 @@ func TestNoMarkupIsTypedIntoTheCatalogue(t *testing.T) {
 	for _, tag := range Tags() {
 		c := For(tag)
 		for _, s := range []string{
-			c.Locked, c.ContentFilter, c.Queued, c.Dropped, c.NoAnswer, c.ResetNotice,
+			c.Locked, c.ContentFilter, c.Queued, c.Dropped, c.NoAnswer, c.ToolMisfire, c.ResetNotice,
 			c.ModelBusy, c.Misconfigured, c.TurnFailed, c.ReasoningOnly, c.RefusalEmptyChain,
 			c.RemindFull, c.RemindPast, c.RemindFailed, c.UnremindNone, c.UnremindFails,
 			c.SaveFailed, c.PublishNoShared, c.PublishUnreadable, c.ProposalOpener,

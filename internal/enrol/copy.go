@@ -81,6 +81,17 @@ type text struct {
 	// transport's default says the question was declined or withdrawn; for a setup
 	// question the true and more useful fact is which value it was left at.
 	retired string
+	// typedNotAnAnswer is sent to a member who writes something while a button
+	// question is on screen. What they typed is dropped — correctly, since it is not
+	// an answer to anything and buffering it would make it the answer to the next
+	// question — and before this they got nothing at all, on a question that looks
+	// answerable by typing.
+	//
+	// It is here rather than in the reader that drops the message because the reader
+	// does not know what language this tutorial is in: the member may have chosen
+	// Spanish at question one, and the household's language is a different setting.
+	// See Tutorial.Nudge.
+	typedNotAnAnswer string
 
 	nameQ       string
 	nameTooLong string
@@ -194,6 +205,8 @@ var english = text{
 	back:            "Back",
 	sameAsHousehold: "Same as the household",
 	retired:         "no answer — left on the default",
+	typedNotAnAnswer: "This one is the buttons above — I can't read a typed answer to it, " +
+		"so what you just sent hasn't gone anywhere.",
 
 	nameQ: transport.Bold("My name") + "\n\nWhat would you like to call me? Send a name, " +
 		"or " + transport.Code(skipWord) + " to leave me as kenward. " +
@@ -246,6 +259,8 @@ var spanish = text{
 	back:            "Atrás",
 	sameAsHousehold: "Igual que la casa",
 	retired:         "sin respuesta — se queda como estaba",
+	typedNotAnAnswer: "Esta se contesta con los botones de arriba: no puedo leer una " +
+		"respuesta escrita, así que lo que acabas de enviar no ha ido a ninguna parte.",
 
 	nameQ: transport.Bold("Mi nombre") + "\n\n¿Cómo quieres llamarme? Escríbeme un nombre, " +
 		"o " + transport.Code(skipWord) + " para dejarme como kenward. " +

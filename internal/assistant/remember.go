@@ -57,6 +57,7 @@ const rememberSchema = `{
     "domain":     {"type": "string", "description": "A coarse category, e.g. household/logistics."},
     "confidence": {"type": "string", "enum": ["experimental", "provisional", "validated", "hardened"]},
     "aliases":    {"type": "array", "items": {"type": "string"}, "description": "The member's own words for what this is about, in the language they are speaking, when that is not English."},
+    "summary":    {"type": "string", "description": "One line, in the language the member is speaking, saying what the body says. It is shown to them so they can see what they are approving; it is not stored. Leave it out when you are answering in English."},
     "target":     {"type": "string", "enum": ["personal", "shared", "unsure"]}
   }
 }`
@@ -116,7 +117,11 @@ type rememberCall struct {
 	// capture.Proposal.Aliases for why — and these are what make it findable by the
 	// person who said it. An English conversation leaves them empty.
 	Aliases []string `json:"aliases"`
-	Target  string   `json:"target"`
+	// Summary is what the member is shown so that they can read what they are being
+	// asked to approve. It is never stored — see capture.Proposal.Summary — and an
+	// English conversation drops it, where it could only repeat the body.
+	Summary string `json:"summary"`
+	Target  string `json:"target"`
 }
 
 // extractProposal reads the completion's tool calls and returns the proposal, if the
@@ -128,14 +133,13 @@ type rememberCall struct {
 func extractProposal(calls []routing.ToolCall) (p *capture.Proposal, warn string) {
 	var payload json.RawMessage
 	for _, c := range calls {
-		switch c.Name {
-		case publishToolName:
-			continue // read by extractPublishTitle
-		case remindToolName, unremindToolName:
-			continue // read by extractReminders
-		}
 		if c.Name != rememberToolName {
-			warn = joinWarn(warn, fmt.Sprintf("model called unknown tool %q; dropped", c.Name))
+			// publish and the two reminder tools are read elsewhere; anything else
+			// is a name kenward never offered, and the log is the only place it can
+			// be seen. See unknownToolWarning for why the near miss is named.
+			if !knownTool(c.Name) {
+				warn = joinWarn(warn, unknownToolWarning(c.Name))
+			}
 			continue
 		}
 		if payload != nil {
@@ -198,7 +202,73 @@ func extractProposal(calls []routing.ToolCall) (p *capture.Proposal, warn string
 		},
 		Target:  target,
 		Aliases: call.Aliases,
+		Summary: call.Summary,
 	}, warn
+}
+
+// knownTool reports whether a name is one of the four kenward offers. It is the one
+// list: extractProposal decides what to drop from it, and unknownTools decides what
+// the member is told, and a second copy would drift the moment a fifth tool lands.
+//
+// It ignores scope. publish is offered in a direct conversation only, but a publish
+// call from the group is a call to a real tool that the wrong conversation made, and
+// extractPublishTitle already drops it as one. Calling it unknown here would tell a
+// member "I got it wrong" about a turn where the node did exactly what it should.
+func knownTool(name string) bool {
+	switch name {
+	case rememberToolName, publishToolName, remindToolName, unremindToolName:
+		return true
+	}
+	return false
+}
+
+// unknownTools names the calls in a completion that no offered tool answers to.
+//
+// It is what turns a known cause into something the member can be told — see
+// Unit.toolMisfire. The turn where this matters produced no reply text at all, so
+// without it the member gets the generic "no usable answer" for a failure kenward
+// could describe.
+func unknownTools(calls []routing.ToolCall) []string {
+	var out []string
+	for _, c := range calls {
+		if !knownTool(c.Name) {
+			out = append(out, c.Name)
+		}
+	}
+	return out
+}
+
+// unknownToolWarning is the log line for a dropped call, naming the real tool the
+// name looks like a slip for when there is one.
+//
+// A live turn called "reminder"; the tool is "remind". The call was dropped exactly
+// as it should have been and the log said only that something unknown was called,
+// which reads as a model doing something arbitrary rather than as a model missing a
+// tool name by two characters — a difference that decides whether anybody looks at
+// the prompt. The near miss is named in the log and nowhere else: routing a call to
+// a tool the model did not name would let a misspelling reach a write, and remember
+// is one of the four names something could be misspelled towards.
+func unknownToolWarning(name string) string {
+	if near := nearestTool(name); near != "" {
+		return fmt.Sprintf("model called unknown tool %q; dropped (near miss for %q)", name, near)
+	}
+	return fmt.Sprintf("model called unknown tool %q; dropped", name)
+}
+
+// nearestTool returns the offered tool an unknown name is a prefix of, or that is a
+// prefix of it. That covers the drift a model actually produces — a plural, a suffix,
+// a truncation — and it is a comparison for a log line, so a wrong guess costs a word.
+func nearestTool(name string) string {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return ""
+	}
+	for _, k := range []string{rememberToolName, publishToolName, remindToolName, unremindToolName} {
+		if n != k && (strings.HasPrefix(n, k) || strings.HasPrefix(k, n)) {
+			return k
+		}
+	}
+	return ""
 }
 
 // rememberCalls counts how many remember calls the completion made.

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/assistant"
@@ -179,14 +180,27 @@ type runner struct {
 	pending  []pendingUnit
 	served   map[int64]struct{}
 	units    map[unitKey]struct{}
-	// tutorials maps a chat with an onboarding in flight to the channel that
-	// onboarding's typed answers go to.
+	// tutorials maps a chat with an onboarding in flight to that onboarding.
 	//
 	// It is what makes the tutorial multi-turn without a second reader of the update
 	// stream. Between a claim and the end of the tutorial the member is served by no
 	// unit, so their messages keep arriving at the enrolment pump — the same pump —
 	// which hands them across rather than putting them to the Claimer again.
-	tutorials map[int64]chan transport.Inbound
+	tutorials map[int64]*tutorial
+}
+
+// tutorial is one onboarding in flight, as the enrolment pump sees it.
+type tutorial struct {
+	// answers is where a typed message goes. The send onto it is non-blocking, so a
+	// message is delivered only while the tutorial is actually waiting for one.
+	answers chan transport.Inbound
+	// nudge is what to say to a member who typed while a button question was up, or
+	// nil when there is nothing to say. The tutorial arms it as each question goes up
+	// and disarms it as the question comes down — it is the only thing that knows
+	// which language to say it in, since the member may have chosen one at question
+	// one — and the pump takes it with Swap, so exactly one message per question
+	// reaches the member however much they type.
+	nudge atomic.Pointer[string]
 }
 
 // pendingUnit is a constructed unit waiting for start to give it a goroutine.
@@ -967,7 +981,7 @@ func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound)
 			}
 			// A member part-way through onboarding is not a stranger presenting a
 			// code; what they sent is an answer, and the tutorial is waiting for it.
-			if r.deliverToTutorial(in) {
+			if r.deliverToTutorial(view, in) {
 				continue
 			}
 			res, err := r.rc.claimer.Handle(r.turnCtx, in)
@@ -997,16 +1011,30 @@ func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound)
 // filter: something a member types while a button question is on screen is not an
 // answer to anything, and buffering it would make it the answer to whatever question
 // comes next.
-func (r *runner) deliverToTutorial(in transport.Inbound) bool {
+//
+// Dropping it silently was the other half, and it was wrong. The member is looking at
+// a question that reads as answerable by typing, they typed, and nothing at all came
+// back — the one outcome that teaches somebody the node is broken. So the drop says
+// so, in the tutorial's own language rather than the household's: the sentence comes
+// from the tutorial, which is the only thing that knows a member chose Spanish at
+// question one, and Swap takes it, so a member who types five times gets one reply
+// and the next question arms a fresh one.
+func (r *runner) deliverToTutorial(view transport.Transport, in transport.Inbound) bool {
 	r.mu.Lock()
-	ch, ok := r.tutorials[in.ChatID]
+	tut, ok := r.tutorials[in.ChatID]
 	r.mu.Unlock()
 	if !ok {
 		return false
 	}
 	select {
-	case ch <- in:
+	case tut.answers <- in:
+		return true
 	default:
+	}
+	if s := tut.nudge.Swap(nil); s != nil && *s != "" {
+		if err := view.Send(r.turnCtx, transport.Outbound{ChatID: in.ChatID, Text: *s}); err != nil {
+			r.logger.Warn("supervisor: telling a member their typed answer was not one failed", "error", err)
+		}
 	}
 	return true
 }
@@ -1026,16 +1054,27 @@ func (r *runner) deliverToTutorial(in transport.Inbound) bool {
 // alternative is a second reader racing this one for their next message.
 func (r *runner) startTutorial(view transport.Transport, m domain.Member, chatID int64) {
 	answers := make(chan transport.Inbound)
+	session := &tutorial{answers: answers}
 	r.mu.Lock()
 	if r.tutorials == nil {
-		r.tutorials = make(map[int64]chan transport.Inbound)
+		r.tutorials = make(map[int64]*tutorial)
 	}
-	r.tutorials[chatID] = answers
+	r.tutorials[chatID] = session
 	r.mu.Unlock()
 
 	tut := r.rc.claimer.Tutorial(view, m, chatID, answers)
 	if tut.Logger == nil {
 		tut.Logger = r.logger
+	}
+	// What to say to a member who types while a button question is up. The tutorial
+	// owns the sentence because it owns the language; this pump owns the sending
+	// because it is the only thing that sees the message. See deliverToTutorial.
+	tut.Nudge = func(s string) {
+		if s == "" {
+			session.nudge.Store(nil)
+			return
+		}
+		session.nudge.Store(&s)
 	}
 	r.turnWg.Add(1)
 	go func() {

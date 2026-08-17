@@ -44,6 +44,7 @@ var catalan = Catalogue{
 	Queued:        "Encara estic amb el teu missatge anterior: aquest queda a la cua i l'atendré tot seguit.",
 	Dropped:       "Vaig saturat i he hagut de descartar aquest missatge. Torna a enviar-lo d'aquí a un moment.",
 	NoAnswer:      "No n'he obtingut cap resposta aprofitable. Prova de preguntar-ho una altra vegada.",
+	ToolMisfire:   "He intentat fer-hi alguna cosa i m'he equivocat, així que no ha passat res. Torna-m'ho a demanar.",
 	ResetNotice:   "Comencem de nou: he esborrat la part anterior d'aquesta conversa. A la teva memòria no ha canviat res; és el reinici programat.",
 
 	ModelBusy:         "El model està ocupat ara mateix. Torna-ho a provar d'aquí a un moment.",
@@ -204,6 +205,7 @@ var catalan = Catalogue{
 	PromotionOpener: "Això es publicaria a la llar exactament tal com està, i no es pot despublicar:",
 	PromotionCloser: "Ho publico?",
 	AlsoKnownAs:     func(words []string) string { return "També: " + latinList(words) },
+	EnglishGloss:    func(summary string) string { return "El text de dalt es guarda en anglès. Diu: " + summary },
 
 	BtnUndo:             "Desfer",
 	BtnPublishHousehold: "Publicar a la llar",

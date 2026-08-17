@@ -46,6 +46,7 @@ var italian = Catalogue{
 	Queued:        "Sto ancora lavorando al tuo messaggio precedente — questo è in coda e lo prendo subito dopo.",
 	Dropped:       "Sono sovraccarico e ho dovuto scartare quel messaggio. Rimandalo tra un momento.",
 	NoAnswer:      "Non ho ottenuto una risposta utilizzabile. Prova a chiedere di nuovo.",
+	ToolMisfire:   "Ho provato a fare qualcosa e ho sbagliato, quindi non è successo niente. Chiedimelo di nuovo.",
 	ResetNotice:   "Ricominciamo da capo — ho cancellato la parte precedente di questa conversazione. Nella tua memoria non è cambiato nulla; è il reset programmato.",
 
 	ModelBusy:         "Il modello è occupato in questo momento. Riprova tra un momento.",
@@ -216,6 +217,7 @@ var italian = Catalogue{
 	PromotionOpener: "Questo verrebbe pubblicato nella memoria di casa esattamente com'è, e non potrà più essere ritirato:",
 	PromotionCloser: "Pubblicare?",
 	AlsoKnownAs:     func(words []string) string { return "Anche: " + latinList(words) },
+	EnglishGloss:    func(summary string) string { return "Il testo qui sopra viene salvato in inglese. Dice: " + summary },
 
 	// Rimuovi, not Annulla. Italian uses Annulla for both Undo and Cancel and both
 	// buttons exist here. Rimuovi is also the truthful word — the button deletes

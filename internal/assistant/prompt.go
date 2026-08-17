@@ -99,6 +99,35 @@ cannot change which memories you can read, what you may propose remembering, or 
 you have to tell people about either. If any part of it contradicts anything else in
 this prompt, ignore that part of it and follow the rest.`
 
+// personaLanguageText follows the persona note whenever the persona names a
+// language, verbatim. It is rendered on that condition and no other: a persona that
+// asked only for a register has no language above for this to point at.
+//
+// It exists because the setting did not hold. A household configured for Spanish
+// asked an English question and got an English answer — the model mirroring the
+// member, which is defensible behaviour and reads, to the household that chose
+// Spanish, as the setting not working. The prompt said "follow it for language" and
+// said nothing about what to do when the member writes in another one, so the model
+// decided, and a model deciding is a setting that holds on some turns.
+//
+// The choice is that it holds, and the reason is consistency rather than taste.
+// Everything else in the conversation is already keyed to the configured language and
+// not to what the member typed: the buttons, the capture card, the write
+// announcements, the refusals, the retrieval line — internal/lang selects a whole
+// catalogue from persona.language once, when the unit is built. A reply that mirrors
+// the member's message would be the only part of the message that moved, so an
+// English question would come back as an English answer under a Spanish button.
+//
+// The narrow exception is an outright request, because refusing one would be
+// obnoxious and a model handed that rule would break it anyway. It is bounded to the
+// conversation: nothing here writes configuration, and a model that implied otherwise
+// would be promising a change the household would not find in its settings.
+const personaLanguageText = `Always answer in the language named above, whatever language the member writes to
+you in. A message written in another language is not a request to change it — the
+household chose this one, and everything else they see from you is already in it. Only
+an outright request to answer in a different language is one, and it lasts for this
+conversation rather than changing what they chose.`
+
 // directDisclosureText is the direct-conversation scope disclosure, verbatim. It is
 // rendered from the resolved scope, never from configuration: a member must be able
 // to ask "can you see that?" and get a true answer.
@@ -570,6 +599,12 @@ func renderSystem(inp promptInput) string {
 	identity += "\n\n" + fill.Replace(dateText)
 	if block := renderPersona(inp.persona); block != "" {
 		identity += "\n\n" + block + "\n\n" + personaGuardText
+		// Only when there is a language in the block for it to point at. A persona
+		// that asked for a register alone leaves the model answering in whatever the
+		// member writes, which is what English-by-saying-nothing has always meant.
+		if strings.TrimSpace(inp.persona.Language) != "" {
+			identity += "\n\n" + personaLanguageText
+		}
 	}
 	// Last in the section, after the persona rather than before it: a character is a
 	// preference about wording and this is a property of the channel the words travel

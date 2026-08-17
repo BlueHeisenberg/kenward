@@ -115,6 +115,7 @@ func TestPromptTextMatchesPromptDoc(t *testing.T) {
 		{"dateText", dateText},
 		{"formattingText", formattingText},
 		{"personaGuardText", personaGuardText},
+		{"personaLanguageText", personaLanguageText},
 		{"directDisclosureText", directDisclosureText},
 		{"groupDisclosureText", groupDisclosureText},
 		{"householdDisclosureText", householdDisclosureText},

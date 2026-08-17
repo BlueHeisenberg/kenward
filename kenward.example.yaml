@@ -80,10 +80,14 @@ household:
     # language is named the way a person names one, not as a code, because it is
     # passed to the model rather than looked up in a table. Empty means English.
     #
-    # An honest limit worth knowing before you set it: this reaches THE MODEL. The
-    # node's own strings — the onboarding text, the capture announcements, the
-    # refusals, the retrieval line, the locked notice — are still English. A Spanish
-    # household gets Spanish answers and English machinery around them.
+    # It reaches the model AND the node's own strings — the capture announcements,
+    # the refusals, the retrieval line, the locked notice, the memory model at the end
+    # of onboarding — in the ten languages internal/lang holds a table for. The setup
+    # wizard and the four tutorial questions are English and Spanish only.
+    #
+    # It is a setting rather than a default: the assistant answers in this language
+    # whatever language a message is written in, because everything else on the screen
+    # is already in it. Asking it outright to switch works, for that conversation.
     language: "Spanish"
     # tone is the register, in a phrase. Empty means the flat register docs/PROMPT.md
     # specifies — useful, brief, specific, not a personality — which is the default

@@ -69,6 +69,24 @@ type Tutorial struct {
 	AskPrivate bool
 	// Timeout bounds the wait for each answer. Zero means DefaultTutorialTimeout.
 	Timeout time.Duration
+	// Nudge, if set, is handed the sentence to send a member who types while a button
+	// question is on screen, and "" whenever no such question is up. It may be nil,
+	// which is the behaviour before it existed: the message is dropped and nothing is
+	// said.
+	//
+	// It is a callback rather than a message this package sends, because the message
+	// is not this package's to send. What the member typed never reaches here at all
+	// — the tutorial is blocked inside Asker.Ask, so nothing is reading Answers, and
+	// the non-blocking send that drops it happens in whoever owns the update stream.
+	// That reader is the only code that knows a message arrived, and this is the only
+	// code that knows what language to answer it in: a member who chose Spanish at
+	// question one is not in the household's language any more. So the language comes
+	// this way and the sending stays there.
+	//
+	// The contract is the reader's: it is called with a sentence when a question goes
+	// up and with "" when it comes down, and sending it at most once per question is
+	// what stops a chatty member collecting one nudge per message.
+	Nudge func(string)
 	// Logger receives what the member does not: why a tutorial ended early.
 	Logger *slog.Logger
 
@@ -350,6 +368,12 @@ const skipped outcome = -1
 // a tap from anyone but this member, or a transport that has gone all mean the same
 // thing: stop asking.
 func (t *Tutorial) ask(ctx context.Context, q string, choices []transport.Choice) (transport.Answer, outcome) {
+	// Around the whole call, in this language, because this is the window in which a
+	// typed message is not an answer to anything. Cleared on every ending, including
+	// an abandoned one: a nudge left armed after the questions stop would answer a
+	// message the tutorial is no longer waiting for.
+	t.nudge(t.cur.typedNotAnAnswer)
+	defer t.nudge("")
 	ans, err := t.Asker.Ask(ctx, transport.Question{
 		ChatID:        t.ChatID,
 		Text:          q,
@@ -424,6 +448,13 @@ func (t *Tutorial) confirm(ctx context.Context, s string) outcome {
 
 func (t *Tutorial) send(ctx context.Context, s string) error {
 	return t.Asker.Send(ctx, transport.Outbound{ChatID: t.ChatID, Text: s})
+}
+
+// nudge publishes what to say to a member who types right now, or "" for nothing.
+func (t *Tutorial) nudge(s string) {
+	if t.Nudge != nil {
+		t.Nudge(s)
+	}
 }
 
 func (t *Tutorial) timeout() time.Duration {
