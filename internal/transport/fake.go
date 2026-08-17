@@ -74,13 +74,19 @@ func (f *Fake) Inject(in ...Inbound) {
 
 // InjectText is Inject for the common case: one text message from one member.
 // Set group to true to have it look like it came from the household chat.
+//
+// The message is Addressed: a caller reaching for the one-line helper means the
+// member spoke to the assistant, and in the household group only an addressed
+// message is answered at all. An overheard one — two members talking to each other
+// — is a different thing to say, so it is said with Inject and the field left off.
 func (f *Fake) InjectText(chatID, userID int64, text string, group bool) {
 	f.Inject(Inbound{
-		ChatID:  chatID,
-		UserID:  userID,
-		Text:    text,
-		IsGroup: group,
-		At:      time.Now().UTC(),
+		ChatID:    chatID,
+		UserID:    userID,
+		Text:      text,
+		IsGroup:   group,
+		Addressed: true,
+		At:        time.Now().UTC(),
 	})
 }
 

@@ -320,7 +320,7 @@ func TestTelegramGroupMessageIsScopedToSharedMemory(t *testing.T) {
 	})
 	h.start()
 
-	api.Push(telegramtest.TextUpdate(groupChatID, davidTelegramID, "supergroup", "what's the gate code?"))
+	api.Push(telegramtest.MentionUpdate(groupChatID, davidTelegramID, "@kenward_bot what's the gate code?"))
 	sent := waitSends(t, api, groupChatID, 1)
 
 	for _, sp := range h.mem.touchedSpaces() {
@@ -345,6 +345,67 @@ func TestTelegramGroupMessageIsScopedToSharedMemory(t *testing.T) {
 	for i, c := range api.CallsFor("sendMessage") {
 		if strings.Contains(c.Form.Get("text"), "9931") {
 			t.Errorf("sendMessage %d carries a private entry: %q", i, c.Form.Get("text"))
+		}
+	}
+}
+
+// TestTelegramGroupAnswersOnlyWhenAddressed is the household group rule end to
+// end, over the wire that produces it.
+//
+// Telegram's bot privacy mode used to supply this gate: with it on a bot in a group
+// receives only what names it. kenward now requires it off — with it on the bot
+// received nothing at all and ignored a real family in silence — so the gate is
+// rebuilt here, from the same entities Telegram would have filtered on.
+//
+// Both halves are asserted from one conversation, because they are one behaviour.
+// The family talks; kenward says nothing and spends nothing. Then somebody asks it
+// something, and what the family said is in the prompt — it was listening the whole
+// time, which is the only reason not answering is acceptable.
+func TestTelegramGroupAnswersOnlyWhenAddressed(t *testing.T) {
+	h, api := telegramHousehold(t, harnessOptions{})
+	h.local.setReply(func(wireRequest) providerReply {
+		return providerReply{Text: "In the spring, you said.", FinishReason: "stop"}
+	})
+	h.start()
+
+	const aside = "we said we would replace the boiler in the spring, not now"
+	api.Push(telegramtest.TextUpdate(groupChatID, davidTelegramID, "supergroup", aside))
+	api.Push(telegramtest.TextUpdate(groupChatID, meiTelegramID, "supergroup", "right, after the trip"))
+
+	// A message that is answered, so there is something to wait for that is not a
+	// sleep: it goes to a different chat and a different unit, and it cannot
+	// overtake the group messages pushed before it — the transport polls one
+	// stream in order.
+	api.Push(telegramtest.TextUpdate(davidChatID, davidTelegramID, "private", "evening"))
+	waitSends(t, api, davidChatID, 1)
+
+	if got := sendsTo(api, groupChatID); len(got) != 0 {
+		t.Fatalf("kenward answered %d messages the family said to each other: %q", len(got), got[0].Form.Get("text"))
+	}
+	if n := h.local.count(); n != 1 {
+		t.Errorf("the model was asked %d times; want 1 — only the private message was a turn", n)
+	}
+
+	api.Push(telegramtest.MentionUpdate(groupChatID, davidTelegramID, "@kenward_bot what did we decide about the boiler?"))
+	waitSends(t, api, groupChatID, 1)
+
+	req := h.local.last(t)
+	var heard bool
+	for _, m := range req.Messages {
+		if m.Role == "user" && strings.Contains(m.Content, aside) {
+			heard = true
+		}
+	}
+	if !heard {
+		t.Errorf("the messages kenward overheard never reached the prompt: %+v", req.Messages)
+	}
+	// Overheard messages are the conversation, not turns in it, so a run of them
+	// arrives as one user message rather than as a run the chat template has to
+	// cope with.
+	for i := 1; i < len(req.Messages); i++ {
+		if req.Messages[i].Role == req.Messages[i-1].Role {
+			t.Errorf("two consecutive %s messages in the prompt: %+v", req.Messages[i].Role, req.Messages)
+			break
 		}
 	}
 }

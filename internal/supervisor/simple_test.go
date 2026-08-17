@@ -138,7 +138,7 @@ func TestSimpleRoutesByScope(t *testing.T) {
 
 	// A group message reaches the group unit: reply in the group chat, quoting
 	// the message, over the household's tier chain.
-	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: davidTelegramID, Text: "hi all", MessageID: 7, IsGroup: true})
+	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: davidTelegramID, Text: "hi all", MessageID: 7, IsGroup: true, Addressed: true})
 	waitFor(t, "group reply", func() bool { return len(h.fake.Sent()) >= 2 })
 
 	var direct, group *transport.Outbound
@@ -1019,7 +1019,7 @@ func TestGroupServesAMemberWhoseTutorialIsStillRunning(t *testing.T) {
 	waitFor(t, "the tutorial is asking its first question", func() bool { return len(h.fake.Asked()) >= 1 })
 
 	before := len(h.fake.Sent())
-	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: anaTelegramID, Text: "hi all", MessageID: 3, IsGroup: true})
+	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: anaTelegramID, Text: "hi all", MessageID: 3, IsGroup: true, Addressed: true})
 	waitFor(t, "a group reply for the member who has just claimed", func() bool {
 		for _, o := range h.fake.Sent()[before:] {
 			if o.ChatID == groupChatID {

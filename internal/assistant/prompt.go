@@ -774,17 +774,37 @@ func oneLine(s string) string {
 // buildMessages lays the prompt out on the routing seam: the assembled system prompt,
 // then the history ring oldest first as alternating user and assistant messages, then
 // the member's message.
+//
+// Consecutive user messages are joined rather than sent as a run. The ring can hold
+// them now: an unaddressed group message is recorded with no assistant side, and a
+// family talking among themselves produces several in a row before anyone asks
+// kenward anything. Two user messages in a row is what several local chat templates
+// reject outright or silently merge — so this merges them deliberately, with a
+// newline, which is what the members' messages were in the chat anyway.
 func buildMessages(system string, hist []turnRecord, text string) []routing.Message {
 	msgs := make([]routing.Message, 0, 2+2*len(hist))
 	msgs = append(msgs, routing.Message{Role: "system", Content: system})
-	for _, t := range hist {
-		if t.user != "" {
-			msgs = append(msgs, routing.Message{Role: "user", Content: t.user})
+	add := func(role, content string) {
+		if content == "" {
+			return
 		}
-		if t.assistant != "" {
-			msgs = append(msgs, routing.Message{Role: "assistant", Content: t.assistant})
+		if n := len(msgs) - 1; msgs[n].Role == role {
+			msgs[n].Content += "\n" + content
+			return
 		}
+		msgs = append(msgs, routing.Message{Role: role, Content: content})
 	}
-	msgs = append(msgs, routing.Message{Role: "user", Content: text})
+	for _, t := range hist {
+		add("user", t.user)
+		add("assistant", t.assistant)
+	}
+	// The member's own message goes on unconditionally — it is the turn, and an
+	// empty one is still the turn — but it merges into a trailing run of overheard
+	// messages for the same reason the ring's do.
+	if n := len(msgs) - 1; msgs[n].Role == "user" {
+		msgs[n].Content += "\n" + text
+	} else {
+		msgs = append(msgs, routing.Message{Role: "user", Content: text})
+	}
 	return msgs
 }

@@ -30,6 +30,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
 )
 
 // pollHold is how long a getUpdates call with nothing to say waits before
@@ -268,8 +269,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	switch method {
 	case "getMe":
-		writeJSON(w, http.StatusOK,
-			`{"ok":true,"result":{"id":42,"is_bot":true,"first_name":"kenward","username":"kenward_bot"}}`)
+		writeJSON(w, http.StatusOK, fmt.Sprintf(
+			`{"ok":true,"result":{"id":42,"is_bot":true,"first_name":"kenward","username":%q}}`,
+			BotUsername))
 
 	case "getUpdates":
 		offset, _ := strconv.ParseInt(form.Get("offset"), 10, 64)
@@ -401,6 +403,31 @@ func TextUpdate(chatID, userID int64, chatType, text string) string {
 	return fmt.Sprintf(
 		`{"message":{"message_id":%d,"date":1700000000,"from":{"id":%d,"is_bot":false,"first_name":"M"},"chat":{"id":%d,"type":%q},"text":%q}}`,
 		messageID(), userID, chatID, chatType, text)
+}
+
+// BotUsername is the bot getMe answers for on this server. A test that wants a
+// message addressed to it names it through MentionUpdate rather than spelling the
+// handle out, so the two cannot drift apart.
+const BotUsername = "kenward_bot"
+
+// MentionUpdate is a supergroup message that @mentions this server's bot, carrying
+// the mention entity Telegram sends with it.
+//
+// The entity is the point. Telegram does not mark a message as addressed; it sends
+// an offset and a length, in UTF-16 code units, and leaves the bot to work out
+// whether the handle at that offset is its own. A test that pushed the text without
+// the entity would be pushing a message Telegram never sends.
+func MentionUpdate(chatID, userID int64, text string) string {
+	handle := "@" + BotUsername
+	before, _, ok := strings.Cut(text, handle)
+	if !ok {
+		panic("telegramtest: MentionUpdate text does not mention " + handle)
+	}
+	entity := fmt.Sprintf(`{"type":"mention","offset":%d,"length":%d}`,
+		len(utf16.Encode([]rune(before))), len(utf16.Encode([]rune(handle))))
+	return fmt.Sprintf(
+		`{"message":{"message_id":%d,"date":1700000000,"from":{"id":%d,"is_bot":false,"first_name":"M"},"chat":{"id":%d,"type":"supergroup"},"text":%q,"entities":[%s]}}`,
+		messageID(), userID, chatID, text, entity)
 }
 
 // BotTextUpdate is a message sent by another bot, which must be ignored.
