@@ -259,8 +259,12 @@ func TestTelegramPrivateWriteIsAnnouncedAndUndoneByARealButtonTap(t *testing.T) 
 	if strings.Contains(got, "I've written this") {
 		t.Errorf("rewritten announcement %q still says the entry was written", got)
 	}
-	if !strings.Contains(got, "not on any other device in the household") {
-		t.Errorf("rewritten announcement %q drops the household-wide promise", got)
+	// Struck entry first, status line under it — the shape of the announcement it
+	// replaces, so the member's eye lands on the same place after the edit as before.
+	// Asserted here as well as in internal/capture because this is the text that
+	// actually goes on the wire, form-encoded, and the order is what survives it.
+	if entry, status := strings.Index(got, "<s>"), strings.Index(got, "Not saved"); entry < 0 || status < 0 || entry > status {
+		t.Errorf("rewritten announcement does not put the struck entry above the status line:\n%s", got)
 	}
 	// And nothing is sent alongside it.
 	for _, c := range sendsTo(api, davidChatID) {

@@ -1568,14 +1568,12 @@ func TestUndoDeletesTheEntryAndSaysSo(t *testing.T) {
 		t.Fatalf("edits = %+v, want the one removal notice, on the announcement", tr.edits)
 	}
 	got := tr.edits[0].text
-	if !strings.Contains(got, "I didn't record this") || !strings.Contains(got, "Bins go out Tuesday") {
+	if !strings.Contains(got, "Not saved") || !strings.Contains(got, "Bins go out Tuesday") {
 		t.Errorf("removal notice %q does not say what was removed", got)
 	}
-	// lore deletes by tombstone, not by shredding, and the message may promise only
-	// what that delivers. ARCHITECTURE.md required the announcement to say which.
-	if !strings.Contains(got, "won't come back in an answer") {
-		t.Errorf("removal notice %q does not bound the promise to what a tombstone does", got)
-	}
+	// lore deletes by tombstone, not by shredding, and no message may promise more
+	// than that delivers. The rewrite promises nothing at all beyond "not saved",
+	// which is the safe end of that rule; the words below are the unsafe end.
 	for _, never := range []string{"erased", "destroyed", "wiped"} {
 		if strings.Contains(got, never) {
 			t.Errorf("removal notice %q promises %q; a tombstone is not a shred", got, never)
@@ -1622,12 +1620,13 @@ func TestUndoStrikesTheAnnouncementInPlace(t *testing.T) {
 			t.Errorf("rewritten announcement %q still says %q about an entry that is gone", ed.text, never)
 		}
 	}
-	// The promise the separate removal notice used to carry has to survive the move,
-	// because it is the only place a member is told what a delete in lore actually
-	// buys them. It is bounded to a tombstone and it is household-wide.
-	if !strings.Contains(ed.text, "won't come back in an answer") ||
-		!strings.Contains(ed.text, "not on any other device in the household") {
-		t.Errorf("rewritten announcement %q drops the bounded, household-wide promise", ed.text)
+	// It says which memory and it says nothing else. The bounded, household-wide
+	// promise this line used to carry lives in two places now, neither of them here:
+	// TestOnboardingTeachesWhatUndoBuys covers the onboarding card that introduces the
+	// button, and TestUndoFallsBackToAMessageWhenTheEditFails covers the notice a
+	// failed edit sends instead of this rewrite.
+	if !strings.Contains(ed.text, "your private memory") {
+		t.Errorf("rewritten announcement %q does not say which memory", ed.text)
 	}
 	for _, never := range []string{"erased", "destroyed", "wiped"} {
 		if strings.Contains(ed.text, never) {
@@ -1639,6 +1638,60 @@ func TestUndoStrikesTheAnnouncementInPlace(t *testing.T) {
 	// retrieval line's whole comment worrying about.
 	if len(tr.sends) != 0 {
 		t.Errorf("sends = %v, want none — the rewritten announcement is the message", tr.sends)
+	}
+}
+
+// TestStruckEntryComesBeforeTheStatusLine fixes the order, which is the half of this
+// message a member actually reads.
+//
+// The rewritten announcement keeps the shape of the one it replaces: the entry, then a
+// line underneath about it. writtenText puts the draft above "The Undo button removes
+// it."; this puts the same draft, struck, above "Not saved". Inverting that on the edit
+// would move the entry down the message at the exact moment it became the only part
+// worth looking at.
+//
+// The second assertion is the body-less case. struckBlock omits the body line when
+// there is no body, and the separator belongs to the caller, so a title-only entry must
+// not leave a blank line hanging where the body would have been.
+func TestStruckEntryComesBeforeTheStatusLine(t *testing.T) {
+	e, _, tr := newEngine(t, accept(ChoiceUndo))
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	if _, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if len(tr.edits) != 1 {
+		t.Fatalf("edits = %+v, want the announcement rewritten in place", tr.edits)
+	}
+	text := tr.edits[0].text
+	entry := strings.Index(text, "<s>Green bin on alternate weeks.</s>")
+	status := strings.Index(text, transport.GlyphGone)
+	if entry < 0 || status < 0 {
+		t.Fatalf("rewritten announcement %q is missing the struck entry or the status line", text)
+	}
+	if entry > status {
+		t.Errorf("rewritten announcement puts the status line above the struck entry:\n%s", text)
+	}
+	if !strings.HasSuffix(text, transport.GlyphGone+" "+lang.For(lang.English).NotSaved(true)) {
+		t.Errorf("rewritten announcement %q does not end on the status line", text)
+	}
+
+	// Title only. The blank line between the entry and the status line is the only
+	// one in the message.
+	e2, _, tr2 := newEngine(t, accept(ChoiceUndo))
+	e2.BeginTurn(sc, "turn-1")
+	p := proposal(TargetPersonal)
+	p.Draft.Body = ""
+	if _, err := e2.Offer(context.Background(), sc, p, davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if len(tr2.edits) != 1 {
+		t.Fatalf("edits = %+v, want the announcement rewritten in place", tr2.edits)
+	}
+	if got, want := tr2.edits[0].text,
+		"<s>Bins go out Tuesday</s>\n\n"+transport.GlyphGone+" "+lang.For(lang.English).NotSaved(true); got != want {
+		t.Errorf("body-less rewrite =\n%q\nwant\n%q", got, want)
 	}
 }
 

@@ -215,13 +215,11 @@ var portuguese = Catalogue{
 		return "Escrevi isto na memória da casa:"
 	},
 	WrittenHint: "O botão Anular retira isto.",
-	RemovedOpener: func(private bool) string {
-		where := "da memória da casa"
+	NotSaved: func(private bool) string {
 		if private {
-			where = "da tua memória privada"
+			return "Não guardado na tua memória privada."
 		}
-		return "Afinal não registei isto: removi-o " + where +
-			". Não volta a aparecer numa resposta, nem aqui nem em nenhum outro dispositivo da casa."
+		return "Não guardado na memória da casa."
 	},
 	PromotionOpener: "Isto seria publicado na casa exatamente como está, e não pode ser despublicado:",
 	PromotionCloser: "Publico isto?",
@@ -253,7 +251,8 @@ var portuguese = Catalogue{
 		"e mostro-te o texto exato antes de alguma coisa se mexer.",
 	EnrolMemoryHeading: "O que acontece quando aponto alguma coisa",
 	EnrolMemoryBodyDefault: "Quando alguma coisa parece valer a pena guardar na tua própria memória, escrevo-a e depois " +
-		"mostro-te exatamente o que escrevi e em que memória ficou, com um botão Anular que a retira. O que for para a " +
+		"mostro-te exatamente o que escrevi e em que memória ficou, com um botão Anular que a retira: se carregares nele, " +
+		"aquilo não volta a aparecer numa resposta, nem aqui nem em nenhum outro dispositivo da casa. O que for para a " +
 		"memória partilhada da casa pergunto primeiro e não escrevo nada até carregares em Guardar na casa.\n\n" +
 		"De uma maneira ou de outra, vês sempre. É só isto. Fala comigo normalmente.",
 	EnrolMemoryBodyAsk: "Nunca guardo nada por minha conta. Quando alguma coisa parecer valer a pena guardar, pergunto: " +

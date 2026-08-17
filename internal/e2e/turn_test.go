@@ -468,7 +468,7 @@ func TestUndoRemovesTheEntryEndToEnd(t *testing.T) {
 	// that is now false, and it is the one a member scrolling back reads.
 	waitFor(t, "the removal notice", func() bool {
 		for _, ed := range h.tr.Edits() {
-			if strings.Contains(ed.Text, "I didn't record this") &&
+			if strings.Contains(ed.Text, "Not saved to your private memory") &&
 				strings.Contains(ed.Text, "<s>Boiler serviced</s>") {
 				return true
 			}

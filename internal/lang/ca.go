@@ -228,13 +228,11 @@ var catalan = Catalogue{
 		return "He escrit això a la memòria de la llar:"
 	},
 	WrittenHint: "El botó Desfer ho retira.",
-	RemovedOpener: func(private bool) string {
-		where := "de la memòria de la llar"
+	NotSaved: func(private bool) string {
 		if private {
-			where = "de la teva memòria privada"
+			return "No desat a la teva memòria privada."
 		}
-		return "Al final no ho he desat: ho he tret " + where +
-			". No tornarà a sortir en cap resposta, ni aquí ni en cap altre dispositiu de la llar."
+		return "No desat a la memòria de la llar."
 	},
 	PromotionOpener: "Això es publicaria a la llar exactament tal com està, i no es pot despublicar:",
 	PromotionCloser: "Ho publico?",
@@ -263,7 +261,8 @@ var catalan = Catalogue{
 		"i et mostraré el text exacte abans que es mogui res.",
 	EnrolMemoryHeading: "Què passa quan apunto alguna cosa",
 	EnrolMemoryBodyDefault: "Quan alguna cosa sembla que val la pena guardar a la teva pròpia memòria, l'escric i després " +
-		"et mostro exactament què he escrit i a quina memòria ha anat, amb un botó de Desfer que ho retira. El que sigui " +
+		"et mostro exactament què he escrit i a quina memòria ha anat, amb un botó de Desfer que ho retira: si el prems, " +
+		"allò no tornarà a sortir en cap resposta, ni aquí ni en cap altre dispositiu de la llar. El que sigui " +
 		"per a la memòria compartida de la llar t'ho pregunto abans i no escric res fins que premis Desar a la llar.\n\n" +
 		"D'una manera o d'una altra sempre ho veus. Això és tot. Parla'm amb normalitat.",
 	EnrolMemoryBodyAsk: "No deso mai res pel meu compte. Quan alguna cosa sembli que val la pena guardar, t'ho preguntaré: " +

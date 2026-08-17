@@ -709,6 +709,12 @@ func (e *Engine) undo(ctx context.Context, sc domain.Scope, p Proposal, out Outc
 		// ARCHITECTURE.md's capture section required this sentence to say which of
 		// the two it is, because "erased" and "will not be recalled" are different
 		// promises and only the second one is kept.
+		//
+		// This is the long form, and it is the fallback rather than the norm: the
+		// rewrite above says only that the entry was not saved, because a member who
+		// has just tapped a button does not need the memory model restated at them.
+		// Where they are taught it is EnrolMemoryBodyDefault, on the onboarding card
+		// that introduces the Undo button in the first place.
 		if serr := e.tr.Send(ctx, transport.Outbound{
 			ChatID: sc.ChatID,
 			Text:   transport.GlyphGone + " " + e.cat.Removed(private, out.Title),
@@ -1187,9 +1193,16 @@ func (e *Engine) strikeAnnouncement(ctx context.Context, sc domain.Scope, p Prop
 // struckText is the write announcement rewritten for an entry the member took back.
 //
 // It keeps writtenText's shape on purpose. This is the same message edited in place,
-// and a member scrolling past it has to recognise the one they tapped — so the glyph
-// changes from memory to gone, the opening line says the entry was not recorded after
-// all, and the entry stays exactly where it was, struck through.
+// and a member scrolling past it has to recognise the one they tapped — so the entry
+// stays exactly where it was, struck through, and the line underneath it changes from
+// the Undo hint to the fact that nothing was saved.
+//
+// Entry first, status second. Inverting that would push the struck draft down the
+// message at the moment it becomes the only part worth reading: the member knows what
+// they tapped, and what they may not remember a week later is what it was they turned
+// down. The glyph therefore travels with the status line rather than heading the
+// message — it marks the sentence it belongs to, which is what it does everywhere
+// else.
 //
 // Struck rather than dropped, because what the member asked for is to be able to see
 // what it was they rejected. Struck rather than bold and quoted, because those two
@@ -1201,10 +1214,8 @@ func (e *Engine) strikeAnnouncement(ctx context.Context, sc domain.Scope, p Prop
 // above is not kept at all, and a line making a claim about a deleted entry is the
 // class of small lie this whole change is about.
 func (e *Engine) struckText(p Proposal, title string, private bool) string {
-	var b strings.Builder
-	b.WriteString(transport.GlyphGone + " " + e.cat.RemovedOpener(private) + "\n\n")
-	b.WriteString(struckBlock(title, p.Draft.Body))
-	return b.String()
+	return struckBlock(title, p.Draft.Body) + "\n\n" +
+		transport.GlyphGone + " " + e.cat.NotSaved(private)
 }
 
 // struckBlock is entryBlock for an entry that is gone: the same title and body, each

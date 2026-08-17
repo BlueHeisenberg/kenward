@@ -343,22 +343,26 @@ type Catalogue struct {
 	UndoExpiredNote  string
 	WrittenOpener    func(private bool) string
 	WrittenHint      string
-	// RemovedOpener replaces WrittenOpener when the member taps Undo and the delete
-	// lands: the same announcement, rewritten in place, with the entry struck through
-	// underneath it.
+	// NotSaved replaces WrittenHint when the member taps Undo and the delete lands:
+	// the same announcement, rewritten in place, with the struck entry above this line
+	// where the live entry and its hint used to be.
 	//
-	// It is a whole sentence rather than the opener plus a note, because it has three
-	// jobs and only one of them is opening. It has to say the entry was not recorded
-	// after all, undoing the claim the message it replaces was making; it has to name
-	// which memory, in a product whose premise is that there are two; and it has to
-	// carry the bounded, household-wide promise — gone from every answer, on every
-	// device, by tombstone rather than by shredding — which used to travel on Removed
-	// in a message of its own and would otherwise be lost when that message stops
-	// being sent. Removed itself stays: it is what a failed edit falls back to.
+	// It is a fragment, not a paragraph. The member tapped a button one second ago and
+	// the thing they tapped it about is struck through directly above, so the message
+	// does not have to re-establish what happened — it has to record, for whoever
+	// scrolls past it in a week, that the entry is not in memory. Everything else this
+	// line used to carry was read once and cost a screenful every time.
 	//
-	// It takes no title. The entry is struck through directly below it, so naming it
-	// again would print it twice in one short message.
-	RemovedOpener   func(private bool) string
+	// It names the memory anyway, in five words, because the premise of the product is
+	// that there are two of them and a household chat contains both. It takes no title:
+	// the entry is struck through immediately above.
+	//
+	// What it deliberately no longer carries is the bounded promise — gone from every
+	// answer, on every device, by tombstone rather than by shredding. That is a thing a
+	// member learns once, not on every undo, and it is now taught by
+	// EnrolMemoryBodyDefault where the Undo button is introduced. Removed still states
+	// it in full, and Removed is what a failed edit falls back to.
+	NotSaved        func(private bool) string
 	PromotionOpener string
 	PromotionCloser string
 

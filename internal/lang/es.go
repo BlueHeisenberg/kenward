@@ -241,13 +241,11 @@ var spanish = Catalogue{
 		return "He escrito esto en la memoria del hogar:"
 	},
 	WrittenHint: "El botón Deshacer lo retira.",
-	RemovedOpener: func(private bool) string {
-		where := "de la memoria del hogar"
+	NotSaved: func(private bool) string {
 		if private {
-			where = "de tu memoria privada"
+			return "No guardado en tu memoria privada."
 		}
-		return "Al final no he guardado esto: lo he quitado " + where +
-			". No volverá a aparecer en ninguna respuesta, ni aquí ni en ningún otro dispositivo del hogar."
+		return "No guardado en la memoria del hogar."
 	},
 	PromotionOpener: "Esto se publicaría en el hogar tal y como está, y no se puede despublicar:",
 	PromotionCloser: "¿Lo publico?",
@@ -278,7 +276,8 @@ var spanish = Catalogue{
 	// The button names in this prose are byte-identical to BtnUndo, BtnDontSave and
 	// BtnSaveHousehold. If a label changes, this changes with it.
 	EnrolMemoryBodyDefault: "Cuando algo parece que vale la pena guardar en tu propia memoria, lo escribo y después te enseño " +
-		"exactamente qué he escrito y en qué memoria ha quedado, con un botón de Deshacer que lo retira. Lo que sea " +
+		"exactamente qué he escrito y en qué memoria ha quedado, con un botón de Deshacer que lo retira: si lo pulsas, " +
+		"eso no volverá a aparecer en ninguna respuesta, ni aquí ni en ningún otro dispositivo del hogar. Lo que sea " +
 		"para la memoria compartida del hogar te lo pregunto antes y no escribo nada hasta que pulses Guardar en el hogar.\n\n" +
 		"De una manera o de otra siempre lo ves. Eso es todo. Háblame con normalidad.",
 	EnrolMemoryBodyAsk: "Nunca guardo nada por mi cuenta. Cuando algo parezca que vale la pena guardar, te lo preguntaré: " +

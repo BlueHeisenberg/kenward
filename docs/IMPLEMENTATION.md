@@ -1405,8 +1405,8 @@ in a different state in each:
 
 | Ending | What the member gets |
 | --- | --- |
-| Delete confirmed, or the entry was already a tombstone | **The announcement is rewritten in place**: the entry struck through, and the line around it reading *"I didn't record this after all — I've taken it back out of your private memory. It won't come back in an answer, not here and not on any other device in the household."* Outcome is `OutcomeUndone`, and `Stored()` is false. Nothing else is sent. |
-| Delete confirmed, but the rewrite could not be made | The same sentence as a message of its own — *"I've removed … not here and not on any other device in the household."* — which is what this flow did before it edited. A message too old to edit, a transport that cannot edit, an announcement whose id never came back: none of them may cost the member the news. |
+| Delete confirmed, or the entry was already a tombstone | **The announcement is rewritten in place**: the entry struck through, and under it *"✕ Not saved to your private memory."* Outcome is `OutcomeUndone`, and `Stored()` is false. Nothing else is sent. |
+| Delete confirmed, but the rewrite could not be made | A message of its own — *"I've removed … not here and not on any other device in the household."* — which is what this flow did before it edited. A message too old to edit, a transport that cannot edit, an announcement whose id never came back: none of them may cost the member the news. |
 | lore refused the delete, for any reason | *"I couldn't take that back: … is still in your private memory."* The outcome stays `OutcomeSaved`, because it is. There is no second failure row: the store writes the tombstone or returns an error, so the entry's state is never unknown. It could be while lore was a subprocess, and this table had a *"I can't tell whether … was removed"* row for it. |
 | Nobody taps; the window closes | The announcement is edited in place, keeping its text and appending *"— the undo window has closed; this is still in your private memory"*. |
 | The announcement itself could not be sent | A plain confirmation, saying the undo button did not go through. Silence here would be a silent write. |
@@ -1421,7 +1421,32 @@ day later, the chat says the opposite of what happened. So a confirmed delete ed
 announcement rather than replying to it, and the entry is **struck through rather than
 removed from the message**, because what a member needs to see afterwards is *what it was
 they rejected*. Only a rewrite that could not be made falls back to a message of its own,
-which is why `Catalogue.Removed` stays in the table alongside `RemovedOpener`.
+which is why `Catalogue.Removed` stays in the table alongside `NotSaved`.
+
+**The struck entry is above the status line, and the status line is short.** Both halves
+are the member's own correction of the first version of this. The announcement being
+rewritten puts the entry above `WrittenHint`, so the rewrite putting it above `NotSaved`
+keeps the eye in the same place across an edit that happens under it. And the line itself
+is a label, not a paragraph: the member tapped a button one second ago and the entry is
+struck through directly above it, so *"Not saved to your private memory."* is the whole
+of what it has left to say. It names the memory — five words, in a product whose premise
+is that a household has two of them — and nothing else.
+
+`NotSaved` therefore no longer carries the bounded promise about what a delete in lore
+buys, and that promise was the point of the sentence it replaced. It has two homes now,
+both of them still tested:
+
+- **`EnrolMemoryBodyDefault`**, the onboarding card that introduces the Undo button in the
+  first place: *"…with an Undo button that takes it back — tap it and the entry won't come
+  back in an answer, not here and not on any other device in the household."* Said once,
+  where a member is learning the memory model, rather than on every undo. It is not added
+  to `EnrolMemoryBodyAsk`: under `PrivateWriteAsk` nothing is written before the member
+  picks a memory, so there is no Undo button on that card to explain.
+- **`Catalogue.Removed`**, unchanged, which the fallback row above still sends in full.
+
+`lang.TestNotSavedIsALabel` holds the ceiling — sixty characters and one sentence, in all
+ten tables — and `lang.TestOnboardingTeachesWhatUndoBuys` holds the promise in its new
+place, bounded to a tombstone rather than a shred exactly as the old assertion was.
 
 The struck entry is written with `transport.Strike`, which escapes its argument exactly as
 `Bold` and `Quote` do. A title is model-written out of what a member just said, and this

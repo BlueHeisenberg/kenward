@@ -59,7 +59,7 @@ func rendered(c Catalogue) []string {
 			c.Saved(private, "Title"), c.SavedNoUndo(private, "Title"),
 			c.Removed(private, "Title"), c.UndoFailed(private, "Title"),
 			c.StoreRefused(private, "Title"), c.ProposalWithDest(private),
-			c.WrittenOpener(private), c.RemovedOpener(private))
+			c.WrittenOpener(private), c.NotSaved(private))
 	}
 	for _, e := range []remind.Every{remind.EveryOnce, remind.EveryDaily, remind.EveryWeekly} {
 		out = append(out, c.When(sampleReminder(e), time.UTC))
@@ -109,6 +109,63 @@ func TestNothingRendersEmpty(t *testing.T) {
 				t.Errorf("%s: rendered string %d is empty", tag, i)
 			}
 		}
+	}
+}
+
+// TestNotSavedIsALabel. The line under a struck entry is a label, not a paragraph.
+//
+// It said two sentences and thirty words once — "I didn't record this after all — I've
+// taken it back out of your private memory. It won't come back in an answer, not here
+// and not on any other device in the household." — for an event the member caused one
+// second ago and can see struck through directly above it. Everything past "not saved
+// to your private memory" was read on the first undo and skipped on every one after.
+//
+// Sixty characters is not a typographic law; it is a ceiling low enough that the
+// paragraph cannot grow back without somebody deciding to raise it here.
+func TestNotSavedIsALabel(t *testing.T) {
+	for _, tag := range Tags() {
+		for _, private := range []bool{true, false} {
+			got := For(tag).NotSaved(private)
+			if n := len([]rune(got)); n > 60 {
+				t.Errorf("%s NotSaved(%v) is %d characters: %q", tag, private, n, got)
+			}
+			if strings.Count(got, ".")+strings.Count(got, "。") > 1 {
+				t.Errorf("%s NotSaved(%v) is more than one sentence: %q", tag, private, got)
+			}
+		}
+	}
+}
+
+// TestOnboardingTeachesWhatUndoBuys is where the promise above went.
+//
+// A member who undoes something sensitive wants to know whether it is gone from
+// everyone's device, and lore's answer is specific: a delete writes a signed tombstone
+// that propagates, so the entry stops coming back from an answer everywhere and the row
+// is still on a disk. That is worth saying once, on the onboarding card that introduces
+// the Undo button, and not on every undo. ARCHITECTURE.md's capture section requires the
+// product to say which of the two it is somewhere a member reads; this is the somewhere,
+// with Catalogue.Removed — the notice a failed edit falls back to — as the other.
+//
+// Asserted in English only, deliberately. The ten tables are not translations of each
+// other and a substring test on nine of them is a test of my Arabic, not of the product.
+// TestNothingRendersEmpty covers that they exist; the wording is reviewed by eye.
+func TestOnboardingTeachesWhatUndoBuys(t *testing.T) {
+	c := For(English)
+	for _, want := range []string{"Undo", "won't come back in an answer", "not on any other device in the household"} {
+		if !strings.Contains(c.EnrolMemoryBodyDefault, want) {
+			t.Errorf("the onboarding memory card does not carry %q:\n%s", want, c.EnrolMemoryBodyDefault)
+		}
+	}
+	// The same bound the message used to be held to. A tombstone is not a shred.
+	for _, never := range []string{"erased", "destroyed", "wiped", "deleted forever"} {
+		if strings.Contains(c.EnrolMemoryBodyDefault, never) {
+			t.Errorf("the onboarding memory card promises %q; lore writes a tombstone", never)
+		}
+	}
+	// The ask-mode card is not given the sentence: in that policy nothing is written
+	// before the member picks a memory, so there is no Undo button on it to explain.
+	if strings.Contains(c.EnrolMemoryBodyAsk, "won't come back in an answer") {
+		t.Errorf("the ask-mode card explains an Undo button it never shows:\n%s", c.EnrolMemoryBodyAsk)
 	}
 }
 

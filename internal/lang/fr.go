@@ -234,13 +234,11 @@ var french = Catalogue{
 	WrittenHint: "Le bouton Retirer l'efface de la mémoire.",
 	// Em dash rather than a colon: the colon would need its no-break space and the
 	// sentence reads better without either.
-	RemovedOpener: func(private bool) string {
-		where := "de ta mémoire privée"
-		if !private {
-			where = "de la mémoire du foyer"
+	NotSaved: func(private bool) string {
+		if private {
+			return "Non enregistré dans ta mémoire privée."
 		}
-		return "Finalement je n'ai rien enregistré — je l'ai retiré " + where +
-			". Cela ne reviendra plus dans une réponse, ni ici ni sur aucun autre appareil du foyer."
+		return "Non enregistré dans la mémoire du foyer."
 	},
 	PromotionOpener: "Ceci serait publié dans la mémoire du foyer exactement tel quel, et ne pourra plus être retiré" + nbsp + ":",
 	PromotionCloser: "Publier" + nbsp + "?",
@@ -275,7 +273,8 @@ var french = Catalogue{
 		"et je te montrerai le texte exact avant que quoi que ce soit ne bouge.",
 	EnrolMemoryHeading: "Ce qui se passe quand je note quelque chose",
 	EnrolMemoryBodyDefault: "Quand quelque chose me paraît mériter d'être gardé dans ta propre mémoire, je l'écris, puis je te montre " +
-		"exactement ce que j'ai écrit et dans quelle mémoire c'est allé, avec un bouton Retirer qui l'efface. Pour la mémoire " +
+		"exactement ce que j'ai écrit et dans quelle mémoire c'est allé, avec un bouton Retirer qui l'enlève — si tu " +
+		"appuies dessus, cela ne reviendra plus dans une réponse, ni ici ni sur aucun autre appareil du foyer. Pour la mémoire " +
 		"partagée du foyer, je demande d'abord et je n'écris rien tant que tu n'as pas appuyé sur Enregistrer pour le foyer.\n\n" +
 		"Dans les deux cas, tu le vois toujours. C'est tout. Parle-moi normalement.",
 	EnrolMemoryBodyAsk: "Je n'enregistre jamais rien de moi-même. Quand quelque chose me paraît mériter d'être gardé, je te le demande — " +

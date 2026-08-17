@@ -225,13 +225,11 @@ var dutch = Catalogue{
 	WrittenHint: "De knop Ongedaan maken verwijdert het.",
 	// verwijderd uit, never verwijderd in: Dutch changes the preposition with the
 	// verb, which is why the destination is written out here rather than slotted.
-	RemovedOpener: func(private bool) string {
-		where := "uit het huishoudgeheugen"
+	NotSaved: func(private bool) string {
 		if private {
-			where = "uit je persoonlijke geheugen"
+			return "Niet opgeslagen in je persoonlijke geheugen."
 		}
-		return "Ik heb dit toch niet vastgelegd: ik heb het " + where +
-			" verwijderd. Het komt niet meer terug in een antwoord, niet hier en niet op een ander apparaat in het huishouden."
+		return "Niet opgeslagen in het huishoudgeheugen."
 	},
 	PromotionOpener: "Dit zou precies zo in het huishoudgeheugen gepubliceerd worden, en kan daarna niet meer ingetrokken worden:",
 	PromotionCloser: "Publiceren?",
@@ -266,7 +264,8 @@ var dutch = Catalogue{
 	EnrolMemoryHeading: "Wat er gebeurt als ik iets opschrijf",
 	EnrolMemoryBodyDefault: "Als iets het waard lijkt om in je eigen geheugen te bewaren, schrijf ik het op en laat ik je daarna " +
 		"precies zien wat ik heb geschreven en in welk geheugen het terecht is gekomen, met een knop Ongedaan maken die het " +
-		"weer weghaalt. Voor het gedeelde geheugen van het huishouden vraag ik het eerst en schrijf ik niets tot je op " +
+		"weer weghaalt: tik je erop, dan komt het niet meer terug in een antwoord, niet hier en niet op een ander apparaat " +
+		"in het huishouden. Voor het gedeelde geheugen van het huishouden vraag ik het eerst en schrijf ik niets tot je op " +
 		"In huishouden opslaan tikt.\n\nHoe dan ook zie je het altijd. Dat is alles. Praat gewoon normaal tegen me.",
 	EnrolMemoryBodyAsk: "Ik sla nooit uit mezelf iets op. Als iets het waard lijkt om te bewaren, vraag ik het je — je ziet dan " +
 		"wat ik zou opschrijven en in welk geheugen het terecht zou komen, en jij kiest een geheugen of tikt op Niet opslaan. " +
