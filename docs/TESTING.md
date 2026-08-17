@@ -79,11 +79,24 @@ just written. lore exposes no way to delete an entry or a space, so isolation ha
 from the store being disposable rather than from cleanup — the same defect and the same
 fix as `internal/memory/integration_test.go`.
 
-Five scenarios: a direct message round trip, retrieval reaching the prompt, a group
-message scoped to shared, a confirmed capture verified by a **separate `lore get`
-process** looking the entry up by id, and a local-only chain refusing. Everything above it
-in the file was found by it within minutes of first running, after a full suite had been
-green for days.
+Ten scenarios: a direct message round trip, a Spanish household holding a two-turn
+conversation, retrieval reaching the prompt, a group message scoped to shared, an
+overheard group message costing no completion while still reaching the history ring, a
+Spanish conversation whose prompt is still English, cross-language retrieval across a
+restart, the model's Markdown reaching the member as HTML, a member-requested capture
+verified by a **separate `lore get` process** looking the entry up by id, and a local-only
+chain refusing in two languages. Everything above it in the file was found by it within
+minutes of first running, after a full suite had been green for days.
+
+The refusal scenario is worth one more sentence, because it is the shape of failure this
+suite is prone to. It asserted MarkdownV2 backticks — `` `local` ``, `` `attic` `` — and
+71add9f moved every message into Telegram HTML months of commits ago. Behind a build tag,
+nothing said so: the default run stayed green while the assertion had been wrong against
+every live endpoint since. It now assembles the expected sentence from the same
+`internal/lang` catalogue and the same `transport.Code` the node assembles it from, so
+the next parse-mode change cannot leave it stale — and separately asserts that the tier
+and the machine reach the member as identifiers, which is the half a catalogue-derived
+expectation cannot check on its own.
 
 ## What has actually been run by hand
 
@@ -162,16 +175,42 @@ they matter less:
 
 ```sh
 # real lore and a real model, in a store this run creates and throws away
-KENWARD_E2E_ENDPOINT=http://localhost:11434/v1 \
-KENWARD_E2E_MODEL=qwen2.5:0.5b \
-go test -tags integration -run TestLive ./internal/e2e/
+KENWARD_E2E_ENDPOINT=http://192.168.1.20:8000/v1 \
+KENWARD_E2E_MODEL=monster \
+go test -tags integration -run TestLive -v ./internal/e2e/
+
+# the capture judgement scorecard, same two variables, one more optional
+KENWARD_E2E_ENDPOINT=… KENWARD_E2E_MODEL=… KENWARD_EVAL_REPEATS=3 \
+go test -tags integration -run TestCaptureJudgement -v ./internal/assistant/
 
 # real Podman, lifecycle only
 KENWARD_TEST_IMAGE=docker.io/library/alpine go test -tags integration ./internal/supervisor/
 ```
 
-Each skips rather than fails when its equipment is absent, so `go test -tags integration
-./...` on a bare machine is green and proves nothing.
+| Variable | Read by | Meaning |
+| --- | --- | --- |
+| `KENWARD_E2E_ENDPOINT` | `internal/e2e/live_test.go`, `internal/assistant/judgement_eval_test.go` | OpenAI-compatible base URL, `/v1` included |
+| `KENWARD_E2E_MODEL` | both of those | the model name to ask that endpoint for |
+| `KENWARD_LORE_BIN` | `internal/e2e/live_test.go` | the `lore` binary, if it is not on `PATH` |
+| `KENWARD_EVAL_REPEATS` | `internal/assistant/judgement_eval_test.go` | samples per case, default 3 |
+| `KENWARD_E2E_SKIP` | both | waives the two model-backed suites (see below) |
+| `KENWARD_TEST_IMAGE` | `internal/supervisor` | a container image the Podman test may run |
+
+The store is not one of them: the live suite creates its own `LORE_HOME` under
+`t.TempDir` and destroys it, so only the model endpoint is external.
+
+**The two model-backed suites fail rather than skip when the endpoint is missing**, and
+that is deliberate. `go test` prints nothing at all for a package whose tests skip — no
+reason, no count, just `ok` and a duration — so a suite that skips on a missing endpoint
+is indistinguishable from one that ran and passed, which is how two runs were believed on
+2026-08-17. Nothing automated pays for the change: the `integration` tag already keeps
+both files out of `go test ./...`, and no CI workflow in this repository passes the tag.
+Somebody running the whole tagged suite for other equipment waives them with
+`KENWARD_E2E_SKIP=1`, which is loud in the other direction — they had to type it.
+
+The Podman test still skips on its own, and `internal/memory`'s and `internal/setup`'s
+lore tests need no equipment at all, so `go test -tags integration ./...` with the waiver
+set is green and says so.
 
 `internal/e2e`'s other files are deliberately **not** tagged — they need nothing but the
 test binary, so they run on every commit, which is the only reason they caught what they
