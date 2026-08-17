@@ -197,8 +197,11 @@ type LookupEnvFunc func(string) (string, bool)
 // Config is the parsed kenward.yaml, one file per household.
 type Config struct {
 	Mode Mode `yaml:"mode"`
-	// DataDir is where kenward keeps the mutable state it writes about itself, which
-	// today is the enrolment bindings in state.json and nothing else. Empty means
+	// DataDir is where kenward keeps the mutable state it writes about itself: the
+	// enrolment bindings and personas in state.json, outstanding invites and
+	// revocations, the dashboard's admin record and its private key, and sessions.json,
+	// which holds every member's wrapped key. A backup of this directory is a backup of
+	// the household's key material and must be treated as one. Empty means
 	// DefaultDataDir.
 	DataDir   string           `yaml:"data_dir"`
 	Household HouseholdConfig  `yaml:"household"`

@@ -171,7 +171,7 @@ func badGroupChatID(answer string) string {
 // household exactly what kenward has always been.
 const (
 	// personaIntroShared is printed under `agents: shared`, and it says the thing
-	// IDENTITY.md exists to make sure gets said: with one assistant there is no
+	// the identity design exists to make sure gets said: with one assistant there is no
 	// personal layer, so this is not the admin choosing a character for themselves.
 	personaIntroShared = `  You chose one assistant, so what you write now is what everyone in the house
   gets — in the group chat and in their own private chats alike. There is no

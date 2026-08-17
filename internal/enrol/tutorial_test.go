@@ -191,7 +191,7 @@ func mustRun(t *testing.T, tu *Tutorial) {
 	}
 }
 
-// TestTutorialOrder is the ordering IDENTITY.md settles on: language first, then the
+// TestTutorialOrder is the ordering the identity design settles on: language first, then the
 // name, then the register, then the character, and the explanation last.
 func TestTutorialOrder(t *testing.T) {
 	a := &scriptedAsker{script: []string{choiceLangEnglish, choiceToneWarm}}
@@ -764,7 +764,7 @@ func TestTutorialTransportFailureStillReports(t *testing.T) {
 }
 
 // TestGreetingIsInTheHouseholdLanguage: the one message that arrives before a member
-// can say anything follows the household's choice, per IDENTITY.md.
+// can say anything follows the household's choice, per the identity design.
 func TestGreetingIsInTheHouseholdLanguage(t *testing.T) {
 	if got := Greeting(500, "David", textFor(LangSpanish), 4); !strings.Contains(got.Text, "Ya estás dentro") {
 		t.Errorf("greeting = %q, want the Spanish one", got.Text)

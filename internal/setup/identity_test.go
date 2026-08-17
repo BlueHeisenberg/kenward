@@ -63,7 +63,7 @@ func TestIdentityDefaultsToOneAssistant(t *testing.T) {
 	}
 }
 
-// TestIdentityQuestionStatesItsConsequence is the requirement IDENTITY.md is most
+// TestIdentityQuestionStatesItsConsequence is the requirement the identity design is most
 // insistent about: under one assistant there is no personal layer, so the character the
 // admin is about to write is everyone's. If the wizard does not say so at the point of
 // asking, an admin chooses a character for the household believing they are choosing

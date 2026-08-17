@@ -120,7 +120,7 @@ func TestPersonaNameAloneKeepsTheFlatRegister(t *testing.T) {
 	}
 }
 
-// TestPersonaCannotEscapeItsBlock is the adversarial test IDENTITY.md asks for.
+// TestPersonaCannotEscapeItsBlock is the adversarial test the identity design asks for.
 //
 // The persona is the one place where free text written by a household member is put
 // into a system prompt *as an instruction*, which is a stronger position than a
