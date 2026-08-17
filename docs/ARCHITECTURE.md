@@ -446,12 +446,34 @@ were two kinds, and would have silently admitted the third.
 
 **A persona is four fields** — `agent_name`, `language`, `tone`, `character` — and every
 empty value reproduces the behaviour kenward had before the section existed, so a
-household that deletes the block loses nothing. `household.persona` is kenward's own, and
-under `shared` it is therefore everyone's, because there is no personal layer to override
-it. `members[].persona` is the member's, written by the member in the Telegram tutorial
-rather than by an operator on their behalf; it falls back to the household's **per field**,
-so somebody who wrote a character and said nothing about language keeps the household's
+household that deletes the block loses nothing. `household.persona` is kenward's own.
+`members[].persona` is the member's, written by the member in the Telegram tutorial rather
+than by an operator on their behalf; it falls back to the household's **per field**, so
+somebody who wrote a character and said nothing about language keeps the household's
 language.
+
+**Under `shared` the voice is the household's and the language is the member's.** Three of
+the four fields have no personal layer: name, tone and character are what "one assistant"
+means, and an assistant that is a flat clerk to one member and a wry ship's captain to
+another is two assistants wearing one name. Language is not one of the three, because
+language is a property of a conversation rather than of an assistant — the same person
+answers in whichever language they are addressed in, and the prompt already works that way
+(an empty `language` leaves the model mirroring whatever the member writes).
+
+What a shared persona actually discarded was never the model's language. It was
+`capture.Options.Language`, which decides the button labels, the write announcements, the
+undo hints, the alias line folded into a stored body and whether the English-gloss line
+renders at all. A Spanish member of a default household got model prose in Spanish wrapped
+in English buttons, with the gloss and the aliases suppressed outright — and the tutorial
+had asked them their language first. Structurally the fix is free: a unit is built per
+member in every mode, each with its own prompt and its own capture engine. Contrast
+`agent_name`, which is not free — an agent is a contact, and simple mode has one bot.
+
+**The tutorial asks only what the household will read back.** Under `shared` that is the
+language question and nothing else; under `per_member` it is all four. The rule was
+already applied to `agent_name` and is now applied to `tone` and `character` for the same
+reason: a question whose answer is resolved away is a question with no consequence, and
+recording it into `state.json` makes the file look like configuration that does something.
 
 kenward's own name is not configurable. Stating `household.persona.agent_name` is a
 validation error rather than a rename, because it is the name this documentation, the logs

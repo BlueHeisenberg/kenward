@@ -55,8 +55,13 @@ household:
   # agents is the identity question: one assistant for the household, or one each.
   #   shared:     there is kenward and nothing else. Everyone talks to it, in private
   #               chats and in the group, and household.persona below is therefore
-  #               EVERYONE'S persona — there is no personal layer to override it. This
-  #               is the default and what kenward has always done.
+  #               EVERYONE'S VOICE — the name, the tone and the character are the
+  #               household's and no member overrides them. The one exception is
+  #               language: a member who chose one in their tutorial is answered in it,
+  #               because language is a property of a conversation rather than of an
+  #               assistant, and it also decides the buttons, the write announcements
+  #               and the undo hints that member reads. This is the default and what
+  #               kenward has always done.
   #   per_member: every member gets their own named agent for their private chat, and
   #               kenward remains the family agent in the group. Each member's name,
   #               language, tone and character live under members[].persona and are
@@ -230,10 +235,12 @@ members:
     # answer is changeable later. It is shown here because it appears in the file and
     # somebody reading it deserves to know what it is.
     #
-    # It applies only under household.agents: per_member. Under shared there is no
-    # personal layer, and what is written here is carried and ignored rather than
-    # refused — a household that tries one-each and goes back should not have to
-    # delete its members' choices by hand before the file will load.
+    # Under household.agents: per_member all four fields apply. Under shared only
+    # `language` does: the voice is the household's, so agent_name, tone and character
+    # are carried and ignored rather than refused — a household that tries one-each and
+    # goes back should not have to delete its members' choices by hand before the file
+    # will load. The tutorial asks a member for the three only where they will be used,
+    # so under shared this block usually holds a language and nothing else.
     #
     # Each field falls back to household.persona's, one field at a time rather than
     # all or nothing. A member who wrote a character and said nothing about language

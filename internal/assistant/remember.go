@@ -50,14 +50,14 @@ const rememberToolName = "remember"
 // tolerated below, so the value is dropped with the rest of the decoration.
 const rememberSchema = `{
   "type": "object",
-  "required": ["title", "body", "domain", "target"],
+  "required": ["title", "body", "domain", "summary", "target"],
   "properties": {
     "title":      {"type": "string", "description": "Short, specific, and searchable later."},
     "body":       {"type": "string", "description": "The fact itself, stated plainly and out of context — it will be read a year from now with none of this conversation around it."},
     "domain":     {"type": "string", "description": "A coarse category, e.g. household/logistics."},
     "confidence": {"type": "string", "enum": ["experimental", "provisional", "validated", "hardened"]},
     "aliases":    {"type": "array", "items": {"type": "string"}, "description": "The member's own words for what this is about, in the language they are speaking, when that is not English."},
-    "summary":    {"type": "string", "description": "One line, in the language the member is speaking, saying what the body says. It is shown to them so they can see what they are approving; it is not stored. Leave it out when you are answering in English."},
+    "summary":    {"type": "string", "description": "One line, in the language the member is speaking, saying what the body says. It is shown to them so they can see what they are approving; it is not stored. Always write it: whether it is shown is decided for you, from the language this conversation is held in."},
     "target":     {"type": "string", "enum": ["personal", "shared", "unsure"]}
   }
 }`
@@ -119,7 +119,16 @@ type rememberCall struct {
 	Aliases []string `json:"aliases"`
 	// Summary is what the member is shown so that they can read what they are being
 	// asked to approve. It is never stored — see capture.Proposal.Summary — and an
-	// English conversation drops it, where it could only repeat the body.
+	// English conversation drops it at render time, where it could only repeat the
+	// body. Dropping it there rather than asking the model not to write it is the
+	// point: the model was the wrong place to decide whether the member can read
+	// English, and while it decided, the gloss appeared about half the time.
+	//
+	// It is required by the schema and not by parseRemember, deliberately, and for the
+	// same reason domain is defaulted rather than enforced below: a model can omit a
+	// required field, and a proposal thrown away for a missing gloss is a capture the
+	// member loses outright to fix a card they would have been able to read. The
+	// schema is the instruction; the missing case degrades to the card as it was.
 	Summary string `json:"summary"`
 	Target  string `json:"target"`
 }

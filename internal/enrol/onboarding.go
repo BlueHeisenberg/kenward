@@ -16,9 +16,10 @@ import (
 //
 // questions is how many are actually coming, counted from the tutorial's own step
 // list rather than written into the sentence: a household with one agent for
-// everybody has nothing to name, so it is asked three and was told four.
+// everybody is asked the language question and nothing else, because the register,
+// the character and the name are that household's and not this member's.
 func Greeting(chatID int64, member string, t text, questions int) transport.Outbound {
-	return transport.Outbound{ChatID: chatID, Text: t.greeting(member, t.number(questions))}
+	return transport.Outbound{ChatID: chatID, Text: t.greeting(member, t.questionCountPhrase(questions))}
 }
 
 // Explanation is what a member reads once the setup questions are done.

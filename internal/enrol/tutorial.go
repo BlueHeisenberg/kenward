@@ -203,13 +203,27 @@ func (t *Tutorial) Run(ctx context.Context) error {
 // many there are before Run exists, and a number written out twice is a number that
 // drifts — it already had, and every member enrolled under one agent per household
 // was promised four questions and asked three.
+//
+// Under one shared assistant the list is the language question and nothing else, and
+// the rule that decides it is the one askName was already written to: do not ask a
+// question whose answer this household throws away. Name, register and character are
+// the household's voice under AgentsShared — config.PersonaFor resolves all three to
+// the household's whatever a member answered — so asking a member for them recorded
+// three fields into state.json that no conversation would ever read. It did: a live
+// member's file held a language, a tone and a character, and the default install used
+// none of them.
+//
+// Language survives because config.PersonaFor now honours it in both topologies, for
+// the reasons written there. It is also the question that has to be asked first
+// whatever else follows, since every message after it is delivered in the answer.
 func (t *Tutorial) steps() []func(context.Context, *Persona) outcome {
 	steps := []func(context.Context, *Persona) outcome{t.askLanguage}
 	if t.OneEach {
-		// Nothing to name when the household shares one agent.
-		steps = append(steps, t.askName)
+		// Nothing to name, no register and no character of their own when the
+		// household shares one agent: it has one voice and this member is not it.
+		steps = append(steps, t.askName, t.askRegister, t.askCharacter)
 	}
-	return append(steps, t.askRegister, t.askCharacter)
+	return steps
 }
 
 // questionCount is how many questions a member of this household will be asked. It

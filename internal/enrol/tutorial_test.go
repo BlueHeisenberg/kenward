@@ -246,7 +246,13 @@ func TestTutorialOrder(t *testing.T) {
 func TestTutorialLanguageIsHonouredForEverythingAfterIt(t *testing.T) {
 	a := &scriptedAsker{script: []string{choiceLangSpanish, choiceToneFlat}}
 	ps := newPersonas()
-	mustRun(t, tutorialFor(t, a, ps, []string{skipWord}, nil))
+	// One agent each, because that is the household with a question after the
+	// language one for the answer to reach. Under one shared assistant the register
+	// and the character are the household's and are not asked; what the language
+	// still has to carry there is the explanation, and TestSharedTutorialAsksOnly-
+	// TheLanguage asserts that half.
+	mustRun(t, tutorialFor(t, a, ps, []string{skipWord, skipWord},
+		func(tu *Tutorial) { tu.OneEach = true }))
 
 	all := a.transcript()
 	for _, want := range []string{
@@ -370,7 +376,10 @@ func TestTutorialSurvivesARestartMidQuestion(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	first := &scriptedAsker{script: []string{choiceLangSpanish}, cancelAt: 2, cancel: cancel}
-	tu := tutorialFor(t, first, ps, nil, nil)
+	// One agent each: cancelAt counts button questions, and a household that shares
+	// one assistant has exactly one of those, so there would be no second question
+	// to die at.
+	tu := tutorialFor(t, first, ps, []string{skipWord}, func(tu *Tutorial) { tu.OneEach = true })
 	tu.Timeout = time.Minute // long: the ending here is cancellation, not a timeout
 	if err := tu.Run(ctx); err == nil {
 		t.Fatal("a tutorial killed mid-question reported success")
@@ -563,11 +572,13 @@ func TestTutorialKilledBeforeTheFirstAnswerIsStillExplainedTo(t *testing.T) {
 // household had chosen, and under one agent for the whole household there is nothing
 // to name, so three are asked. A member counting them is owed the right number.
 func TestGreetingPromisesTheQuestionsItWillAsk(t *testing.T) {
-	// The step list is language, register and character, plus the agent name only
-	// when each member has an agent of their own to name.
+	// The step list is the language question alone under one shared assistant, and
+	// language, name, register and character where each member has an agent of their
+	// own. The phrase is quantified, not just numbered, because "One quick questions"
+	// is the first thing a member would have read.
 	words := map[string]map[bool]string{
-		LangEnglish: {false: "Three", true: "Four"},
-		LangSpanish: {false: "Tres", true: "Cuatro"},
+		LangEnglish: {false: "One quick question", true: "Four quick questions"},
+		LangSpanish: {false: "Una pregunta rápida", true: "Cuatro preguntas rápidas"},
 	}
 	ctx := context.Background()
 	for tag := range tables {
@@ -602,7 +613,10 @@ func TestGreetingPromisesTheQuestionsItWillAsk(t *testing.T) {
 // and the next thing they saw was the memory model, with no sign it had landed.
 func TestTutorialConfirmsWhatTheMemberWrote(t *testing.T) {
 	a := &scriptedAsker{script: []string{choiceLangEnglish, choiceToneFlat}}
-	mustRun(t, tutorialFor(t, a, newPersonas(), []string{"a bit dry, into cycling"}, nil))
+	// One agent each: the character question is only asked where the character is
+	// this member's own. The first typed answer is the agent's name, skipped.
+	mustRun(t, tutorialFor(t, a, newPersonas(), []string{skipWord, "a bit dry, into cycling"},
+		func(tu *Tutorial) { tu.OneEach = true }))
 
 	sent := a.sentTexts()
 	asked, noted, explained := -1, -1, -1
@@ -659,20 +673,24 @@ func TestTutorialSkipEverythingIsTodaysBehaviour(t *testing.T) {
 	}
 }
 
-// TestTutorialBack walks back from the register question to the language one.
+// TestTutorialBack walks back from a button question to the one before it. Under one
+// agent each that is the register question returning to the name, which is the same
+// mechanic the step loop has always implemented; the household that shares one
+// assistant is asked a single question and has nothing to walk back to.
 func TestTutorialBack(t *testing.T) {
-	a := &scriptedAsker{script: []string{choiceLangEnglish, choiceBack, choiceLangSpanish, choiceToneFlat}}
+	a := &scriptedAsker{script: []string{choiceLangEnglish, choiceBack, choiceToneFlat}}
 	ps := newPersonas()
-	mustRun(t, tutorialFor(t, a, ps, []string{skipWord}, nil))
+	mustRun(t, tutorialFor(t, a, ps, []string{"Jeeves", "Bruno", skipWord},
+		func(tu *Tutorial) { tu.OneEach = true }))
 
 	qs := a.questions()
-	if len(qs) != 4 {
-		t.Fatalf("asked %d questions, want 4 (language, register, language again, register again)", len(qs))
+	if len(qs) != 3 {
+		t.Fatalf("asked %d button questions, want 3 (language, register, register again)", len(qs))
 	}
-	if !strings.Contains(qs[2].Text, "Language") && !strings.Contains(qs[2].Text, "Idioma") {
-		t.Errorf("Back did not return to the language question: %q", qs[2].Text)
+	if !strings.Contains(qs[2].Text, "How I talk") && !strings.Contains(qs[2].Text, "Cómo hablo") {
+		t.Errorf("Back did not return to the question before the register one: %q", qs[2].Text)
 	}
-	if got := ps.get("david").Language; got != spanish.name {
+	if got := ps.get("david").AgentName; got != "Bruno" {
 		t.Errorf("the answer given after going back did not win: %q", got)
 	}
 }
@@ -682,7 +700,10 @@ func TestTutorialBack(t *testing.T) {
 func TestTutorialBackFromTypedQuestion(t *testing.T) {
 	a := &scriptedAsker{script: []string{choiceLangEnglish, choiceToneWarm, choiceToneFlat}}
 	ps := newPersonas()
-	mustRun(t, tutorialFor(t, a, ps, []string{backWord, skipWord}, nil))
+	// The name is skipped, the register answered, and /back is typed at the
+	// character question — the typed question this household actually has.
+	mustRun(t, tutorialFor(t, a, ps, []string{skipWord, backWord, skipWord},
+		func(tu *Tutorial) { tu.OneEach = true }))
 
 	if got := len(a.questions()); got != 3 {
 		t.Fatalf("asked %d questions, want 3: /back at the character question re-asks the register", got)
@@ -725,13 +746,53 @@ func TestTutorialRejectsNonsense(t *testing.T) {
 	}
 }
 
-// TestTutorialNameOnlyUnderOneEach: there is nothing to name when the household has
-// one agent, and asking would be offering a setting that does nothing.
-func TestTutorialNameOnlyUnderOneEach(t *testing.T) {
-	a := &scriptedAsker{script: []string{choiceLangEnglish, choiceToneFlat}}
-	mustRun(t, tutorialFor(t, a, newPersonas(), []string{skipWord}, nil))
-	if strings.Contains(a.transcript(), "What would you like to call me") {
-		t.Error("the tutorial asked for an agent name under one agent per household")
+// TestSharedTutorialAsksOnlyWhatItWillUse: under one assistant for the whole household
+// the tutorial asks the language and nothing else, because the language is the only one
+// of the four answers that household will ever read back.
+//
+// The rule is the one askName was already written to, applied to the two questions it
+// was not. config.PersonaFor resolves the name, the register and the character to the
+// household's whenever AgentPerMember is false — and per_member is a validation error in
+// simple mode, so under the default install it always is. Asking anyway wrote three
+// fields into state.json that no conversation would ever read; a live file held exactly
+// that, a language and a tone and a character, none of them used.
+//
+// The language survives because config.PersonaFor now honours a member's own, and it is
+// the answer with a cost attached: it decides the button labels, the write announcement,
+// the undo hint and the English-gloss line, none of which a member who does not read the
+// household's language can use.
+func TestSharedTutorialAsksOnlyWhatItWillUse(t *testing.T) {
+	a := &scriptedAsker{script: []string{choiceLangSpanish}}
+	ps := newPersonas()
+	mustRun(t, tutorialFor(t, a, ps, nil, nil))
+
+	all := a.transcript()
+	for what, probe := range map[string]string{
+		"an agent name": "What would you like to call me",
+		"a register":    spanish.registerQ,
+		"a character":   spanish.characterQ,
+	} {
+		if strings.Contains(all, probe) {
+			t.Errorf("the tutorial asked for %s under one assistant for the household, and config.PersonaFor will resolve it to the household's whatever the member answered:\n%s", what, all)
+		}
+	}
+	if got := len(a.questions()); got != 1 {
+		t.Errorf("asked %d questions, want 1 (the language)", got)
+	}
+
+	// The one answer it does take is recorded, and nothing else is.
+	got := ps.get("david")
+	want := Persona{
+		PersonaConfig: config.PersonaConfig{Language: spanish.name},
+		ChatID:        500, Explained: true,
+	}
+	if got != want {
+		t.Errorf("persona = %+v, want %+v", got, want)
+	}
+	// And the explanation still arrives: it is the half of onboarding that is not a
+	// question, and it is the only place the memory model is explained to the member.
+	if !strings.Contains(all, lang.For(spanish.name).EnrolPrivateBody) {
+		t.Errorf("a one-question tutorial dropped the explanation:\n%s", all)
 	}
 }
 
@@ -800,16 +861,16 @@ func TestEveryLanguageIsComplete(t *testing.T) {
 				t.Errorf("table %q has no %s", tag, name)
 			}
 		}
-		if tbl.greeting("David", tbl.number(4)) == "" || tbl.otherNoted("X") == "" || tbl.nameSet("X") == "" {
+		if tbl.greeting("David", tbl.questionCountPhrase(4)) == "" || tbl.otherNoted("X") == "" || tbl.nameSet("X") == "" {
 			t.Errorf("table %q builds an empty message", tag)
 		}
-		// Every count the step list can produce has a word in this language. The
+		// Every count the step list can produce has a phrase in this language. The
 		// fallback to digits exists so nothing is ever blank, not so a table can
 		// leave the number out.
 		for _, oneEach := range []bool{false, true} {
 			n := questionCount(oneEach)
-			if _, ok := tbl.numbers[n]; !ok {
-				t.Errorf("table %q has no word for %d, the number of questions it will ask", tag, n)
+			if _, ok := tbl.questionsPhrase[n]; !ok {
+				t.Errorf("table %q has no phrase for %d, the number of questions it will ask", tag, n)
 			}
 		}
 	}

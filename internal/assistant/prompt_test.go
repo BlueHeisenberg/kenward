@@ -573,3 +573,31 @@ func TestMarkerCannotInstructTheModel(t *testing.T) {
 		}
 	}
 }
+
+// TestThePromptAsksForTheMembersReading closes the gap that made the gloss a coin flip.
+//
+// capture.glossLine renders a one-line reading of the English entry in the member's own
+// language, and it renders whenever the proposal carries one. For half of a live Spanish
+// session the proposal did not carry one: `summary` existed only as a description on the
+// tool schema, and the capture paragraph asked for a title, a body and aliases and
+// stopped. Four minutes apart, the shared proposal had the line and the private write —
+// the card that matters more, because the entry is already stored and Undo is the only
+// recourse for wording the member cannot read — did not.
+//
+// aliases is the control. It is not a required field either, it is asked for in this
+// paragraph, and it has never gone missing.
+func TestThePromptAsksForTheMembersReading(t *testing.T) {
+	want := []string{
+		"Always write summary as well",
+		"one line, in the language you are answering in, saying what the body says",
+		"It is what the member reads to see what they are approving.",
+	}
+	for name, sys := range everyScopeShape(t) {
+		sys = flattened(sys)
+		for _, w := range want {
+			if !strings.Contains(sys, w) {
+				t.Errorf("the %s prompt never tells the model %q.\n\nWithout it the gloss is a property description the model may or may not read, and capture.glossLine renders nothing at all when the field is absent.", name, w)
+			}
+		}
+	}
+}

@@ -455,3 +455,55 @@ func TestAGlossThatIsNotOneLineIsDropped(t *testing.T) {
 		t.Errorf("a two-line summary was not flattened onto one line: %q", got)
 	}
 }
+
+// TestBothCardsCarryTheGloss. There are two cards that show a member an English entry,
+// and both need the reading: the question a shared proposal puts before anything is
+// written, and the announcement a private write makes after the fact. Only the question
+// was ever tested.
+//
+// The announcement is the one that matters more. In a live Spanish session, four minutes
+// apart, the shared proposal carried the line and the private write did not — and on the
+// private write the entry is already stored, in a language the member did not use, with
+// Undo as their only recourse for wording they cannot read.
+func TestBothCardsCarryTheGloss(t *testing.T) {
+	// Both cards reach the member through Ask — the question carries the destination
+	// buttons and the announcement carries Undo — so the target is the whole of the
+	// difference the table needs.
+	for _, tc := range []struct {
+		name   string
+		target Target
+	}{
+		{"the question a shared proposal puts", TargetShared},
+		{"the announcement a private write makes", TargetPersonal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, ids := newRealStore(t, "Ana", "Test House")
+			sc := spanishScope(ids)
+			tr := &stubTransport{answers: []transport.Answer{{TimedOut: true}}}
+			e := New(c, tr, Options{Language: "Spanish", Shared: ids["Test House"]})
+
+			p := gardenGate()
+			p.Target = tc.target
+			if _, err := e.Offer(context.Background(), sc, p, davidID); err != nil {
+				t.Fatalf("Offer: %v", err)
+			}
+
+			if len(tr.asks) != 1 {
+				t.Fatalf("the member saw %d cards, want 1", len(tr.asks))
+			}
+			shown := tr.asks[0].q.Text
+
+			if !strings.Contains(shown, transport.Esc(p.Summary)) {
+				t.Errorf("this card does not say, in the member's language, what the entry says:\n%s", shown)
+			}
+			// And it names the English above it rather than standing in for it. A
+			// member must never come away believing the store now holds Spanish.
+			if !strings.Contains(shown, transport.Esc(lang.For("Spanish").EnglishGloss(""))) {
+				t.Errorf("the reading does not name the stored text as English:\n%s", shown)
+			}
+			if !strings.Contains(shown, transport.Esc(p.Draft.Title)) {
+				t.Errorf("the English entry left the card, which is what the gloss exists to be read against:\n%s", shown)
+			}
+		})
+	}
+}
