@@ -625,6 +625,11 @@ func (e *Engine) writeAndAnnounce(ctx context.Context, sc domain.Scope, p Propos
 		return Outcome{}, err
 	}
 
+	// The id of the announcement itself, so that an undo can rewrite the message
+	// rather than contradict it from below. Posted runs on this goroutine before Ask
+	// waits for anything, so there is nothing to synchronise; it stays zero if the
+	// message never went out, and a zero id is one of the ways undo falls back.
+	var msgID int
 	ans, err := e.tr.Ask(ctx, transport.Question{
 		ChatID:        sc.ChatID,
 		Text:          e.writtenText(p, title, isPrivate(sc, out.Space)),
@@ -633,6 +638,7 @@ func (e *Engine) writeAndAnnounce(ctx context.Context, sc domain.Scope, p Propos
 		Timeout:       e.opts.AskTimeout,
 		RetiredNote:   e.cat.UndoExpiredNote,
 		Notes:         e.cat.OutcomeNotes(),
+		Posted:        func(id int) { msgID = id },
 	})
 	if err != nil {
 		// The entry is written and the message carrying that news did not go out.
@@ -653,7 +659,7 @@ func (e *Engine) writeAndAnnounce(ctx context.Context, sc domain.Scope, p Propos
 	if ans.TimedOut || ans.UserID != askUserID || ans.ChoiceID != ChoiceUndo {
 		return out, nil
 	}
-	return e.undo(ctx, sc, out, askUserID, turn)
+	return e.undo(ctx, sc, p, out, askUserID, turn, msgID)
 }
 
 // undo removes an entry the member has just taken back, and tells them what actually
@@ -665,12 +671,21 @@ func (e *Engine) writeAndAnnounce(ctx context.Context, sc domain.Scope, p Propos
 // tell: the member asked for something to not exist, and would be told it does not
 // while it does.
 //
+// Where the sentence goes matters as much as what it says, and this is the one place
+// in the package that edits rather than sends. The announcement above it reads "I've
+// written this to your private memory" and shows the entry as stored; the member
+// tapping Undo makes that false, and a new message underneath does not make it true
+// again. Scrolled back to a day later, the chat would say the opposite of what
+// happened. So a confirmed delete rewrites the announcement in place — see
+// struckText — and only a rewrite that could not be made falls back to the separate
+// notice this used to send unconditionally.
+//
 // A second tap cannot reach here. The transport retires the announcement on the first
 // one — keyboard stripped, pending question forgotten — and every later tap on a
 // keyboard still on somebody's screen is dropped silently, exactly as a stale tap on a
 // capture question is. The delete is therefore attempted once per announcement, and
 // lore's own idempotence is a second line rather than the first.
-func (e *Engine) undo(ctx context.Context, sc domain.Scope, out Outcome, speaker int64, turn int) (Outcome, error) {
+func (e *Engine) undo(ctx context.Context, sc domain.Scope, p Proposal, out Outcome, speaker int64, turn int, msgID int) (Outcome, error) {
 	// Recorded before the delete is attempted, and recorded whether or not it
 	// succeeds: what the member has told us is that they did not want this written,
 	// and that is true even if it turns out to still be there. Without it the model
@@ -682,6 +697,12 @@ func (e *Engine) undo(ctx context.Context, sc domain.Scope, out Outcome, speaker
 	switch {
 	case err == nil:
 		out.Kind = OutcomeUndone
+		// The announcement now says it, struck entry and all, in the place the
+		// member is already looking. Nothing else is sent: two messages carrying one
+		// fact is the noise this file already refuses on the standing-write path.
+		if e.strikeAnnouncement(ctx, sc, p, out.Title, private, msgID) {
+			return out, nil
+		}
 		// The promise is bounded to what lore actually does. A delete is a signed
 		// tombstone, not a shred: the entry stops coming back from search and from
 		// get, here and on every synced device, and the row is still on the disk.
@@ -1134,6 +1155,66 @@ func (e *Engine) writtenText(p Proposal, title string, private bool) string {
 	b.WriteString("\n\n")
 	b.WriteString(transport.Italic(e.cat.WrittenHint))
 	return b.String()
+}
+
+// editor is a transport that can rewrite a message it has already sent.
+//
+// It is not part of transport.Transport and is asked for by assertion, the way
+// RetireKeyboard is: every transport can send, and rewriting is a capability the
+// Telegram adapter happens to have. A transport without it is not an error — the
+// caller has somewhere else to put the news — which is the whole reason this package
+// discovers it rather than requiring it.
+type editor interface {
+	EditText(ctx context.Context, chatID int64, messageID int, text string) error
+}
+
+// strikeAnnouncement rewrites the write announcement the member has just undone, and
+// reports whether the chat now tells the truth on its own.
+//
+// Every false return is a real case and none of them may cost the member the news.
+// A transport that cannot edit; an announcement whose id never came back, because the
+// send failed or the transport does not report one; a message Telegram will not edit,
+// which it will not once it is old enough, and will not at all from a node that
+// restarted since. The caller falls back to a message of its own on each of them.
+func (e *Engine) strikeAnnouncement(ctx context.Context, sc domain.Scope, p Proposal, title string, private bool, msgID int) bool {
+	ed, ok := e.tr.(editor)
+	if !ok || msgID == 0 {
+		return false
+	}
+	return ed.EditText(ctx, sc.ChatID, msgID, e.struckText(p, title, private)) == nil
+}
+
+// struckText is the write announcement rewritten for an entry the member took back.
+//
+// It keeps writtenText's shape on purpose. This is the same message edited in place,
+// and a member scrolling past it has to recognise the one they tapped — so the glyph
+// changes from memory to gone, the opening line says the entry was not recorded after
+// all, and the entry stays exactly where it was, struck through.
+//
+// Struck rather than dropped, because what the member asked for is to be able to see
+// what it was they rejected. Struck rather than bold and quoted, because those two
+// marks are what said this was a stored entry and it is not one now — and because
+// Strike escapes its argument, so a struck bold title would have to be composed out
+// of markup here, which is the one thing format.go exists to prevent.
+//
+// The English gloss is dropped. It says the text above is kept in English; the text
+// above is not kept at all, and a line making a claim about a deleted entry is the
+// class of small lie this whole change is about.
+func (e *Engine) struckText(p Proposal, title string, private bool) string {
+	var b strings.Builder
+	b.WriteString(transport.GlyphGone + " " + e.cat.RemovedOpener(private) + "\n\n")
+	b.WriteString(struckBlock(title, p.Draft.Body))
+	return b.String()
+}
+
+// struckBlock is entryBlock for an entry that is gone: the same title and body, each
+// struck through, each escaped.
+func struckBlock(title, body string) string {
+	out := transport.Strike(title)
+	if body = strings.TrimSpace(body); body != "" {
+		out += "\n" + transport.Strike(body)
+	}
+	return out
 }
 
 func (e *Engine) promotionText(entry memory.Entry) string {

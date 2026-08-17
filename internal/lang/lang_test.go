@@ -59,7 +59,7 @@ func rendered(c Catalogue) []string {
 			c.Saved(private, "Title"), c.SavedNoUndo(private, "Title"),
 			c.Removed(private, "Title"), c.UndoFailed(private, "Title"),
 			c.StoreRefused(private, "Title"), c.ProposalWithDest(private),
-			c.WrittenOpener(private))
+			c.WrittenOpener(private), c.RemovedOpener(private))
 	}
 	for _, e := range []remind.Every{remind.EveryOnce, remind.EveryDaily, remind.EveryWeekly} {
 		out = append(out, c.When(sampleReminder(e), time.UTC))

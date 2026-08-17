@@ -263,7 +263,17 @@ var english = Catalogue{
 	// "The Undo button removes it", not "Undo removes it": the short form depends
 	// on the button label being a bare verb, which it barely is in Catalan and
 	// Portuguese and is not at all in Arabic.
-	WrittenHint:     "The Undo button removes it.",
+	WrittenHint: "The Undo button removes it.",
+	// Says the same thing Removed says, minus the title, which is struck through
+	// immediately below this line.
+	RemovedOpener: func(private bool) string {
+		where := "the household memory"
+		if private {
+			where = "your private memory"
+		}
+		return "I didn't record this after all — I've taken it back out of " + where +
+			". It won't come back in an answer, not here and not on any other device in the household."
+	},
 	PromotionOpener: "This would be published to the household exactly as it stands, and cannot be unpublished:",
 	PromotionCloser: "Publish it?",
 	AlsoKnownAs:     func(words []string) string { return "Also known as: " + latinList(words) },

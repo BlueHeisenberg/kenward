@@ -32,12 +32,23 @@ type shareCall struct {
 	id       string
 }
 
+type editCall struct {
+	chatID    int64
+	messageID int
+	text      string
+}
+
 type stubTransport struct {
 	answers []transport.Answer
 	askErr  error
 	sendErr error
+	editErr error
 	asks    []askCall
 	sends   []transport.Outbound
+	edits   []editCall
+	// posted is the message id handed to Question.Posted, one-based in the order
+	// the questions were asked, exactly as the real transport's ids arrive.
+	posted int
 }
 
 func (t *stubTransport) Updates(context.Context) (<-chan transport.Inbound, error) {
@@ -49,10 +60,24 @@ func (t *stubTransport) Send(_ context.Context, o transport.Outbound) error {
 	return t.sendErr
 }
 
+// EditText records a rewrite of a message already on screen. The engine uses it to
+// strike an announcement whose entry the member has just undone; editErr is how a
+// test makes that fail, which is the case the fallback exists for.
+func (t *stubTransport) EditText(_ context.Context, chatID int64, messageID int, text string) error {
+	t.edits = append(t.edits, editCall{chatID: chatID, messageID: messageID, text: text})
+	return t.editErr
+}
+
 func (t *stubTransport) Ask(_ context.Context, q transport.Question) (transport.Answer, error) {
 	t.asks = append(t.asks, askCall{q: q})
 	if t.askErr != nil {
+		// The real transport reports Posted only once the message is on screen, so
+		// an Ask that never sent one reports nothing.
 		return transport.Answer{}, t.askErr
+	}
+	if q.Posted != nil {
+		t.posted = len(t.asks)
+		q.Posted(t.posted)
 	}
 	if len(t.answers) == 0 {
 		return transport.Answer{}, errors.New("stub transport: no scripted answer")
@@ -1536,11 +1561,14 @@ func TestUndoDeletesTheEntryAndSaysSo(t *testing.T) {
 	if want := []string{string(personal) + "/entry-1"}; !equal(m.deletes, want) {
 		t.Fatalf("deletes = %v, want %v — the undo must be space-scoped and name the entry it wrote", m.deletes, want)
 	}
-	if len(tr.sends) != 1 {
-		t.Fatalf("sends = %v, want the one removal notice", tr.sends)
+	// The sentence lands on the announcement itself rather than under it — see
+	// TestUndoStrikesTheAnnouncementInPlace for why, and for the fallback when the
+	// edit cannot be made.
+	if len(tr.edits) != 1 {
+		t.Fatalf("edits = %+v, want the one removal notice, on the announcement", tr.edits)
 	}
-	got := tr.sends[0].Text
-	if !strings.Contains(got, "I've removed") || !strings.Contains(got, "Bins go out Tuesday") {
+	got := tr.edits[0].text
+	if !strings.Contains(got, "I didn't record this") || !strings.Contains(got, "Bins go out Tuesday") {
 		t.Errorf("removal notice %q does not say what was removed", got)
 	}
 	// lore deletes by tombstone, not by shredding, and the message may promise only
@@ -1551,6 +1579,136 @@ func TestUndoDeletesTheEntryAndSaysSo(t *testing.T) {
 	for _, never := range []string{"erased", "destroyed", "wiped"} {
 		if strings.Contains(got, never) {
 			t.Errorf("removal notice %q promises %q; a tombstone is not a shred", got, never)
+		}
+	}
+}
+
+// TestUndoStrikesTheAnnouncementInPlace is the reason this flow edits rather than
+// replies.
+//
+// The announcement said "I've written this to your private memory" and showed the
+// entry as stored. Once the member taps Undo that sentence is false, and a separate
+// message saying so does not make it true again: scroll back a day and the chat still
+// reads as though the entry were there. So the announcement itself is rewritten — the
+// entry struck through, so the member can see what it was they rejected, and the line
+// around it saying the thing is gone.
+func TestUndoStrikesTheAnnouncementInPlace(t *testing.T) {
+	e, _, tr := newEngine(t, accept(ChoiceUndo))
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	if _, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+
+	if len(tr.edits) != 1 {
+		t.Fatalf("edits = %+v, want the announcement rewritten in place", tr.edits)
+	}
+	ed := tr.edits[0]
+	if ed.chatID != sc.ChatID || ed.messageID != tr.posted {
+		t.Errorf("edited chat %d message %d, want chat %d message %d — the announcement's own message",
+			ed.chatID, ed.messageID, sc.ChatID, tr.posted)
+	}
+	// Struck, not deleted from the message. What the member needs a week later is
+	// what it was they turned down.
+	for _, want := range []string{"<s>Bins go out Tuesday</s>", "<s>Green bin on alternate weeks.</s>"} {
+		if !strings.Contains(ed.text, want) {
+			t.Errorf("rewritten announcement %q does not carry %q", ed.text, want)
+		}
+	}
+	// And it no longer claims the entry is stored, which is the whole defect.
+	for _, never := range []string{"I've written this", "The Undo button removes it"} {
+		if strings.Contains(ed.text, never) {
+			t.Errorf("rewritten announcement %q still says %q about an entry that is gone", ed.text, never)
+		}
+	}
+	// The promise the separate removal notice used to carry has to survive the move,
+	// because it is the only place a member is told what a delete in lore actually
+	// buys them. It is bounded to a tombstone and it is household-wide.
+	if !strings.Contains(ed.text, "won't come back in an answer") ||
+		!strings.Contains(ed.text, "not on any other device in the household") {
+		t.Errorf("rewritten announcement %q drops the bounded, household-wide promise", ed.text)
+	}
+	for _, never := range []string{"erased", "destroyed", "wiped"} {
+		if strings.Contains(ed.text, never) {
+			t.Errorf("rewritten announcement %q promises %q; a tombstone is not a shred", ed.text, never)
+		}
+	}
+	// And no second message. The announcement now says it, in the place the member
+	// was already looking; saying it twice is the noise this codebase spends the
+	// retrieval line's whole comment worrying about.
+	if len(tr.sends) != 0 {
+		t.Errorf("sends = %v, want none — the rewritten announcement is the message", tr.sends)
+	}
+}
+
+// TestUndoFallsBackToAMessageWhenTheEditFails.
+//
+// Editing is the better message and it is not a guaranteed one: Telegram refuses an
+// edit to a message too old, a node that restarted since never learned the id, and a
+// network can simply fail. None of that may cost the member the news that their entry
+// is gone, so a failed rewrite falls back to exactly the separate notice this change
+// replaces — which is why that notice, and its promise, stay in the catalogue.
+func TestUndoFallsBackToAMessageWhenTheEditFails(t *testing.T) {
+	e, _, tr := newEngine(t, accept(ChoiceUndo))
+	tr.editErr = errors.New("message to edit not found")
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	out, err := e.Offer(context.Background(), sc, proposal(TargetPersonal), davidID)
+	if err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if out.Kind != OutcomeUndone {
+		t.Errorf("outcome = %v, want %v — the delete succeeded and only the cosmetics failed", out.Kind, OutcomeUndone)
+	}
+	if len(tr.sends) != 1 {
+		t.Fatalf("sends = %v, want the one removal notice the failed edit falls back to", tr.sends)
+	}
+	got := tr.sends[0].Text
+	for _, want := range []string{"I've removed", "Bins go out Tuesday", "won't come back in an answer"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("fallback notice %q does not carry %q", got, want)
+		}
+	}
+}
+
+// TestStruckAnnouncementEscapesMemberText. A title is written by the model out of
+// what the member said, so it is member text, and this message is now the one place
+// it is shown after the entry has been deleted. A member whose note is titled "<s>"
+// gets a note titled "<s>", not a message whose remainder is struck through — and not
+// a 400 from Telegram that costs them the correction entirely.
+func TestStruckAnnouncementEscapesMemberText(t *testing.T) {
+	e, _, tr := newEngine(t, accept(ChoiceUndo))
+	sc := directScope()
+	e.BeginTurn(sc, "turn-1")
+
+	p := proposal(TargetPersonal)
+	p.Draft.Title = `<s>Tom & Jerry</s>`
+	p.Draft.Body = `if a < b && b > c then <b>panic</b>`
+	if _, err := e.Offer(context.Background(), sc, p, davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if len(tr.edits) != 1 {
+		t.Fatalf("edits = %+v, want the announcement rewritten in place", tr.edits)
+	}
+	text := tr.edits[0].text
+
+	// One <s> open and one close per struck run, and nothing the member wrote
+	// counted among them.
+	if got, want := strings.Count(text, "<s>"), strings.Count(text, "</s>"); got != want || got != 2 {
+		t.Errorf("rewritten announcement has %d <s> and %d </s>, want 2 of each: %q", got, want, text)
+	}
+	for _, never := range []string{"<b>panic</b>", "<s>Tom"} {
+		if strings.Contains(text, never) {
+			t.Errorf("rewritten announcement %q passed member markup %q through unescaped", text, never)
+		}
+	}
+	// What the member typed is what the member reads back.
+	plain := transport.PlainText(text)
+	for _, want := range []string{p.Draft.Title, p.Draft.Body} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("rendered announcement %q does not show %q as the member wrote it", plain, want)
 		}
 	}
 }

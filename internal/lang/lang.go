@@ -343,8 +343,24 @@ type Catalogue struct {
 	UndoExpiredNote  string
 	WrittenOpener    func(private bool) string
 	WrittenHint      string
-	PromotionOpener  string
-	PromotionCloser  string
+	// RemovedOpener replaces WrittenOpener when the member taps Undo and the delete
+	// lands: the same announcement, rewritten in place, with the entry struck through
+	// underneath it.
+	//
+	// It is a whole sentence rather than the opener plus a note, because it has three
+	// jobs and only one of them is opening. It has to say the entry was not recorded
+	// after all, undoing the claim the message it replaces was making; it has to name
+	// which memory, in a product whose premise is that there are two; and it has to
+	// carry the bounded, household-wide promise — gone from every answer, on every
+	// device, by tombstone rather than by shredding — which used to travel on Removed
+	// in a message of its own and would otherwise be lost when that message stops
+	// being sent. Removed itself stays: it is what a failed edit falls back to.
+	//
+	// It takes no title. The entry is struck through directly below it, so naming it
+	// again would print it twice in one short message.
+	RemovedOpener   func(private bool) string
+	PromotionOpener string
+	PromotionCloser string
 
 	// AlsoKnownAs labels the member's own words for what an entry is about, on the
 	// line capture appends to a stored body so that the entry can be retrieved in

@@ -226,34 +226,50 @@ func TestTelegramPrivateWriteIsAnnouncedAndUndoneByARealButtonTap(t *testing.T) 
 		t.Errorf("deleted from %v, want the member's own space %s", got, davidSpace)
 	}
 
-	// The member is told the entry is gone, and told so only because it is.
-	waitFor(t, "the removal notice", func() bool {
-		for _, c := range sendsTo(api, davidChatID) {
-			if strings.Contains(c.Form.Get("text"), "I've removed") {
-				return true
-			}
-		}
-		return false
-	})
+	// The member is told the entry is gone, and told so only because it is — on the
+	// message that said it was written, which is the one that stopped being true.
+	// That is the second edit: the first retired the keyboard the moment the tap
+	// landed, before anyone knew whether the delete would succeed.
+	struck := api.WaitCall(t, "editMessageText", 2)
 
 	// The spinner on the member's client is stopped, once and only for them.
 	if n := api.CountFor("answerCallbackQuery"); n != 1 {
 		t.Errorf("answerCallbackQuery called %d times, want 1; another member's tap must not be acknowledged, because an acknowledgement is itself a signal", n)
 	}
 
-	// And the announcement is retired in place: same message, keyboard emptied,
-	// so an undo that has happened cannot be tapped a second time.
-	if edit.MessageID != announcement.MessageID {
-		t.Errorf("edited message %d, want the announcement's own message %d", edit.MessageID, announcement.MessageID)
-	}
-	if got := edit.Form.Get("reply_markup"); !strings.Contains(got, `"inline_keyboard":[]`) {
-		t.Errorf("keyboard not removed on the retirement edit: reply_markup = %q", got)
+	// Both edits land on the announcement, keyboard emptied, so an undo that has
+	// happened cannot be tapped a second time.
+	for i, c := range []telegramtest.Call{edit, struck} {
+		if c.MessageID != announcement.MessageID {
+			t.Errorf("edit %d hit message %d, want the announcement's own message %d", i+1, c.MessageID, announcement.MessageID)
+		}
+		if got := c.Form.Get("reply_markup"); !strings.Contains(got, `"inline_keyboard":[]`) {
+			t.Errorf("keyboard not removed on edit %d: reply_markup = %q", i+1, got)
+		}
 	}
 	if got := edit.Form.Get("text"); !strings.Contains(got, "The boiler was serviced in March.") || !strings.Contains(got, "Undo") {
 		t.Errorf("retired announcement reads %q; it must keep what was written and show that undo was pressed", got)
 	}
-	if n := api.CountFor("editMessageText"); n != 1 {
-		t.Errorf("editMessageText called %d times, want 1", n)
+	// The rewritten one keeps the words and strikes them, and stops claiming they
+	// are stored. This is what the chat still reads as a week later.
+	got := struck.Form.Get("text")
+	if !strings.Contains(got, "<s>The boiler was serviced in March.</s>") {
+		t.Errorf("rewritten announcement %q does not show the struck entry", got)
+	}
+	if strings.Contains(got, "I've written this") {
+		t.Errorf("rewritten announcement %q still says the entry was written", got)
+	}
+	if !strings.Contains(got, "not on any other device in the household") {
+		t.Errorf("rewritten announcement %q drops the household-wide promise", got)
+	}
+	// And nothing is sent alongside it.
+	for _, c := range sendsTo(api, davidChatID) {
+		if strings.Contains(c.Form.Get("text"), "I've removed") {
+			t.Errorf("a second removal notice was sent as well: %q", c.Form.Get("text"))
+		}
+	}
+	if n := api.CountFor("editMessageText"); n != 2 {
+		t.Errorf("editMessageText called %d times, want 2: the retirement and the rewrite", n)
 	}
 }
 

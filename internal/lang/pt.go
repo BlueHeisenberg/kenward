@@ -214,7 +214,15 @@ var portuguese = Catalogue{
 		}
 		return "Escrevi isto na memória da casa:"
 	},
-	WrittenHint:     "O botão Anular retira isto.",
+	WrittenHint: "O botão Anular retira isto.",
+	RemovedOpener: func(private bool) string {
+		where := "da memória da casa"
+		if private {
+			where = "da tua memória privada"
+		}
+		return "Afinal não registei isto: removi-o " + where +
+			". Não volta a aparecer numa resposta, nem aqui nem em nenhum outro dispositivo da casa."
+	},
 	PromotionOpener: "Isto seria publicado na casa exatamente como está, e não pode ser despublicado:",
 	PromotionCloser: "Publico isto?",
 	AlsoKnownAs:     func(words []string) string { return "Também: " + latinList(words) },

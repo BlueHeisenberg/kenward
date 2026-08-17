@@ -53,10 +53,11 @@ var escaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 // of the marks below, which apply it.
 func Esc(s string) string { return escaper.Replace(s) }
 
-// The four marks. There are four because there are four kinds of thing in
+// The five marks. There are five because there are five kinds of thing in
 // kenward's messages that are not prose: a title, a quoted body, a name the
-// member could type back, and the node annotating itself. Each takes raw text
-// and escapes it — there is deliberately no way to pass markup through.
+// member could type back, the node annotating itself, and words that were shown
+// once and no longer stand. Each takes raw text and escapes it — there is
+// deliberately no way to pass markup through.
 
 // Bold marks a title: the thing the message is about.
 func Bold(s string) string { return "<b>" + Esc(s) + "</b>" }
@@ -73,6 +74,19 @@ func Code(s string) string { return "<code>" + Esc(s) + "</code>" }
 // Quote marks stored words being shown back — an entry's body, quoted so it is
 // visibly the entry and not kenward's own sentence.
 func Quote(s string) string { return "<blockquote>" + Esc(s) + "</blockquote>" }
+
+// Strike marks words that were true when the message was sent and are not now:
+// an entry the member has taken back, left legible in the message that announced
+// it so they can still see what it was they rejected.
+//
+// It escapes its argument exactly as the four above do, and that matters more
+// here than anywhere else in this file. This mark is applied to an entry title
+// and body — model-written text summarising what a member just said — in the one
+// message that outlives the entry itself, so a member whose note is titled "<s>"
+// must get a note titled "<s>" rather than a message whose remainder is struck
+// through. Because it escapes, it does not compose with Bold or Quote: a struck
+// entry is written as struck runs, not as a struck bold one.
+func Strike(s string) string { return "<s>" + Esc(s) + "</s>" }
 
 // --- the model's own markup -------------------------------------------------
 

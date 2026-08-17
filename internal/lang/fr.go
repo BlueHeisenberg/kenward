@@ -231,7 +231,17 @@ var french = Catalogue{
 		}
 		return "J'ai écrit ceci dans la mémoire du foyer" + nbsp + ":"
 	},
-	WrittenHint:     "Le bouton Retirer l'efface de la mémoire.",
+	WrittenHint: "Le bouton Retirer l'efface de la mémoire.",
+	// Em dash rather than a colon: the colon would need its no-break space and the
+	// sentence reads better without either.
+	RemovedOpener: func(private bool) string {
+		where := "de ta mémoire privée"
+		if !private {
+			where = "de la mémoire du foyer"
+		}
+		return "Finalement je n'ai rien enregistré — je l'ai retiré " + where +
+			". Cela ne reviendra plus dans une réponse, ni ici ni sur aucun autre appareil du foyer."
+	},
 	PromotionOpener: "Ceci serait publié dans la mémoire du foyer exactement tel quel, et ne pourra plus être retiré" + nbsp + ":",
 	PromotionCloser: "Publier" + nbsp + "?",
 	AlsoKnownAs:     func(words []string) string { return "Aussi" + nbsp + ": " + latinList(words) },

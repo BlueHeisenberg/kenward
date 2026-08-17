@@ -38,6 +38,9 @@ type Fake struct {
 	// retired is every keyboard RetireKeyboard was asked to strip, as chat and
 	// message id. A test asserting that a restart cleaned up after itself reads it.
 	retired []Retired
+	// edits is every message EditText was asked to rewrite. A test asserting that a
+	// message stopped saying something false reads it.
+	edits []Edit
 	// typing counts the indicators sent, per chat.
 	typing map[int64]int
 
@@ -45,6 +48,7 @@ type Fake struct {
 	answerFn  func(Question) Answer
 	sendErr   error
 	askErr    error
+	editErr   error
 	askDelay  time.Duration
 	updateBuf int
 }
@@ -158,6 +162,17 @@ func (f *Fake) SetAskError(err error) {
 	f.askErr = err
 }
 
+// SetEditError makes every subsequent EditText fail with err. Pass nil to clear.
+//
+// It is how a test reaches the case Telegram reaches on its own: a message too old to
+// edit, a node that restarted since, a network that dropped the call. A caller
+// correcting something it already said has to have somewhere else to say it.
+func (f *Fake) SetEditError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.editErr = err
+}
+
 // --- captured outbound -----------------------------------------------------
 
 // Sent returns every message sent so far, in order.
@@ -214,6 +229,7 @@ func (f *Fake) Reset() {
 	f.asked = nil
 	f.ignored = 0
 	f.retired = nil
+	f.edits = nil
 	f.typing = map[int64]int{}
 }
 
@@ -389,6 +405,39 @@ func (f *Fake) RetiredKeyboards() []Retired {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]Retired(nil), f.retired...)
+}
+
+// Edit is one message EditText was asked to rewrite, with the words it was rewritten
+// to. The text is kept because the point of an edit is what the message now says.
+type Edit struct {
+	ChatID    int64
+	MessageID int
+	Text      string
+}
+
+// EditText records the rewrite. See Telegram.EditText for what it does against the
+// real thing.
+func (f *Fake) EditText(ctx context.Context, chatID int64, messageID int, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return ErrClosed
+	}
+	if f.editErr != nil {
+		return f.editErr
+	}
+	f.edits = append(f.edits, Edit{ChatID: chatID, MessageID: messageID, Text: text})
+	return nil
+}
+
+// Edits returns every message this Fake was asked to rewrite, in order.
+func (f *Fake) Edits() []Edit {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Edit(nil), f.edits...)
 }
 
 // Close releases the Fake. It is idempotent; afterwards every call returns

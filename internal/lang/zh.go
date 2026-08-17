@@ -233,7 +233,15 @@ var chinese = Catalogue{
 		}
 		return "我已经把这条内容写入家庭记忆："
 	},
-	WrittenHint:     "撤销按钮会把它移除。",
+	WrittenHint: "撤销按钮会把它移除。",
+	RemovedOpener: func(private bool) string {
+		where := "家庭记忆"
+		if private {
+			where = "你的私人记忆"
+		}
+		return "这条内容我最终没有记下来，已经把它从" + where +
+			"中移除。它不会再出现在任何回答里，这里不会，家里的其他设备上也不会。"
+	},
 	PromotionOpener: "这条内容会原样发布给整个家庭，并且无法撤回：",
 	PromotionCloser: "要发布吗？",
 	AlsoKnownAs:     func(words []string) string { return "也称：" + strings.Join(words, "、") },

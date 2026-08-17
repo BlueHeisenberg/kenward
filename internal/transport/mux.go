@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -294,6 +295,26 @@ func (v *muxView) RetireKeyboard(ctx context.Context, chatID int64, messageID in
 		return nil
 	}
 	return r.RetireKeyboard(ctx, chatID, messageID)
+}
+
+// EditText passes straight through to the shared bot, and unlike RetireKeyboard a
+// bot that cannot do it is an error rather than a shrug.
+//
+// The difference is what the caller does next. Retiring a stale keyboard is tidying:
+// nothing the member reads depends on it. An edit is a correction to a message that
+// is now false, and the caller has a fallback to reach for — so it has to be told the
+// edit did not happen rather than left believing the chat has been put right.
+func (v *muxView) EditText(ctx context.Context, chatID int64, messageID int, text string) error {
+	if err := v.state(); err != nil {
+		return err
+	}
+	e, ok := v.mux.t.(interface {
+		EditText(context.Context, int64, int, string) error
+	})
+	if !ok {
+		return errors.New("transport: this transport cannot rewrite a message")
+	}
+	return e.EditText(ctx, chatID, messageID, text)
 }
 
 // Close detaches this view. It never closes the shared bot, so one member's unit

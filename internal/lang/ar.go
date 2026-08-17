@@ -358,7 +358,18 @@ var arabic = Catalogue{
 	},
 	// "Undo" is a button name here, not a verb: التراجع on its own reads as the
 	// abstract act of undoing, so the button is named.
-	WrittenHint:     "زر التراجع يزيله.",
+	WrittenHint: "زر التراجع يزيله.",
+	// Two sentences rather than a dash. The struck entry below this line is Latin
+	// script, and a dash at the end of an Arabic clause detaches from it across that
+	// boundary the way the outcome dash does; a full stop does not.
+	RemovedOpener: func(private bool) string {
+		where := "من ذاكرة المنزل"
+		if private {
+			where = "من ذاكرتك الخاصة"
+		}
+		return "لم أسجّل هذا في النهاية. أزلته " + where +
+			". لن يظهر مرة أخرى في أي إجابة، لا هنا ولا على أي جهاز آخر في المنزل."
+	},
 	PromotionOpener: "سيُنشر هذا للمنزل كما هو تمامًا، ولا يمكن التراجع عن نشره:",
 	PromotionCloser: "هل أنشره؟",
 	AlsoKnownAs:     func(words []string) string { return "أيضًا: " + strings.Join(words, "، ") },

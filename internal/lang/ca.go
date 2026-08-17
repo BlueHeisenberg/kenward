@@ -227,7 +227,15 @@ var catalan = Catalogue{
 		}
 		return "He escrit això a la memòria de la llar:"
 	},
-	WrittenHint:     "El botó Desfer ho retira.",
+	WrittenHint: "El botó Desfer ho retira.",
+	RemovedOpener: func(private bool) string {
+		where := "de la memòria de la llar"
+		if private {
+			where = "de la teva memòria privada"
+		}
+		return "Al final no ho he desat: ho he tret " + where +
+			". No tornarà a sortir en cap resposta, ni aquí ni en cap altre dispositiu de la llar."
+	},
 	PromotionOpener: "Això es publicaria a la llar exactament tal com està, i no es pot despublicar:",
 	PromotionCloser: "Ho publico?",
 	AlsoKnownAs:     func(words []string) string { return "També: " + latinList(words) },
