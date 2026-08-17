@@ -10,8 +10,9 @@ import (
 //
 // It is the one message that cannot be in the language the member chose, because
 // choosing it is the first question and this arrives before it. It goes out in the
-// household's language, which the admin set in the wizard, on the reasoning in
-// IDENTITY.md: kenward's language seeds the default for new members.
+// household's language, which the admin set in the wizard: kenward's language seeds
+// the default for new members. See docs/ARCHITECTURE.md, "The node speaks ten
+// languages; the prompt speaks one".
 //
 // questions is how many are actually coming, counted from the tutorial's own step
 // list rather than written into the sentence: a household with one agent for

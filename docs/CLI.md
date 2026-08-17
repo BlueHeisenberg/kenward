@@ -104,8 +104,10 @@ It asks, in order:
    other door. `doctor` warns about it afterwards, and a warning nobody was told to run
    is not a remedy, so this is a refusal in the wizard instead. The question says how to
    find the number: add the bot to the group, send a message, and read it off
-   `https://api.telegram.org/bot<TOKEN>/getUpdates`. `--non-interactive` refuses the same
-   combination, and so does the dashboard's wizard and its settings page.
+   `https://api.telegram.org/bot<TOKEN>/getUpdates`. The dashboard's wizard and its
+   settings page refuse the same combination. The scripted path carries the same check
+   and cannot currently reach it: `--non-interactive` has no flag for this question, so
+   it always produces `agents: shared` — see `--non-interactive` below.
 
    Then three questions about how kenward writes — language, tone, character — each with
    an answer that changes nothing. Pressing Enter three times gives the assistant kenward
@@ -186,7 +188,25 @@ Details the first draft of this document left out, settled during implementation
   configuration in which nothing can ever be answered locally is worth noticing before it
   is written rather than after.
 
-`--non-interactive` with flags for every answer, for scripted installs.
+`--non-interactive` takes its answers from flags, for scripted installs. It does **not**
+have a flag for every question. What it covers: `--mode`, `--household-name`,
+`--shared-space`, `--bot-token-env`, `--member`, `--member-space`, `--member-tiers`,
+`--group-tiers`, `--endpoint`, `--data-dir`, `--write-env-file`.
+
+What it does not cover, and the consequence:
+
+- **the identity question.** There is no `--agents`, so a scripted install always writes
+  `agents: shared`. One assistant each cannot be set up from a script today; use the
+  terminal wizard or the dashboard, or write the key into the file by hand afterwards.
+- **the group chat id.** No flag, and it is only required under `per_member`, which a
+  script cannot produce — so today this follows from the line above rather than being a
+  separate gap. Set `household.group_chat_id` in the file.
+- **any persona field.** No `--persona-language`, `-tone` or `-character`. A scripted
+  household gets the flat English register until somebody edits the file.
+- `history.reset_every`, `memory.search_limit`, `session.idle_timeout`,
+  `capture.max_proposals_per_turn` and `update.channel` are absent **by design** rather
+  than by omission: a scripted install that says nothing about them should get the
+  defaults, not a widened flag surface.
 
 `--force` replaces an existing configuration. Without it, setup refuses when a file is
 already there and says why: a household's configuration is full of decisions somebody

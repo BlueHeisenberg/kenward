@@ -70,9 +70,14 @@ publishes nothing that a household will act on; a human signs.**
 
 ### 1. Tag it
 
+Set the version once and use it throughout; the commands below assume it. `v0.1.0` is the
+only tag that exists so far.
+
 ```sh
-git tag -a v0.2.0 -m "v0.2.0"
-git push origin v0.2.0
+VERSION=v0.1.1
+
+git tag -a "$VERSION" -m "$VERSION"
+git push origin "$VERSION"
 ```
 
 That is the only command that starts a release. `.github/workflows/release.yml` then:
@@ -95,7 +100,7 @@ That is the only command that starts a release. `.github/workflows/release.yml` 
   separate build of the same commit, stamped identically but not byte-identical to the
   published `kenward_<goos>_<goarch>` — the bundle is checksummed, the copy inside it
   is not separately;
-- pushes `ghcr.io/blueheisenberg/kenward:v0.2.0` (and `:latest`, unless the tag carries a
+- pushes `ghcr.io/blueheisenberg/kenward:$VERSION` (and `:latest`, unless the tag carries a
   hyphen and is therefore a prerelease) for linux/amd64 and linux/arm64.
 
 The release is a draft because `kenward update` fetches
@@ -112,10 +117,12 @@ rehearsal is `task snapshot`.
 On the machine holding the private key, which is not a build machine and not CI:
 
 ```sh
-mkdir -p /tmp/rel && cd /tmp/rel
-gh release download v0.2.0 --repo BlueHeisenberg/kenward --pattern 'kenward_*'
+VERSION=v0.1.1        # the tag you just pushed; this is a different machine
 
-kenward-release manifest --version v0.2.0 \
+mkdir -p /tmp/rel && cd /tmp/rel
+gh release download "$VERSION" --repo BlueHeisenberg/kenward --pattern 'kenward_*'
+
+kenward-release manifest --version "$VERSION" \
     --channel edge,stable \
     --dist . \
     --notes "..." \
@@ -124,8 +131,8 @@ kenward-release sign --key ~/.kenward-release/release-1.key \
     --in manifest-unsigned.json --out manifest.json
 kenward-release verify --in manifest.json --pub ~/.kenward-release/release-1.pub
 
-gh release upload v0.2.0 manifest.json --repo BlueHeisenberg/kenward
-gh release edit v0.2.0 --draft=false --repo BlueHeisenberg/kenward
+gh release upload "$VERSION" manifest.json --repo BlueHeisenberg/kenward
+gh release edit "$VERSION" --draft=false --repo BlueHeisenberg/kenward
 ```
 
 Download the artifacts rather than hashing a local `dist/`: the digests then cover exactly

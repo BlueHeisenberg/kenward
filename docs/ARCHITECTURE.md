@@ -412,9 +412,160 @@ announce-and-Undo path `(*capture.Engine).writeAndAnnounce` with its `capture.Ch
 button, all in `internal/capture/capture.go`. A private write is performed and announced
 with an Undo; only a shared write is still asked about first.
 
+## Personas, and one assistant or one each
+
+`household.agents` is either `shared` — there is kenward and nothing else — or
+`per_member`, where every member gets their own named agent for their private chat and
+kenward remains the family agent in the group. `shared` is the default and is what kenward
+has always done.
+
+**It is not `mode`, and must never be described as though it were.** Mode is a security
+question, answered by topology: can whoever runs this machine read a member's private
+plaintext. This is a presentation question: who the household is talking to. Under
+`per_member` a member has their own bot so their agent is its own *contact* — that is a
+separate contact, not a separate secret, and the mode is what seals memory. Conflating the
+two would sell isolation as a naming scheme. The wizard asks them as two questions, in
+that order, and a test fails the build if the identity step's transcript so much as
+mentions containers or sealing.
+
+The two meet in exactly one place and it is arithmetic rather than privacy. An agent is a
+Telegram contact; simple mode runs one bot for the whole household; two agents behind one
+contact are one agent. So `per_member` requires `mode: isolated`, and it is **refused
+rather than downgraded** — the downgrade would resolve every member's private chat to
+kenward's and quietly take away the assistant they were promised.
+
+**A third scope came with it.** Under `per_member`, kenward is reachable in a private chat
+too, on the household bot. That conversation reads and writes the shared space and nothing
+else, exactly as the group does, and it exists for the two things a group chat makes
+impossible: adding to the household's memory without notifying everybody, and asking what
+the household knows without asking in front of everybody. It carries a member — kenward
+has to know who is asking in order to authorise them — and knowing that is a different
+thing from being allowed near their private memory. This is why the boundary is stated as
+`Kind == ScopeDirect` and not as "not the group": the negative form was true while there
+were two kinds, and would have silently admitted the third.
+
+**A persona is four fields** — `agent_name`, `language`, `tone`, `character` — and every
+empty value reproduces the behaviour kenward had before the section existed, so a
+household that deletes the block loses nothing. `household.persona` is kenward's own, and
+under `shared` it is therefore everyone's, because there is no personal layer to override
+it. `members[].persona` is the member's, written by the member in the Telegram tutorial
+rather than by an operator on their behalf; it falls back to the household's **per field**,
+so somebody who wrote a character and said nothing about language keeps the household's
+language.
+
+kenward's own name is not configurable. Stating `household.persona.agent_name` is a
+validation error rather than a rename, because it is the name this documentation, the logs
+and `kenward doctor` all use.
+
+The length limits — 80 runes a line, 1000 for the character — are a trust boundary and not
+taste. The budget loop trims retrieved entries and never trims the persona, so an
+unbounded character could push the scope disclosure and the capture rules out of a small
+endpoint's context window, which is the one way persona text could countermand them
+without the model ever being asked to. The prompt renders the persona inside a delimited
+block, indented so no line of it reaches column zero, followed by a guard stating that it
+governs wording alone. Nothing inside a persona can close the block or forge a heading;
+a character quoting `</persona>` renders as an indented line saying `</persona>`, which is
+what it is.
+
+## The group is heard, and answered only when addressed
+
+Telegram turns bot privacy mode on for every new bot, and with it on the bot receives
+nothing in a group: not plain messages, not a reply, not an @mention. Nothing arrives, so
+nothing is logged, and a household adds the bot to their family group and it ignores
+everyone with no symptom anybody can search for. kenward therefore **requires privacy mode
+disabled**, which setup instructs, checks against Telegram in a loop, and `kenward doctor`
+checks again.
+
+That turns the problem inside out: every sentence a family says to each other now arrives
+here. So kenward rebuilds, deliberately, the gate Telegram used to provide for free, and
+the set is Telegram's own privacy-mode set restated where kenward can see it — an @mention
+of this bot, a reply to one of its own messages, a bot command not aimed at some other bot
+by name, or a text mention carrying its user record. **A bare name prefix is not a
+mention**: "kenward, what time is dinner" carries no Telegram entity and is not addressed.
+
+Two properties are worth stating because each was a decision:
+
+**"Addressed" is a fact about the message, not a policy.** The transport computes it on
+every message, private chats included, and the policy is one line in the assistant:
+overheard means group scope and not addressed. Keying it on scope kind rather than on "is
+this a group" is what keeps a member's private chat with kenward out of it.
+
+**An overheard message is added to the history ring and nothing else runs.** No retrieval,
+no router, no capture, not even the turn slot — the conversation is context for the
+question that comes later. Capture not running is the part worth defending, because the
+argument the other way is a good one: ambient household knowledge is exactly what a shared
+memory is for. It loses anyway, because capture asks a question and a question is a reply,
+and an assistant that interjects into a family conversation to ask whether it should
+remember something is one the household mutes. Ambient capture is a feature to design
+deliberately, with its own consent shape; it is not a side effect of listening.
+
+The gate fails open when the transport does not know its own username — every message
+counts as addressed. Answering too much is wrong in a way a household can see and report;
+gating the whole household into silence is not.
+
+## Reminders: the one unprompted message
+
+Every other message kenward sends is a reply. A reminder is not, and that is the whole of
+its proactive capability: a piece of text and a time to send it. When the time comes the
+text is sent verbatim.
+
+**A reminder never reaches a model.** Nothing is generated, no memory is searched, no
+provider is contacted — and this is structural rather than a rule somebody follows. The
+package is given no router and no memory client, so it cannot reach a provider because it
+has nothing to reach one with, and that is checkable by reading its imports. A scheduled
+job that invokes the model is a job that spends tokens all night with nobody asking,
+against whatever tier its chain reaches; the privacy claim about tier chains would have to
+be qualified, and it is not.
+
+The rest is bounds, because an unprompted message is the one thing a household cannot
+refuse turn by turn. `reminders.max_per_day` caps deliveries per conversation — reaching
+the cap is deliberately **not** announced, since saying so would itself be an unprompted
+message sent to report that too many unprompted messages had been sent; it goes to the log
+and to `kenward doctor`, where the person who can change the number is looking. A negative
+cap turns delivery off entirely while still allowing reminders to be set and listed, so a
+household can go quiet without every member cancelling their own.
+
+Missed occurrences get different answers by kind, because household machines are
+legitimately asleep. A **repeating** reminder delivers at most one missed occurrence, the
+most recent, and only if it is younger than `catch_up_window`: a node off overnight owes
+the household one bin reminder, not sixteen. A **one-off** is delivered however late, and
+the window does not apply — there is exactly one of it ever, so it cannot flood anything,
+and it is a promise to a person. A late delivery says when it was due.
+
+Storage is one file per unit, never one file keyed by member, and the daily ledger is
+persisted with it so a crash-looping unit cannot reset its own allowance. A reminder is
+counted and advanced before it is handed off to be sent, so a crash loses a message rather
+than repeating one.
+
+## The node speaks ten languages; the prompt speaks one
+
+`persona.language` is free text, passed to the model rather than looked up in a table,
+because that is what makes "answer in Valencian" work at all. It reaches a second place
+under a different rule: the strings kenward itself writes — the retrieval line, the locked
+notice, the refusals, the capture buttons, the enrolment tutorial — come from a closed
+catalogue, `internal/lang`, in ten languages: English, Spanish, Catalan, Portuguese,
+French, Italian, Dutch, German, Chinese and Arabic. Outside that list the model still
+answers in the language and kenward's own machinery stays English, which is a stated limit
+rather than a surprise.
+
+The line between the two is where the words come from. Anything a member reads that kenward
+composed is translated. The system prompt, the tool descriptions and the JSON-schema
+descriptions are not: they are addressed to the model, they are golden-checked against
+PROMPT.md, and translating them would multiply the surface that has to stay in step with
+the code by ten while changing nothing anybody reads.
+
+Glyphs and markup stay outside the catalogue — they are structural, and the caller
+prepends them — so a translator cannot lose a `🔍` or unbalance an `<i>`. Missing fields
+fall back to English **per field**, and a test asserts the fallback has nothing to do, so
+an incomplete language is a build failure rather than a household reading half a sentence
+in the wrong tongue. Matching accepts codes, endonyms and exonyms ("español",
+"castellano", "中文", "pt-BR"), and anything unrecognised resolves to English.
+
 ## Tool surface
 
-Deliberately thin, plus MCP passthrough so households bring their own tools.
+Deliberately thin, plus MCP passthrough so households bring their own tools. **The
+passthrough is not built**: there is no MCP client in the module today, and the tool set is
+the native one — `remember`, `publish`, `remind`, `unremind`.
 
 Household assistants are only useful with real-world access — calendar, shopping,
 documents, home automation — and building those integrations is unbounded work that has
@@ -447,10 +598,12 @@ Go rather than Python because the two packages worth inheriting are Go; because 
 thing being talked to, is Go; because per-member processes cost roughly 25 MB each instead
 of 150 MB, which matters once there is one per household member; and because a single
 static binary is a materially better self-hosted install story than a container-only one.
-Go 1.25 is the floor because the MCP SDK requires it.
+Go 1.25 is the floor: it was the MCP SDK's requirement when it was set, and lore's own
+module keeps it there now that the SDK is gone.
 
-Three dependencies do real work — `go-telegram/bot` for transport, the official MCP Go SDK
-for lore, `yaml.v3` for configuration — plus [keel](https://github.com/BlueHeisenberg/keel)
+Three dependencies do real work — `go-telegram/bot` for transport,
+[lore](https://github.com/BlueHeisenberg/lore) itself for memory, `yaml.v3` for
+configuration — plus [keel](https://github.com/BlueHeisenberg/keel)
 for the mechanisms that are not kenward's to own: process isolation, the sealed vault, the
 OpenAI-compatible model client, and signed self-update. keel knows nothing about
 households; no exported keel signature contains a domain noun. Adding a dependency outside
