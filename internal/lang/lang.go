@@ -107,13 +107,16 @@ type Catalogue struct {
 	// worry after silence is whether half of it landed.
 	ToolMisfire string
 
-	// NothingSaved replaces a reply that was nothing but an acknowledgement on a
-	// turn where the node did nothing at all — see BareAcknowledgements.
+	// NothingSaved goes under a reply that would leave the member believing something
+	// was kept on a turn where the node kept nothing — see BareAcknowledgements and
+	// SaveClaims. Under it and never instead of it: the assistant's answer always
+	// reaches the member, and this is the node's own accounting added beneath it.
 	//
 	// It says the one thing the member cannot see and would otherwise get wrong,
 	// and it invites them to ask again. It deliberately does not apologise for the
-	// model or explain what a tool call is: the member asked for something to be
-	// kept, and what they need is to know that it was not.
+	// model or explain what a tool call is: it is only ever sent on a turn where the
+	// member asked for something to be kept or the reply told them it had been, and
+	// what they need is to know that it was not.
 	NothingSaved string
 
 	// BareAcknowledgements is every way this language says "done" and nothing else.
@@ -125,15 +128,21 @@ type Catalogue struct {
 	// on holding only that.
 	//
 	// What belongs here: a reply that claims an action completed and carries no
-	// information — "Done.", "Got it.", "Noted." A turn that made no tool call and
-	// answered with one of these has told the member something happened when nothing
-	// did, which is D-059 arriving through the reply instead of through a claimed save.
+	// information — "Done.", "Got it.", "Noted." A turn that made no tool call, was
+	// asked for a write, and answered with one of these has told the member something
+	// happened when nothing did, which is D-059 arriving through the reply instead of
+	// through a claimed save.
 	//
 	// What must never be put here: an answer. "Yes", "No", "Correct" and their
-	// equivalents answer questions, and the caller *replaces* a matched reply rather
-	// than annotating it — so a word that can carry information would be information
-	// destroyed. Every entry is a word that cannot answer anything. That is what makes
-	// the replacement free: a reply that matches had nothing in it to lose.
+	// equivalents answer questions, and a match here is what decides that a reply
+	// needs the member's own request behind it before it earns a notice — so a word
+	// that can carry information would be a real answer sent past the gate on the
+	// wrong branch. Every entry is a word that cannot answer anything.
+	//
+	// A matched reply is no longer dropped. It was, and the argument for it — an
+	// acknowledgement has nothing in it to lose — held only while the acknowledgement
+	// was answering a save request. "Got it." after "thanks" is a legitimate reply and
+	// was being deleted by a string match, so the caller appends and never substitutes.
 	//
 	// Entries are written naturally and normalized on both sides at match time, so
 	// apostrophes, diacritics and punctuation need no thought here.
@@ -144,18 +153,20 @@ type Catalogue struct {
 	//
 	// The second field the member never reads, matched against what the model wrote,
 	// and here for the same reason as the first. It exists because the first was not
-	// enough. Once bare acknowledgements were replaced, a live run of seventeen
+	// enough. Once bare acknowledgements were corrected, a live run of seventeen
 	// "remember this for me: …" turns produced three replies that named the fact and
 	// claimed it kept — "Saved — plumber number is 555 0182.", "Noted — the garden
 	// tap is shut off at the valve under the sink." — with nothing behind any of
 	// them. Those are worse than "Done.": they tell the member exactly what was
 	// stored, so the false belief is specific and checkable and will not be checked.
 	//
-	// What belongs here: vocabulary that can only be about a write. "Saved",
-	// "noted", "stored", "I'll remember". A promise counts as a claim — a reply that
-	// says "I won't forget that" on a turn where nothing was asked of the store is
-	// as false as one that says "saved", and it was three of the twenty samples the
-	// eval first caught this on.
+	// What belongs here: vocabulary that can only be about a write that has already
+	// happened. "Saved", "noted", "stored", "got it". These are false the moment they
+	// are written on a turn that stored nothing, whatever the member asked for, so
+	// this is the one list consulted unconditionally.
+	//
+	// What belongs in SavePromises instead: the future tense. "I'll remember" is a
+	// promise and not a claim, and the difference showed up live — see that field.
 	//
 	// What must never be put here: a word that merely says an action finished.
 	// "Done" and "Got it" say nothing about memory — "Done — the boiler service code
@@ -172,8 +183,67 @@ type Catalogue struct {
 	// ponytail: substring match, so "you saved £40" reads as a claim. The cost is one
 	// extra true sentence appended to a reply nobody loses; the cost of missing a real
 	// claim is a member who believes something is stored. Narrow the entries, never
-	// the match, if the noise ever shows up in a live run.
+	// the match, if the noise ever shows up in a live run — which it did, and
+	// SavePromises is what came out of it.
 	SaveClaims []string
+
+	// SavePromises is every way this language says "I will keep that" — the future
+	// tense of SaveClaims, and the negated future with it: "I'll remember", "I won't
+	// forget", "I'll note that down".
+	//
+	// These were in SaveClaims and were moved out, and a live run is what moved them.
+	// A promise counts as a lie in the context that field was written for — a member
+	// says "remember this", the model says "I won't forget that", nothing is stored,
+	// and the member believes it is — and it was three of the twenty samples the eval
+	// first caught the defect on. But outside that context it is not a claim about
+	// anything: sixteen turns of ordinary household chat produced *"Yep — drop me the
+	// day next time and I'll keep it."*, which promises a future write, states plainly
+	// that nothing was written now, and is the honest thing to say. Annotating it with
+	// "I didn't record anything just then. Say it again if you want me to remember it."
+	// contradicts an offer the member had just been made.
+	//
+	// So this list is gated on SaveRequests exactly as BareAcknowledgements is, and for
+	// the same reason: a promise is false when it answers a request to keep something
+	// and is merely a promise otherwise. SaveClaims stays unconditional, because a
+	// completed claim is false whatever prompted it.
+	//
+	// Nothing is lost by the gate. A promise is dangerous precisely on the turn where
+	// the member asked, and that is the turn AsksForASave matches.
+	SavePromises []string
+
+	// SaveRequests is every way this language asks for something to be kept —
+	// "remember this", "write that down", "don't forget".
+	//
+	// The third field the member never reads, and the only one matched against what
+	// the *member* wrote rather than what the model wrote. It is here because it is
+	// the same ten-language problem as the two above and there is no second place to
+	// put it.
+	//
+	// It exists to narrow the two guards whose replies are false only in context —
+	// BareAcknowledgements and SavePromises — and must never be widened into a
+	// detector of its own. Deciding "the member asked for a write" from free text is
+	// exactly the primary detector internal/assistant refuses to build: a phrasing this
+	// table missed would be a member left believing something was stored, silently. As
+	// a filter the risk runs the other way — a miss leaves a bare "Done." or an unkept
+	// promise uncorrected, and SaveClaims still catches every reply saying a save has
+	// happened — which is what makes an admittedly incomplete list of phrases
+	// acceptable here and unacceptable as the thing the guard rests on.
+	//
+	// What belongs here: the verbs and the imperatives a member uses when they hand
+	// something over to be kept. Breadth is cheap. An entry that fires on a message
+	// that was not a save request costs, at most, the notice appearing on a turn
+	// where the model also wrote nothing but "Done." — which was the whole of the old
+	// behaviour and is survivable; the cost of a missing entry is the guard not
+	// firing where it should.
+	//
+	// What must never be put here: a word ordinary conversation is full of. "Thanks",
+	// "ok" and "that's great" are the messages this filter exists to let through, and
+	// a table that matched them would put the notice back in front of a member who
+	// asked for nothing. That is the defect this field was added to fix.
+	//
+	// Substring-matched over the member's message like SaveClaims, so conjugations,
+	// clitics and enclosing sentences fall out.
+	SaveRequests []string
 
 	// --- REF: refusals ------------------------------------------------------
 
@@ -364,7 +434,8 @@ func (c Catalogue) OutcomeNotes() transport.OutcomeNotes {
 //
 // The whole of it, not the start of it: "Done — the code is 4471" carries the answer
 // and is not this. Only a reply with nothing in it but the acknowledgement matches,
-// which is what lets the caller drop it outright.
+// which is what makes the reply's meaning depend entirely on the message it answers —
+// and therefore what lets the caller ask AsksForASave before saying anything about it.
 //
 // Both sides are reduced to their letters and digits before comparing, so trailing
 // punctuation, an emoji, a French apostrophe and an Arabic diacritic all fall out
@@ -390,10 +461,10 @@ func (c Catalogue) IsBareAcknowledgement(reply string) bool {
 // see SaveClaims.
 //
 // Any part of it, unlike IsBareAcknowledgement, which needs the whole. That is the
-// difference the two guards are for: an acknowledgement matches whole because a
-// matched reply is dropped and must have nothing to lose, and a claimed save matches
-// anywhere because the claim arrives welded to the fact it is lying about, which is
-// content the member keeps.
+// difference the two guards are for: an acknowledgement matches whole because a reply
+// with nothing else in it means only what the message before it meant, and a claimed
+// save matches anywhere because the claim arrives welded to the fact it is lying
+// about, which is content the member keeps.
 //
 // There is no attempt to read tense, and it is deliberate. "Yes, I saved it earlier"
 // is true about an earlier turn and matches here, and every rule that could tell the
@@ -403,12 +474,39 @@ func (c Catalogue) IsBareAcknowledgement(reply string) bool {
 // other is the defect. The caller appends rather than replaces and its notice speaks
 // only for this turn, which is what makes the noise survivable.
 func (c Catalogue) ClaimsASave(reply string) bool {
-	got := letters(reply)
+	return containsAny(reply, c.SaveClaims)
+}
+
+// PromisesASave reports whether a reply promises to keep something in future — see
+// SavePromises. Substring-matched like ClaimsASave, and meaningful only alongside
+// AsksForASave: on its own a promise is not a false statement about this turn.
+func (c Catalogue) PromisesASave(reply string) bool {
+	return containsAny(reply, c.SavePromises)
+}
+
+// AsksForASave reports whether a member's message asks for something to be kept —
+// see SaveRequests.
+//
+// Matched over the member's own message, and only ever used to narrow the two guards
+// whose replies are false only in context — the bare acknowledgement and the promise.
+// It is not, and must not become, the thing that decides whether a turn was supposed to
+// store something: ClaimsASave is what catches a reply that says a save happened, and
+// it runs whatever this returns.
+func (c Catalogue) AsksForASave(text string) bool {
+	return containsAny(text, c.SaveRequests)
+}
+
+// containsAny reports whether s contains any of the phrases, both sides reduced to
+// their letters and digits first. Three of the four matchers here are this — the
+// tables differ, the matching does not — and the fourth compares the whole string
+// instead, which is the only real distinction among them.
+func containsAny(s string, phrases []string) bool {
+	got := letters(s)
 	if got == "" {
 		return false
 	}
-	for _, claim := range c.SaveClaims {
-		if strings.Contains(got, letters(claim)) {
+	for _, p := range phrases {
+		if strings.Contains(got, letters(p)) {
 			return true
 		}
 	}

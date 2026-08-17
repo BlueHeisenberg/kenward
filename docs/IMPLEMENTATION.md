@@ -2522,7 +2522,7 @@ than as part of one. They are product surface exactly as the refusals are.
 | A message arrives when the queue behind a running turn is already full | "I'm backed up and had to drop that message. Send it again in a moment." |
 | The turn ran to the end and produced nothing the member could see | "I didn't get a usable answer to that. Try asking again." |
 | The same, where the only tool call named a tool that does not exist | "I tried to do something for that and got it wrong, so nothing happened. Ask me again." |
-| The whole reply was an acknowledgement and the turn did nothing at all | "I didn't record anything just then. Say it again if you want me to remember it." |
+| The reply would leave the member believing something was kept and the turn stored nothing | "I didn't record anything just then. Say it again if you want me to remember it." — appended under the model's reply, never in place of it |
 
 ### Where the words live
 
@@ -2588,34 +2588,61 @@ the log line (`nearestTool`) and nowhere else: routing a call to a tool the mode
 name would let a misspelling reach a write, and `remember` is one of the four names
 something could be misspelled towards.
 
-The seventh is the only one of the seven that **replaces** something the model wrote
-rather than filling a silence, and it is D-059's second half. A live English run put ten
-`remember this for me: …` messages to a real model on a fresh store: eight produced a
+The seventh is the only one of the seven that goes out **alongside** something the model
+wrote rather than filling a silence, and it is D-059's second half. A live English run put
+ten `remember this for me: …` messages to a real model on a fresh store: eight produced a
 memory card, and two produced `Done.` and `Got it.` with nothing behind either. The
 member asked outright, was told the job was done, and nothing exists. D-059 fixed the
 sentence that *names* a save; this is the same lie with the verb removed, and no prompt
 rule can catch a word that is not there.
 
 The node can, because it knows: it has just read the completion's tool calls. So a turn
-that produced no proposal, no publication and no reminder, and whose whole reply is one
-of `lang.Catalogue.BareAcknowledgements` for the member's language, sends this notice
-instead of the reply, and records nothing in history.
+that produced no proposal, no publication and no reminder, and whose reply would leave the
+member believing otherwise, gets this notice **under the reply**. The reply itself always
+goes out, first and whole, and is recorded in history.
 
-Three things about the shape are deliberate.
+Four things about the shape are deliberate.
 
-**The signal is the reply, not the member's message.** Detecting "this looks like a
-request to store something" means matching free text in ten languages, and every phrasing
-such a matcher missed would be a member left believing something was kept — a silent
-failure on the dangerous side. Whether *this node acted* is not a guess. It also disposes
-of the false positive worth worrying about: "remember when we went to Lisbon?" is answered
-with a sentence about Lisbon, which carries information and therefore never matches.
+**The node never substitutes for the assistant's words.** This notice used to *replace* a
+bare acknowledgement, on the argument that `Done.` has nothing in it to lose. That
+argument holds only while the acknowledgement is answering a save request; a member who
+says "thanks", is answered "Got it.", and reads nothing but a node notice has had the
+assistant's reply deleted by a string match. Whether an acknowledgement is contentless
+depends on what it is answering, and the node is not the judge of that. The model answers,
+always; the node may add its own accounting underneath, and may speak when the model did
+not, but it does not overwrite what the assistant said.
 
-**Only the whole reply matches, and only an acknowledgement.** `Done — the code is 4471`
-keeps the code. `BareAcknowledgements` holds contentless acknowledgements and never a word
-that can answer anything — no *yes*, no *no*, no *correct* — so a matched reply has nothing
-in it to lose, which is what makes replacing it rather than annotating it safe. Leaving
-`Done.` on screen above a line saying nothing was done would leave the member to work out
-which half is true.
+**One rule, three shapes.** A reply that says a save has *already happened* is false
+whatever the member asked for, so `SaveClaims` runs unconditionally. A reply that merely
+**acknowledges** or **promises** one is false only in the context of a request to keep
+something — outside it, `Got it.` is an acknowledgement and `I'll keep it` is an offer —
+so `BareAcknowledgements` and `SavePromises` are gated on `lang.Catalogue.SaveRequests`,
+matched over the member's own message in their own language, and outside a save request
+they append nothing at all. Silence, not a softer notice: there is nothing to correct.
+
+The promises used to live in `SaveClaims` and fire unconditionally, on the argument that
+*I won't forget that* is the same lie in the future tense. It is — when it answers a
+request, which is where the three-of-twenty samples that put it in the table came from.
+The live run measured on this change found the other half: sixteen ordinary turns produced
+*"Yep — drop me the day next time and I'll keep it."* in reply to "ok, no problem", which
+offers a future write and states plainly that nothing has been written, and the notice
+contradicted it. Nothing is lost by the gate, because a promise misleads precisely on the
+turn the member asked. Chinese needed its `SaveClaims` retensed for this — bare 记住 covers
+both 我会记住 and 记住了, so every entry now carries 了 or 已 and the promises carry 会.
+
+That gate is exactly the free-text intent matching this design refused as a *primary*
+detector, and the reason it is admissible as a filter is that the risk inverts. As the
+thing the guard rests on, a phrasing the table missed would be a member silently believing
+something was kept — the dangerous side. As a filter on the weak arm alone, a miss costs a
+bare `Done.` going out uncorrected while the vocabulary arm still catches every reply that
+words the claim. It reads this turn's message and not the history, because a member who
+asked for a write four turns ago and now says "thanks" is having an ordinary conversation.
+
+**Only the whole reply matches the bare arm.** `Done — the code is 4471` keeps the code and
+is not bare. `BareAcknowledgements` holds contentless acknowledgements and never a word
+that can answer anything — no *yes*, no *no*, no *correct* — which is what makes the reply's
+meaning depend entirely on the message it answers, and therefore what makes the gate above
+the right question to ask about it.
 
 **Nothing is retried.** The tool call is the member's decision to make; firing one off a
 near miss would be the node writing something nobody chose.
@@ -2635,11 +2662,11 @@ Matching the shape of that sentence cannot work. The phrasing space is unbounded
 model varies it freely; `Done — the boiler service code is 4471.` is the same shape and is
 an answer that must reach the member untouched. So the second guard matches **vocabulary**
 instead. `lang.Catalogue.SaveClaims` is the second field the member never reads: the words
-that can only be about a write — *saved*, *noted*, *stored*; the promise forms *I'll
-remember*, *I won't forget*, which are the same lie in the future tense; and *got it*,
-which claims to be holding the thing the member just handed over — in each of the ten
-languages, matched as substrings anywhere in the reply, because that is where the claim
-sits in Chinese and Arabic and in any sentence that answers something else first.
+that can only be about a write that has already happened — *saved*, *noted*, *stored*, and
+*got it*, which claims to be holding the thing the member just handed over — in each of
+the ten languages, matched as substrings anywhere in the reply, because that is where the
+claim sits in Chinese and Arabic and in any sentence that answers something else first.
+The future tense of the same words lives in `SavePromises` and is gated; see above.
 
 **The line between the two tables is possession against completion.** *Got it* is a save
 claim and *done* is not. `Done — the boiler service code is 4471.` is an answer and must
@@ -2656,10 +2683,13 @@ both tables, and that is correct in both.
 cannot be told apart by vocabulary from one that answers a question, and the answer has to
 win. Nothing here reaches it; only the prompt can.
 
-**This guard appends; the first one replaces.** That is the only structural difference and
-it follows from what each reply is worth. `Done.` has nothing to lose. `Saved — plumber
-number is 555 0182` has the number in it, which is the thing the member wanted kept and
-can now at least read, so the reply goes out and the notice goes out under it.
+**Both guards append.** That was once the structural difference between them and is not
+any more: the first replaced its reply and no longer does. Every reply goes out first and
+whole — `Saved — plumber number is 555 0182` has the number in it, which is the thing the
+member wanted kept, and `Done.` is an answer to somebody — and the notice goes out under
+it. What separates the two arms now is not what they do with the reply but what they read
+to decide: the vocabulary arm reads the reply alone, the bare arm also reads the member's
+message.
 
 **The same code scores the eval.** `claimsASave` in `judgement_eval_test.go` used to be a
 private phrase list on the argument that nothing like it belonged in production; that
@@ -2690,6 +2720,14 @@ is the model's judgement, is measured by `TestRequestedCapture` in
 false-positive cost of the guard is a member who was not asking for a save, whose turn
 produced nothing, and who reads one extra line saying nothing was recorded. That is noise;
 the defect it replaces is a member believing they have a record they do not have.
+
+The version of that cost the household actually met is fixed rather than accepted. Before
+the `SaveRequests` gate, the bare arm fired on **any** turn whose reply was an
+acknowledgement — so "thanks" answered with "Got it." produced *"I didn't record anything
+just then. Say it again if you want me to remember it."*, in place of the reply, to a
+member who had asked for nothing. It reads as a malfunction, and it fires on the commonest
+turn a household has. `TestAnAcknowledgementInOrdinaryConversationIsLeftAlone` pins it in
+five languages, and the second live population below measures it.
 
 The generic notice is the last resort, not the mechanism. A turn that ends in a capture
 question — a remember proposal or a publish request — hands the rest of the turn to

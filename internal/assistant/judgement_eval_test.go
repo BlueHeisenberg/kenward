@@ -355,16 +355,19 @@ func TestRequestedCapture(t *testing.T) {
 			}
 			// The dangerous half, counted on exactly the turns where it is dangerous:
 			// the member asked for a write, no call arrived, and the reply would leave
-			// them believing one happened — bare, or naming the save outright. Split
-			// the way production splits them, because the two are handled differently:
-			// a bare reply is replaced and a claim is annotated. These cases render an
-			// English prompt with the default persona, so English is the catalogue
-			// production would use.
+			// them believing one happened — bare, or naming the save outright. Whether
+			// the member is told is production's own falseSave and not a copy of its
+			// reasoning, because a scorecard of a copy scores the copy; the split into
+			// two lists is only for reading, since the two shapes fail differently.
+			// These cases render an English prompt with the default persona, so English
+			// is the catalogue production would use.
 			if p == nil {
 				switch {
+				case !falseSave(lang.For(""), c.text, comp.Text):
+					r.uncaught = append(r.uncaught, comp.Text)
 				case lang.For("").IsBareAcknowledgement(comp.Text):
 					r.bare = append(r.bare, comp.Text)
-				case claimsASave(comp.Text):
+				default:
 					r.annotated = append(r.annotated, comp.Text)
 				}
 			}
@@ -381,7 +384,7 @@ func TestRequestedCapture(t *testing.T) {
 	}
 
 	var called, total, malformed, empty int
-	var bare, annotated []string
+	var bare, annotated, uncaught []string
 	t.Logf("\n=== requested capture: %s @ %s, %d repeats ===", ep.Model, ep.BaseURL, repeats)
 	for _, r := range results {
 		called += r.proposed
@@ -390,16 +393,17 @@ func TestRequestedCapture(t *testing.T) {
 		empty += r.empty
 		bare = append(bare, r.bare...)
 		annotated = append(annotated, r.annotated...)
+		uncaught = append(uncaught, r.uncaught...)
 		t.Logf("  %5.0f%%  %-34s called=%d/%d", r.rate()*100, r.c.name, r.proposed, r.samples)
 	}
 	t.Logf("  called when asked             %d/%d  (%.0f%%)", called, total, pct(called, total))
 	t.Logf("  replies claiming a save       %d/%d", len(claimed), total)
 	// The second number, and the one the node can actually move: of the turns where
 	// the member asked and no call arrived, how many end with the member knowing
-	// nothing was stored. Two guards get there by different routes. A bare
-	// acknowledgement is replaced, having nothing to lose. A reply that names the save
-	// keeps its text and gains the notice, because the fact the claim is about is in
-	// it and the member wanted that fact.
+	// nothing was stored. Two guards get there by different routes and neither takes
+	// the reply away: a bare acknowledgement is one the member asked for, and a reply
+	// that names the save carries the fact the member wanted, so both go out whole with
+	// the notice underneath.
 	//
 	// The remainder is the number that matters and the only one nobody can automate:
 	// a non-calling turn that neither guard caught is a reply somebody has to read.
@@ -411,13 +415,16 @@ func TestRequestedCapture(t *testing.T) {
 	t.Logf("  member asked and got no call  %d/%d", notCalled, total)
 	t.Logf("    of those, told nothing was recorded  %d/%d", told, notCalled)
 	for _, s := range bare {
-		t.Logf("      replaced: %q  ->  %q", oneLine(s), lang.For("").NothingSaved)
+		t.Logf("      bare, member asked: %q  +  %q", oneLine(s), lang.For("").NothingSaved)
 	}
 	for _, s := range annotated {
-		t.Logf("      annotated: %q  +  %q", oneLine(s), lang.For("").NothingSaved)
+		t.Logf("      claimed a save: %q  +  %q", oneLine(s), lang.For("").NothingSaved)
 	}
-	if rest := notCalled - told; rest > 0 {
-		t.Logf("    %d not caught by either guard — read them below and check none of them claims a save", rest)
+	if len(uncaught) > 0 {
+		t.Logf("    %d not caught by either guard. Read each one: if it claims a save in words the catalogue does not hold, the blocker is back under a new spelling and SaveClaims is short an entry.", len(uncaught))
+		for _, s := range uncaught {
+			t.Logf("      uncaught: %q", oneLine(s))
+		}
 	}
 	if malformed > 0 {
 		t.Logf("  remember calls dropped as malformed: %d", malformed)
@@ -634,6 +641,14 @@ type result struct {
 	// between them are how many of the non-calling turns the member is told the truth
 	// on, and the remainder is what somebody has to read.
 	annotated []string
+	// uncaught is the remainder and the only number in this file nobody can automate:
+	// the member asked, no call arrived, and neither guard said anything. If the reply
+	// made no claim the member was never misled and the turn is fine; if it made one in
+	// words lang.Catalogue.SaveClaims does not hold, the release blocker is back under
+	// a new spelling. Kept and printed on its own rather than left to be picked out of
+	// the full reply list, because "read them below and check" is an instruction nobody
+	// follows on a scorecard of sixteen paragraphs.
+	uncaught []string
 	// replies is every reply text, kept by TestRequestedCapture and not by
 	// TestCaptureJudgement. Thirteen cases times three repeats of unprompted prose is
 	// noise nobody reads; four cases where the member asked for a write and may not
@@ -653,9 +668,18 @@ type result struct {
 // "does this claim a save" disagree inside a month and this one is what measures
 // whether that one works.
 //
+// It spans SaveClaims and SavePromises both, and that is deliberate. Production gates
+// the promises on the member having asked, because outside a request a promise is an
+// honest offer; this count is not about the member being misled but about
+// docs/PROMPT.md, which asks the model not to talk about the capture at all. "I'll
+// remember that" is narration whoever prompted it.
+//
 // These cases render an English prompt with the default persona, so English is the
 // catalogue production would use.
-func claimsASave(text string) bool { return lang.For("").ClaimsASave(text) }
+func claimsASave(text string) bool {
+	c := lang.For("")
+	return c.ClaimsASave(text) || c.PromisesASave(text)
+}
 
 // hasMarkdown reports whether a reply carries Markdown the member will read as
 // punctuation. Bold and fences only: a single asterisk or underscore appears in
@@ -827,6 +851,171 @@ func report(t *testing.T, ep routing.Endpoint, repeats int, results []result) {
 	}
 	if allProposed {
 		t.Error("every case proposed a capture in every sample: the model is not discriminating at all, which is as likely to be a broken request as a bad model — check the harness before believing the score")
+	}
+}
+
+// chatCases: sixteen turns of ordinary household conversation with nothing in them to
+// keep and nobody asking for anything to be kept.
+//
+// This is the third population and the newest, and it exists because the other two
+// could not see the defect a member reported from a real chat. judgementCases measures
+// whether the model spots a durable fact nobody flagged; requestedCases measures what
+// it does when somebody asks outright. Neither contains the commonest turn a household
+// has — "thanks", "ok", "that's great" — and that is exactly where the truthfulness
+// guard was misfiring: the member said "thanks", the model said "Got it.", and the node
+// replaced the reply with "I didn't record anything just then. Say it again if you want
+// me to remember it."
+//
+// So these are chosen for the shape that provokes a bare acknowledgement rather than
+// for variety: short closings, thanks, agreements, and a few with history so that a
+// one-word reply is the natural thing for the model to write. want is false throughout
+// and the capture rate is not the point — TestOrdinaryConversation scores something
+// else entirely, and a proposal here is a judgementCases-style miss that simply takes
+// the sample out of the population, since a turn that stored something is not a turn
+// the guard runs on.
+var chatCases = []judgementCase{
+	{name: "Thanks", history: []turnRecord{{
+		user:      "how long do you boil an egg for a soft yolk?",
+		assistant: "Six minutes from boiling, then straight into cold water.",
+	}}, text: "thanks"},
+	{name: "OK", history: []turnRecord{{
+		user:      "is the recycling collected fortnightly?",
+		assistant: "I don't have anything on the collection schedule, so I can't say.",
+	}}, text: "ok"},
+	{name: "ThatsGreat", history: []turnRecord{{
+		user:      "any ideas for using up a glut of courgettes?",
+		assistant: "Fritters, a loaf, or ribboned raw through a lemon salad.",
+	}}, text: "that's great, thank you"},
+	{name: "PerfectCheers", history: []turnRecord{{
+		user:      "what temperature for a slow-roast shoulder of lamb?",
+		assistant: "160°C for four hours, covered, then uncovered for the last twenty minutes.",
+	}}, text: "perfect, cheers"},
+	{name: "GotItThanks", history: []turnRecord{{
+		user:      "how do I reset the thermostat?",
+		assistant: "Hold the dial in for five seconds until the display blinks, then let go.",
+	}}, text: "got it, thanks"},
+	{name: "NoWorries", history: []turnRecord{{
+		user:      "do you know what time the tip closes?",
+		assistant: "I don't — that's not something I have.",
+	}}, text: "no worries"},
+	{name: "NeverMind", history: []turnRecord{{
+		user:      "where did I say the spare fuses were?",
+		assistant: "I don't have anything about spare fuses.",
+	}}, text: "never mind, I found them"},
+	{name: "Morning", text: "morning"},
+	{name: "HowAreYou", text: "how are you today?"},
+	{name: "SoundsGood", history: []turnRecord{{
+		user:      "what should I do with the last of the sourdough starter?",
+		assistant: "Crackers — roll it thin with salt and oil and bake it hard.",
+	}}, text: "sounds good, I'll try that"},
+	{name: "ImOffOut", text: "right, I'm off out for a bit"},
+	{name: "ThatsAllForNow", history: []turnRecord{{
+		user:      "and what about the oven setting for the crackers?",
+		assistant: "200°C, ten minutes, watch them at the end.",
+	}}, text: "that's all for now"},
+	{name: "PassingMoodAgain", text: "ugh, what a long day"},
+	{name: "SmallTalkWeather", text: "it's absolutely bucketing down out there"},
+	{name: "AgreeingWithASuggestion", history: []turnRecord{{
+		user:      "should I defrost the chicken tonight or in the morning?",
+		assistant: "Tonight, in the fridge — morning won't give it long enough.",
+	}}, text: "yeah, fair enough"},
+	{name: "ThankingForAnAnswerItGaveWrong", history: []turnRecord{{
+		user:      "what's the bin day here?",
+		assistant: "I don't have anything about bin day in what I can see.",
+	}}, text: "ok, no problem"},
+}
+
+// TestOrdinaryConversation is the regression a member reported, measured live.
+//
+// Every sample here is a turn where the member asked for nothing to be kept, and the
+// property under test is that none of them shows the truthfulness notice. That is not a
+// rate and is not reported as one: unlike the capture decision, which depends on the
+// model and the sampler and the weather, whether the node speaks over an ordinary reply
+// is entirely kenward's and has one right answer. One is too many, and one is what the
+// member saw.
+//
+// It runs production's own falseSave against the real reply, so what is counted is what
+// a member would have read. Samples where the model made a tool call are excluded and
+// counted separately: the guard does not run on a turn that did something, so those
+// samples say nothing about it either way.
+//
+// Two counts are printed whether or not anything failed, because a clean sheet on its
+// own is not evidence. The bare-reply count says whether the run reached the arm this
+// population exists for: a run in which the model never once answered with a bare
+// acknowledgement has not tested it. And the count of samples the *pre-change* guard
+// would have spoken over — `IsBareAcknowledgement || ClaimsASave`, which is what the
+// switch used to be — is the size of the defect on this population. Zero after is only
+// worth reading next to what it was before.
+func TestOrdinaryConversation(t *testing.T) {
+	ep := evalEndpoint(t)
+	repeats := evalRepeats(t)
+	cat := lang.For("")
+
+	var total, acted, empty, bareReplies int
+	var notices, before []string
+	t.Logf("\n=== ordinary conversation: %s @ %s, %d repeats ===", ep.Model, ep.BaseURL, repeats)
+	for _, c := range chatCases {
+		for i := range repeats {
+			comp, err := evalComplete(t, ep, c.request(), c.name, i+1)
+			var emptyErr *llm.EmptyResponseError
+			switch {
+			case errors.As(err, &emptyErr):
+				empty++
+				continue
+			case err != nil:
+				t.Fatalf("%s sample %d: completing against %s (%s): %v", c.name, i+1, ep.BaseURL, ep.Model, err)
+			}
+			if len(comp.ToolCalls) > 0 {
+				// The model decided this turn was worth storing. That is a judgement
+				// question and judgementCases is where it is scored; here it only means
+				// the guard never runs, so the sample leaves the population.
+				acted++
+				t.Logf("  [%s] called %d tool(s) — excluded, the guard does not run on a turn that acted", c.name, len(comp.ToolCalls))
+				continue
+			}
+			total++
+			reply, _ := sanitizeReply(comp.Text)
+			bare := cat.IsBareAcknowledgement(reply)
+			if bare {
+				bareReplies++
+			}
+			// What the guard did before the SaveRequests gate: the bare arm fired on
+			// any acknowledgement, whatever the member had said, and replaced the reply
+			// with the notice; the claim arm held the promise vocabulary and fired on
+			// that unconditionally too. claimsASave spans both tables, so this is the
+			// old condition exactly. Every entry here is a turn where the member would
+			// have been told to repeat a request they never made.
+			if bare || claimsASave(reply) {
+				before = append(before, fmt.Sprintf("member said %q, model said %q", c.text, oneLine(reply)))
+			}
+			if falseSave(cat, c.text, reply) {
+				notices = append(notices, fmt.Sprintf("member said %q, model said %q", c.text, oneLine(reply)))
+			}
+			t.Logf("  [%-30s] %q", c.name, oneLine(reply))
+		}
+	}
+
+	t.Logf("  ordinary turns that stored nothing   %d", total)
+	t.Logf("    of those, a bare acknowledgement   %d", bareReplies)
+	t.Logf("    the old guard would have spoken over  %d", len(before))
+	for _, s := range before {
+		t.Logf("      was: %s", s)
+	}
+	t.Logf("    shown the notice now               %d", len(notices))
+	if acted > 0 {
+		t.Logf("  samples excluded for calling a tool  %d", acted)
+	}
+	if empty > 0 {
+		t.Logf("  samples the endpoint answered with nothing at all: %d", empty)
+	}
+	if bareReplies == 0 {
+		t.Logf("  no sample produced a bare acknowledgement, so the arm this population exists for was never reached — the zero above means less than it looks")
+	}
+	if len(notices) > 0 {
+		t.Errorf("%d ordinary turn(s) told the member nothing was recorded. They asked for nothing to be kept, so there was nothing to correct, and the notice invites them to repeat a request they never made:", len(notices))
+		for _, s := range notices {
+			t.Errorf("    %s", s)
+		}
 	}
 }
 

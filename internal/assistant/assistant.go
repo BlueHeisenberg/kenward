@@ -306,10 +306,11 @@ func (u *Unit) noAnswer() string { return u.problem(u.cat.NoAnswer) }
 // kenward tried to act, and nothing happened.
 func (u *Unit) toolMisfire() string { return u.problem(u.cat.ToolMisfire) }
 
-// nothingSaved replaces a reply that was nothing but an acknowledgement on a turn
-// where the node did nothing at all — no proposal, no publication, no reminder. It
-// is the member being told the one thing they cannot see and would otherwise get
-// wrong. See the guard in Unit.turn.
+// nothingSaved goes under a reply that would leave the member believing something was
+// kept on a turn where the node did nothing at all — no proposal, no publication, no
+// reminder. It is the member being told the one thing they cannot see and would
+// otherwise get wrong. It is never sent in place of the reply: see the guard in
+// Unit.turn.
 func (u *Unit) nothingSaved() string { return u.problem(u.cat.NothingSaved) }
 
 // problem marks a turn that produced nothing and says why.
@@ -687,73 +688,96 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		u.deps.Logger.Warn("assistant: reminder call dropped", "reason", warn)
 	}
 
-	// An acknowledgement is a claim that something happened, and this node is the one
-	// party that knows whether anything did: it has just read the completion's tool
-	// calls. So a turn whose whole reply is "Done." and which produced no proposal, no
-	// publication and no reminder is a turn that told the member a job was finished and
-	// did nothing — D-059 arriving through the reply rather than through a sentence
-	// naming a memory, and worse than that one, because there is no verb in it to
-	// catch. A live English run put ten "remember this for me" messages to a real model
-	// and got "Done." and "Got it." to two of them, with nothing in lore behind either.
+	// A reply can tell the member something was kept when nothing was, and this node is
+	// the one party that knows: it has just read the completion's tool calls. So a turn
+	// that produced no proposal, no publication and no reminder, and whose reply says
+	// otherwise, gets one line of the node's own underneath saying what is true. That
+	// is D-059 arriving through the reply rather than through a written entry.
 	//
-	// The signal is the reply and deliberately not the member's message. Deciding "this
-	// looks like a request to store something" means matching free text in ten
-	// languages, and every phrasing such a matcher missed would be a member left
-	// believing something was kept — the failure would be silent and on the dangerous
-	// side. Whether this node acted is not a guess. And the one false positive worth
-	// worrying about cannot reach here: "remember when we went to Lisbon?" is answered
-	// with a sentence about Lisbon, which carries information and therefore never
-	// matches.
+	// It is appended and never substituted, on every arm. This used to replace a bare
+	// acknowledgement outright, on the argument that "Done." has nothing in it to lose,
+	// and that argument is wrong in the case that matters: whether an acknowledgement
+	// is contentless depends on what it is answering, and the node is not the judge of
+	// that. A member who says "thanks", is answered "Got it.", and reads nothing but a
+	// node notice has had the assistant's reply taken away from them by a string match.
+	// The model answers, always; this adds an accounting line under the answer when the
+	// answer would otherwise mislead.
 	//
-	// The reply is dropped rather than annotated. A reply that matches has nothing in
-	// it to lose — lang.Catalogue.BareAcknowledgements holds acknowledgements only,
-	// never an answer — and leaving "Done." on screen above a line saying nothing was
-	// done leaves the member to work out which half is true. Nothing is retried: the
-	// tool call is the member's decision to make, and firing one off a near miss would
-	// be the node writing something nobody chose.
+	// One rule, three shapes: a reply that says a save has *already happened* is a lie
+	// whatever prompted it, and a reply that merely acknowledges or promises one is a
+	// lie only when it is answering a request to keep something. So the first is
+	// checked unconditionally and the other two are gated on the member's own message.
 	//
+	// The unconditional arm reads nothing but the reply. Chasing the shape of that
+	// sentence is what fails — the phrasing space is unbounded and the model varies it
+	// freely — so it matches vocabulary instead. lang.Catalogue.SaveClaims holds the
+	// words that can only be about a write already made, in the member's language, and
+	// it is the same list the eval scores runs with: one
+	// implementation, because two would disagree inside a month and the eval's copy is
+	// what says whether this one works. A live run of seventeen "remember this for me:
+	// …" turns produced twelve cards and three replies — "Saved — plumber number is 555
+	// 0182.", "Noted — the garden tap is shut off at the valve under the sink." — with
+	// nothing in lore behind any of them, which is the same lie carrying the thing it is
+	// lying about, and worse, because a member told the plumber's number is stored will
+	// not check.
+	//
+	// Which leaves "Done — <the fact>" uncaught, deliberately rather than missed.
+	// "Done" claims an errand finished and says nothing about memory, so "Done — the
+	// boiler service code is 4471." is an answer and gets no notice. "Got it" is in the
+	// table and "done" is not, on that line: got it claims to be holding what the member
+	// just handed over. Only the prompt can reach the rest.
+	//
+	// The two gated arms are the acknowledgement and the promise, and both are gated
+	// because both are only false in context.
+	//
+	// A bare acknowledgement — "Done.", "Got it.", "OK 👍" — claims a job finished with
+	// no verb in it for the unconditional arm to catch, and a live English run put ten
+	// "remember this for me" messages to a real model and got two of those with nothing
+	// in lore behind either. But outside a request to remember something, "Got it."
+	// after "thanks" is an acknowledgement and nothing more, and the member who read "I
+	// didn't record anything just then. Say it again if you want me to remember it."
+	// under it was never asking for anything. Ordinary conversation is most turns, so
+	// that fired far more often than the lie it was written for.
+	//
+	// A promise — lang.Catalogue.SavePromises, "I'll remember", "I won't forget" — is
+	// the same lie in the future tense when it answers a request, and was three of the
+	// twenty samples the eval first caught this on. Outside one it states plainly that
+	// nothing has been written yet, which is true: a live run of sixteen ordinary turns
+	// produced "Yep — drop me the day next time and I'll keep it.", an honest offer that
+	// the notice would have contradicted. So the promises moved out of SaveClaims and
+	// under the same gate.
+	//
+	// Outside a save request both append nothing at all: silence, not a softer notice,
+	// because there is nothing to correct.
+	//
+	// That gate is free-text intent matching, and it is admissible here only because
+	// the risk inverts. As the *primary* detector it would decide whether anyone is
+	// corrected at all, and a phrasing it missed would be a member silently believing
+	// something was kept — the dangerous side. As a filter on these two arms, a miss
+	// costs a bare "Done." or an unkept promise going out uncorrected while the
+	// unconditional arm still catches every reply that says a save has happened, and
+	// what it buys back is the false positive a household actually meets. Nothing else
+	// is lost either: a promise is dangerous precisely on the turn the member asked,
+	// and that is the turn the gate matches.
+	//
+	// It reads this turn's message and not the history, deliberately: a member who
+	// asked for a write four turns ago and now says "thanks" is having an ordinary
+	// conversation, and reaching back for the old request would rebuild the defect one
+	// turn later. It is matched in u.cat's language only, the same catalogue the reply
+	// is matched against, because the persona is what tells the model which language to
+	// write in; widening it to all ten would add words that mean nothing in this
+	// conversation, which is the wrong direction for a filter whose job is to let
+	// ordinary chat through.
+	//
+	// Nothing is retried on any arm. The tool call is the member's decision to make,
+	// and firing one off a near miss would be the node writing something nobody chose.
 	// The rate at which the model calls the tool when asked is not addressed here and
-	// cannot be. That is the model's judgement, it is measured in
-	// judgement_eval_test.go's TestRequestedCapture, and this is the half that stops it
-	// costing the member a false belief.
-	//
-	// Replacing the bare ones was not enough, and the way it failed is the reason the
-	// second arm below exists. A live run of seventeen "remember this for me: …" turns
-	// produced twelve cards and three replies that said "Saved — plumber number is 555
-	// 0182." and "Noted — the garden tap is shut off at the valve under the sink." with
-	// nothing in lore behind any of them. The guard above logged nothing, correctly:
-	// none of the three is bare. The residue had moved from "Done." to "Done — <the
-	// fact>", which is the same lie carrying the thing it is lying about, and worse,
-	// because a member who is told the plumber's number is stored will not check.
-	//
-	// Chasing the shape of the sentence is what fails here. The phrasing space is
-	// unbounded and the model varies it freely, so the second arm matches vocabulary
-	// instead: lang.Catalogue.SaveClaims holds the words that can only be about a
-	// write, in the member's language, and it is the same list the eval scores runs
-	// with — one implementation, because two would disagree inside a month and the
-	// eval's copy is what says whether this one works.
-	//
-	// Which leaves "Done — <the fact>" itself uncaught, and that is deliberate rather
-	// than missed. "Done" claims an errand finished and says nothing about memory, so
-	// "Done — the boiler service code is 4471." is an answer and has to reach the
-	// member whole. "Got it" is in the table and "done" is not, on that line: got it
-	// claims to be holding what the member just handed over. Only the prompt can reach
-	// the rest.
-	//
-	// This arm appends and does not replace, and that is the whole difference between
-	// the two. "Done." has nothing to lose. "Saved — plumber number is 555 0182" has
-	// the number in it, which is the thing the member wanted kept and can now at least
-	// read, so the reply goes out and the notice goes out under it saying this turn
-	// stored nothing.
+	// cannot be: that is the model's judgement, measured in judgement_eval_test.go's
+	// TestRequestedCapture, and this is the half that stops it costing a false belief.
 	unsaved := ""
 	if reply != "" && proposal == nil && publishID == "" && remindNotice == "" {
-		switch {
-		case u.cat.IsBareAcknowledgement(reply):
-			u.deps.Logger.Warn("assistant: bare acknowledgement on a turn that did nothing",
-				"chat", in.ChatID, "reply", reply)
-			reply, unsaved = "", u.nothingSaved()
-		case u.cat.ClaimsASave(reply):
-			u.deps.Logger.Warn("assistant: claimed a save on a turn that stored nothing",
+		if falseSave(u.cat, in.Text, reply) {
+			u.deps.Logger.Warn("assistant: reply implied a save on a turn that stored nothing",
 				"chat", in.ChatID, "reply", reply)
 			unsaved = u.nothingSaved()
 		}
@@ -802,13 +826,12 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 			parts = append(parts, transport.Markdown(reply))
 		}
 		if unsaved != "" {
-			// What was true, either instead of the reply or under it. On the bare
-			// path the reply is already gone and this goes out alone — there was no
-			// answer behind the acknowledgement, and the retrieval line says nothing
-			// when there is nothing it informed. On the claimed-save path the reply
-			// survives above it, because the claim is welded to a fact the member
-			// wanted kept and this notice is the only correction they need: it speaks
-			// for this turn and says nothing was recorded in it.
+			// What was true, under what the assistant said and never instead of it.
+			// The reply is always above this line — the model answers, and the node
+			// annotates — so the correction is read as an addition to an answer rather
+			// than as the answer. It speaks for this turn only and says nothing was
+			// recorded in it, which is what makes it safe above a reply that is
+			// telling the truth about an earlier one.
 			parts = append(parts, unsaved)
 		} else if reply == "" && remindNotice == "" {
 			// Nothing here answers what the member said. A reply does, and a
@@ -918,6 +941,36 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 			}
 		}
 	}, nil
+}
+
+// falseSave reports whether a reply would leave the member believing something was
+// kept, on a turn where the node kept nothing. It never says what to do about the
+// reply: the answer is always sent, and the caller's only choice is whether to append
+// the notice under it.
+//
+// Three shapes and one rule: a reply is a lie about memory if it says a save has
+// already happened, and it is a lie only in context if it merely acknowledges or
+// promises one. So ClaimsASave runs unconditionally and the other two are gated on the
+// member having asked.
+//
+// The bare arm is checked first and does not fall through, which matters: "Noted!" is
+// both a bare acknowledgement and a save claim, and outside a save request it is
+// neither — it is a person being answered. Falling through to ClaimsASave would put the
+// notice back under it and undo the fix.
+//
+// The reasoning for each arm is in Unit.turn where the result is acted on. It is a
+// function of its own for one reason: judgement_eval_test.go scores live runs by how
+// many non-writing turns end with the member knowing the truth, and an eval scoring its
+// own copy of this decision measures the copy. That is the same argument that moved
+// SaveClaims out of the eval and into lang.
+func falseSave(cat lang.Catalogue, ask, reply string) bool {
+	if cat.IsBareAcknowledgement(reply) {
+		return cat.AsksForASave(ask)
+	}
+	if cat.ClaimsASave(reply) {
+		return true
+	}
+	return cat.PromisesASave(reply) && cat.AsksForASave(ask)
 }
 
 // publishTarget resolves a publish request to an entry id using this turn's own
