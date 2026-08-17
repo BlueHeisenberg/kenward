@@ -232,6 +232,17 @@ func (f *fakeMemory) putCount() int {
 	return len(f.puts)
 }
 
+// lastPut is the draft that actually reached the store, for a test asserting what a
+// turn stored rather than only that it stored something.
+func (f *fakeMemory) lastPut() (putCall, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.puts) == 0 {
+		return putCall{}, false
+	}
+	return f.puts[len(f.puts)-1], true
+}
+
 // fakeTransport records sends and answers questions with a canned answer. A non-nil
 // askGate makes Ask block until the gate is closed, standing in for a member who
 // has not tapped a button yet.

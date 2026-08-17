@@ -43,7 +43,14 @@ type Draft struct {
 	Title      string
 	Body       string
 	Confidence string
-	Markers    []string
+	// Markers is lore's, and nothing in kenward fills it. The capture flow shows a
+	// member the title and the body and nothing else, so a marker would be a stored
+	// field they approved without reading — and a later prompt renders markers back
+	// to the model. The remember tool therefore does not offer the field at all
+	// (internal/assistant's rememberSchema). It stays here because it is part of
+	// lore's write surface and Put must be able to carry it if a caller ever
+	// legitimately has one; do not wire it back to anything the model writes.
+	Markers []string
 }
 
 // SearchQuery asks for entries from an explicit set of spaces.

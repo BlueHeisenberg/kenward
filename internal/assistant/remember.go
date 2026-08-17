@@ -29,6 +29,25 @@ import (
 const rememberToolName = "remember"
 
 // rememberSchema is the input schema from docs/PROMPT.md, verbatim.
+//
+// It used to carry a "markers" array and does not any more. Markers were the one
+// field the model could write that the member was never shown — the capture question
+// and the write announcement both render entryBlock, which is the title and the body
+// — and that a later turn's prompt then presented back to the model as a human's
+// instruction to obey (prompt.go's confidenceText, which no longer says so). A live
+// run produced markers ["FOR THE WHOLE HOUSE"] on a Spanish entry with no person
+// anywhere in its authorship.
+//
+// Removing the field rather than showing it in the question is the smaller fix and the
+// better one. Showing them would cost every capture question the space, and would ask
+// a member to judge a lore concept nothing else in kenward has ever explained to them;
+// and the only marker the model was observed to reach for restates the destination,
+// which the scope decides and this node already knows. So kenward writes none: an
+// entry's audience is which space it is in, and that is a fact about the write rather
+// than a string alongside it. Nothing is lost that was ever read — see confidenceText.
+//
+// A model that emits markers anyway is not malformed, only ignored: unknown fields are
+// tolerated below, so the value is dropped with the rest of the decoration.
 const rememberSchema = `{
   "type": "object",
   "required": ["title", "body", "domain", "target"],
@@ -37,7 +56,6 @@ const rememberSchema = `{
     "body":       {"type": "string", "description": "The fact itself, stated plainly and out of context — it will be read a year from now with none of this conversation around it."},
     "domain":     {"type": "string", "description": "A coarse category, e.g. household/logistics."},
     "confidence": {"type": "string", "enum": ["experimental", "provisional", "validated", "hardened"]},
-    "markers":    {"type": "array", "items": {"type": "string"}},
     "aliases":    {"type": "array", "items": {"type": "string"}, "description": "The member's own words for what this is about, in the language they are speaking, when that is not English."},
     "target":     {"type": "string", "enum": ["personal", "shared", "unsure"]}
   }
@@ -85,12 +103,15 @@ func toolSpecs(sc domain.Scope) []routing.ToolSpec {
 
 // rememberCall mirrors the tool schema. Unknown fields are tolerated: models
 // decorate, and a decoration is not a malformation.
+//
+// There is deliberately no Markers field, and that is what stops a model that
+// improvises one from having it stored: no field, no decode, no write. See
+// rememberSchema.
 type rememberCall struct {
-	Title      string   `json:"title"`
-	Body       string   `json:"body"`
-	Domain     string   `json:"domain"`
-	Confidence string   `json:"confidence"`
-	Markers    []string `json:"markers"`
+	Title      string `json:"title"`
+	Body       string `json:"body"`
+	Domain     string `json:"domain"`
+	Confidence string `json:"confidence"`
 	// Aliases are the member's own words. The entry itself stays English — see
 	// capture.Proposal.Aliases for why — and these are what make it findable by the
 	// person who said it. An English conversation leaves them empty.
@@ -165,13 +186,15 @@ func extractProposal(calls []routing.ToolCall) (p *capture.Proposal, warn string
 		rememberDomain = "household/general"
 	}
 
+	// No markers: the tool does not take them and this node does not invent them, so
+	// every field of the draft below is something the member is shown before or
+	// immediately after it is written.
 	return &capture.Proposal{
 		Draft: memory.Draft{
 			Domain:     rememberDomain,
 			Title:      call.Title,
 			Body:       call.Body,
 			Confidence: confidence,
-			Markers:    call.Markers,
 		},
 		Target:  target,
 		Aliases: call.Aliases,
