@@ -38,6 +38,7 @@ var portuguese = Catalogue{
 	Queued:        "Ainda estou com a tua mensagem anterior: esta fica em fila e trato dela a seguir.",
 	Dropped:       "Estou sobrecarregado e tive de descartar essa mensagem. Volta a enviá-la daqui a pouco.",
 	NoAnswer:      "Não obtive nenhuma resposta aproveitável. Tenta perguntar outra vez.",
+	ToolMisfire:   "Tentei fazer algo com isso e enganei-me, por isso não aconteceu nada. Pede-me outra vez.",
 	ResetNotice:   "Vamos começar de novo: apaguei a parte anterior desta conversa. Na tua memória não mudou nada; é o reinício programado.",
 
 	ModelBusy:         "O modelo está ocupado neste momento. Tenta outra vez daqui a pouco.",
@@ -192,6 +193,7 @@ var portuguese = Catalogue{
 	PromotionOpener: "Isto seria publicado na casa exatamente como está, e não pode ser despublicado:",
 	PromotionCloser: "Publico isto?",
 	AlsoKnownAs:     func(words []string) string { return "Também: " + latinList(words) },
+	EnglishGloss:    func(summary string) string { return "O texto acima fica guardado em inglês. Diz: " + summary },
 
 	// Anular is the pt-PT platform convention for Undo, on both Microsoft and
 	// Google. Desfazer is the pt-BR form and reads as an editor's undo rather than

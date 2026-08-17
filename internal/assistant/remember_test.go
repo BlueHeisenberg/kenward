@@ -139,6 +139,35 @@ func TestExtractProposalPassesFieldsThrough(t *testing.T) {
 	}
 }
 
+// TestTheGlossReachesTheProposalAndNotTheDraft. The member's-language reading of an
+// English entry travels beside the draft, never inside it: the entry is what gets
+// stored and the gloss is what makes the question about it answerable. A summary
+// folded into the body would put a Spanish sentence into a shared space whose whole
+// design is that every entry holds English.
+func TestTheGlossReachesTheProposalAndNotTheDraft(t *testing.T) {
+	const summary = "El código de la cancela del jardín es 4821."
+	p, warn := extractProposal([]routing.ToolCall{call("remember",
+		`{"title": "Garden gate code", "body": "The code for the garden gate is 4821.",`+
+			`"domain": "household/logistics", "target": "personal",`+
+			`"aliases": ["cancela"], "summary": "`+summary+`"}`)})
+	if warn != "" {
+		t.Fatalf("unexpected warning %q", warn)
+	}
+	if p.Summary != summary {
+		t.Errorf("Summary = %q, want the model's line verbatim", p.Summary)
+	}
+	if strings.Contains(p.Draft.Body, summary) || strings.Contains(p.Draft.Title, summary) {
+		t.Errorf("the gloss reached the entry that gets stored:\n%+v", p.Draft)
+	}
+	// A model that omits it — every English conversation, where the prompt says to —
+	// is not malformed and loses nothing else.
+	q, warn := extractProposal([]routing.ToolCall{call("remember",
+		`{"title": "T", "body": "B", "domain": "d", "target": "personal"}`)})
+	if warn != "" || q == nil || q.Summary != "" {
+		t.Errorf("a call with no summary gave %+v, warn %q", q, warn)
+	}
+}
+
 func TestExtractProposalDefaultsConfidence(t *testing.T) {
 	p, _ := extractProposal([]routing.ToolCall{call("remember", `{"title": "T", "body": "B", "target": "shared"}`)})
 	if p == nil || p.Draft.Confidence != "provisional" {
@@ -485,6 +514,102 @@ func TestReminderOnlyTurnIsStillAnAnswer(t *testing.T) {
 	for _, s := range rig.tr.sentTextsRaw() {
 		if strings.Contains(s, enCat.NoAnswer) {
 			t.Errorf("a turn that set the reminder it was asked for claimed it had no answer: %q", s)
+		}
+	}
+}
+
+// TestAnInventedToolNameIsNotADeadEnd is the live turn, whole.
+//
+// A member asked for a reminder. The model called "reminder"; the tool is "remind".
+// kenward did everything right — the call was dropped, nothing was written, no
+// reminder was invented — and produced no reply text, so the member read "I didn't
+// get a usable answer to that. Try asking again." That sentence is about their
+// question. The failure was not their question: it was kenward reaching for a tool
+// that does not exist, and it is the one empty turn whose cause the node knows.
+func TestAnInventedToolNameIsNotADeadEnd(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{
+			ToolCalls:    []routing.ToolCall{call("reminder", `{"text": "Put the bins out.", "at": "18:00"}`)},
+			FinishReason: routing.FinishToolCalls,
+		}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("remind me to put the bins out at six")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	texts := rig.tr.sentTextsRaw()
+	if len(texts) != 1 {
+		t.Fatalf("sent %v, want exactly one message", texts)
+	}
+	if !strings.Contains(texts[0], enCat.ToolMisfire) {
+		t.Errorf("the member was told %q; a turn whose only tool call named a tool that "+
+			"does not exist has a cause kenward can state", texts[0])
+	}
+	if strings.Contains(texts[0], enCat.NoAnswer) {
+		t.Errorf("the generic no-answer notice was used for a cause the node knew: %q", texts[0])
+	}
+	// Nothing was acted on, which is the half of the message that has to be true.
+	if got := rig.reminders.List(); len(got) != 0 {
+		t.Errorf("a call to a tool that does not exist set %d reminder(s)", len(got))
+	}
+	if rig.mem.putCount() != 0 {
+		t.Error("a call to a tool that does not exist reached memory")
+	}
+}
+
+// TestAnEmptyTurnWithNoToolCallKeepsTheGenericNotice is the bound on the message
+// above. "I tried to do something and got it wrong" is a claim about what kenward
+// did, and a model that returned nothing at all did not try anything.
+func TestAnEmptyTurnWithNoToolCallKeepsTheGenericNotice(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{FinishReason: "stop"}, nil
+	}
+	if err := rig.unit.Handle(context.Background(), directInbound("anything?")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	texts := rig.tr.sentTextsRaw()
+	if len(texts) != 1 || !strings.Contains(texts[0], enCat.NoAnswer) {
+		t.Errorf("sent %v, want the generic no-answer notice", texts)
+	}
+}
+
+// TestUnknownToolWarningNamesTheNearMiss. The log line is the only place a dropped
+// call can be seen, and "unknown tool" alone reads as a model doing something
+// arbitrary rather than as one missing a name by two characters.
+func TestUnknownToolWarningNamesTheNearMiss(t *testing.T) {
+	for name, want := range map[string]string{
+		"reminder":   remindToolName,
+		"reminders":  remindToolName,
+		"remembers":  rememberToolName,
+		"rememb":     rememberToolName,
+		"unremindme": unremindToolName,
+		"publishes":  publishToolName,
+		"weather":    "",
+		"":           "",
+	} {
+		if got := nearestTool(name); got != want {
+			t.Errorf("nearestTool(%q) = %q, want %q", name, got, want)
+		}
+	}
+	if got := unknownToolWarning("reminder"); !strings.Contains(got, `"remind"`) {
+		t.Errorf("the warning for a near miss does not name the real tool: %q", got)
+	}
+	if got := unknownToolWarning("weather"); strings.Contains(got, "near miss") {
+		t.Errorf("a name that resembles nothing was reported as a near miss: %q", got)
+	}
+	// And a real tool is never a near miss for another one: the reply to that is to
+	// drop the call, not to guess a name the model did not write.
+	for _, real := range []string{rememberToolName, publishToolName, remindToolName, unremindToolName} {
+		if !knownTool(real) {
+			t.Errorf("knownTool(%q) is false", real)
 		}
 	}
 }

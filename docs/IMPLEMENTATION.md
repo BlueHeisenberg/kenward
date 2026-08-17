@@ -1269,9 +1269,10 @@ other way:
 ## 6. Capture
 
 Model proposals arrive as a structured tool call: `{title, body, domain, confidence,
-aliases, target: personal|shared|unsure}` on the `remember` tool. `aliases` is
-the member's own words for what the entry is about — see *Finding it again in the
-language it was said in* below.
+aliases, summary, target: personal|shared|unsure}` on the `remember` tool. `aliases` is
+the member's own words for what the entry is about and is stored; `summary` is a one-line
+reading of the entry in the member's language and is shown but never stored. See *Finding
+it again in the language it was said in* and *Reading it before approving it* below.
 
 There is no `markers` field, and there used to be. Markers are the one thing the model
 could write that the member is never shown — the capture question and the write
@@ -1467,6 +1468,44 @@ The bound this does not clear: Ana's German-speaking housemate finds her househo
 by its English words and not by German ones. A lexical index cannot match a word that is
 not there, and English is where the household meets.
 
+### Reading it before approving it
+
+Keeping the entry English has a second cost, and it lands on consent rather than
+retrieval. The capture card becomes the member's language wrapped around English content:
+
+```
+Puedo anotar esto:
+Garden gate door code
+The code for the garden gate door is zarzamora-7741.
+También: código de la puerta del jardín
+¿Lo guardo en la memoria del hogar?
+```
+
+The member is being asked to confirm the exact wording of something they may not read,
+and the whole capture design rests on them seeing what will be written. Aliases do not
+close it: they name what the entry is *about*, and what has to be checkable is what it
+*says*.
+
+So `remember` also takes `summary` — one line, in the language of the conversation,
+saying what the body says — and `capture` renders it italic under the entry in both the
+question and the write announcement, from `Catalogue.EnglishGloss`:
+
+> *El texto de arriba se guarda en inglés. Dice: El código de la cancela del jardín es
+> zarzamora-7741.*
+
+**It is never stored.** The stored entry is the English above it, so nothing here changes
+the storage format, and this line is not indexed, not retrieved, and never read back to a
+model. That is what makes it safe for it to be model-written text nobody reviewed — and
+what makes it mandatory that the sentence names the English rather than standing in for
+it. A member must not come away believing the store now holds a Spanish entry.
+
+Bounded at 240 runes and flattened to one line; a longer one is dropped rather than
+trimmed, because a truncated reading of an entry is a misleading one and the English is
+on the screen either way. Dropped entirely in an English conversation, by the same
+`Options.Language` rule as the alias line and for the same reason. The promotion flow has
+no gloss: it re-renders an entry out of lore with no proposal behind it, and a member
+publishing something is publishing what they have already seen once.
+
 ---
 
 ## 7. Enrolment
@@ -1495,6 +1534,18 @@ Telegram bot usernames are publicly discoverable and anyone may `/start`. Theref
    started are the same thing downstream — unanswered fields are empty, and empty means
    "the household's". The member is served by no unit until the tutorial ends, because
    until then their messages have to keep reaching the enrolment pump for it to read.
+
+   **A typed message at a button question is dropped, and said so.** The pump's hand-off
+   is a non-blocking send onto an unbuffered channel, so a message reaches the tutorial
+   only while it is actually waiting for typed input; something typed at a question with
+   buttons is not an answer to anything, and buffering it would make it the answer to
+   whatever comes next. Silence was the wrong half of that: the member is looking at a
+   question that reads as answerable by typing. The tutorial publishes the sentence to
+   say — `Tutorial.Nudge`, armed as each button question goes up and disarmed as it comes
+   down — because it is the only thing that knows the current language, which is not the
+   household's once a member has chosen at question one; the pump sends it, because it is
+   the only thing that sees the message. Taken with `atomic.Pointer.Swap`, so a member who
+   types five times gets one reply and the next question arms a fresh one.
 
    **The household group is not part of that wait.** The binding is folded into the
    running configuration the moment the code is redeemed (`runner.bound`), before the
@@ -2305,7 +2356,7 @@ The notice says the two things that are true: nothing is broken, and a smaller q
 is the one lever the member actually holds. More room to answer in is the operator's
 knob, not theirs, so it is not offered as advice they cannot take.
 
-Five further notices come from outside the router, sent by the Unit around a turn rather
+Six further notices come from outside the router, sent by the Unit around a turn rather
 than as part of one. They are product surface exactly as the refusals are.
 
 | When | What is sent |
@@ -2315,6 +2366,7 @@ than as part of one. They are product surface exactly as the refusals are.
 | A message has waited behind a running turn for longer than `QueueNoticeAfter` | "Still working on your last message — this one is queued and I'll take it next." |
 | A message arrives when the queue behind a running turn is already full | "I'm backed up and had to drop that message. Send it again in a moment." |
 | The turn ran to the end and produced nothing the member could see | "I didn't get a usable answer to that. Try asking again." |
+| The same, where the only tool call named a tool that does not exist | "I tried to do something for that and got it wrong, so nothing happened. Ask me again." |
 
 ### Where the words live
 
@@ -2354,11 +2406,22 @@ that. Waiting in silence and being ignored look identical from inside a chat; so
 dropped message and a lost one. Both notices are sent only after the scope has resolved,
 so neither ever reaches a stranger.
 
-The last row covers the two ways a turn can succeed and still say nothing: a completion
+The fifth row covers the two ways a turn can succeed and still say nothing: a completion
 with no text and no tool call, and a bare tool call whose capture proposal was suppressed
 without asking. Neither is a failure the node can classify further, and neither may be
 answered with silence — this section promises every message produces something, and until
 this notice existed that promise had two paths where it was untrue.
+
+The sixth is the one empty turn the node *can* classify. A live turn produced `model
+called unknown tool "reminder"; dropped` — the tool is `remind` — and no reply text, so
+the member, who had asked for a reminder, read "I didn't get a usable answer to that".
+Everything the node did was right: the call was dropped, nothing was written, no reminder
+was invented. The sentence was not, because it is about the member's question and the
+failure was kenward reaching for a tool that does not exist. The replacement says the two
+things they cannot see — it tried to act, and nothing happened. The near miss is named in
+the log line (`nearestTool`) and nowhere else: routing a call to a tool the model did not
+name would let a misspelling reach a write, and `remember` is one of the four names
+something could be misspelled towards.
 
 The generic notice is the last resort, not the mechanism. A turn that ends in a capture
 question — a remember proposal or a publish request — hands the rest of the turn to

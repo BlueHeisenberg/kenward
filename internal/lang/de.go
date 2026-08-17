@@ -43,6 +43,7 @@ var german = Catalogue{
 	Queued:        "Ich arbeite noch an deiner letzten Nachricht — diese hier steht in der Warteschlange und ich nehme sie mir als Nächstes vor.",
 	Dropped:       "Ich komme gerade nicht hinterher und musste diese Nachricht verwerfen. Schick sie gleich noch einmal.",
 	NoAnswer:      "Ich habe darauf keine brauchbare Antwort bekommen. Frag es noch einmal.",
+	ToolMisfire:   "Ich wollte etwas dafür tun und habe es falsch gemacht, also ist nichts passiert. Frag mich noch einmal.",
 	ResetNotice:   "Neuer Anfang — ich habe den früheren Teil dieses Gesprächs gelöscht. An deinem Gedächtnis hat sich nichts geändert; das ist der planmäßige Reset.",
 
 	ModelBusy:         "Das Modell ist gerade ausgelastet. Versuch es gleich noch einmal.",
@@ -208,6 +209,9 @@ var german = Catalogue{
 	PromotionOpener: "Das würde genau in dieser Form im Haushalt veröffentlicht und kann nicht zurückgezogen werden:",
 	PromotionCloser: "Veröffentlichen?",
 	AlsoKnownAs:     func(words []string) string { return "Auch: " + latinList(words) },
+	EnglishGloss: func(summary string) string {
+		return "Der Text oben wird auf Englisch gespeichert. Er lautet: " + summary
+	},
 
 	BtnUndo:             "Rückgängig",
 	BtnPublishHousehold: "Im Haushalt veröffentlichen",

@@ -92,6 +92,20 @@ type Catalogue struct {
 	NoAnswer      string
 	ResetNotice   string
 
+	// ToolMisfire is NoAnswer for the one empty turn whose cause the node knows: the
+	// model tried to act — it called a tool — and named one that does not exist, so
+	// the call was dropped and there was no reply behind it. A live turn called
+	// "reminder" when the tool is "remind", and the member, who had asked for a
+	// reminder, was told "I didn't get a usable answer to that".
+	//
+	// It is a separate string rather than a reworded NoAnswer because the two say
+	// different true things. NoAnswer reports that nothing came back and reads,
+	// fairly, as being about the question. This reports that kenward tried to do
+	// something and got it wrong, which is about kenward — and it has to say that
+	// nothing happened, because the member's request was an action and the honest
+	// worry after silence is whether half of it landed.
+	ToolMisfire string
+
 	// --- REF: refusals ------------------------------------------------------
 
 	ModelBusy     string
@@ -205,6 +219,27 @@ type Catalogue struct {
 	// and Arabic ، — and because Arabic's isolates are deliberately absent here:
 	// they are invisible control characters and this string is stored.
 	AlsoKnownAs func(words []string) string
+
+	// EnglishGloss labels a one-line reading, in this language, of an entry whose
+	// title and body are English — which every entry's are, deliberately, so that a
+	// shared space stays usable by a household that does not all read one language.
+	//
+	// It exists because the capture question is a consent question. A Spanish member
+	// was shown Spanish chrome around an English title and an English body and asked
+	// whether to save it, which is asking somebody to approve wording they may not be
+	// able to read. The whole capture design rests on the member seeing what will be
+	// written, so the gloss is what makes the question answerable.
+	//
+	// It is the opposite of AlsoKnownAs in two ways, and both matter. It is never
+	// stored — the entry is the English above it, and this line is presentation only,
+	// which is why it may be model-written text that nobody has checked. And it must
+	// say, in the same breath, that the text above is the English one: a reading in
+	// the member's language that did not would leave them believing the store now
+	// holds a Spanish entry, which is exactly the belief the design cannot afford.
+	//
+	// It is not markup and does not escape its argument. The caller wraps the whole
+	// line, once, the way it wraps WrittenHint.
+	EnglishGloss func(summary string) string
 
 	// --- BTN: button labels. The ids are constants; only labels translate. ---
 

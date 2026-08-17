@@ -56,6 +56,7 @@ var spanish = Catalogue{
 	Queued:        "Sigo con tu mensaje anterior: este queda en cola y lo atenderé a continuación.",
 	Dropped:       "Voy saturado y he tenido que descartar ese mensaje. Vuelve a enviarlo en un momento.",
 	NoAnswer:      "No he obtenido una respuesta utilizable. Prueba a preguntarlo otra vez.",
+	ToolMisfire:   "Intenté hacer algo con eso y me equivoqué, así que no ha pasado nada. Vuelve a pedírmelo.",
 	ResetNotice:   "Empezamos de nuevo: he borrado la parte anterior de esta conversación. En tu memoria no ha cambiado nada; es el reinicio programado.",
 
 	ModelBusy:         "El modelo está ocupado ahora mismo. Inténtalo de nuevo en un momento.",
@@ -216,6 +217,7 @@ var spanish = Catalogue{
 	PromotionOpener: "Esto se publicaría en el hogar tal y como está, y no se puede despublicar:",
 	PromotionCloser: "¿Lo publico?",
 	AlsoKnownAs:     func(words []string) string { return "También: " + latinList(words) },
+	EnglishGloss:    func(summary string) string { return "El texto de arriba se guarda en inglés. Dice: " + summary },
 
 	BtnUndo:             "Deshacer",
 	BtnPublishHousehold: "Publicar en el hogar",

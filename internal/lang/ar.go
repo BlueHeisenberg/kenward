@@ -126,6 +126,7 @@ var arabic = Catalogue{
 	Queued:        "ما زلت أعمل على رسالتك السابقة — هذه في الانتظار وسآخذها بعدها.",
 	Dropped:       "تراكمت عليّ الرسائل واضطررت إلى إسقاط تلك الرسالة. أرسلها مرة أخرى بعد قليل.",
 	NoAnswer:      "لم أحصل على إجابة صالحة عن ذلك. حاول السؤال مرة أخرى.",
+	ToolMisfire:   "حاولت أن أفعل شيئًا من أجل ذلك فأخطأت، فلم يحدث شيء. اسألني مرة أخرى.",
 	ResetNotice:   "نبدأ من جديد — مسحت الجزء السابق من هذه المحادثة. لم يتغير شيء في ذاكرتك؛ هذه هي إعادة الضبط المُجدولة.",
 
 	ModelBusy:         "النموذج مشغول الآن. حاول مرة أخرى بعد قليل.",
@@ -328,6 +329,9 @@ var arabic = Catalogue{
 	PromotionOpener: "سيُنشر هذا للمنزل كما هو تمامًا، ولا يمكن التراجع عن نشره:",
 	PromotionCloser: "هل أنشره؟",
 	AlsoKnownAs:     func(words []string) string { return "أيضًا: " + strings.Join(words, "، ") },
+	EnglishGloss: func(summary string) string {
+		return "النص أعلاه محفوظ بالإنجليزية، ومعناه: " + arFSI + summary + arPDI
+	},
 
 	BtnUndo:             "تراجع",
 	BtnPublishHousehold: "نشر للمنزل",

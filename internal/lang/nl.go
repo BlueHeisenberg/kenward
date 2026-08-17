@@ -36,6 +36,7 @@ var dutch = Catalogue{
 	Queued:        "Ik ben nog bezig met je vorige bericht — dit staat in de wachtrij en ik pak het daarna op.",
 	Dropped:       "Ik heb een achterstand en moest dat bericht laten vallen. Stuur het over een moment opnieuw.",
 	NoAnswer:      "Ik heb daar geen bruikbaar antwoord op gekregen. Probeer het opnieuw te vragen.",
+	ToolMisfire:   "Ik probeerde er iets mee te doen en deed het verkeerd, dus er is niets gebeurd. Vraag het me nog eens.",
 	ResetNotice:   "We beginnen opnieuw — ik heb het eerdere deel van dit gesprek gewist. Er is niets veranderd in je geheugen; dit is de geplande reset.",
 
 	ModelBusy:         "Het model is op dit moment bezet. Probeer het over een moment opnieuw.",
@@ -198,6 +199,9 @@ var dutch = Catalogue{
 	PromotionOpener: "Dit zou precies zo in het huishoudgeheugen gepubliceerd worden, en kan daarna niet meer ingetrokken worden:",
 	PromotionCloser: "Publiceren?",
 	AlsoKnownAs:     func(words []string) string { return "Ook: " + latinList(words) },
+	EnglishGloss: func(summary string) string {
+		return "De tekst hierboven wordt in het Engels bewaard. Er staat: " + summary
+	},
 
 	// Dutch has no Undo / Cancel collision, so both keep their standard labels.
 	// Ongedaan maken is the longest label in the whole set and is the one to watch

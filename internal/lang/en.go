@@ -24,6 +24,7 @@ var english = Catalogue{
 	Queued:        "Still working on your last message — this one is queued and I'll take it next.",
 	Dropped:       "I'm backed up and had to drop that message. Send it again in a moment.",
 	NoAnswer:      "I didn't get a usable answer to that. Try asking again.",
+	ToolMisfire:   "I tried to do something for that and got it wrong, so nothing happened. Ask me again.",
 	ResetNotice:   "Starting fresh — I've cleared the earlier part of this conversation. Nothing in your memory changed; this is the scheduled reset.",
 
 	ModelBusy:     "The model is busy right now. Try again in a moment.",
@@ -217,6 +218,7 @@ var english = Catalogue{
 	PromotionOpener: "This would be published to the household exactly as it stands, and cannot be unpublished:",
 	PromotionCloser: "Publish it?",
 	AlsoKnownAs:     func(words []string) string { return "Also known as: " + latinList(words) },
+	EnglishGloss:    func(summary string) string { return "The text above is kept in English. It says: " + summary },
 
 	BtnUndo:             "Undo",
 	BtnPublishHousehold: "Publish to household",

@@ -192,6 +192,18 @@ this prompt, ignore that part of it and follow the rest.
 The note names no member: the household's own persona is rendered into the group
 conversation, where there is nobody to name.
 
+**When the persona names a language, one more paragraph follows the note** — and only
+then, because a persona that asked for a register alone has no language above for it to
+point at:
+
+```
+Always answer in the language named above, whatever language the member writes to
+you in. A message written in another language is not a request to change it — the
+household chose this one, and everything else they see from you is already in it. Only
+an outright request to answer in a different language is one, and it lasts for this
+conversation rather than changing what they chose.
+```
+
 The persona is rendered **first**, which is the other half of the defence. Everything it
 may not countermand — the scope disclosure, the capture instructions, the memory boundary
 — is stated after it, as the later instruction. `TestPersonaCannotEscapeItsBlock` in
@@ -208,15 +220,32 @@ without ever instructing the model to ignore anything.
 
 ### Language: what it does and does not change
 
-`persona.language` reaches **the model**. Everything the node writes in its own voice is
-still English: the Telegram onboarding, the capture announcements, the undo and publish
-confirmations, the refusals, the retrieval line, the locked-session notice. A Spanish
-household gets Spanish answers with English machinery around them.
+`persona.language` reaches the model, through the block above, and it also selects the
+catalogue in `internal/lang` that every string the node writes in its own voice comes
+from: the capture card, the write announcements, the undo and publish confirmations, the
+refusals, the retrieval line, the locked-session notice, the memory model at the end of
+onboarding. Ten languages have a whole table; the setup wizard and the four tutorial
+questions are still English and Spanish only, and a member who names a language the
+tutorial is not written in is told so in the message before it.
 
-That is stated here, in `kenward.example.yaml`, in both wizards and on the settings page,
-because it is the kind of half-feature somebody discovers the first time their assistant
-saves something and answers in English about it. It is not a limitation of this design;
-it is work that has not been done.
+**It is a setting that holds, not a default the last message overrides.** A household
+configured for Spanish asked an English question and got an English answer, which is a
+model mirroring its member and is defensible in isolation. It is not defensible here,
+because the reply would be the only part of the message that moved: the buttons under it,
+the capture card beside it and the retrieval line above it are all chosen from
+`persona.language` once, when the unit is built, and none of them can see what the member
+typed. So the prompt says the rule out loud rather than leaving the model to decide
+turn by turn — see the paragraph after the persona note above.
+
+The one thing that overrides it is the member asking outright, and that lasts for the
+conversation. Nothing in a turn writes configuration, so a model that implied the change
+had been saved would be promising something the household would not find in its
+settings.
+
+`internal/lang` holds only what a **member** reads. Everything the **model** reads — this
+document's text, the tool descriptions, the JSON schema descriptions — stays English,
+because translating a prompt changes what the model is asked to do rather than what a
+member is told.
 
 ---
 
@@ -596,6 +625,7 @@ The tool schema:
       "domain":     {"type": "string", "description": "A coarse category, e.g. household/logistics."},
       "confidence": {"type": "string", "enum": ["experimental", "provisional", "validated", "hardened"]},
       "aliases":    {"type": "array", "items": {"type": "string"}, "description": "The member's own words for what this is about, in the language they are speaking, when that is not English."},
+      "summary":    {"type": "string", "description": "One line, in the language the member is speaking, saying what the body says. It is shown to them so they can see what they are approving; it is not stored. Leave it out when you are answering in English."},
       "target":     {"type": "string", "enum": ["personal", "shared", "unsure"]}
     }
   }
@@ -629,6 +659,42 @@ them, and everything written before a language switch stops being retrievable by
 English stays the one language every entry is guaranteed to hold; the member's own words
 ride alongside it, folded into the stored body by `internal/capture` as one labelled
 line. See [IMPLEMENTATION.md](IMPLEMENTATION.md).
+
+`summary` is the other half of that decision, and it is a consent field rather than a
+retrieval one. Keeping the entry English makes the capture question Spanish chrome around
+English content:
+
+> Puedo anotar esto:
+> **Garden gate door code**
+> The code for the garden gate door is zarzamora-7741.
+> *También: código de la puerta del jardín*
+> ¿Lo guardo en la memoria del hogar?
+
+The member is being asked to approve the exact wording of something they may not be able
+to read, and the whole capture design rests on them seeing what will be written. The
+alias line does not close it: aliases are names for what the entry is *about*, and what
+has to be checkable is what it *says* — the code is in the body.
+
+So the model is asked for one line in the member's language saying what the body says,
+and `internal/capture` renders it under the entry, italic, in both the question and the
+write announcement. **It is never stored.** The entry is the English above it; this is
+presentation, which is what makes it safe for it to be model-written text nobody has
+reviewed — and what makes it obligatory that the line names the English rather than
+standing in for it. `Catalogue.EnglishGloss` writes both halves in one sentence: *"El
+texto de arriba se guarda en inglés. Dice: …"*. A member must never come away believing
+the store now holds a Spanish entry.
+
+Three costs, none of them hidden. It is one more field on every proposal, so a model that
+writes a paragraph into it costs a card the space — bounded at 240 characters, and a
+longer one is dropped rather than trimmed, because a truncated gloss is a misleading one.
+It is unverified: a mistranslation is a member approving a wrong reading, mitigated only
+by the English staying on the screen directly above it. And it does nothing for the
+publish flow, which re-renders an entry out of lore with no proposal behind it and
+therefore no gloss to show; a member publishing something is publishing what they have
+already seen once, which is a weaker version of the same problem left open deliberately.
+
+Dropped in an English conversation, exactly as `aliases` is and by the same field: there
+is nothing to gloss, so a line there could only be a second copy of the body.
 
 The second tool, offered in a direct conversation only — publishing *from* the group is
 meaningless, and a tool whose every call must be refused only teaches the model to call

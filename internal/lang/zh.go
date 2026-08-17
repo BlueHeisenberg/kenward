@@ -42,6 +42,7 @@ var chinese = Catalogue{
 	Queued:        "我还在处理你上一条消息，这一条已经排队，接下来就轮到它。",
 	Dropped:       "我这边积压了，只好丢掉了那条消息。过一会儿再发一次。",
 	NoAnswer:      "我没有得到可用的回答。再问一次试试。",
+	ToolMisfire:   "我想为此做点什么，但做错了，所以什么都没发生。再问我一次。",
 	ResetNotice:   "重新开始——我已经清掉了这段对话较早的部分。你的记忆没有任何变化，这是预定的重置。",
 
 	ModelBusy:         "模型现在很忙。过一会儿再试。",
@@ -207,6 +208,7 @@ var chinese = Catalogue{
 	PromotionOpener: "这条内容会原样发布给整个家庭，并且无法撤回：",
 	PromotionCloser: "要发布吗？",
 	AlsoKnownAs:     func(words []string) string { return "也称：" + strings.Join(words, "、") },
+	EnglishGloss:    func(summary string) string { return "上面的内容以英文保存，意思是：" + summary },
 
 	BtnUndo:             "撤销",
 	BtnPublishHousehold: "发布给家庭",

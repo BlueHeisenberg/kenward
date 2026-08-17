@@ -39,6 +39,7 @@ var french = Catalogue{
 	Queued:        "Je traite encore ton message précédent — celui-ci est en file d'attente, je m'en occupe juste après.",
 	Dropped:       "Je suis débordé et j'ai dû abandonner ce message. Renvoie-le dans un instant.",
 	NoAnswer:      "Je n'ai pas obtenu de réponse exploitable. Essaie de redemander.",
+	ToolMisfire:   "J'ai essayé de faire quelque chose et je m'y suis mal pris, donc rien ne s'est passé. Redemande-le-moi.",
 	ResetNotice:   "On repart de zéro — j'ai effacé le début de cette conversation. Rien n'a changé dans ta mémoire" + nbsp + "; c'est la réinitialisation prévue.",
 
 	ModelBusy:         "Le modèle est occupé pour le moment. Réessaie dans un instant.",
@@ -206,6 +207,9 @@ var french = Catalogue{
 	PromotionOpener: "Ceci serait publié dans la mémoire du foyer exactement tel quel, et ne pourra plus être retiré" + nbsp + ":",
 	PromotionCloser: "Publier" + nbsp + "?",
 	AlsoKnownAs:     func(words []string) string { return "Aussi" + nbsp + ": " + latinList(words) },
+	EnglishGloss: func(summary string) string {
+		return "Le texte ci-dessus est conservé en anglais. Il dit" + nbsp + ": " + summary
+	},
 
 	// Retirer, not Annuler. French uses Annuler for both Undo and Cancel and both
 	// buttons exist in this product. Retirer is also the truthful word: the button

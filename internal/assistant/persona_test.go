@@ -280,3 +280,41 @@ func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 	return line
 }
+
+// TestAConfiguredLanguageHolds is the live defect: a household configured for Spanish
+// asked an English question and got an English answer.
+//
+// The model was mirroring its member, which is reasonable behaviour and was never
+// asked about — the prompt said "follow it for language" and said nothing about a
+// member who writes in another one. It reads, to the household that chose Spanish, as
+// the setting not working, and the reply is the only part of the message that moves:
+// the buttons, the capture card and the retrieval line are all chosen from the same
+// setting once, when the unit is built, and cannot see what the member typed.
+//
+// Asserted structurally, as everything about a prompt has to be: the rule is in the
+// prompt, after the persona block that names the language, and absent when there is no
+// language for it to point at.
+func TestAConfiguredLanguageHolds(t *testing.T) {
+	opts := testOptions()
+	opts.Persona = Persona{Language: "Spanish"}
+	system := renderTurn(t, opts)
+
+	if !strings.Contains(system, personaLanguageText) {
+		t.Errorf("a persona naming a language did not get the rule that makes it hold:\n%s", system)
+	}
+	if strings.Index(system, personaLanguageText) < strings.Index(system, "Language:\n  Spanish") {
+		t.Error("the rule is rendered before the language it points at")
+	}
+
+	// A persona that asked for a register alone has no language above for the
+	// paragraph to name, and English-by-saying-nothing has always meant answering in
+	// whatever the member writes.
+	tone := testOptions()
+	tone.Persona = Persona{Tone: "warm"}
+	if got := renderTurn(t, tone); strings.Contains(got, personaLanguageText) {
+		t.Error("a persona with no language rendered the language rule anyway")
+	}
+	if got := renderTurn(t, testOptions()); strings.Contains(got, personaLanguageText) {
+		t.Error("a prompt with no persona at all rendered the language rule")
+	}
+}

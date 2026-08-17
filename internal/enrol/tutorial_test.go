@@ -880,3 +880,81 @@ func TestTutorialKilledBeforeItsFirstQuestionPostedIsStillExplainedTo(t *testing
 		t.Fatalf("a tutorial killed before its first question posted left no chat to finish in: %+v", got)
 	}
 }
+
+// TestTheTutorialPublishesWhatToSayToSomebodyWhoTypes.
+//
+// A member typing while a button question is on screen gets their message dropped,
+// which is right — it is not an answer to anything, and buffering it would make it
+// the answer to the next question — and used to get nothing at all back, on a
+// question that looks answerable by typing.
+//
+// The reply has to come from whoever holds the update stream, because that is the
+// only code that sees the message: this tutorial is blocked inside Asker.Ask and
+// nothing is reading Answers. But it is the only code that does not know what
+// language to write in — the member may have chosen one at question one, and the
+// household's is a different setting. So the sentence travels this way.
+//
+// Asserted here as the contract the pump depends on: armed in the current language
+// while a button question is up, and disarmed the moment it comes down, so a nudge
+// cannot answer a message the tutorial is no longer waiting for.
+func TestTheTutorialPublishesWhatToSayToSomebodyWhoTypes(t *testing.T) {
+	var mu sync.Mutex
+	var armed []string  // every non-empty sentence published, in order
+	var during []string // what was armed at the moment each question went up
+
+	a := &nudgeAsker{}
+	tu := tutorialFor(t, a, newPersonas(), []string{"Jeeves", "dry"}, func(tu *Tutorial) {
+		tu.OneEach = true
+	})
+	tu.Nudge = func(s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if s != "" {
+			armed = append(armed, s)
+		}
+		a.current = s
+	}
+	a.observe = func(cur string) {
+		mu.Lock()
+		defer mu.Unlock()
+		during = append(during, cur)
+	}
+	a.script = []string{choiceLangSpanish, choiceToneWarm}
+	mustRun(t, tu)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(during) != 2 {
+		t.Fatalf("saw %d button questions, want the language and the register", len(during))
+	}
+	// Question one is the household's language, which here is English.
+	if during[0] != english.typedNotAnAnswer {
+		t.Errorf("nothing usable was armed for the first question: %q", during[0])
+	}
+	// Question two is after the member chose Spanish, and it is the whole reason
+	// this is not a constant in the pump.
+	if during[1] != spanish.typedNotAnAnswer {
+		t.Errorf("the second question armed %q, want the language the member just chose", during[1])
+	}
+	if a.current != "" {
+		t.Errorf("a nudge is still armed after the last question: %q", a.current)
+	}
+	if len(armed) != 2 {
+		t.Errorf("armed %d sentences for 2 button questions: %q", len(armed), armed)
+	}
+}
+
+// nudgeAsker records what the tutorial had armed at the instant each question went
+// up, which is the only moment the value means anything.
+type nudgeAsker struct {
+	scriptedAsker
+	current string
+	observe func(string)
+}
+
+func (a *nudgeAsker) Ask(ctx context.Context, q transport.Question) (transport.Answer, error) {
+	if a.observe != nil {
+		a.observe(a.current)
+	}
+	return a.scriptedAsker.Ask(ctx, q)
+}

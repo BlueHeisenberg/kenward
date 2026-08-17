@@ -293,6 +293,18 @@ func (u *Unit) dropped() string { return u.problem(u.cat.Dropped) }
 // (IMPLEMENTATION.md sections 5 and 10).
 func (u *Unit) noAnswer() string { return u.problem(u.cat.NoAnswer) }
 
+// toolMisfire is noAnswer for the one empty turn whose cause this node knows: the
+// model called a tool that does not exist, so the call was dropped, and there was no
+// reply behind it.
+//
+// A live turn called "reminder" — the tool is "remind" — after a member asked for a
+// reminder. Everything the node did was correct: the call was dropped, nothing was
+// written, no reminder was invented. What the member read was "I didn't get a usable
+// answer to that", which is about their question and says nothing about the action
+// they asked for. This says the two things that are true and that they cannot see:
+// kenward tried to act, and nothing happened.
+func (u *Unit) toolMisfire() string { return u.problem(u.cat.ToolMisfire) }
+
 // problem marks a turn that produced nothing and says why.
 func (u *Unit) problem(text string) string { return transport.GlyphProblem + " " + text }
 
@@ -751,6 +763,16 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// Nothing to say, nothing to propose and nothing to publish. The model
 		// misbehaved, but the member still sent a message, so they still get an
 		// answer.
+		//
+		// Which answer depends on whether the node knows why. A turn whose only tool
+		// call named a tool that does not exist is a turn kenward can describe: it
+		// tried to act and got the name wrong. Every other empty turn is not, and
+		// gets the generic notice.
+		if unknown := unknownTools(comp.ToolCalls); len(unknown) > 0 {
+			u.deps.Logger.Warn("assistant: empty reply behind a call to a tool that does not exist",
+				"chat", in.ChatID, "tools", strings.Join(unknown, ","))
+			return nil, u.send(ctx, sc, in, u.toolMisfire())
+		}
 		u.deps.Logger.Warn("assistant: model returned an empty reply", "chat", in.ChatID)
 		return nil, u.send(ctx, sc, in, u.noAnswer())
 	}

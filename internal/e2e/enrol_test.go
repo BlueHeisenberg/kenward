@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -629,4 +630,94 @@ func personaOf(t *testing.T, h *household, id domain.MemberID) enrol.Persona {
 		t.Fatalf("reading personas: %v", err)
 	}
 	return all[id]
+}
+
+// TestTypingAtAButtonQuestionIsAnsweredOnceInTheTutorialsLanguage is the third live
+// complaint: total silence.
+//
+// A member part-way through onboarding typed at a question that had buttons. The
+// message was dropped, which is correct and stays correct — it is not an answer to
+// anything, and buffering it would make it the answer to whatever comes next — and
+// they got nothing back at all, on a question that looks answerable by typing.
+//
+// Two things make this more than a constant in the pump, and both are asserted. The
+// sentence is in the tutorial's current language, which is not the household's: this
+// member picks Spanish at question one and the household is English, so a reply
+// composed by the reader that drops the message would go out in the wrong language.
+// And a member who types four times gets one reply, not four.
+func TestTypingAtAButtonQuestionIsAnsweredOnceInTheTutorialsLanguage(t *testing.T) {
+	h := newHousehold(t, harnessOptions{unenrolled: []domain.MemberID{"mei"}})
+	code := h.mint("Mei", 0)
+
+	// The register question is held open, which is what a member looking at a
+	// keyboard and deciding is. Everything before it is answered at once.
+	release := make(chan struct{})
+	var held atomic.Bool
+	h.tr.SetAnswerFunc(func(q transport.Question) transport.Answer {
+		for _, c := range q.Choices {
+			if c.ID == "lang.es" {
+				return transport.Answer{ChoiceID: c.ID, UserID: meiTelegramID}
+			}
+			if strings.HasPrefix(c.ID, "tone.") {
+				held.Store(true)
+				<-release
+				return transport.Answer{ChoiceID: c.ID, UserID: meiTelegramID}
+			}
+		}
+		return transport.Answer{TimedOut: true}
+	})
+	h.start()
+
+	h.tr.InjectText(meiChatID, meiTelegramID, code, false)
+	waitFor(t, "the register question to be on screen", held.Load)
+	before := len(h.sentTo(meiChatID))
+
+	for range 4 {
+		h.tr.InjectText(meiChatID, meiTelegramID, "warm please", false)
+	}
+	sent := h.waitForReply(meiChatID, before+1)
+	nudge := sent[len(sent)-1].Text
+
+	if !strings.Contains(nudge, "botones de arriba") {
+		t.Errorf("the member was answered in the wrong language: %q\n"+
+			"the household is English and this member chose Spanish at question one, "+
+			"which is why the sentence comes from the tutorial and not from the pump", nudge)
+	}
+	if strings.Contains(nudge, "buttons above") {
+		t.Errorf("the household's language reached a member who chose another: %q", nudge)
+	}
+
+	// Let the question be answered and drive the tutorial to its end. The last
+	// question is a typed one, so a message that arrives there is delivered rather
+	// than dropped — which is both the barrier this test needs (everything injected
+	// before it has been read by the same single pump) and the property the drop
+	// exists to protect: none of the four messages typed at the button question
+	// became the answer to this one.
+	close(release)
+	waitFor(t, "the character question to be on screen", func() bool {
+		for _, m := range h.sentTo(meiChatID) {
+			if strings.Contains(m.Text, "Algo más") {
+				return true
+			}
+		}
+		return false
+	})
+	h.tr.InjectText(meiChatID, meiTelegramID, "un poco seco", false)
+	waitFor(t, "the character to be recorded", func() bool {
+		return personaOf(t, h, "mei").Character != ""
+	})
+	if got := personaOf(t, h, "mei"); got.Character != "un poco seco" || got.Tone == "" {
+		t.Errorf("persona = %+v; a message typed at a button question was eaten by a later one", got)
+	}
+
+	// Four messages, one reply. A chatty member must not collect one nudge each.
+	n := 0
+	for _, m := range h.sentTo(meiChatID) {
+		if strings.Contains(m.Text, "botones de arriba") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("four typed messages at one button question produced %d nudges, want 1", n)
+	}
 }

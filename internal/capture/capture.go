@@ -109,6 +109,29 @@ type Proposal struct {
 	// Options.Language. In every other conversation an alias whose every word is
 	// already in the entry is dropped rather than repeated.
 	Aliases []string
+	// Summary is one line, in the language the conversation is held in, saying what
+	// the entry above says. It is shown to the member and never stored.
+	//
+	// Aliases make an English entry findable by the person who said it; this makes it
+	// readable by them, and the two are different problems with the same cause. The
+	// capture question is a consent question — the member is asked whether to save
+	// this exact wording — and a Spanish member was being shown Spanish chrome around
+	// an English title and an English body. Approving text you cannot read is not
+	// consent, and the aliases do not close it: they are names for what the entry is
+	// about, and what a member has to be able to check is what it says. The gate code
+	// is in the body.
+	//
+	// It is presentation and nothing else. The entry stays exactly the English the
+	// model wrote, because that is what keeps a multilingual household's shared space
+	// legible to all of it (see Aliases), so there is no path on which this line is
+	// indexed, retrieved or read back to a model. That is also what makes it safe for
+	// it to be model-written text nobody has reviewed: the English it glosses is on
+	// the screen directly above it, and the line says so.
+	//
+	// Ignored in an English conversation, for the same reason as Aliases and by the
+	// same rule: there is nothing to gloss, so a line there could only be a second
+	// copy of the entry.
+	Summary string
 }
 
 // OutcomeKind enumerates every way a capture can end. Callers switch on it rather than
@@ -1033,6 +1056,28 @@ func usefulAliases(title, body string, aliases []string) []string {
 	return kept
 }
 
+// maxSummaryRunes bounds the gloss. It is model-written text put on a member's
+// screen, and a model asked for one line can return three paragraphs; longer than
+// this is not a reading of the entry, it is a second entry.
+const maxSummaryRunes = 240
+
+// glossLine is the member's-language reading of an English entry, ready to append to
+// a card, or empty when there is nothing to show.
+//
+// Empty in an English conversation, where the entry is already in the member's
+// language and a gloss could only repeat it — the same rule as withAliases, for the
+// same reason, and decided by the same field.
+func (e *Engine) glossLine(summary string) string {
+	if e.english {
+		return ""
+	}
+	summary = strings.Join(strings.Fields(summary), " ")
+	if summary == "" || len([]rune(summary)) > maxSummaryRunes {
+		return ""
+	}
+	return "\n\n" + transport.Italic(e.cat.EnglishGloss(summary))
+}
+
 // dest is which memory a question is about, when it is about one at all. An unsure
 // proposal offers a genuine choice and names no destination, which is the zero value.
 type dest struct {
@@ -1044,6 +1089,10 @@ func (e *Engine) proposalText(p Proposal, title string, d dest) string {
 	var b strings.Builder
 	b.WriteString(transport.GlyphAsk + " " + e.cat.ProposalOpener + "\n\n")
 	b.WriteString(entryBlock(title, p.Draft.Body))
+	// Between the entry and the question, because it is a reading of the entry and
+	// the question is what it exists to make answerable. Italic, like every other
+	// line where the node speaks about the message rather than writing part of it.
+	b.WriteString(e.glossLine(p.Summary))
 	b.WriteString("\n\n")
 	if d.known {
 		b.WriteString(e.cat.ProposalWithDest(d.private))
@@ -1078,6 +1127,10 @@ func (e *Engine) writtenText(p Proposal, title string, private bool) string {
 	var b strings.Builder
 	b.WriteString(transport.GlyphMemory + " " + e.cat.WrittenOpener(private) + "\n\n")
 	b.WriteString(entryBlock(title, p.Draft.Body))
+	// The announcement needs it as much as the question does, and arguably more: the
+	// entry is already written, and Undo is the only thing the member can do about
+	// wording they cannot read.
+	b.WriteString(e.glossLine(p.Summary))
 	b.WriteString("\n\n")
 	b.WriteString(transport.Italic(e.cat.WrittenHint))
 	return b.String()

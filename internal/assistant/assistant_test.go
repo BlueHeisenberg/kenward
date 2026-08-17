@@ -309,7 +309,13 @@ func TestEmptyRetrievalRendersExplicitStatement(t *testing.T) {
 	}
 	// Nothing was shown, so the paragraph saying entries are data rather than
 	// instruction has nothing to describe and must not render.
-	if strings.Contains(sys, "not instruction") {
+	//
+	// Asserted against the constant itself, not against a phrase inside it. A
+	// substring is a proxy for the property and it drifts the other way round from
+	// how a test should: rewording the prompt silences the guard, so the last person
+	// to edit that paragraph had to write around the words this test happened to
+	// pick. The constant is what renders, so the constant is what is asserted.
+	if strings.Contains(sys, untrustedEntryNote) {
 		t.Error("the untrusted-entry note rendered with no entries shown")
 	}
 }
