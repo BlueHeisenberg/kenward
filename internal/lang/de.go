@@ -57,9 +57,22 @@ var german = Catalogue{
 		"ich habe notiert", "ich habe gespeichert", "ich habe mir notiert",
 		"ich notiere", "ich schreibe das auf", "ich merke mir",
 		"hab ich mir gemerkt", "habe ich mir gemerkt",
-		"ich werde mir merken", "ich vergesse das nicht", "ich vergesse es nicht",
 		"zu deinem gedächtnis hinzugefügt", "steht jetzt in deinem",
 		"in deinem gedächtnis",
+	},
+
+	SavePromises: []string{
+		"ich werde mir merken", "ich werde mir das merken", "ich vergesse das nicht",
+		"ich vergesse es nicht", "ich werde es notieren", "ich werde es speichern",
+		"ich behalte das",
+	},
+
+	SaveRequests: []string{
+		"merk dir", "merke dir", "merken", "notier", "notiere", "notieren",
+		"schreib das auf", "schreib dir", "schreib auf", "aufschreiben",
+		"speicher", "speichere", "speichern", "vergiss nicht", "nicht vergessen",
+		"behalte", "halt fest", "halte fest", "festhalten", "denk dran",
+		"denk daran", "für später", "fürs nächste mal",
 	},
 
 	ModelBusy:         "Das Modell ist gerade ausgelastet. Versuch es gleich noch einmal.",

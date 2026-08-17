@@ -48,10 +48,22 @@ var dutch = Catalogue{
 	SaveClaims: []string{
 		"opgeslagen", "genoteerd", "vastgelegd", "opgeschreven", "bewaard",
 		"ik heb genoteerd", "ik heb opgeslagen", "ik heb opgeschreven",
-		"ik noteer", "ik schrijf het op", "ik onthoud", "ik zal onthouden",
+		"ik noteer", "ik schrijf het op", "ik onthoud",
 		"ik heb het",
-		"ik vergeet het niet", "ik vergeet dat niet",
 		"toegevoegd aan je", "toegevoegd aan het geheugen", "staat nu in je",
+	},
+
+	SavePromises: []string{
+		"ik zal onthouden", "ik zal het onthouden", "ik vergeet het niet",
+		"ik vergeet dat niet", "ik zal het noteren", "ik zal het opslaan",
+		"ik bewaar het",
+	},
+
+	SaveRequests: []string{
+		"onthoud", "onthouden", "noteer", "noteren", "schrijf dit op",
+		"schrijf dat op", "schrijf het op", "schrijf op", "bewaar",
+		"sla dit op", "sla dat op", "sla op", "vergeet niet", "niet vergeten",
+		"denk eraan", "leg vast", "vastleggen", "voor de volgende keer",
 	},
 
 	ModelBusy:         "Het model is op dit moment bezet. Probeer het over een moment opnieuw.",

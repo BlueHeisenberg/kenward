@@ -142,9 +142,24 @@ var arabic = Catalogue{
 	// stop matching the undiacriticized "دونت" a model actually types.
 	SaveClaims: []string{
 		"تم الحفظ", "حفظت", "سجلت", "دونت", "تم التسجيل", "تم تسجيل",
-		"احتفظت", "محفوظ", "مسجل", "سأتذكر", "سوف أتذكر", "لن أنسى",
+		"احتفظت", "محفوظ", "مسجل",
 		"استلمت", "تم الاستلام",
 		"أضفت إلى", "في ذاكرتك",
+	},
+
+	// Undiacriticized for the same reason as SaveClaims above.
+	SavePromises: []string{
+		"سأتذكر", "سوف أتذكر", "لن أنسى", "سأحفظ", "سوف أحفظ", "سأسجل",
+		"لن انسى",
+	},
+
+	// Undiacriticized for the same reason as SaveClaims above. The imperative of
+	// دوّن is deliberately absent: without its shadda it is دون, which is the
+	// ordinary word for "without" and would fire on half the messages a household
+	// sends.
+	SaveRequests: []string{
+		"احفظ", "احتفظ", "تذكر", "ذكرني", "سجل", "اكتب", "لا تنس", "لا تنسى",
+		"خذ ملاحظة", "للمرة القادمة", "لا تنساه",
 	},
 
 	ModelBusy:         "النموذج مشغول الآن. حاول مرة أخرى بعد قليل.",

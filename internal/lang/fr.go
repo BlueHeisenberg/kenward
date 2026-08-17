@@ -52,9 +52,22 @@ var french = Catalogue{
 		"enregistré", "enregistrée", "noté", "notée", "c'est noté", "j'ai noté",
 		"j'ai enregistré", "j'ai gardé", "je note", "je le note", "je prends note",
 		"bien reçu",
-		"j'ai pris note", "je retiens", "je m'en souviendrai", "je n'oublierai pas",
+		"j'ai pris note", "je retiens",
 		"ajouté à ta", "ajouté à la mémoire", "gardé en mémoire",
 		"est maintenant dans ta",
+	},
+
+	SavePromises: []string{
+		"je m'en souviendrai", "je n'oublierai pas", "je le retiendrai",
+		"je vais le noter", "je vais le garder", "je le garderai",
+	},
+
+	SaveRequests: []string{
+		"retiens", "retenir", "souviens", "se souvenir", "rappelle",
+		"note", "noter", "notez", "prends note", "prendre note",
+		"n'oublie pas", "ne pas oublier", "garde ça", "garde ceci",
+		"garde en mémoire", "enregistre", "écris ça", "écris ceci",
+		"mémorise", "pour la prochaine fois",
 	},
 
 	ModelBusy:         "Le modèle est occupé pour le moment. Réessaie dans un instant.",

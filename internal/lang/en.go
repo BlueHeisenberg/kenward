@@ -54,9 +54,26 @@ var english = Catalogue{
 		"made a note", "make a note", "making a note", "got it down",
 		"added to your", "added to the household", "is now in your",
 		"is now in the household", "in your memory", "in the household memory",
+	},
+
+	// The future tense of the same lie, and only a lie when it answers a request.
+	// "Yep — drop me the day next time and I'll keep it." is an honest offer.
+	SavePromises: []string{
 		"i'll remember", "i will remember", "i'll keep that", "i will keep that",
 		"i'll keep it", "i won't forget", "i will not forget", "i'll hold on to",
 		"i'll note", "i will note", "i'll save", "i will save",
+	},
+
+	// The member handing something over to be kept. Nothing here appears in
+	// "thanks", "ok" or "that was great" — those are the messages this list exists
+	// to let past the two gated guards.
+	SaveRequests: []string{
+		"remember", "note this", "note that", "note it", "note down",
+		"make a note", "take a note", "jot", "write this down", "write that down",
+		"write it down", "write down", "save this", "save that", "save it",
+		"keep this", "keep that", "keep a note", "keep a record",
+		"store this", "store that", "add this to", "add that to", "put this in",
+		"don't forget", "do not forget", "for future reference", "for next time",
 	},
 
 	ModelBusy:     "The model is busy right now. Try again in a moment.",

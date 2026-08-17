@@ -53,10 +53,25 @@ var chinese = Catalogue{
 
 	// Chinese puts no space anywhere useful, so every entry here is matched as a
 	// substring of a longer clause — "帮你记下了" has to hit "记下".
+	// Chinese marks completion with 了 and futurity with 会, and this table needs the
+	// first. Bare 记住 and 记下 are tense-neutral — 我会记住 is a promise and 记住了 is a
+	// claim — so an untensed entry here would match both and SavePromises below would
+	// never get its gate. Every entry names a write that has already happened.
 	SaveClaims: []string{
-		"已记录", "已保存", "记下", "记住", "会记住", "记录下来", "保存好",
-		"收到了",
-		"存好了", "已经记", "帮你记", "添加到你的", "在你的记忆里",
+		"已记录", "已保存", "已记下", "已记住", "记下了", "记住了",
+		"记录下来了", "保存好了", "收到了", "存好了", "已经记",
+		"帮你记下了", "帮你记住了", "添加到你的", "在你的记忆里",
+	},
+
+	SavePromises: []string{
+		"会记住", "会记下", "会帮你记", "不会忘", "会保存", "会存起来", "会记录",
+	},
+
+	// Substrings of a longer clause, like SaveClaims above — "帮我记住这个" has to
+	// hit "记住".
+	SaveRequests: []string{
+		"记住", "记下", "记一下", "帮我记", "记录", "别忘", "不要忘", "别忘了",
+		"保存", "存一下", "写下来", "写下", "留个记录", "以后要用", "记着",
 	},
 
 	ModelBusy:         "模型现在很忙。过一会儿再试。",

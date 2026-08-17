@@ -494,6 +494,131 @@ func TestSaveClaimsMatchWhatTheyAreFor(t *testing.T) {
 	}
 }
 
+// TestSavePromisesMatchWhatTheyAreFor, and the rule that keeps the gate from being
+// bypassed: no promise may also be a save claim.
+//
+// SaveClaims is consulted unconditionally and SavePromises only behind AsksForASave, so
+// an entry in both is an entry with no gate — the phrase would fire in ordinary
+// conversation through the unconditional list and the split would have bought nothing.
+// That is not hypothetical: every entry here was in SaveClaims until a live run found
+// one of them under an honest offer.
+func TestSavePromisesMatchWhatTheyAreFor(t *testing.T) {
+	for _, tag := range Tags() {
+		c := For(tag)
+		if len(c.SavePromises) == 0 {
+			t.Errorf("%s: no save promises, so \"I won't forget that\" answering an explicit request reaches the member unchallenged in this language", tag)
+		}
+		for _, p := range c.SavePromises {
+			for _, dressed := range []string{
+				p, p + ".", p + " — 555 0182.", strings.ToUpper(p) + "!", "…, " + p + ".",
+			} {
+				if !c.PromisesASave(dressed) {
+					t.Errorf("%s: %q is in the table and %q does not match it", tag, p, dressed)
+				}
+			}
+			if c.ClaimsASave(p) {
+				t.Errorf("%s: %q is in SavePromises and also matches SaveClaims, which is consulted unconditionally — the promise would fire in ordinary conversation anyway and the gate would be doing nothing", tag, p)
+			}
+		}
+	}
+	if For("").PromisesASave("") {
+		t.Error("an empty reply promised a save; nothing was said, so nothing was promised")
+	}
+}
+
+// TestTheLivePromiseInOrdinaryChatIsNotAClaim. The exact sentence a live run of
+// sixteen ordinary turns produced, in answer to "ok, no problem" and nothing else.
+// It offers a future write and says plainly that nothing has been written, so it is
+// the honest reply — and it was being annotated with a notice that contradicted it.
+func TestTheLivePromiseInOrdinaryChatIsNotAClaim(t *testing.T) {
+	const reply = "Yep — drop me the day next time and I'll keep it."
+	c := For("")
+	if c.ClaimsASave(reply) {
+		t.Errorf("%q read as a claim that something had been kept; it says the opposite, and it is consulted with no gate in front of it", reply)
+	}
+	if !c.PromisesASave(reply) {
+		t.Errorf("%q did not read as a promise, so the same sentence answering \"remember this\" would go out uncorrected", reply)
+	}
+	if c.AsksForASave("ok, no problem") {
+		t.Error(`"ok, no problem" read as a request to keep something`)
+	}
+}
+
+// TestSaveRequestsMatchWhatTheyAreFor. Every table's own entries match inside the
+// sentence a member wraps them in, which is the only shape they ever arrive in.
+func TestSaveRequestsMatchWhatTheyAreFor(t *testing.T) {
+	for _, tag := range Tags() {
+		c := For(tag)
+		if len(c.SaveRequests) == 0 {
+			t.Errorf("%s: no save requests, so the bare-acknowledgement guard never fires in this language and a bare \"Done.\" to an explicit request reaches the member unchallenged", tag)
+		}
+		for _, req := range c.SaveRequests {
+			for _, dressed := range []string{
+				req, req + " 555 0182", strings.ToUpper(req) + "! 555 0182",
+				"…, " + req + " 555 0182",
+			} {
+				if !c.AsksForASave(dressed) {
+					t.Errorf("%s: %q is in the table and %q does not match it", tag, req, dressed)
+				}
+			}
+		}
+	}
+}
+
+// TestOrdinaryConversationIsNotASaveRequest is the defect this table was added to fix,
+// asserted at the table rather than at the guard.
+//
+// A member said "thanks", the model said "Got it.", and they were told to say it again
+// if they wanted it remembered. Nothing here may read as a request to keep something:
+// these are the messages a household sends between the ones that matter, and the whole
+// job of SaveRequests is to let them through the bare-acknowledgement arm.
+func TestOrdinaryConversationIsNotASaveRequest(t *testing.T) {
+	for tag, chat := range map[string][]string{
+		English:    {"thanks", "ok", "thank you!", "great, cheers", "that's perfect", "sounds good", "morning", "how are you?", "no worries", "yep"},
+		Spanish:    {"gracias", "vale", "muchas gracias", "perfecto", "buenos días", "¿qué tal?", "genial", "de nada", "sí", "hasta luego"},
+		Catalan:    {"gràcies", "d'acord", "moltes gràcies", "perfecte", "bon dia", "com va?", "genial", "de res", "sí", "fins ara"},
+		Portuguese: {"obrigado", "está bem", "muito obrigada", "perfeito", "bom dia", "tudo bem?", "ótimo", "de nada", "sim", "até logo"},
+		French:     {"merci", "d'accord", "merci beaucoup", "parfait", "bonjour", "ça va ?", "super", "de rien", "oui", "à plus"},
+		Italian:    {"grazie", "va bene", "grazie mille", "perfetto", "buongiorno", "come stai?", "ottimo", "di niente", "sì", "a dopo"},
+		Dutch:      {"bedankt", "oké", "dank je wel", "perfect", "goedemorgen", "hoe gaat het?", "top", "graag gedaan", "ja", "tot straks"},
+		German:     {"danke", "okay", "danke dir", "perfekt", "guten morgen", "wie geht's?", "super", "gern geschehen", "ja", "bis später"},
+		Chinese:    {"谢谢", "好的", "多谢", "太好了", "早上好", "你好吗？", "没问题", "不客气", "是的", "回头见"},
+		Arabic:     {"شكرا", "تمام", "شكرا جزيلا", "ممتاز", "صباح الخير", "كيف حالك؟", "رائع", "عفوا", "نعم", "إلى اللقاء"},
+	} {
+		c := For(tag)
+		for _, s := range chat {
+			if c.AsksForASave(s) {
+				t.Errorf("%s: %q read as a request to keep something; a member who says that and gets a bare acknowledgement back would be told to say it again if they want it remembered, and they asked for nothing", tag, s)
+			}
+		}
+	}
+	if For("").AsksForASave("") {
+		t.Error("an empty message asked for a save; nothing was said, so nothing was asked")
+	}
+}
+
+// TestTheLiveSaveRequestsAreRecognised: the exact member messages the guard's own
+// tests put to a model, one per language, matched by the table that would run for
+// them. A phrasing that stops matching here is a bare "Done." going out uncorrected.
+func TestTheLiveSaveRequestsAreRecognised(t *testing.T) {
+	for tag, ask := range map[string]string{
+		English:    "remember this for me: the plumber's number is 555 0182",
+		Spanish:    "apunta esto: el número del fontanero es el 555 0182",
+		Catalan:    "apunta això: el número del lampista és el 555 0182",
+		Portuguese: "guarda isto: o número do canalizador é 555 0182",
+		French:     "retiens ça : le numéro du plombier est le 555 0182",
+		Italian:    "ricorda questo: il numero dell'idraulico è 555 0182",
+		Dutch:      "onthoud dit: het nummer van de loodgieter is 555 0182",
+		German:     "merk dir das: die Nummer des Klempners ist 555 0182",
+		Chinese:    "帮我记住：水管工的电话是 555 0182",
+		Arabic:     "احفظ هذا: رقم السباك هو 555 0182",
+	} {
+		if !For(tag).AsksForASave(ask) {
+			t.Errorf("%s: %q did not read as a request to keep something, so a reply of \"Done.\" to it would go out uncorrected", tag, ask)
+		}
+	}
+}
+
 // TestNoSaveClaimIsMerelyAnErrandFinished is the line between the two tables, and it
 // is drawn between completion and possession.
 //

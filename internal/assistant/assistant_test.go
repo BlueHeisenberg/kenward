@@ -977,8 +977,18 @@ func TestEmptyCompletionGetsNotice(t *testing.T) {
 //
 // Whether the model calls the tool is the model's judgement and is measured, not
 // asserted, in judgement_eval_test.go. What is asserted here is the half that is
-// kenward's: on a turn where no remember call arrived, a reply that says nothing but
-// "Done." never reaches the member as it stands.
+// kenward's: on a turn where the member asked for a write and no remember call
+// arrived, a reply that says nothing but "Done." never reaches the member as it
+// stands.
+//
+// "As it stands" is the whole of the claim, and it used to be more than that. The
+// reply was replaced by the notice, and that was wrong for a reason this test could
+// not see, because every case in it is a member who did ask: the node was deleting the
+// assistant's words on a string match, and out in ordinary conversation it deleted
+// legitimate ones. See TestAnAcknowledgementInOrdinaryConversationIsLeftAlone. The
+// model answers, always; the node adds a line underneath. So the assertion here is the
+// pair — the acknowledgement is above and the correction is below it — and the turn is
+// recorded in history, because the assistant really did say that.
 func TestBareAcknowledgementWithNoCaptureIsNotSentAsIs(t *testing.T) {
 	for _, body := range []string{"Done.", "Got it.", "Noted!", "OK 👍"} {
 		t.Run(body, func(t *testing.T) {
@@ -999,8 +1009,8 @@ func TestBareAcknowledgementWithNoCaptureIsNotSentAsIs(t *testing.T) {
 			if len(texts) != 1 {
 				t.Fatalf("sent %v, want exactly one message", texts)
 			}
-			if strings.Contains(texts[0], body) {
-				t.Errorf("the member was sent %q on a turn where nothing was stored: an acknowledgement is a claim that something happened, and nothing did", texts[0])
+			if !strings.HasPrefix(texts[0], body) {
+				t.Errorf("the member was sent %q; the model's own reply must reach them, first and whole — the node annotates and never substitutes", texts[0])
 			}
 			if !strings.Contains(texts[0], lang.For("").NothingSaved) {
 				t.Errorf("the member was sent %q, which never says nothing was recorded", texts[0])
@@ -1008,20 +1018,128 @@ func TestBareAcknowledgementWithNoCaptureIsNotSentAsIs(t *testing.T) {
 			if rig.mem.putCount() != 0 {
 				t.Error("something was written to memory on a turn the model never proposed one; the fix is a notice, never a retry")
 			}
-			if got := len(rig.unit.history.snapshot()); got != 0 {
-				t.Errorf("history holds %d turns: a dropped acknowledgement must not be fed back as the assistant's words", got)
+			// The notice is the node's accounting and never the assistant's words, so
+			// history holds the reply and nothing else. Feeding the notice back would
+			// teach the model to write those lines itself.
+			hist := rig.unit.history.snapshot()
+			if len(hist) != 1 || hist[0].assistant != body {
+				t.Errorf("history holds %v, want the one turn with %q as the assistant's side", hist, body)
 			}
 		})
 	}
 }
 
-// TestBareAcknowledgementIsReplacedInTheMembersOwnLanguage. The product speaks ten
+// TestAnAcknowledgementInOrdinaryConversationIsLeftAlone is the regression a member
+// reported from a real Telegram chat, and the reason the bare arm is narrowed.
+//
+// They said "thanks". The model said "Got it." Nothing was stored, because nothing had
+// been asked for — and they were told "I didn't record anything just then. Say it again
+// if you want me to remember it." They had not asked for anything to be remembered, and
+// the notice invited them to ask again for something they never wanted. It reads as a
+// malfunction, and it fires on the commonest turn a household has: an ordinary reply to
+// an ordinary message.
+//
+// The distinction the fix rests on is that a bare acknowledgement claims a save only in
+// the context of a save request. Out of that context it is an acknowledgement, and
+// correcting it is the bug. So the arm is gated on lang.Catalogue.AsksForASave over the
+// member's own message, and everything below is a turn where the member asked for
+// nothing — which must produce the reply and nothing else.
+//
+// The five languages are one per matcher family the filter has to work in: a Latin
+// imperative, an accented one, a German separable verb, unspaced Chinese and Arabic.
+// The member's message in each is a thing a household says fifty times a week.
+func TestAnAcknowledgementInOrdinaryConversationIsLeftAlone(t *testing.T) {
+	for _, c := range []struct{ tag, said, reply string }{
+		{"en", "thanks", "Got it."},
+		{"en", "ok", "Noted."},
+		{"en", "that's the one, cheers", "Done."},
+		{"es", "gracias", "Entendido."},
+		{"de", "danke dir", "Alles klar."},
+		{"zh", "谢谢", "好的"},
+		{"ar", "شكرا", "تمام"},
+	} {
+		t.Run(c.tag+"/"+c.said, func(t *testing.T) {
+			opts := testOptions()
+			opts.Persona = Persona{Language: c.tag}
+			rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{Text: c.reply, FinishReason: routing.FinishStop}, nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound(c.said)); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 || texts[0] != c.reply {
+				t.Fatalf("member said %q and was sent %v; want just %q — they asked for nothing to be kept, so there is nothing to correct",
+					c.said, texts, c.reply)
+			}
+			if strings.Contains(texts[0], lang.For(c.tag).NothingSaved) {
+				t.Errorf("member said %q and was told %q: they never asked for anything to be remembered", c.said, texts[0])
+			}
+		})
+	}
+}
+
+// TestAPromiseIsCorrectedOnlyWhenTheMemberAsked is the second half of the same
+// distinction, and it came out of the live run of the first.
+//
+// "I'll keep it" was in `SaveClaims` and fired unconditionally, on the argument that a
+// promise to remember is the same lie in the future tense. It is — when it answers a
+// request. Sixteen ordinary turns against a real model produced *"Yep — drop me the day
+// next time and I'll keep it."* in reply to "ok, no problem": an offer, which says in so
+// many words that nothing has been written yet, annotated with a notice saying nothing
+// had been written. So promises moved to `SavePromises` and behind the same gate as bare
+// acknowledgements.
+//
+// Both halves are asserted here because either alone is the wrong fix. Removing the
+// promise vocabulary outright would let "remember this" → "I won't forget that" through,
+// which is the release blocker in the future tense.
+func TestAPromiseIsCorrectedOnlyWhenTheMemberAsked(t *testing.T) {
+	const promise = "Yep — drop me the day next time and I'll keep it."
+	for _, c := range []struct {
+		name, said string
+		want       bool
+	}{
+		{"asked", "remember this for me: the bins go out on Thursday", true},
+		{"ordinary chat", "ok, no problem", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{Text: promise, FinishReason: routing.FinishStop}, nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound(c.said)); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 || !strings.HasPrefix(texts[0], promise) {
+				t.Fatalf("sent %v, want the model's promise first and whole", texts)
+			}
+			switch got := strings.Contains(texts[0], lang.For("").NothingSaved); {
+			case c.want && !got:
+				t.Errorf("member said %q and was sent %q: they asked for a write, none happened, and a promise to keep it is the blocker in the future tense", c.said, texts[0])
+			case !c.want && got:
+				t.Errorf("member said %q and was sent %q: the reply offers a future write and says nothing was written, which is true — the notice contradicts an honest answer", c.said, texts[0])
+			}
+		})
+	}
+}
+
+// TestBareAcknowledgementIsCorrectedInTheMembersOwnLanguage. The product speaks ten
 // languages and a member writing "apunta esto" is owed the same protection as one
-// writing "remember this". The signal is the reply rather than the message precisely
-// so that this costs nothing: the acknowledgement is written in the member's language
-// because the persona told the model to write in it, and lang is the one package that
-// knows ten of those.
-func TestBareAcknowledgementIsReplacedInTheMembersOwnLanguage(t *testing.T) {
+// writing "remember this". Both halves have to be in that language: the
+// acknowledgement is written in it because the persona told the model to, and the
+// request is written in it because the member is. lang is the one package that knows
+// ten of those, and the same catalogue matches both sides.
+func TestBareAcknowledgementIsCorrectedInTheMembersOwnLanguage(t *testing.T) {
 	opts := testOptions()
 	opts.Persona = Persona{Language: "español"}
 	rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
@@ -1039,15 +1157,18 @@ func TestBareAcknowledgementIsReplacedInTheMembersOwnLanguage(t *testing.T) {
 	if len(texts) != 1 || !strings.Contains(texts[0], lang.For("es").NothingSaved) {
 		t.Fatalf("sent %v, want the Spanish notice that nothing was recorded", texts)
 	}
+	if !strings.HasPrefix(texts[0], "¡Hecho!") {
+		t.Errorf("sent %q; the model's reply comes first and whole in every language", texts[0])
+	}
 }
 
-// TestAnAcknowledgementCarryingAnAnswerIsLeftAlone is where the line is drawn, and why
-// dropping the reply is safe.
+// TestAnAcknowledgementCarryingAnAnswerIsLeftAlone is where the line is drawn: not
+// just the reply but the notice too, on a turn that needs neither.
 //
-// Only a reply that is *nothing but* an acknowledgement is replaced, so a reply that
-// carries anything a member could act on cannot be lost. "Done — the code is 4471"
-// keeps the code. The named false positive — "remember when we went to Lisbon?" — never
-// reaches the guard at all, because the answer to it is a sentence about Lisbon.
+// The member said "remember when we went to Lisbon?", which is a question about a trip
+// and not a request to keep anything. None of these replies is bare — each carries
+// something the member could act on — and none of them claims a save, so the turn is
+// sent exactly as the model wrote it, with nothing added.
 func TestAnAcknowledgementCarryingAnAnswerIsLeftAlone(t *testing.T) {
 	for _, body := range []string{
 		"Done — the boiler service code is 4471.",

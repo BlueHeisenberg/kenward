@@ -58,8 +58,19 @@ var catalan = Catalogue{
 		"registrat", "he desat", "he anotat", "he apuntat", "queda anotat",
 		"ho tinc", "ja ho tinc",
 		"prenc nota", "he pres nota", "ho apunto", "ho anoto", "ho deso",
-		"ho recordaré", "me'n recordaré", "no ho oblidaré",
 		"afegit a la teva", "afegit a la memòria", "és a la teva memòria",
+	},
+
+	SavePromises: []string{
+		"ho recordaré", "me'n recordaré", "no ho oblidaré", "no me n'oblidaré",
+		"ho desaré", "ho apuntaré", "ho anotaré",
+	},
+
+	SaveRequests: []string{
+		"recorda", "recórda", "que recordis", "apunta", "apúnta", "anota", "anóta",
+		"desa", "guarda", "pren nota", "prendre nota", "no oblidis",
+		"no t'oblidis", "que no se t'oblidi", "escriu això", "registra",
+		"memoritza", "per a la propera", "per la propera",
 	},
 
 	ModelBusy:         "El model està ocupat ara mateix. Torna-ho a provar d'aquí a un moment.",

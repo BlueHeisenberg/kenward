@@ -59,9 +59,20 @@ var italian = Catalogue{
 		"salvato", "salvata", "annotato", "annotata", "registrato", "segnato",
 		"ho salvato", "ho annotato", "ho segnato", "ho preso nota", "prendo nota",
 		"ce l'ho",
-		"me lo ricorderò", "me ne ricorderò", "non lo dimenticherò",
-		"non me lo dimentico", "aggiunto alla tua", "aggiunto alla memoria",
+		"aggiunto alla tua", "aggiunto alla memoria",
 		"è nella tua memoria",
+	},
+
+	SavePromises: []string{
+		"me lo ricorderò", "me ne ricorderò", "non lo dimenticherò",
+		"non me lo dimentico", "lo salverò", "lo annoterò", "me lo segno",
+	},
+
+	SaveRequests: []string{
+		"ricorda", "ricordare", "che tu ricordi", "annota", "appunta",
+		"prendi nota", "prendere nota", "segnati", "segna",
+		"non dimenticare", "non ti dimenticare", "salva", "memorizza",
+		"scrivi questo", "scrivi", "scrivilo", "per la prossima",
 	},
 
 	ModelBusy:         "Il modello è occupato in questo momento. Riprova tra un momento.",
