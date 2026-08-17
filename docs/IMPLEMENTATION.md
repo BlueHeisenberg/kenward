@@ -1080,6 +1080,16 @@ italic line saying so — one line, only when a call was actually dropped, and w
 cannot be read as an announcement that anything landed. The rule is unchanged: one
 question per turn, and the second thing is not stored.
 
+**And it never stands alone.** The prompt tells the model not to mention a capture at
+all, so the turn that drops a second proposal is routinely tool calls and no prose —
+which made the member's entire reply *"I only ask about one thing at a time; nothing else
+from that message was saved"*: a correction with no answer under it. The turn's usual
+"I didn't get a usable answer to that" was skipped because a proposal existed, which says
+whether a question is coming and nothing about whether anything was answered. It now
+leads the message whenever there is neither a reply nor a reminder notice to carry. A
+reminder notice does count as an answer — the member asked for the reminder and the
+notice reports that it exists.
+
 History is unit-local, in memory, bounded (default 20 turns), and is **not** written to
 lore. lore holds distilled knowledge, not transcripts.
 
@@ -1187,9 +1197,20 @@ other way:
 ## 6. Capture
 
 Model proposals arrive as a structured tool call: `{title, body, domain, confidence,
-markers, aliases, target: personal|shared|unsure}` on the `remember` tool. `aliases` is
+aliases, target: personal|shared|unsure}` on the `remember` tool. `aliases` is
 the member's own words for what the entry is about — see *Finding it again in the
 language it was said in* below.
+
+There is no `markers` field, and there used to be. Markers are the one thing the model
+could write that the member is never shown — the capture question and the write
+announcement render the title and the body — and that a later prompt then rendered back
+to the model as a note from a person to be honoured. Text the model wrote, unreviewed,
+returning as an instruction. Both halves are closed: the tool no longer offers the
+field, and the prompt no longer exempts markers from the note saying everything inside
+an `<entry>` is data (docs/PROMPT.md, *Markers are data*). The read half has to stand on
+its own, because markers on entries other lore clients wrote arrive with no authorship
+kenward can recover — lore records none per marker, and its MCP server writes under the
+same account key an operator's `lore put` does.
 
 A second tool, `publish`, carries the promotion flow and is offered in a direct
 conversation only. It takes `{title}` and no id — see *Promotion* below.

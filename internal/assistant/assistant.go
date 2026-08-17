@@ -661,6 +661,22 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 				parts = append(parts, notice)
 			}
 			parts = append(parts, transport.Markdown(reply))
+		} else if remindNotice == "" {
+			// Nothing here answers what the member said. A reply does, and a
+			// reminder notice does — the member asked for the reminder and this
+			// reports that it exists — but the dropped-proposal notice is the node
+			// correcting itself, and this branch is only reached when one of the
+			// three is set, so reaching it with neither of the first two means the
+			// whole message would be that correction. A member who named two things
+			// and got back nothing but "I only ask about one thing at a time" has
+			// been told off and not answered.
+			//
+			// It is the same statement the branch below makes for a turn with
+			// nothing to say and nothing to propose, and the publish path makes
+			// for a failure nobody spoke for. The only reason it was skipped here
+			// is that a proposal existed, which says whether a question is coming
+			// and nothing about whether anything was answered.
+			parts = append(parts, u.noAnswer())
 		}
 		if remindNotice != "" {
 			parts = append(parts, remindNotice)
