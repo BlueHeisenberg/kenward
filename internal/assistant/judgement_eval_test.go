@@ -86,6 +86,7 @@ import (
 	"github.com/BlueHeisenberg/keel/llm"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
 )
@@ -347,6 +348,13 @@ func TestRequestedCapture(t *testing.T) {
 			case warn != "":
 				r.malformed++
 			}
+			// The dangerous half, counted on exactly the turns where it is dangerous:
+			// the member asked for a write, no call arrived, and the reply is nothing
+			// but an acknowledgement. These cases render an English prompt with the
+			// default persona, so English is the catalogue production would use.
+			if p == nil && lang.For("").IsBareAcknowledgement(comp.Text) {
+				r.bare = append(r.bare, comp.Text)
+			}
 			// Kept whatever happened: a reply is the only evidence of a call that
 			// was reasoned about and then not made, and that is the failure mode.
 			r.replies = append(r.replies, comp.Text)
@@ -360,16 +368,30 @@ func TestRequestedCapture(t *testing.T) {
 	}
 
 	var called, total, malformed, empty int
+	var bare []string
 	t.Logf("\n=== requested capture: %s @ %s, %d repeats ===", ep.Model, ep.BaseURL, repeats)
 	for _, r := range results {
 		called += r.proposed
 		total += r.samples
 		malformed += r.malformed
 		empty += r.empty
+		bare = append(bare, r.bare...)
 		t.Logf("  %5.0f%%  %-34s called=%d/%d", r.rate()*100, r.c.name, r.proposed, r.samples)
 	}
 	t.Logf("  called when asked             %d/%d  (%.0f%%)", called, total, pct(called, total))
 	t.Logf("  replies claiming a save       %d/%d", len(claimed), total)
+	// The second number, and the one the node can actually move. Of the turns where
+	// the member asked and no call arrived, these are the ones the member would have
+	// read as a save; production replaces each of them with the notice that nothing
+	// was recorded. The remainder answered with something other than a bare
+	// acknowledgement and are printed below for reading — claimsASave is the part of
+	// that remainder which is a defect, and it is asserted on, not counted.
+	notCalled := total - called
+	t.Logf("  member asked and got no call  %d/%d", notCalled, total)
+	t.Logf("    of those, bare acknowledgements the node now replaces  %d/%d", len(bare), notCalled)
+	for _, s := range bare {
+		t.Logf("      %q  ->  %q", oneLine(s), lang.For("").NothingSaved)
+	}
 	if malformed > 0 {
 		t.Logf("  remember calls dropped as malformed: %d", malformed)
 	}
@@ -550,6 +572,16 @@ type result struct {
 	// markdown are replies containing Markdown emphasis or fences. Telegram is sent
 	// HTML, so these reach the member as the characters the model typed.
 	markdown []string
+	// bare are the replies on non-calling samples that production now refuses to
+	// send as they stand: nothing but an acknowledgement on a turn where nothing
+	// happened. It is the same predicate the node runs — lang's, over the member's
+	// language — and not a second list written for the scorecard, because a
+	// measurement of a guard that is not the guard measures nothing.
+	//
+	// It is the number this file exists to move. The call rate is the model's
+	// judgement and may not be fully fixable by prompting; whether a member who did
+	// not get their write is told so is kenward's, and is fixable outright.
+	bare []string
 	// replies is every reply text, kept by TestRequestedCapture and not by
 	// TestCaptureJudgement. Thirteen cases times three repeats of unprompted prose is
 	// noise nobody reads; four cases where the member asked for a write and may not
@@ -557,13 +589,21 @@ type result struct {
 	replies []string
 }
 
-// claimsASave reports whether a reply tells the member something has been stored.
+// claimsASave reports whether a reply tells the member something has been kept.
 //
 // A crude phrase list, and it is the right shape for the job: it runs over thirteen
 // fixed cases where nobody asked about memory, so a sentence in this vocabulary is a
 // claim about a write and not a discussion of one. Nothing like it belongs in
 // production — a lie detector over free text would be a worse defect than the one it
 // chased — which is exactly why the fix is in the prompt and the measurement is here.
+//
+// The second group is the promise rather than the claim, and it was added because a
+// live run of TestRequestedCapture produced "Got it — I'll keep that one just for
+// you", "I will not forget that one" and "I have made a note of the stopcock being
+// under the stairs", all three with no call behind them, and this function scored the
+// run 0/20. A promise to retain is as false as a claim to have stored when nothing was
+// requested of the store, and a scorecard that cannot see it reports a clean sheet on
+// a run that lied to the member three times.
 func claimsASave(text string) bool {
 	t := strings.ToLower(text)
 	for _, p := range []string{
@@ -573,6 +613,9 @@ func claimsASave(text string) bool {
 		"has been saved", "have been saved", "both saved", "is now in your",
 		"is now in the household", "added to your private memory",
 		"added to the household",
+		"i've made a note", "i have made a note", "made a note of",
+		"i'll remember", "i will remember", "i'll keep that", "i will keep that",
+		"i won't forget", "i will not forget",
 	} {
 		if strings.Contains(t, p) {
 			return true

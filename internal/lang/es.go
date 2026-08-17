@@ -57,7 +57,13 @@ var spanish = Catalogue{
 	Dropped:       "Voy saturado y he tenido que descartar ese mensaje. Vuelve a enviarlo en un momento.",
 	NoAnswer:      "No he obtenido una respuesta utilizable. Prueba a preguntarlo otra vez.",
 	ToolMisfire:   "Intenté hacer algo con eso y me equivoqué, así que no ha pasado nada. Vuelve a pedírmelo.",
+	NothingSaved:  "No he guardado nada ahora mismo. Dímelo otra vez si quieres que lo recuerde.",
 	ResetNotice:   "Empezamos de nuevo: he borrado la parte anterior de esta conversación. En tu memoria no ha cambiado nada; es el reinicio programado.",
+
+	BareAcknowledgements: []string{
+		"hecho", "ya está", "listo", "todo listo", "entendido", "anotado",
+		"apuntado", "guardado", "de acuerdo", "vale", "ok", "okay", "sin problema",
+	},
 
 	ModelBusy:         "El modelo está ocupado ahora mismo. Inténtalo de nuevo en un momento.",
 	Misconfigured:     "Algo va mal en la configuración de este hogar; díselo a quien lo administra.",

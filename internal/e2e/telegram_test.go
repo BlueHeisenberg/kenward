@@ -160,7 +160,7 @@ func TestTelegramPrivateWriteIsAnnouncedAndUndoneByARealButtonTap(t *testing.T) 
 	h, api := telegramHousehold(t, harnessOptions{})
 	h.local.setReply(func(wireRequest) providerReply {
 		return providerReply{
-			Text:         "Noted.",
+			Text:         "The bins go out on Thursday.",
 			FinishReason: "tool_calls",
 			ToolCalls: []providerToolCall{{
 				Name:      "remember",
@@ -270,7 +270,7 @@ func TestTelegramPrivateWriteIsAnnouncedAndUndoneByARealButtonTap(t *testing.T) 
 func TestTelegramGetUpdatesDeliversEachMessageOnce(t *testing.T) {
 	h, api := telegramHousehold(t, harnessOptions{})
 	h.local.setReply(func(wireRequest) providerReply {
-		return providerReply{Text: "Noted.", FinishReason: "stop"}
+		return providerReply{Text: "The bins go out on Thursday.", FinishReason: "stop"}
 	})
 	h.start()
 
@@ -427,7 +427,7 @@ func TestTelegramGroupAnswersOnlyWhenAddressed(t *testing.T) {
 func TestTelegramFailedPollNeitherLosesNorRepeatsAMessage(t *testing.T) {
 	h, api := telegramHousehold(t, harnessOptions{})
 	h.local.setReply(func(wireRequest) providerReply {
-		return providerReply{Text: "Noted.", FinishReason: "stop"}
+		return providerReply{Text: "The bins go out on Thursday.", FinishReason: "stop"}
 	})
 
 	release := api.Hold("getUpdates")
@@ -441,7 +441,7 @@ func TestTelegramFailedPollNeitherLosesNorRepeatsAMessage(t *testing.T) {
 	release()
 
 	sent := waitSends(t, api, davidChatID, 1)
-	if got := sent[0].Form.Get("text"); got != "Noted." {
+	if got := sent[0].Form.Get("text"); got != "The bins go out on Thursday." {
 		t.Errorf("reply text = %q, want the model's", got)
 	}
 
@@ -491,7 +491,7 @@ func TestTelegramSharedCaptureDeclinedByARealButtonTapWritesNothing(t *testing.T
 			return providerReply{Text: "Nothing else.", FinishReason: "stop"}
 		}
 		return providerReply{
-			Text:         "Noted.",
+			Text:         "The bins go out on Thursday.",
 			FinishReason: "tool_calls",
 			ToolCalls: []providerToolCall{{
 				Name:      "remember",

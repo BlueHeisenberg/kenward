@@ -369,7 +369,7 @@ func TestACodeInTheGroupChatIsNotBurnedAndStillWorksInPrivate(t *testing.T) {
 	code := h.mint("Mei", 0)
 	h.mem.seed(sharedSpace, entry("s1", "Side gate", "The side gate code is 4417."))
 	h.local.setReply(func(wireRequest) providerReply {
-		return providerReply{Text: "Noted.", FinishReason: "stop"}
+		return providerReply{Text: "The bins go out on Thursday.", FinishReason: "stop"}
 	})
 	h.start()
 
@@ -414,7 +414,7 @@ func TestACodeInTheGroupChatIsNotBurnedAndStillWorksInPrivate(t *testing.T) {
 	h.waitForUnit("mei")
 	h.tr.InjectText(meiChatID, meiTelegramID, "hello", false)
 	sent := h.waitForReply(meiChatID, onboardingMessages+1)
-	if got := replyBody(sent[onboardingMessages].Text); got != "Noted." {
+	if got := replyBody(sent[onboardingMessages].Text); got != "The bins go out on Thursday." {
 		t.Errorf("reply after the private claim = %q, want the model's text", got)
 	}
 }
@@ -550,7 +550,7 @@ func TestTheTutorialIsMultiTurnAndTheMemberIsServedAfterIt(t *testing.T) {
 	})
 	code := h.mint("Mei", 0)
 	h.local.setReply(func(wireRequest) providerReply {
-		return providerReply{Text: "Noted.", FinishReason: "stop"}
+		return providerReply{Text: "The bins go out on Thursday.", FinishReason: "stop"}
 	})
 	// Tap through the button questions; the typed ones are injected below.
 	h.tr.SetAnswerFunc(func(q transport.Question) transport.Answer {
@@ -609,7 +609,7 @@ func TestTheTutorialIsMultiTurnAndTheMemberIsServedAfterIt(t *testing.T) {
 	h.waitForUnit("mei")
 	h.tr.InjectText(meiChatID, meiTelegramID, "hello", false)
 	after := h.waitForReply(meiChatID, len(sent)+1)
-	if got := replyBody(after[len(after)-1].Text); got != "Noted." {
+	if got := replyBody(after[len(after)-1].Text); got != "The bins go out on Thursday." {
 		t.Errorf("reply after the tutorial = %q, want the model's text", got)
 	}
 

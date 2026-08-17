@@ -39,7 +39,13 @@ var portuguese = Catalogue{
 	Dropped:       "Estou sobrecarregado e tive de descartar essa mensagem. Volta a enviá-la daqui a pouco.",
 	NoAnswer:      "Não obtive nenhuma resposta aproveitável. Tenta perguntar outra vez.",
 	ToolMisfire:   "Tentei fazer algo com isso e enganei-me, por isso não aconteceu nada. Pede-me outra vez.",
+	NothingSaved:  "Não guardei nada agora. Diz-me outra vez se queres que me lembre disso.",
 	ResetNotice:   "Vamos começar de novo: apaguei a parte anterior desta conversa. Na tua memória não mudou nada; é o reinício programado.",
+
+	BareAcknowledgements: []string{
+		"feito", "está feito", "pronto", "tudo pronto", "entendido", "percebido",
+		"anotado", "guardado", "combinado", "ok", "okay", "sem problema",
+	},
 
 	ModelBusy:         "O modelo está ocupado neste momento. Tenta outra vez daqui a pouco.",
 	Misconfigured:     "Há alguma coisa mal na configuração desta casa; diz a quem a administra.",

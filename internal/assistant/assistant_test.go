@@ -15,6 +15,7 @@ import (
 
 	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/remind"
 	"github.com/BlueHeisenberg/kenward/internal/routing"
@@ -446,8 +447,12 @@ func TestMalformedRememberIsDroppedHarmlessly(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		// Prose, not "Noted." — a dropped call leaves nothing stored, so an
+		// acknowledgement here would be replaced by the guard in Unit.turn and this
+		// test would be measuring that instead of the parser. See
+		// TestBareAcknowledgementWithNoCaptureIsNotSentAsIs.
 		return routing.Completion{
-			Text: "Noted.",
+			Text: "The bins go out on Thursday.",
 			ToolCalls: []routing.ToolCall{
 				{ID: "tc-1", Name: "remember", Arguments: json.RawMessage(`{this is not json`)},
 			},
@@ -459,7 +464,7 @@ func TestMalformedRememberIsDroppedHarmlessly(t *testing.T) {
 		t.Fatalf("a malformed tool call crashed the turn: %v", err)
 	}
 	texts := rig.tr.sentTexts()
-	if len(texts) != 1 || texts[0] != "Noted." {
+	if len(texts) != 1 || texts[0] != "The bins go out on Thursday." {
 		t.Fatalf("sent %v, want just the reply", texts)
 	}
 	if rig.tr.askCount() != 0 {
@@ -554,7 +559,7 @@ func TestConcurrentMessagesSerialise(t *testing.T) {
 		flightMu.Lock()
 		inFlight--
 		flightMu.Unlock()
-		return routing.Completion{Text: "done"}, nil
+		return routing.Completion{Text: "the bins go out on Thursday"}, nil
 	}
 
 	const n = 12
@@ -958,6 +963,145 @@ func TestEmptyCompletionGetsNotice(t *testing.T) {
 	golden(t, "no_answer.golden", texts[0])
 	if len(rig.unit.history.snapshot()) != 0 {
 		t.Error("a turn with no reply was recorded in history")
+	}
+}
+
+// TestBareAcknowledgementWithNoCaptureIsNotSentAsIs is the release blocker, in a test.
+//
+// A live English run put ten "remember this for me: …" messages to a real model on a
+// fresh store. Eight produced a memory card. Two produced "Done." and "Got it.", and a
+// separate lore process confirmed exactly eight entries. The member asked outright, was
+// told the job was done, and nothing exists — which is D-059 arriving on the one path
+// where the intent is unambiguous, and arriving without a verb for the prompt's
+// prohibition to catch.
+//
+// Whether the model calls the tool is the model's judgement and is measured, not
+// asserted, in judgement_eval_test.go. What is asserted here is the half that is
+// kenward's: on a turn where no remember call arrived, a reply that says nothing but
+// "Done." never reaches the member as it stands.
+func TestBareAcknowledgementWithNoCaptureIsNotSentAsIs(t *testing.T) {
+	for _, body := range []string{"Done.", "Got it.", "Noted!", "OK 👍"} {
+		t.Run(body, func(t *testing.T) {
+			rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{Text: body, FinishReason: routing.FinishStop}, nil
+			}
+
+			in := directInbound("remember this for me: I always buy the tarragon-brand coffee beans")
+			if err := rig.unit.Handle(context.Background(), in); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 {
+				t.Fatalf("sent %v, want exactly one message", texts)
+			}
+			if strings.Contains(texts[0], body) {
+				t.Errorf("the member was sent %q on a turn where nothing was stored: an acknowledgement is a claim that something happened, and nothing did", texts[0])
+			}
+			if !strings.Contains(texts[0], lang.For("").NothingSaved) {
+				t.Errorf("the member was sent %q, which never says nothing was recorded", texts[0])
+			}
+			if rig.mem.putCount() != 0 {
+				t.Error("something was written to memory on a turn the model never proposed one; the fix is a notice, never a retry")
+			}
+			if got := len(rig.unit.history.snapshot()); got != 0 {
+				t.Errorf("history holds %d turns: a dropped acknowledgement must not be fed back as the assistant's words", got)
+			}
+		})
+	}
+}
+
+// TestBareAcknowledgementIsReplacedInTheMembersOwnLanguage. The product speaks ten
+// languages and a member writing "apunta esto" is owed the same protection as one
+// writing "remember this". The signal is the reply rather than the message precisely
+// so that this costs nothing: the acknowledgement is written in the member's language
+// because the persona told the model to write in it, and lang is the one package that
+// knows ten of those.
+func TestBareAcknowledgementIsReplacedInTheMembersOwnLanguage(t *testing.T) {
+	opts := testOptions()
+	opts.Persona = Persona{Language: "español"}
+	rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{Text: "¡Hecho!", FinishReason: routing.FinishStop}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("apunta esto: siempre compro café de la marca Estragón")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	texts := rig.tr.sentTexts()
+	if len(texts) != 1 || !strings.Contains(texts[0], lang.For("es").NothingSaved) {
+		t.Fatalf("sent %v, want the Spanish notice that nothing was recorded", texts)
+	}
+}
+
+// TestAnAcknowledgementCarryingAnAnswerIsLeftAlone is where the line is drawn, and why
+// dropping the reply is safe.
+//
+// Only a reply that is *nothing but* an acknowledgement is replaced, so a reply that
+// carries anything a member could act on cannot be lost. "Done — the code is 4471"
+// keeps the code. The named false positive — "remember when we went to Lisbon?" — never
+// reaches the guard at all, because the answer to it is a sentence about Lisbon.
+func TestAnAcknowledgementCarryingAnAnswerIsLeftAlone(t *testing.T) {
+	for _, body := range []string{
+		"Done — the boiler service code is 4471.",
+		"We went in the spring of 2019, four nights, and you got sunburnt.",
+		"Yes.",
+	} {
+		t.Run(body, func(t *testing.T) {
+			rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{Text: body, FinishReason: routing.FinishStop}, nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound("remember when we went to Lisbon?")); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 || texts[0] != body {
+				t.Fatalf("sent %v, want the model's reply untouched: a reply that carries information is not a bare acknowledgement", texts)
+			}
+		})
+	}
+}
+
+// TestAcknowledgementSurvivesWhenTheTurnActuallyDidSomething. "Done." is true on a turn
+// that proposed a capture, set a reminder or published an entry — the node did act, and
+// the capture engine or the reminder notice says so in its own words. The guard reads
+// what this turn did and not what the member typed, so it must not fire on any of them.
+func TestAcknowledgementSurvivesWhenTheTurnActuallyDidSomething(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoiceDecline, UserID: testUserID}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{
+			Text: "Done.",
+			ToolCalls: []routing.ToolCall{{
+				ID:        "tc-1",
+				Name:      "remember",
+				Arguments: json.RawMessage(`{"title": "Coffee", "body": "Tarragon-brand beans.", "target": "unsure"}`),
+			}},
+			FinishReason: routing.FinishToolCalls,
+		}, nil
+	}
+
+	if err := rig.unit.Handle(context.Background(), directInbound("remember this for me: tarragon-brand beans")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	texts := rig.tr.sentTexts()
+	if len(texts) != 1 || texts[0] != "Done." {
+		t.Fatalf("sent %v, want the reply untouched on a turn that did propose a capture", texts)
 	}
 }
 

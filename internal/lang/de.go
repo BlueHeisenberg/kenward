@@ -44,7 +44,13 @@ var german = Catalogue{
 	Dropped:       "Ich komme gerade nicht hinterher und musste diese Nachricht verwerfen. Schick sie gleich noch einmal.",
 	NoAnswer:      "Ich habe darauf keine brauchbare Antwort bekommen. Frag es noch einmal.",
 	ToolMisfire:   "Ich wollte etwas dafür tun und habe es falsch gemacht, also ist nichts passiert. Frag mich noch einmal.",
+	NothingSaved:  "Ich habe gerade nichts gespeichert. Sag es noch einmal, wenn ich es mir merken soll.",
 	ResetNotice:   "Neuer Anfang — ich habe den früheren Teil dieses Gesprächs gelöscht. An deinem Gedächtnis hat sich nichts geändert; das ist der planmäßige Reset.",
+
+	BareAcknowledgements: []string{
+		"erledigt", "fertig", "alles klar", "notiert", "gespeichert", "verstanden",
+		"in ordnung", "okay", "ok", "mach ich", "geht klar", "kein problem",
+	},
 
 	ModelBusy:         "Das Modell ist gerade ausgelastet. Versuch es gleich noch einmal.",
 	Misconfigured:     "Mit der Einrichtung dieses Haushalts stimmt etwas nicht — sag der Person Bescheid, die ihn betreibt.",

@@ -40,7 +40,13 @@ var french = Catalogue{
 	Dropped:       "Je suis débordé et j'ai dû abandonner ce message. Renvoie-le dans un instant.",
 	NoAnswer:      "Je n'ai pas obtenu de réponse exploitable. Essaie de redemander.",
 	ToolMisfire:   "J'ai essayé de faire quelque chose et je m'y suis mal pris, donc rien ne s'est passé. Redemande-le-moi.",
+	NothingSaved:  "Je n'ai rien enregistré à l'instant. Redis-le-moi si tu veux que je m'en souvienne.",
 	ResetNotice:   "On repart de zéro — j'ai effacé le début de cette conversation. Rien n'a changé dans ta mémoire" + nbsp + "; c'est la réinitialisation prévue.",
+
+	BareAcknowledgements: []string{
+		"c'est fait", "fait", "c'est noté", "noté", "entendu", "compris",
+		"bien reçu", "d'accord", "enregistré", "ok", "okay", "pas de problème",
+	},
 
 	ModelBusy:         "Le modèle est occupé pour le moment. Réessaie dans un instant.",
 	Misconfigured:     "Quelque chose ne va pas dans la configuration de ce foyer — préviens la personne qui s'en occupe.",

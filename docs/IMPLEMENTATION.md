@@ -2483,7 +2483,7 @@ The notice says the two things that are true: nothing is broken, and a smaller q
 is the one lever the member actually holds. More room to answer in is the operator's
 knob, not theirs, so it is not offered as advice they cannot take.
 
-Six further notices come from outside the router, sent by the Unit around a turn rather
+Seven further notices come from outside the router, sent by the Unit around a turn rather
 than as part of one. They are product surface exactly as the refusals are.
 
 | When | What is sent |
@@ -2494,6 +2494,7 @@ than as part of one. They are product surface exactly as the refusals are.
 | A message arrives when the queue behind a running turn is already full | "I'm backed up and had to drop that message. Send it again in a moment." |
 | The turn ran to the end and produced nothing the member could see | "I didn't get a usable answer to that. Try asking again." |
 | The same, where the only tool call named a tool that does not exist | "I tried to do something for that and got it wrong, so nothing happened. Ask me again." |
+| The whole reply was an acknowledgement and the turn did nothing at all | "I didn't record anything just then. Say it again if you want me to remember it." |
 
 ### Where the words live
 
@@ -2528,6 +2529,13 @@ model's prompt and the operator's CLI, and it stays English, with
 `lang.Catalogue.When` as the member's copy and a test asserting the prompt path never
 sees a translation.
 
+`BareAcknowledgements` is the one field in the table that is neither. It is not read by
+the member and it is not sent to the model: it is matched against what the model *wrote*,
+which is in the member's language because the persona asked for it. It lives here because
+this is the package that knows ten languages, and the alternative — a second language
+table inside `internal/assistant`, which holds the model-facing English — is how the two
+would drift.
+
 The two queue notices exist because turns are serialised (§5) and a member cannot see
 that. Waiting in silence and being ignored look identical from inside a chat; so do a
 dropped message and a lost one. Both notices are sent only after the scope has resolved,
@@ -2549,6 +2557,46 @@ things they cannot see — it tried to act, and nothing happened. The near miss 
 the log line (`nearestTool`) and nowhere else: routing a call to a tool the model did not
 name would let a misspelling reach a write, and `remember` is one of the four names
 something could be misspelled towards.
+
+The seventh is the only one of the seven that **replaces** something the model wrote
+rather than filling a silence, and it is D-059's second half. A live English run put ten
+`remember this for me: …` messages to a real model on a fresh store: eight produced a
+memory card, and two produced `Done.` and `Got it.` with nothing behind either. The
+member asked outright, was told the job was done, and nothing exists. D-059 fixed the
+sentence that *names* a save; this is the same lie with the verb removed, and no prompt
+rule can catch a word that is not there.
+
+The node can, because it knows: it has just read the completion's tool calls. So a turn
+that produced no proposal, no publication and no reminder, and whose whole reply is one
+of `lang.Catalogue.BareAcknowledgements` for the member's language, sends this notice
+instead of the reply, and records nothing in history.
+
+Three things about the shape are deliberate.
+
+**The signal is the reply, not the member's message.** Detecting "this looks like a
+request to store something" means matching free text in ten languages, and every phrasing
+such a matcher missed would be a member left believing something was kept — a silent
+failure on the dangerous side. Whether *this node acted* is not a guess. It also disposes
+of the false positive worth worrying about: "remember when we went to Lisbon?" is answered
+with a sentence about Lisbon, which carries information and therefore never matches.
+
+**Only the whole reply matches, and only an acknowledgement.** `Done — the code is 4471`
+keeps the code. `BareAcknowledgements` holds contentless acknowledgements and never a word
+that can answer anything — no *yes*, no *no*, no *correct* — so a matched reply has nothing
+in it to lose, which is what makes replacing it rather than annotating it safe. Leaving
+`Done.` on screen above a line saying nothing was done would leave the member to work out
+which half is true.
+
+**Nothing is retried.** The tool call is the member's decision to make; firing one off a
+near miss would be the node writing something nobody chose.
+
+This addresses the harm and not the cause. How often the model calls the tool when asked
+is the model's judgement, is measured by `TestRequestedCapture` in
+`internal/assistant/judgement_eval_test.go`, and may not be fully fixable by prompting —
+`fee9949` moved it from 15/20 to 18/20 and that is where prompting appears to run out. The
+false-positive cost of the guard is a member who was not asking for a save, whose turn
+produced nothing, and who reads one extra line saying nothing was recorded. That is noise;
+the defect it replaces is a member believing they have a record they do not have.
 
 The generic notice is the last resort, not the mechanism. A turn that ends in a capture
 question — a remember proposal or a publish request — hands the rest of the turn to

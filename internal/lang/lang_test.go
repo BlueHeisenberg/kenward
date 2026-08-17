@@ -28,6 +28,7 @@ func sampleReminder(every remind.Every) remind.Reminder {
 func rendered(c Catalogue) []string {
 	out := []string{
 		c.Locked, c.ContentFilter, c.Queued, c.Dropped, c.NoAnswer, c.ToolMisfire, c.ResetNotice,
+		c.NothingSaved,
 		c.ModelBusy, c.Misconfigured, c.TurnFailed, c.ReasoningOnly, c.RefusalEmptyChain,
 		c.WhoseDirect, c.WhoseGroup,
 		c.RemindFull, c.RemindPast, c.RemindFailed, c.UnremindNone, c.UnremindFails,
@@ -428,6 +429,7 @@ func TestNoMarkupIsTypedIntoTheCatalogue(t *testing.T) {
 		c := For(tag)
 		for _, s := range []string{
 			c.Locked, c.ContentFilter, c.Queued, c.Dropped, c.NoAnswer, c.ToolMisfire, c.ResetNotice,
+			c.NothingSaved,
 			c.ModelBusy, c.Misconfigured, c.TurnFailed, c.ReasoningOnly, c.RefusalEmptyChain,
 			c.RemindFull, c.RemindPast, c.RemindFailed, c.UnremindNone, c.UnremindFails,
 			c.SaveFailed, c.PublishNoShared, c.PublishUnreadable, c.ProposalOpener,
@@ -439,6 +441,55 @@ func TestNoMarkupIsTypedIntoTheCatalogue(t *testing.T) {
 				t.Errorf("%s: %q carries markup; the helpers own that", tag, s)
 			}
 		}
+	}
+}
+
+// TestBareAcknowledgementsMatchWhatTheyAreFor. Every table's own entries match, with
+// the punctuation, casing and emoji a model actually types around them — that is what
+// the normalization on both sides is for, and it is the half that has to work in
+// Arabic, where a diacritic sits between two letters, and in French, where an
+// apostrophe does.
+func TestBareAcknowledgementsMatchWhatTheyAreFor(t *testing.T) {
+	for _, tag := range Tags() {
+		c := For(tag)
+		if len(c.BareAcknowledgements) == 0 {
+			t.Errorf("%s: no acknowledgements, so a bare \"Done.\" in this language reaches the member unchallenged", tag)
+		}
+		for _, ack := range c.BareAcknowledgements {
+			for _, dressed := range []string{ack, ack + ".", ack + "!", strings.ToUpper(ack) + " 👍", "  " + ack + "  "} {
+				if !c.IsBareAcknowledgement(dressed) {
+					t.Errorf("%s: %q is in the table and %q does not match it", tag, ack, dressed)
+				}
+			}
+			if c.IsBareAcknowledgement(ack + " — the boiler code is 4471") {
+				t.Errorf("%s: %q matched a reply carrying an answer; only the whole reply may match, or replacing it would lose what the member asked for", tag, ack)
+			}
+		}
+	}
+}
+
+// TestNoAcknowledgementCanCarryAnAnswer is the rule that makes replacing a matched
+// reply safe rather than destructive.
+//
+// The caller drops the reply outright, so a word that can answer a question must never
+// be in the table: a member who asks "is bin day Thursday?" and is answered "Yes." must
+// read that answer, not a notice about memory. Acknowledgements cannot answer anything,
+// which is the whole basis of the guard.
+func TestNoAcknowledgementCanCarryAnAnswer(t *testing.T) {
+	answers := []string{
+		"yes", "no", "correct", "sí", "no", "sim", "não", "oui", "non", "sí, és",
+		"ja", "nee", "nein", "是", "不是", "对", "نعم", "لا",
+	}
+	for _, tag := range Tags() {
+		c := For(tag)
+		for _, a := range answers {
+			if c.IsBareAcknowledgement(a) {
+				t.Errorf("%s: %q is treated as a bare acknowledgement, and a matched reply is dropped — a member asking a yes-or-no question would lose the answer", tag, a)
+			}
+		}
+	}
+	if For("").IsBareAcknowledgement("") {
+		t.Error("an empty reply matched; nothing was said, so there is nothing to replace")
 	}
 }
 

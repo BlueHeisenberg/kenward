@@ -37,7 +37,13 @@ var dutch = Catalogue{
 	Dropped:       "Ik heb een achterstand en moest dat bericht laten vallen. Stuur het over een moment opnieuw.",
 	NoAnswer:      "Ik heb daar geen bruikbaar antwoord op gekregen. Probeer het opnieuw te vragen.",
 	ToolMisfire:   "Ik probeerde er iets mee te doen en deed het verkeerd, dus er is niets gebeurd. Vraag het me nog eens.",
+	NothingSaved:  "Ik heb net niets opgeslagen. Zeg het nog eens als je wilt dat ik het onthoud.",
 	ResetNotice:   "We beginnen opnieuw — ik heb het eerdere deel van dit gesprek gewist. Er is niets veranderd in je geheugen; dit is de geplande reset.",
+
+	BareAcknowledgements: []string{
+		"gedaan", "klaar", "genoteerd", "opgeslagen", "begrepen", "duidelijk",
+		"oké", "ok", "okay", "in orde", "komt goed", "prima", "geen probleem",
+	},
 
 	ModelBusy:         "Het model is op dit moment bezet. Probeer het over een moment opnieuw.",
 	Misconfigured:     "Er klopt iets niet aan de instellingen van dit huishouden — zeg het tegen degene die het beheert.",
