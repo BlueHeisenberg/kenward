@@ -1199,10 +1199,22 @@ func (r *runner) bound(m domain.Member) {
 	r.cfgMu.Unlock()
 }
 
+// workerDone retires one pump and, when it was the last, tells the drain so.
+//
+// `launched` is what stops a transient zero during startup from being read as "the
+// update stream ended" — between the first pump exiting and the second being
+// launched, the count really is zero and means nothing. `stopping` has to count too,
+// and its absence was a twenty-second hang: a Stop that lands while start is still
+// walking its units makes the next launch return "supervisor: stopping", so start
+// gives up and shuts down having never reached `launched = true`. The pumps it did
+// start then exit on the drain signal, the count reaches zero, and nobody closes
+// allDone — so the drain waits out its whole deadline and reports itself unclean for
+// pumps that had all gone. Once stopping is set, launch refuses to add any more, so a
+// zero count is final and closing on it is right.
 func (r *runner) workerDone() {
 	r.mu.Lock()
 	r.active--
-	last := r.active == 0 && r.launched
+	last := r.active == 0 && (r.launched || r.stopping)
 	r.mu.Unlock()
 	if last {
 		r.allDoneOnce.Do(func() { close(r.allDone) })

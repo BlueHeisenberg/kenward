@@ -19,6 +19,16 @@ type Inbound struct {
 	MessageID int
 	IsGroup   bool
 	At        time.Time
+	// Addressed reports that the member spoke to the bot rather than to the room:
+	// they named it, replied to one of its messages, or aimed a command at it. See
+	// addressedTo for the exact set and why it is that set.
+	//
+	// It is a fact about the message, carried on every one of them, and it is not a
+	// decision about whether to answer. Which conversations require it is a policy
+	// internal/assistant applies to the resolved scope — a private chat sets this
+	// field the same way and nothing reads it there, because a chat with one member
+	// in it is addressed by definition.
+	Addressed bool
 }
 
 // Outbound is a reply.

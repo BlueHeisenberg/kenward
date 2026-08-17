@@ -389,6 +389,31 @@ func (u *Unit) Handle(ctx context.Context, in transport.Inbound) error {
 		return fmt.Errorf("assistant: resolving scope: %w", err)
 	}
 
+	if overheard(sc, in) {
+		// Heard, and not answered. The conversation is context for the question
+		// that comes later, so the ring gets it; nothing else runs — no retrieval,
+		// no router, no capture, and not even the turn slot, because a message that
+		// is not a turn must not queue behind one or be told that it is queued.
+		//
+		// Capture not running is the decision worth stating, because the argument
+		// the other way is a good one: ambient household knowledge is exactly what
+		// a shared memory is for, and the group chat is where most of it is said.
+		// It loses anyway, because capture asks a question and a question is a
+		// reply. A family talking among themselves would be interrupted by kenward
+		// offering to save things nobody asked it to save — which is the product
+		// failure this whole gate exists to prevent, arriving through the one door
+		// left open. Ambient capture is a feature to design deliberately, with its
+		// own consent shape; it is not a side effect of listening.
+		//
+		// ponytail: an overheard message does not check the scheduled reset
+		// boundary, because the reset speaks to the member and this path may not.
+		// One that lands between a boundary and the next addressed turn is
+		// therefore dropped by that turn's reset. Move the check here, silent, if
+		// that ever costs a real conversation.
+		u.history.add(in.Text, "")
+		return nil
+	}
+
 	release, err := u.admit(ctx, sc, in)
 	if err != nil || release == nil {
 		return err
@@ -408,6 +433,29 @@ func (u *Unit) Handle(ctx context.Context, in transport.Inbound) error {
 		followup(ctx)
 	}
 	return nil
+}
+
+// overheard reports a message this conversation should listen to and not answer.
+//
+// The predicate is the scope kind and deliberately not Inbound.IsGroup. What
+// separates the two conversations is not the chat type: it is whether kenward is the
+// counterparty or a participant. A member's private chat is theirs and every message
+// in it is addressed to it by definition; so is a member's own agent's conversation,
+// wherever that agent one day lives, group chat included. ScopeGroup is the only
+// conversation kenward shares with several people who talk to each other, and it is
+// the only one where "not for me" is a thing a message can be.
+//
+// Group scope is the whole of it because scope.Resolve makes it so: a member's own
+// bot in any group chat is ErrNotEnrolled today, and the household group on the
+// household's bot is the only ScopeGroup there is. Keying on the scope rather than
+// the flag means a member's agent in a group answers everything the day that becomes
+// reachable, with nothing here to change.
+//
+// Reminders do not pass through here. The clock sends on the transport directly, and
+// it should: a reminder is kenward speaking without being addressed, and that is the
+// one unprompted thing it is for.
+func overheard(sc domain.Scope, in transport.Inbound) bool {
+	return sc.Kind == domain.ScopeGroup && !in.Addressed
 }
 
 // admit serialises the turn. It returns an idempotent release function once the

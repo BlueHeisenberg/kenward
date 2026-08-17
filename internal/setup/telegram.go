@@ -51,9 +51,11 @@ var TelegramAPIBase = "https://api.telegram.org"
 
 // DefaultTelegramProbe authorises a bot token and reports what Telegram says about it.
 //
-// It is the only getMe in this module. `kenward doctor` calls it through this type, and
-// so do both wizards, because "which bot is this and can it hear the group" is one
-// question and two answers to it would eventually differ.
+// It is the only getMe anyone asks before there is a transport. `kenward doctor` calls
+// it through this type, and so do both wizards, because "which bot is this and can it
+// hear the group" is one question and two answers to it would eventually differ. The
+// running transport makes its own, once, at startup — it has to, because it needs its
+// own username to recognise an @mention and by then no wizard is in the picture.
 //
 // The token goes in the URL path, which is where the Bot API wants it, and is scrubbed
 // out of every error before it can reach a terminal or a log: net/url and net/http both

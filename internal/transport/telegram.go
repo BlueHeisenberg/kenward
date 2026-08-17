@@ -25,6 +25,11 @@ const (
 	defaultUpdateBuffer     = 32
 	defaultRateLimitRetries = 3
 	defaultQuestionTimeout  = 5 * time.Minute
+	// tokenCheckTimeout bounds the startup getMe. It is the go-telegram library's
+	// own default for the call it used to make on this transport's behalf, kept so
+	// that moving the call did not quietly change how long a household waits on a
+	// bad link before startup fails.
+	tokenCheckTimeout = 5 * time.Second
 )
 
 // Telegram is a Transport over the Telegram Bot API.
@@ -41,6 +46,13 @@ const (
 type Telegram struct {
 	api   *bot.Bot
 	token string // held only to scrub it out of errors; never logged, never returned
+	// username is this bot's own handle, without the @, learned from the startup
+	// getMe. It is what makes an @mention recognisable, and Telegram does not put
+	// it on an update: a mention arrives as an offset into the text and the text
+	// says @something, so without this the transport cannot tell whether the
+	// something is itself. Empty when the token check was skipped, which
+	// addressedTo treats as "answer everything".
+	username string
 
 	maxLen         int
 	retries        int
@@ -139,6 +151,11 @@ func WithLogger(l *slog.Logger) Option {
 // WithSkipTokenCheck skips the getMe call that NewTelegram otherwise makes to
 // prove the token works. Useful offline; in production the check is what turns a
 // bad token into a startup error instead of a silent nothing.
+//
+// It also leaves the transport without its own username, which is what recognises
+// an @mention of itself. addressedTo then marks every message addressed, so a
+// household group is answered as it was before the gate existed rather than falling
+// silent — see addressedTo on why that is the right way to fail.
 func WithSkipTokenCheck() Option {
 	return func(c *telegramConfig) { c.skipTokenCheck = true }
 }
@@ -202,13 +219,24 @@ func NewTelegram(token string, opts ...Option) (*Telegram, error) {
 	if cfg.serverURL != "" {
 		bopts = append(bopts, bot.WithServerURL(cfg.serverURL))
 	}
-	if cfg.skipTokenCheck {
-		bopts = append(bopts, bot.WithSkipGetMe())
-	}
+	// The library's own startup getMe throws its answer away, and the answer is the
+	// bot's username — the one thing needed to recognise an @mention of itself. So
+	// the check is made here instead of there: the same single call, at the same
+	// point in startup, failing the same way, with the result kept.
+	bopts = append(bopts, bot.WithSkipGetMe())
 
 	api, err := bot.New(token, bopts...)
 	if err != nil {
 		return nil, fmt.Errorf("transport: telegram: %w", redactToken(err, token))
+	}
+	if !cfg.skipTokenCheck {
+		ctx, cancel := context.WithTimeout(context.Background(), tokenCheckTimeout)
+		defer cancel()
+		me, err := api.GetMe(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("transport: telegram: error call getMe, %w", redactToken(err, token))
+		}
+		t.username = me.Username
 	}
 	t.api = api
 	return t, nil
@@ -501,6 +529,7 @@ func (t *Telegram) onMessage(m *models.Message) {
 		MessageID: m.ID,
 		IsGroup:   group,
 		At:        at,
+		Addressed: addressedTo(m, t.username, t.api.ID()),
 	}) {
 		t.log(slog.LevelWarn, "inbound backlog full, oldest message dropped", "chat_id", m.Chat.ID)
 	}

@@ -26,6 +26,12 @@ because a member reading a transcript should be able to predict what the assista
 6. **Recent turns** — the unit-local history ring, oldest first. See *The scheduled
    reset* below: the ring may be emptied on a boundary the household chose, and when it
    is, the member is told.
+
+   In the household group the ring also holds what kenward heard and did not answer —
+   messages the family sent each other, which are context and not turns (see
+   IMPLEMENTATION §5). They have no assistant side, so a run of them is joined into one
+   `user` message rather than sent as consecutive ones, which several local chat
+   templates reject or silently merge.
 7. **The member's message.**
 
 ### Budget

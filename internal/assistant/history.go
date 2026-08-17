@@ -10,14 +10,20 @@ import (
 )
 
 // turnRecord is one delivered turn: what the member said and what they were shown.
+//
+// An empty assistant side is a message that was heard and not answered — an
+// unaddressed message in the household group. It is a record of the conversation
+// rather than of a turn, which is the point: the group's talk is context for the
+// question that eventually gets asked.
 type turnRecord struct {
 	user      string
 	assistant string
 }
 
-// historyRing keeps the last max turns. Turns are serialised by the Unit's slot, so
-// the ring sees one writer at a time; it carries its own lock anyway, so a snapshot
-// is consistent no matter what a future caller does.
+// historyRing keeps the last max turns. It carries its own lock: answered turns are
+// serialised by the Unit's slot, but an overheard message is recorded before the slot
+// is taken — it is not a turn and must not queue behind one — so the ring genuinely
+// has more than one writer.
 type historyRing struct {
 	mu  sync.Mutex
 	buf []turnRecord

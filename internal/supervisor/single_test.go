@@ -120,7 +120,7 @@ func TestSingleServesExactlyOneMember(t *testing.T) {
 	// elsewhere, and this process answers with nothing at all.
 	h.fake.Inject(transport.Inbound{ChatID: 2, UserID: 2, Text: "eve here", MessageID: 2})
 	// A group message is not served either: the group has its own pod.
-	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: 1, Text: "hi all", MessageID: 3, IsGroup: true})
+	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: 1, Text: "hi all", MessageID: 3, IsGroup: true, Addressed: true})
 	time.Sleep(50 * time.Millisecond)
 	if n := len(h.fake.Sent()); n != 1 {
 		t.Fatalf("other units' messages produced %d extra replies, want none", n-1)
@@ -136,7 +136,7 @@ func TestSingleServesTheGroup(t *testing.T) {
 	})
 	h.start(t, "group")
 
-	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: 1, Text: "hi all", MessageID: 9, IsGroup: true})
+	h.fake.Inject(transport.Inbound{ChatID: groupChatID, UserID: 1, Text: "hi all", MessageID: 9, IsGroup: true, Addressed: true})
 	waitFor(t, "group reply", func() bool { return len(h.fake.Sent()) >= 1 })
 	got, _ := h.fake.LastSent()
 	if got.ChatID != groupChatID || got.ReplyTo != 9 || replyBody(got.Text) != "via:local" {

@@ -591,10 +591,17 @@ func directInbound(text string) transport.Inbound {
 	}
 }
 
+// groupInbound is a member addressing the assistant in the household chat: they
+// named it, replied to it, or aimed a command at it. Which of the three is
+// internal/transport's to work out; here it is the one fact the Unit reads.
+//
+// A message between two members with nothing in it for the assistant is a different
+// thing and is built by groupAside, in addressed_test.go, with this flag off.
 func groupInbound(text string) transport.Inbound {
 	in := directInbound(text)
 	in.ChatID = testGroupChat
 	in.IsGroup = true
+	in.Addressed = true
 	return in
 }
 

@@ -277,6 +277,7 @@ type Inbound struct {
     MessageID int
     IsGroup   bool
     At        time.Time
+    Addressed bool   // the member spoke to the bot, not to the room; see §5
 }
 
 type Outbound struct {
@@ -945,7 +946,11 @@ another member's plaintext, and that one member's compromise reaches no one else
 1. **Resolve scope.** `scope.Resolve(cfg, in)`. Unknown sender or unmapped chat →
    return `ErrNotEnrolled`; the caller drops it silently, sending nothing. Never reply
    "you are not authorised" — that confirms the bot exists to a stranger.
-2. **Ensure session.** Only a member has a key, so a group turn proceeds without one. If
+2. **Decide whether this is a turn at all.** In the household group — and only there —
+   a message that does not address kenward is recorded in the history ring and produces
+   nothing else. See "The household group is heard, and answered only when addressed"
+   below. Every other conversation continues to step 3 unconditionally.
+3. **Ensure session.** Only a member has a key, so a group turn proceeds without one. If
    the member's key is not unwrapped, the turn stops with the locked notice from §10 and
    nothing else: retrieval without a session would be retrieval without the member
    present. The notice deliberately does **not** invite the member to send a passphrase.
@@ -953,7 +958,7 @@ another member's plaintext, and that one member's compromise reaches no one else
    a chat travels through Telegram, stays in the member's own history, and in simple mode
    is readable by whoever holds the bot token. Otherwise the session's idle clock is
    touched and the turn continues.
-3. **Show the member they are being answered.** From here to the end of the turn the
+4. **Show the member they are being answered.** From here to the end of the turn the
    typing indicator runs in this chat, refreshed every four seconds and stopped — waited
    for, not merely cancelled — when the reply lands or the turn fails. It starts *after*
    scope resolution and after the session check, which is what keeps it away from a
@@ -961,10 +966,10 @@ another member's plaintext, and that one member's compromise reaches no one else
    notice, and an indicator would be the node claiming to be working on an answer it has
    already decided not to produce. A turn against a real household model measured fifteen
    to twenty seconds; a family group chat reads that silence as a broken assistant.
-4. **Reset the history, if a boundary has passed.** `history.reset_every`, off by
+5. **Reset the history, if a boundary has passed.** `history.reset_every`, off by
    default. See "The scheduled reset" below; when it drops anything the member is sent a
    notice before the turn goes any further, and nothing in lore is touched.
-5. **Retrieve.** The member's message is reduced to its content words — lore's own
+6. **Retrieve.** The member's message is reduced to its content words — lore's own
    tokens, minus a stopword list, capped at six — and each word is searched on its own
    in every space in `scope.Read`, concurrently. Each space's hits are unioned and
    ranked by what each word narrowed down — a word contributes `1/(entries it found)`
@@ -983,7 +988,7 @@ another member's plaintext, and that one member's compromise reaches no one else
    "what" is not in it — and the node then answers as though nothing had been stored.
    Searching word by word makes retrieval degrade instead of failing outright: one
    relevant word among six filler ones still finds the entry.
-6. **Assemble.** System prompt + retrieved entries (rendered with their markers and
+7. **Assemble.** System prompt + retrieved entries (rendered with their markers and
    confidence) + the last N turns from the unit-local history ring, trimmed to fit
    `Options.ContextBudget` with `Options.MaxTokens` reserved out of it for the completion.
    `MaxTokens >= ContextBudget` is a construction error, not a runtime surprise: it leaves
@@ -1022,13 +1027,80 @@ another member's plaintext, and that one member's compromise reaches no one else
    emitting any content, and a cap sized for a plain instruct model makes it return a full
    reasoning trace, no content, and `finish_reason: stop` — which reaches the member as the
    §10 "no usable answer" notice from a model that is working perfectly.
-7. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
+8. **Route.** `router.Complete(ctx, scope.Tiers, req)`. A `*NoBackendError` becomes an
    explicit refusal naming the tiers tried — never a silent fallback. Any other router
    failure becomes one of the notices in §10; a turn never ends in silence.
-8. **Reply**, prefixed with the retrieval line.
-9. **Capture.** If the model proposed a memory write, run the capture state machine.
-10. **Record** the turn in the unit-local history ring — the reply alone, without the
+9. **Reply**, prefixed with the retrieval line.
+10. **Capture.** If the model proposed a memory write, run the capture state machine.
+11. **Record** the turn in the unit-local history ring — the reply alone, without the
    retrieval line.
+
+### The household group is heard, and answered only when addressed
+
+Telegram turns bot privacy mode **on** for every new bot, and with it on a bot in a
+group receives only what names it: an `@mention`, a reply to one of its own messages,
+a bot command. A live run found kenward ignoring an entire family group because of it
+— nothing arrived, so nothing was logged, and there was no error anywhere to find. The
+wizard and `kenward doctor` therefore require it **disabled**.
+
+Disabling it removed a gate Telegram had been providing for free, and the gate has to
+exist: kenward now receives every message in the household chat and would answer all of
+them, which is unusable in a chat where a family is talking to each other. So the same
+set is rebuilt in `internal/transport`, off the same entities Telegram would have
+filtered on, and carried as `Inbound.Addressed`:
+
+- an `@username` mention of this bot, anywhere in the text, matched on the mention
+  entity's own offset — which Telegram counts in **UTF-16 code units**, so one emoji
+  ahead of the handle moves it by two;
+- a reply to a message this bot sent;
+- a bot command, unless it names some other bot: `/reset` and `/reset@kenward_bot`
+  count, `/roll@dice_bot` does not. A bare command is Telegram's own privacy-mode
+  exception, which is Telegram saying a command is never one member talking to another;
+- a `text_mention` entity carrying this bot's user record — unreachable in practice,
+  since Telegram produces those only for users with no username and every bot has one,
+  and matched anyway because the id costs nothing.
+
+The username comes from the `getMe` the transport already makes at startup to prove its
+token; the library discarded that answer, so the call moved into `NewTelegram`, which
+keeps it. A transport that never learned its username **fails open** and treats
+everything as addressed. That direction is deliberate: falling silent is the failure
+that started all this and it leaves no trace anywhere, while answering too much is
+visible in the chat within one message.
+
+**The predicate is the scope kind, not `IsGroup`.** What separates the two cases is not
+the chat type but whether kenward is the counterparty or a participant. A member's
+private chat is theirs and every message in it is addressed by definition; so is a
+member's own agent's conversation, wherever that agent lives, group chat included.
+`ScopeGroup` is the only conversation kenward shares with several people who talk to
+each other, and it is the only one where "not for me" is something a message can be.
+Keying on the scope means a member's agent in a group answers everything on the day
+that becomes reachable, with nothing to change here.
+
+**Hearing and answering are different things.** An unaddressed group message goes into
+the unit's history ring with an empty assistant side, so the question that eventually
+does get asked — "what did we decide about the boiler?" — arrives with the
+conversation behind it. It does not take the turn slot, run retrieval, reach the
+router, or run capture. Nothing is spent on it.
+
+A run of overheard messages is joined into one `user` message when the prompt is
+assembled. Two `user` messages in a row is what several local chat templates reject or
+silently merge, and a family talking among themselves produces several before anybody
+asks anything.
+
+**Capture does not fire on an unaddressed message**, and the argument the other way is
+a real one: ambient household knowledge is exactly what a shared memory is for, and the
+group chat is where most of it is said. It loses because capture *asks a question*, and
+a question is a reply. A family chatting among themselves would be interrupted by
+kenward offering to save things nobody asked it to save — the product failure this gate
+exists to prevent, arriving through the one door left open. Ambient capture is a feature
+to design deliberately, with a consent shape of its own; it is not a side effect of
+listening.
+
+Two things that speak into the group without being addressed keep working, and both are
+correct. The **reminder clock** (§15) sends on the transport directly and never passes
+through `Handle` — a reminder is kenward speaking unprompted, which is what it is for.
+A **capture button already in flight** arrives as a callback query, not a message, so a
+member tapping one is answering a question kenward asked.
 
 ### The member is told what was read
 
