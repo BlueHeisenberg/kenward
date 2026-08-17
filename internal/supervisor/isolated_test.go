@@ -1542,6 +1542,106 @@ func TestIsolatedRecreatesARevokedMembersPodOnceAndNotOnEveryStart(t *testing.T)
 	}
 }
 
+// editedConfigHousehold builds a household whose kenward.yaml was written at edited,
+// with every pod already created at created, and returns the supervisor and backend.
+func editedConfigHousehold(t *testing.T, edited, created time.Time) (*Isolated, *fakeBackend) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "kenward.yaml")
+	if err := os.WriteFile(path, []byte("mode: isolated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backdate(t, path, edited)
+
+	b := newFakeBackend()
+	opts := isolatedTestOptions(b)
+	opts.ConfigFile = path
+	sup, err := newIsolated(isolatedTestConfig(), opts, "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		if _, err := b.Create(context.Background(), spec); err != nil {
+			t.Fatalf("create %s: %v", p.name, err)
+		}
+		b.setCreatedAt(p.name, created)
+	}
+	return sup, b
+}
+
+// TestIsolatedRecreatesEveryPodOlderThanTheHouseholdConfiguration.
+//
+// The household's kenward.yaml is provisioned into every pod at PodConfigPath and
+// written only by Create and Recreate. Before this, nothing ever compared the two:
+// newIsolated read the file once, Roll fired on an image change, and stale asked about
+// the invite seed and the revocation record and answered false for the group's pod
+// always. So an operator could edit kenward.yaml, restart exactly as instructed, and get
+// a host supervisor on the new file with every pod still serving the old one — found
+// against real podman by cmd/kenward's TestPodConfigGoesStale, which read the file back
+// out of a container with `podman cp` and got the pre-edit bytes.
+//
+// It is the documented first-run path, not an exotic edit: docs/IMPLEMENTATION.md §8 has
+// the operator create the household's lore spaces after the pods exist — they can only be
+// created inside a pod — and then write the minted ids into kenward.yaml. Following that
+// recipe wrote a configuration nothing would ever read, and the household failed days
+// later on the placeholder space id with `✗ space "…" is not a space this lore store
+// holds` inside the pod while host-side `doctor`, reading the new file, reported health.
+//
+// The group's pod is the case worth naming: it holds no member's binding and no claimer,
+// which is why stale used to dismiss it outright, but it is given this file like every
+// other pod and it is the pod that serves the shared space the recipe is about.
+func TestIsolatedRecreatesEveryPodOlderThanTheHouseholdConfiguration(t *testing.T) {
+	now := time.Now()
+	sup, b := editedConfigHousehold(t, now.Add(-time.Hour), now.Add(-2*time.Hour))
+
+	sup.recreateStalePods(context.Background())
+
+	for _, p := range sup.pods {
+		if got := b.recreated(p.name); got != 1 {
+			t.Errorf("%s recreated %d times, want 1: it was built before the household configuration was edited, so it cannot be holding it", p.name, got)
+		}
+	}
+
+	// Once, not on every start. Recreate advances the pod's creation time past the
+	// file, the same contract that makes one revocation delivery enough — otherwise
+	// every restart for the rest of the file's life rebuilds the whole household.
+	sup.recreateStalePods(context.Background())
+	for _, p := range sup.pods {
+		if got := b.recreated(p.name); got != 1 {
+			t.Errorf("%s recreated %d times across two starts, want 1", p.name, got)
+		}
+	}
+
+	// A pod built after the edit already holds it and is left alone.
+	sup2, b2 := editedConfigHousehold(t, now.Add(-2*time.Hour), now.Add(-time.Hour))
+	sup2.recreateStalePods(context.Background())
+	for _, p := range sup2.pods {
+		if got := b2.recreated(p.name); got != 0 {
+			t.Errorf("%s recreated %d times, want 0: it was built after the configuration was written and was given it at create time", p.name, got)
+		}
+	}
+
+	// And the fresh install, which is the case that makes this file's comparison
+	// different from the other two. `kenward setup` writes kenward.yaml and
+	// `kenward run` creates the pods from it moments later, so the pod legitimately
+	// postdates the file by less than createdAtSkew — every time, on every first
+	// run. Comparing with that tolerance called all of them stale and rebuilt the
+	// whole household twice before the timestamps drifted far enough apart to
+	// settle, which is why stale passes zero for this one. Caught by
+	// TestIsolatedPodman/HouseholdComesUp against real pods, where the entire
+	// household is created inside four seconds.
+	sup3, b3 := editedConfigHousehold(t, now.Add(-300*time.Millisecond), now)
+	sup3.recreateStalePods(context.Background())
+	for _, p := range sup3.pods {
+		if got := b3.recreated(p.name); got != 0 {
+			t.Errorf("%s recreated %d times, want 0: it was created 300ms after the configuration it was built from, which is what every fresh install looks like", p.name, got)
+		}
+	}
+}
+
 // TestIsolatedProvisionsEachMemberTheirOwnRevocationAndTheGroupNone.
 //
 // The other direction of the same crossing, and the only delivery a revocation has in

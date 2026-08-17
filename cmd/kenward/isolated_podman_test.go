@@ -402,6 +402,13 @@ type household struct {
 	rig    *rig
 	h      *harness
 	prefix string
+
+	// wrapBackend, when set, wraps the podman backend supervisorFor builds, after the
+	// recording wrapper and before the supervisor sees it. It is how thirdscope_podman_test.go
+	// provisions its stand-in Bot API's CA into every pod without a second copy of
+	// supervisorFor: keel's sandbox.Spec carries the file list, and the only place a test
+	// can reach a Spec on its way to podman is the Backend.
+	wrapBackend func(sandbox.Backend) sandbox.Backend
 }
 
 func newHousehold(t *testing.T, r *rig, yaml string, vars map[string]string) *household {
@@ -473,7 +480,10 @@ func (hh *household) supervisorFor(image string) (*supervisor.Isolated, *recordi
 	opts.RollTimeout = rollTimeout
 
 	backend := &recordingBackend{Backend: sandbox.NewPodmanBackend(sandbox.Config{}, logger)}
-	opts.Backend = backend
+	opts.Backend = sandbox.Backend(backend)
+	if hh.wrapBackend != nil {
+		opts.Backend = hh.wrapBackend(backend)
+	}
 
 	sup, err := supervisor.NewIsolated(cfg, opts)
 	if err != nil {

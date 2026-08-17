@@ -191,6 +191,10 @@ type IsolatedOptions struct {
 	// (`--config=… --data-dir=… --member=ID | --group`). When empty, unit
 	// selection travels as environment only and the image is expected to carry
 	// or locate its own configuration.
+	//
+	// The path is kept, not just its contents: provisioning happens at Create and
+	// Recreate time only, so a pod older than this file is holding a configuration
+	// the operator has since replaced, and recreateStalePods needs the path to ask.
 	ConfigFile string
 	// PollInterval is the liveness poll. Defaults to DefaultPollInterval.
 	PollInterval time.Duration
@@ -294,6 +298,12 @@ type pod struct {
 	// which is what makes a revocation recorded while the household runs reach the
 	// pod on its next creation — the only moment the host can tell it anything.
 	revocation string
+	// configFile is the host's kenward.yaml — IsolatedOptions.ConfigFile — or empty
+	// when none was supplied. Unlike the two above it is the same file for every pod
+	// and the group's has it too, and it is here rather than read off the supervisor
+	// for one reason: stale asks about the host files a pod may not be holding, and
+	// this is one of them. See stale, and the defect that put it there.
+	configFile string
 	// enrolled records whether this pod's member had claimed their invite when the
 	// supervisor read the configuration. It changes nothing about the pod — a
 	// claim-only pod is started from the same spec, because the process inside
@@ -523,6 +533,7 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			secrets:    append([]podSecret{token, pass}, keys...),
 			inviteSeed: perMemberPath(opts.InviteSeedDir, m.ID),
 			revocation: perMemberPath(opts.RevocationDir, m.ID),
+			configFile: opts.ConfigFile,
 			base: i.podSpec(name, map[string]string{
 				EnvMember:   string(m.ID),
 				EnvLoreHome: opts.LoreHome,
@@ -560,8 +571,9 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 				key:  k,
 				name: name,
 				// The group has nobody to enrol; its pod is ready when it runs.
-				enrolled: true,
-				secrets:  append([]podSecret{token}, keys...),
+				enrolled:   true,
+				secrets:    append([]podSecret{token}, keys...),
+				configFile: opts.ConfigFile,
 				base: i.podSpec(name, map[string]string{
 					EnvGroup:    "1",
 					EnvLoreHome: opts.LoreHome,
@@ -891,7 +903,7 @@ func podName(prefix, suffix string) string {
 // Before the monitors run it rolls the household onto the current image when the
 // image has changed since the last start — see rollIfImageChanged, which is where
 // the host's own self-update finally reaches the pods — and recreates the pods
-// whose provisioned invites or revocations they may not have; see
+// whose provisioned configuration, invites or revocations they may not have; see
 // recreateStalePods, which is what makes "restart kenward" true.
 func (i *Isolated) Start(ctx context.Context) error {
 	i.mu.Lock()
@@ -999,7 +1011,21 @@ func (i *Isolated) logStartup() {
 // recreated because that record is the entire delivery mechanism for an action whose
 // point is to take effect. An unenrolled member's pod with a seed is recreated for the
 // same reason and at the same price D-023 already pays: it is serving nobody, so
-// replacing it interrupts nothing. Every other pod is started, not replaced.
+// replacing it interrupts nothing. A pod older than the household's kenward.yaml is
+// recreated because provisioning is the only delivery there is for that file too, and
+// that one reaches the group's pod as well as the members'. Every other pod is started,
+// not replaced.
+//
+// What a recreate costs here, since one of those three can now fire on a pod that is
+// serving somebody. Nothing in flight is dropped: this runs once in Start, before the
+// monitors, and Stop has already stopped every pod on the way out of the previous
+// `kenward run` — so in the restart the operator was told to perform there is no turn
+// to lose. Where a supervisor died without draining and left containers up, replace
+// stops the pod first and that stop is a SIGTERM the pod's runtime answers by finishing
+// its turn and locking its sessions. What is deliberately absent is a watcher: nothing
+// recreates a pod because a file changed under a running household. The operator edits
+// and restarts, which is what §8 tells them to do, and the recreate happens at the one
+// moment the household is already down.
 //
 // When one of those is actually rebuilt. A revoked member's record is never deleted —
 // nothing can know when the pod has consumed it — so the record's mere existence cannot
@@ -1029,10 +1055,12 @@ func (i *Isolated) logStartup() {
 // time later than its files and is skipped on its own evidence, not on an assumption.
 func (i *Isolated) recreateStalePods(ctx context.Context) {
 	for _, p := range i.pods {
-		// A first pass against an unknown creation time, which costs no Inspect:
-		// the group's pod is never given these files and most members have neither,
-		// and a pod that is not stale even when nothing is known about its age
-		// cannot become stale once something is. recreateOne asks the real question.
+		// A first pass against an unknown creation time, on the rule that a pod which
+		// is not stale even when nothing is known about its age cannot become stale
+		// once something is. It skips the Inspect for a pod with none of these files
+		// at all — which, now that the household configuration counts, means a
+		// deployment that provisions no configuration rather than the common case.
+		// recreateOne asks the real question.
 		if !p.stale(time.Time{}) {
 			continue
 		}
@@ -1042,27 +1070,56 @@ func (i *Isolated) recreateStalePods(ctx context.Context) {
 		case errors.Is(err, errPodCurrent):
 			// Created after every file it would be given: it already holds them.
 		case err != nil:
-			i.logger.Warn("supervisor: could not recreate pod to give it the current invites and revocations; it may be serving a revoked account",
+			i.logger.Warn("supervisor: could not recreate pod to give it the current configuration, invites and revocations; it may be serving a revoked account or an outdated kenward.yaml",
 				"pod", p.name, "error", err)
 		default:
-			i.logger.Info("supervisor: pod recreated so it reads the current invites and revocations", "pod", p.name)
+			i.logger.Info("supervisor: pod recreated so it reads the current configuration, invites and revocations", "pod", p.name)
 		}
 	}
 }
 
 // stale reports whether this pod, created at createdAt, may not be holding the
-// current contents of the per-member files the host provisions into it.
+// current contents of the host files provisioned into it.
 // createdAt is the pod's sandbox.Status.CreatedAt. See recreateStalePods.
 func (p *pod) stale(createdAt time.Time) bool {
-	if p.key.group {
-		// The group's pod is given neither: it has no claimer and holds no member's
-		// binding.
-		return false
-	}
-	if fileNewerThan(p.revocation, createdAt) {
+	// The household configuration is one of those files, for every pod including
+	// the group's, and until this was here it was the one nobody asked about:
+	// newIsolated reads kenward.yaml once, podSpec puts the bytes in the spec, and
+	// only Create and Recreate write a spec's files. An operator who edited
+	// kenward.yaml and restarted got a host supervisor on the new file and pods
+	// still serving the old one, with nothing anywhere saying so — host-side
+	// `doctor` reads the new file and is satisfied.
+	//
+	// That is not a cosmetic drift. docs/IMPLEMENTATION.md §8's own first-run recipe
+	// ends in exactly this state: the household's lore spaces can only be created
+	// inside a pod, so the operator creates them after the pods exist and then writes
+	// the minted ids into kenward.yaml — into a file the pods will never read. Every
+	// pod looks healthy and every turn that touches memory fails, days later, against
+	// the placeholder id the pods were built with.
+	//
+	// It is compared without createdAtSkew, unlike the two below, because the
+	// timing that tolerance exists for is reversed here. A revocation record is
+	// written just *before* the restart that must deliver it, so a coarse
+	// filesystem rounding its mtime down can hide a genuinely newer record and
+	// the window is worth buying. kenward.yaml is written just *before the pods
+	// are created from it* — on every first run — so the same window would call
+	// a pod stale for holding the very bytes it was built from, and rebuild the
+	// whole household twice on `kenward setup` followed by `kenward run`. What
+	// the strict comparison gives up is an edit made inside one tick of a
+	// two-second-granularity filesystem of a pod's creation, which costs that
+	// edit one further restart rather than losing it.
+	if fileNewerThan(p.configFile, createdAt, 0) {
 		return true
 	}
-	return !p.enrolled && fileNewerThan(p.inviteSeed, createdAt)
+	if p.key.group {
+		// The group's pod is given neither of the per-member files: it has no claimer
+		// and holds no member's binding.
+		return false
+	}
+	if fileNewerThan(p.revocation, createdAt, createdAtSkew) {
+		return true
+	}
+	return !p.enrolled && fileNewerThan(p.inviteSeed, createdAt, createdAtSkew)
 }
 
 // createdAtSkew is how much older than a host file a pod may be observed to be
@@ -1090,7 +1147,9 @@ const createdAtSkew = 2 * time.Second
 
 // fileNewerThan reports whether the host file at path exists and may be newer
 // than a pod created at createdAt — that is, whether that pod may not be holding
-// its current contents.
+// its current contents. skew widens the window in favour of "newer"; see
+// createdAtSkew for what it buys, and stale for the one file that passes zero
+// because the timing that tolerance exists for runs the other way.
 //
 // Every uncertain answer is "yes", and that asymmetry is the whole design. A
 // needless recreation costs one container rebuild and preserves the work volume
@@ -1106,7 +1165,7 @@ const createdAtSkew = 2 * time.Second
 //     stale. The file may well be a revocation record; if it is unreadable,
 //     replace will fail on it in podFile and say so loudly, which is the outcome
 //     to want over quietly leaving a revoked member served.
-func fileNewerThan(path string, createdAt time.Time) bool {
+func fileNewerThan(path string, createdAt time.Time, skew time.Duration) bool {
 	if path == "" {
 		return false
 	}
@@ -1117,7 +1176,7 @@ func fileNewerThan(path string, createdAt time.Time) bool {
 	case err != nil, createdAt.IsZero():
 		return true
 	}
-	return fi.ModTime().After(createdAt.Add(-createdAtSkew))
+	return fi.ModTime().After(createdAt.Add(-skew))
 }
 
 // errPodCurrent reports that a pod was created after every per-member file the
