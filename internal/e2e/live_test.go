@@ -961,6 +961,51 @@ func TestLive(t *testing.T) {
 		t.Logf("group reply: %q", sent[0].Text)
 	})
 
+	// 3b-ii. The handle a member types to address the household node is not part of
+	// what they asked it.
+	//
+	// This is the group gate's own bill, and it was paid live. Once an @mention became
+	// the ordinary way to speak to kenward in a group, the handle started arriving
+	// inside the text, and to lore's tokeniser "@kenward_hearth_e2e_bot" is four words.
+	// A turn searches six, first six win, so a real household asked for its garage gate
+	// code and the shared store was searched for "kenward hearth e2e bot cuál es" — no
+	// retrieval line at all, and "I have not got that written down" over an entry that
+	// held it. The same question by reply found it in one.
+	//
+	// Everything below the transport is real: a real lore store searched by a real
+	// client, and the entry seeded by the `lore` binary out of process. The Inbound is
+	// built by hand because transport.Fake is not Telegram and does not know the bot's
+	// own name — the field this is about is set by internal/transport, from the mention
+	// entity, and internal/transport's own tests own that half.
+	t.Run("GroupMentionDoesNotEatTheQuestion", func(t *testing.T) {
+		const handle = "@kenward_hearth_e2e_bot"
+		token := "membrillo-" + stamp()
+		loreCLI(t, l, "El código del portón del garaje es "+token+".",
+			"put", "-space", string(l.shared), "-domain", "kenward/e2e",
+			"-title", "Código del portón del garaje",
+			"-confidence", "validated", "-body-file", "-")
+
+		h := newLiveHarness(t, l, liveOptions{persona: config.PersonaConfig{Language: "Spanish"}})
+		h.start()
+		h.tr.Inject(transport.Inbound{
+			ChatID: groupChatID, UserID: davidTelegramID,
+			Text:      handle + " ¿cuál es el código del portón del garaje?",
+			Mention:   handle,
+			MessageID: 1, IsGroup: true, Addressed: true, At: time.Now().UTC(),
+		})
+		sent := h.waitForReply(groupChatID, 1)
+		t.Logf("group reply: %q", sent[0].Text)
+
+		if system := h.proxy.last(t).System(); !strings.Contains(system, token) {
+			t.Errorf("an @mentioned question did not retrieve the entry that answers it; the system prompt was:\n%s", system)
+		}
+		for _, c := range h.mem.recorded() {
+			if c.Op == "search" && strings.Contains(handle, strings.ToLower(c.Text)) {
+				t.Errorf("the shared store was searched for %q, which is a word of the bot's own handle", c.Text)
+			}
+		}
+	})
+
 	// 3c. A Spanish household reads Spanish and the model still reads English.
 	//
 	// The two halves are one rule (internal/lang's package comment): everything a

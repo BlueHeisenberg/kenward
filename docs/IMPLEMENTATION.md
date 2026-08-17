@@ -296,6 +296,7 @@ type Inbound struct {
     IsGroup   bool
     At        time.Time
     Addressed bool   // the member spoke to the bot, not to the room; see §5
+    Mention   string // this bot's own @mention as it appears in Text, or ""
 }
 
 type Outbound struct {
@@ -1023,8 +1024,19 @@ another member's plaintext, and that one member's compromise reaches no one else
    default. See "The scheduled reset" below; when it drops anything the member is sent a
    notice before the turn goes any further, and nothing in lore is touched.
 6. **Retrieve.** The member's message is reduced to its content words — lore's own
-   tokens, minus a stopword list, capped at six — and each word is searched on its own
-   in every space in `scope.Read`, concurrently. Each space's hits are unioned and
+   tokens, minus this bot's own `@mention` (`Inbound.Mention`), minus a stopword list,
+   capped at six, and when more than six survive it is the six **longest** that are kept
+   — and each word is searched on its own in every space in `scope.Read`, concurrently.
+   Both of those exclusions were paid for live and are one bug: an `@mention` is how a
+   member addresses the household node in a group, `@kenward_hearth_e2e_bot` is four
+   words to the tokeniser, and a Spanish question then spent its last two slots on
+   "cuál" and "es" — the shared store was searched for the bot's own name and the
+   household was told its garage gate code had never been written down. The stopword
+   list is English and stays English; the length preference is what carries the other
+   nine languages, because function words are short in all of them and a per-language
+   table needs the household to be typing in the language it configured. It costs the
+   case where a short word is the subject of a long message.
+   Each space's hits are unioned and
    ranked by what each word narrowed down — a word contributes `1/(entries it found)`
    to each of them, so an entry every word found still outranks one a single word
    brushed, and a precise word outranks two ordinary ones. Ranking by a plain count of
@@ -1104,7 +1116,10 @@ filtered on, and carried as `Inbound.Addressed`:
 
 - an `@username` mention of this bot, anywhere in the text, matched on the mention
   entity's own offset — which Telegram counts in **UTF-16 code units**, so one emoji
-  ahead of the handle moves it by two;
+  ahead of the handle moves it by two. The handle the member typed is carried alongside
+  the flag as `Inbound.Mention`, taken from that same entity, because the search path
+  has to take it back out of the question (§5 step 6) and `Text` keeps it: what the
+  member said is what the model, capture and the logs see;
 - a reply to a message this bot sent;
 - a bot command, unless it names some other bot: `/reset` and `/reset@kenward_bot`
   count, `/roll@dice_bot` does not. A bare command is Telegram's own privacy-mode

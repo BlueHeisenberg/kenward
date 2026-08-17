@@ -25,13 +25,22 @@ import (
 // require it is internal/assistant's to say, and it says so on the scope; a private
 // chat carries the flag exactly as a group does and nothing reads it there.
 //
+// The second return is the handle the member typed, exactly as it appeared, when it
+// was an @mention of this bot that addressed the message — "" for every other way of
+// addressing it. It exists because the handle is addressing and not content: it is
+// four words to a tokeniser ("@kenward_hearth_e2e_bot" is kenward, hearth, e2e, bot)
+// and the search path has six word-slots per turn, so a question that names the bot
+// was searching for its own name instead of for what was asked. Returned rather than
+// stripped from the text, because what the member said is what the member said, and
+// the model, the capture engine and the logs all get to see it.
+//
 // An empty username fails open — every message is addressed. A transport that never
 // learned its own name would otherwise gate the whole household into silence, which
 // is the failure this function exists to prevent and the one nothing in the chat
 // would show; answering too much is wrong in a way a household can see and report.
-func addressedTo(m *models.Message, username string, botID int64) bool {
+func addressedTo(m *models.Message, username string, botID int64) (addressed bool, mention string) {
 	if username == "" {
-		return true
+		return true, ""
 	}
 	handle := "@" + username
 
@@ -39,18 +48,26 @@ func addressedTo(m *models.Message, username string, botID int64) bool {
 	// addressing us. Bots always carry a username in `from`, so this compares the
 	// same field the mention path does.
 	if r := m.ReplyToMessage; r != nil && r.From != nil && strings.EqualFold(r.From.Username, username) {
-		return true
+		addressed = true
 	}
 
 	// Entity offsets are counted in UTF-16 code units, which is neither bytes nor
 	// runes: one emoji ahead of a mention moves a byte offset by four and a rune
 	// offset by one. Encoding once here costs one pass over a chat message.
+	//
+	// The loop runs to the end rather than returning on the first match, because a
+	// member who both replies and names the bot has done both, and the mention is
+	// wanted whichever of the two got here first.
 	units := utf16.Encode([]rune(m.Text))
 	for _, e := range m.Entities {
 		switch e.Type {
 		case models.MessageEntityTypeMention:
-			if strings.EqualFold(entityText(units, e), handle) {
-				return true
+			// Taken from the entity rather than assembled from the username, so
+			// what comes back is the exact substring of the text — case and all,
+			// which is what makes removing it later a plain string operation
+			// with no case folding and no offsets to get wrong a second time.
+			if got := entityText(units, e); strings.EqualFold(got, handle) {
+				addressed, mention = true, got
 			}
 		case models.MessageEntityTypeBotCommand:
 			// A command is never one member talking to another, so a bare
@@ -60,7 +77,7 @@ func addressedTo(m *models.Message, username string, botID int64) bool {
 			// is not ours.
 			_, named, ok := strings.Cut(entityText(units, e), "@")
 			if !ok || strings.EqualFold(named, username) {
-				return true
+				addressed = true
 			}
 		case models.MessageEntityTypeTextMention:
 			// Telegram produces this only for a user with no username, and every
@@ -68,11 +85,11 @@ func addressedTo(m *models.Message, username string, botID int64) bool {
 			// anyway: the id is free, and a rule that holds for a reason living
 			// outside this file is a rule that stops holding without a sound.
 			if e.User != nil && e.User.ID == botID {
-				return true
+				addressed = true
 			}
 		}
 	}
-	return false
+	return addressed, mention
 }
 
 // entityText returns the text one entity covers, or "" if it points outside the
