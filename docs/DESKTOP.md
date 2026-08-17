@@ -237,9 +237,10 @@ a division.
 
 1. **Three runners, three bundles.** `ubuntu-latest` for `.deb` and `.rpm`,
    `macos-latest` for the `.dmg`, `windows-latest` for the installer. Each depends on
-   the `gate` job only, so all three run alongside GoReleaser rather than behind it.
+   the `stamp` and `gate` jobs only, so all three run alongside GoReleaser rather than
+   behind it.
 2. **The daemon is `CGO_ENABLED=0` everywhere, including on the Mac.** Only the
-   wrapper needs cgo, and only on darwin. The gate job asserts the daemon still links
+   wrapper needs cgo, and only on darwin. The `stamp` job asserts the daemon still links
    without cgo, and that `kenward-desktop` has not appeared in the Dockerfile.
 3. **Windows is amd64 only.** The installer declares
    `ArchitecturesAllowed=x64compatible`, so it installs and runs on ARM Windows under
@@ -252,7 +253,9 @@ a division.
    opens a console window behind the tray icon. Nothing else needs it, and the wrapper
    takes no version `-X` flags: it does not import `internal/version` and has no
    `--version` to print. The daemon it ships beside is stamped exactly as GoReleaser
-   stamps the published one, from a single definition in the `gate` job.
+   stamps the published one, from a single definition in the `stamp` job — which is a
+   one-runner job precisely so that definition is single: matrix job outputs in GitHub
+   Actions are last-writer-wins.
 6. **Linux packaging shells out to `packaging/linux/nfpm.yaml`** rather than
    translating it into a `nfpms:` block. One definition of the package layout, and the
    file the manual instructions above use is the file CI uses. nfpm is fetched with
@@ -285,7 +288,7 @@ a division.
     the warning already knowing what it is.
 11. **The container image is untouched.** `cmd/kenward-desktop` must never enter the
     Dockerfile: it would pull a tray library into a distroless image with no display.
-    The gate job greps for it.
+    The `stamp` job greps for it.
 
 A `workflow_dispatch` run is the rehearsal, and it is worth using before a tag rather
 than after one: all three desktop jobs run and leave their bundles as downloadable

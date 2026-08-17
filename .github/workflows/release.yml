@@ -22,11 +22,18 @@ permissions:
   contents: read
 
 jobs:
-  # The same gate CI runs on every push, on the exact commit being released.
-  # A tag can point at anything, including a commit that never went through a
-  # pull request.
-  gate:
-    name: gate
+  # Everything that is a property of the source rather than of a platform: the
+  # shape of the tag, the version stamp, and the two invariants below. One
+  # runner, no tests.
+  #
+  # This is split from `gate` because `gate` is now a matrix, and matrix job
+  # outputs in GitHub Actions are last-writer-wins: three runners each writing
+  # `pkgversion` would leave whichever finished last, and the value handed to
+  # the three desktop jobs would depend on runner scheduling. A version stamp
+  # that is nondeterministic is worse than no version stamp, because it is only
+  # wrong sometimes.
+  stamp:
+    name: stamp
     runs-on: ubuntu-latest
     env:
       GOWORK: off
@@ -105,15 +112,6 @@ jobs:
                "-X $pkg.Date=$(git show -s --format=%cI)" \
                "-X main.releaseTrustedKeys=$KEYS" >>"$GITHUB_OUTPUT"
 
-      - name: Check formatting (gofmt)
-        run: |
-          unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            echo "The following files are not gofmt-formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
-
       # Two invariants the desktop wrapper makes it possible to break silently.
       #
       # The daemon must keep linking without cgo, because the distroless image
@@ -126,6 +124,10 @@ jobs:
       # library into a distroless container that has no display, no session bus
       # and nobody to look at it. That one would not fail at all. It would just
       # ship.
+      #
+      # Both are properties of the source and of the Dockerfile, not of the
+      # runner, so they stay here rather than going in the matrix: running them
+      # three times would prove the same thing three times.
       - name: The daemon builds without cgo, and the tray stays out of the image
         env:
           CGO_ENABLED: '0'
@@ -136,12 +138,58 @@ jobs:
             exit 1
           fi
 
+  # The same gate CI runs on every push, on the exact commit being released.
+  # A tag can point at anything, including a commit that never went through a
+  # pull request.
+  #
+  # On all three platforms, matching ci.yml, because a single-platform gate is
+  # not a gate. Two real races — one in a test fake, two `wg.Add` outside the
+  # lock in the supervisors — failed macOS and Windows for four consecutive CI
+  # runs while ubuntu stayed green, and for those four runs the tree was
+  # taggable and a tag would have produced a green release from it.
+  #
+  # fail-fast: false so one red platform still reports the other two; finding
+  # out about Windows only after macOS has been fixed is two round trips.
+  gate:
+    name: gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      GOWORK: off
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25'
+          cache: false   # see the stamp job
+
+      - name: Check formatting (gofmt)
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - run: go vet ./...
+
+      # Builds every command, which on macOS is also the cgo build of
+      # cmd/kenward-desktop — the one target that cannot be cross-compiled and
+      # so has nowhere else to be checked before desktop-macos runs.
+      - run: go build ./...
+
       - run: go test -race ./...
 
   artifacts:
     name: artifacts
-    needs: gate
+    needs: [stamp, gate]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the draft release and upload to it
@@ -160,7 +208,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
-          cache: false   # see the gate job
+          cache: false   # see the stamp job
 
       - name: Build and draft the release
         uses: goreleaser/goreleaser-action@v6
@@ -197,7 +245,7 @@ jobs:
 
   image:
     name: image
-    needs: gate
+    needs: [stamp, gate]
     # A tag push, never a dispatch: unlike the GitHub release, a ghcr push is
     # immediate and public — there is no draft to sign first — and :latest is
     # what deploy/compose.*.yml pin. Dispatching this workflow at an old tag
@@ -278,7 +326,7 @@ jobs:
   # (cmd/kenward-desktop/main.go, kenwardBinary), which is what makes the .app,
   # the Windows install directory and /usr/bin work with nothing on PATH.
   #
-  # They depend on gate only, not on artifacts, so they run alongside GoReleaser
+  # They depend on the gate only, not on artifacts, so they run alongside GoReleaser
   # rather than behind it; desktop-publish is what waits for the draft release
   # to exist. And none of them holds a write token: they hand their output to
   # desktop-publish as a workflow artifact, and that one job does the uploading.
@@ -286,7 +334,7 @@ jobs:
 
   desktop-linux:
     name: desktop (linux)
-    needs: gate
+    needs: [stamp, gate]
     runs-on: ubuntu-latest
     env:
       GOWORK: off
@@ -295,10 +343,10 @@ jobs:
       # packaging/linux/nfpm.yaml can declare no dependencies and the result
       # runs on glibc and musl alike.
       CGO_ENABLED: '0'
-      LDFLAGS: ${{ needs.gate.outputs.ldflags }}
+      LDFLAGS: ${{ needs.stamp.outputs.ldflags }}
       # nfpm reads ${VERSION} out of the environment; the "v"-less form is the
-      # only one dpkg will take. See the gate job.
-      VERSION: ${{ needs.gate.outputs.pkgversion }}
+      # only one dpkg will take. See the stamp job.
+      VERSION: ${{ needs.stamp.outputs.pkgversion }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -306,7 +354,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
-          cache: false   # see the gate job
+          cache: false   # see the stamp job
 
       - name: Build the pair, both architectures
         run: |
@@ -354,14 +402,14 @@ jobs:
 
   desktop-macos:
     name: desktop (macos)
-    needs: gate
+    needs: [stamp, gate]
     runs-on: macos-latest
     env:
       GOWORK: off
-      LDFLAGS: ${{ needs.gate.outputs.ldflags }}
+      LDFLAGS: ${{ needs.stamp.outputs.ldflags }}
       # The "v"-less form: it becomes CFBundleVersion, which Apple requires to
-      # be period-separated integers. See the gate job.
-      VERSION: ${{ needs.gate.outputs.pkgversion }}
+      # be period-separated integers. See the stamp job.
+      VERSION: ${{ needs.stamp.outputs.pkgversion }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -369,7 +417,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
-          cache: false   # see the gate job
+          cache: false   # see the stamp job
 
       # One universal .app rather than two single-architecture .dmgs. macOS has
       # carried fat binaries since it existed, `lipo` ships with the toolchain,
@@ -412,7 +460,7 @@ jobs:
 
   desktop-windows:
     name: desktop (windows)
-    needs: gate
+    needs: [stamp, gate]
     runs-on: windows-latest
     defaults:
       run:
@@ -420,10 +468,10 @@ jobs:
     env:
       GOWORK: off
       CGO_ENABLED: '0'   # the tray uses Win32 through golang.org/x/sys, no cgo
-      LDFLAGS: ${{ needs.gate.outputs.ldflags }}
+      LDFLAGS: ${{ needs.stamp.outputs.ldflags }}
       # The "v"-less form: it becomes the installer's AppVersion, which is what
-      # Settings › Apps shows. See the gate job.
-      VERSION: ${{ needs.gate.outputs.pkgversion }}
+      # Settings › Apps shows. See the stamp job.
+      VERSION: ${{ needs.stamp.outputs.pkgversion }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -431,7 +479,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
-          cache: false   # see the gate job
+          cache: false   # see the stamp job
 
       # amd64 only, and that covers every Windows machine: the installer sets
       # ArchitecturesAllowed=x64compatible, which includes arm64 running x64
@@ -512,6 +560,19 @@ jobs:
           # against, and rewriting it here would drop GoReleaser's lines.
           gh release download "$TAG" --pattern checksums.txt
           # shellcheck disable=SC2086
-          sha256sum $files >>checksums.txt
+          sha256sum $files >"$RUNNER_TEMP/desktop.sums"
+          # Replace, do not append. `gh release upload --clobber` is idempotent
+          # and `>>` is not: a re-run of this job, or a force-pushed tag, would
+          # otherwise give every desktop artifact a second line in the file
+          # install.sh verifies against. Two lines for one name is at best noise
+          # and at worst a contradiction, and nothing downstream would notice.
+          #
+          # So: drop any line already naming a file we are about to add, keep
+          # every other line exactly as fetched (GoReleaser's are untouched),
+          # then append ours. Field 2 of a sha256sum line is the filename.
+          awk 'NR==FNR { mine[$2]; next } !($2 in mine)' \
+            "$RUNNER_TEMP/desktop.sums" checksums.txt >"$RUNNER_TEMP/checksums.txt"
+          cat "$RUNNER_TEMP/desktop.sums" >>"$RUNNER_TEMP/checksums.txt"
+          mv "$RUNNER_TEMP/checksums.txt" checksums.txt
           # shellcheck disable=SC2086
           gh release upload "$TAG" --clobber $files checksums.txt
