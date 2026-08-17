@@ -86,7 +86,8 @@ assistants this household has.`
 	IdentityQuestion = `One assistant for the whole household, or one each?`
 
 	identityAnswerShared = "One — kenward, for everybody.            (the character below is then\n" +
-		"                                                everyone's, not just yours)"
+		"                                                everyone's; each member still\n" +
+		"                                                picks their own language)"
 	identityAnswerPerMember = "One each, and kenward for the group.     (each person names their own\n" +
 		"                                                and writes it in Telegram)"
 
