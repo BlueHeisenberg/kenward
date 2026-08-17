@@ -47,6 +47,14 @@ var portuguese = Catalogue{
 		"anotado", "guardado", "combinado", "ok", "okay", "sem problema",
 	},
 
+	SaveClaims: []string{
+		"guardado", "guardada", "anotado", "anotada", "registado", "registrado",
+		"guardei", "anotei", "apontei", "tomei nota", "tomo nota", "fica anotado",
+		"já tenho", "fica guardado",
+		"vou lembrar", "vou-me lembrar", "não vou esquecer", "não me vou esquecer",
+		"adicionado à tua", "adicionado à memória", "está na tua memória",
+	},
+
 	ModelBusy:         "O modelo está ocupado neste momento. Tenta outra vez daqui a pouco.",
 	Misconfigured:     "Há alguma coisa mal na configuração desta casa; diz a quem a administra.",
 	TurnFailed:        "Alguma coisa correu mal ao contactar o modelo e a tua mensagem ficou sem resposta. Tenta outra vez daqui a pouco.",

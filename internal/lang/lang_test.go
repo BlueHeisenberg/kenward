@@ -468,6 +468,61 @@ func TestBareAcknowledgementsMatchWhatTheyAreFor(t *testing.T) {
 	}
 }
 
+// TestSaveClaimsMatchWhatTheyAreFor. Every table's own entries match where they
+// actually appear — welded to the fact the claim is about, which is the shape the live
+// run produced and the shape IsBareAcknowledgement cannot see, since none of these
+// replies is bare.
+func TestSaveClaimsMatchWhatTheyAreFor(t *testing.T) {
+	for _, tag := range Tags() {
+		c := For(tag)
+		if len(c.SaveClaims) == 0 {
+			t.Errorf("%s: no save claims, so \"Saved — the plumber's number is 555 0182\" in this language reaches the member unchallenged", tag)
+		}
+		for _, claim := range c.SaveClaims {
+			for _, dressed := range []string{
+				claim, claim + ".", claim + " — 555 0182.",
+				strings.ToUpper(claim) + "! 555 0182", "…, " + claim + " 555 0182",
+			} {
+				if !c.ClaimsASave(dressed) {
+					t.Errorf("%s: %q is in the table and %q does not match it", tag, claim, dressed)
+				}
+			}
+			if c.IsBareAcknowledgement(claim + " — 555 0182.") {
+				t.Errorf("%s: %q with a fact welded to it read as a bare acknowledgement, and that reply would be dropped with the fact in it", tag, claim)
+			}
+		}
+	}
+}
+
+// TestNoSaveClaimIsMerelyAnErrandFinished is the line between the two tables, and it
+// is drawn between completion and possession.
+//
+// "Done" says an action finished and says nothing about memory, so a reply carrying it
+// is routinely an answer — "Done — the boiler service code is 4471." — and the product
+// must send that untouched, which TestAnAcknowledgementCarryingAnAnswerIsLeftAlone
+// asserts. "Got it" is the other side of the line and is in SaveClaims: it says the
+// node is holding the thing the member just handed it, which is a claim about storage,
+// and it is where the residue was measured live.
+//
+// A consequence worth naming: "Done — <the fact>" on a turn that stored nothing is
+// still uncaught, and cannot be caught without breaking the reply that carries an
+// answer. It is the known hole, and the prompt is the only thing that can reach it.
+func TestNoSaveClaimIsMerelyAnErrandFinished(t *testing.T) {
+	for _, s := range []string{
+		"Done — the boiler service code is 4471.",
+		"OK, the bins go out on Tuesday.",
+		"Yes.",
+		"We went in the spring of 2019, four nights, and you got sunburnt.",
+	} {
+		if For("").ClaimsASave(s) {
+			t.Errorf("English: %q read as a claim to have saved something; it is an answer, and the product would annotate it with a notice about memory", s)
+		}
+	}
+	if For("").ClaimsASave("") {
+		t.Error("an empty reply claimed a save; nothing was said, so nothing was claimed")
+	}
+}
+
 // TestNoAcknowledgementCanCarryAnAnswer is the rule that makes replacing a matched
 // reply safe rather than destructive.
 //

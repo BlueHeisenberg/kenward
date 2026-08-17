@@ -52,6 +52,16 @@ var german = Catalogue{
 		"in ordnung", "okay", "ok", "mach ich", "geht klar", "kein problem",
 	},
 
+	SaveClaims: []string{
+		"gespeichert", "notiert", "vermerkt", "aufgeschrieben", "festgehalten",
+		"ich habe notiert", "ich habe gespeichert", "ich habe mir notiert",
+		"ich notiere", "ich schreibe das auf", "ich merke mir",
+		"hab ich mir gemerkt", "habe ich mir gemerkt",
+		"ich werde mir merken", "ich vergesse das nicht", "ich vergesse es nicht",
+		"zu deinem gedächtnis hinzugefügt", "steht jetzt in deinem",
+		"in deinem gedächtnis",
+	},
+
 	ModelBusy:         "Das Modell ist gerade ausgelastet. Versuch es gleich noch einmal.",
 	Misconfigured:     "Mit der Einrichtung dieses Haushalts stimmt etwas nicht — sag der Person Bescheid, die ihn betreibt.",
 	TurnFailed:        "Beim Zugriff auf das Modell ist etwas schiefgegangen, und deine Nachricht wurde nicht beantwortet. Versuch es gleich noch einmal.",

@@ -139,6 +139,42 @@ type Catalogue struct {
 	// apostrophes, diacritics and punctuation need no thought here.
 	BareAcknowledgements []string
 
+	// SaveClaims is every way this language says "I have kept that" — the words, not
+	// the shape of the sentence around them.
+	//
+	// The second field the member never reads, matched against what the model wrote,
+	// and here for the same reason as the first. It exists because the first was not
+	// enough. Once bare acknowledgements were replaced, a live run of seventeen
+	// "remember this for me: …" turns produced three replies that named the fact and
+	// claimed it kept — "Saved — plumber number is 555 0182.", "Noted — the garden
+	// tap is shut off at the valve under the sink." — with nothing behind any of
+	// them. Those are worse than "Done.": they tell the member exactly what was
+	// stored, so the false belief is specific and checkable and will not be checked.
+	//
+	// What belongs here: vocabulary that can only be about a write. "Saved",
+	// "noted", "stored", "I'll remember". A promise counts as a claim — a reply that
+	// says "I won't forget that" on a turn where nothing was asked of the store is
+	// as false as one that says "saved", and it was three of the twenty samples the
+	// eval first caught this on.
+	//
+	// What must never be put here: a word that merely says an action finished.
+	// "Done" and "Got it" say nothing about memory — "Done — the boiler service code
+	// is 4471." is an answer to a question and must reach the member untouched — and
+	// a table that held them would annotate every completed errand with a notice
+	// about storage. That distinction is the whole difference between this field and
+	// the one above, which is why they overlap in some languages ("saved", "noted")
+	// and not in others ("done", "ok").
+	//
+	// Entries match as substrings of the reply, so a claim keeps matching when it is
+	// conjugated, suffixed, or buried mid-sentence — which is where it lives in
+	// Chinese and Arabic, neither of which puts a space in a useful place.
+	//
+	// ponytail: substring match, so "you saved £40" reads as a claim. The cost is one
+	// extra true sentence appended to a reply nobody loses; the cost of missing a real
+	// claim is a member who believes something is stored. Narrow the entries, never
+	// the match, if the noise ever shows up in a live run.
+	SaveClaims []string
+
 	// --- REF: refusals ------------------------------------------------------
 
 	ModelBusy     string
@@ -344,6 +380,35 @@ func (c Catalogue) IsBareAcknowledgement(reply string) bool {
 	}
 	for _, ack := range c.BareAcknowledgements {
 		if got == letters(ack) {
+			return true
+		}
+	}
+	return false
+}
+
+// ClaimsASave reports whether a reply tells the member something has been kept —
+// see SaveClaims.
+//
+// Any part of it, unlike IsBareAcknowledgement, which needs the whole. That is the
+// difference the two guards are for: an acknowledgement matches whole because a
+// matched reply is dropped and must have nothing to lose, and a claimed save matches
+// anywhere because the claim arrives welded to the fact it is lying about, which is
+// content the member keeps.
+//
+// There is no attempt to read tense, and it is deliberate. "Yes, I saved it earlier"
+// is true about an earlier turn and matches here, and every rule that could tell the
+// two apart — a list of words meaning "before", a check that the claim is about this
+// turn's content — buys that one redundant sentence back at the price of missing "I
+// already noted that" said about a note that never existed. One is noise and the
+// other is the defect. The caller appends rather than replaces and its notice speaks
+// only for this turn, which is what makes the noise survivable.
+func (c Catalogue) ClaimsASave(reply string) bool {
+	got := letters(reply)
+	if got == "" {
+		return false
+	}
+	for _, claim := range c.SaveClaims {
+		if strings.Contains(got, letters(claim)) {
 			return true
 		}
 	}

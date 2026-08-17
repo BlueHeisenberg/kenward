@@ -55,6 +55,15 @@ var italian = Catalogue{
 		"salvato", "d'accordo", "va bene", "ok", "okay", "nessun problema",
 	},
 
+	SaveClaims: []string{
+		"salvato", "salvata", "annotato", "annotata", "registrato", "segnato",
+		"ho salvato", "ho annotato", "ho segnato", "ho preso nota", "prendo nota",
+		"ce l'ho",
+		"me lo ricorderò", "me ne ricorderò", "non lo dimenticherò",
+		"non me lo dimentico", "aggiunto alla tua", "aggiunto alla memoria",
+		"è nella tua memoria",
+	},
+
 	ModelBusy:         "Il modello è occupato in questo momento. Riprova tra un momento.",
 	Misconfigured:     "C'è qualcosa che non va nella configurazione di questa casa — dillo a chi la gestisce.",
 	TurnFailed:        "Qualcosa è andato storto nel raggiungere il modello, e il tuo messaggio è rimasto senza risposta. Riprova tra un momento.",

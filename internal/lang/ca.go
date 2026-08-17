@@ -53,6 +53,15 @@ var catalan = Catalogue{
 		"apuntat", "desat", "d'acord", "ok", "okay", "cap problema",
 	},
 
+	SaveClaims: []string{
+		"desat", "desada", "anotat", "anotada", "apuntat", "apuntada",
+		"registrat", "he desat", "he anotat", "he apuntat", "queda anotat",
+		"ho tinc", "ja ho tinc",
+		"prenc nota", "he pres nota", "ho apunto", "ho anoto", "ho deso",
+		"ho recordaré", "me'n recordaré", "no ho oblidaré",
+		"afegit a la teva", "afegit a la memòria", "és a la teva memòria",
+	},
+
 	ModelBusy:         "El model està ocupat ara mateix. Torna-ho a provar d'aquí a un moment.",
 	Misconfigured:     "Hi ha alguna cosa malament a la configuració d'aquesta llar; digues-ho a qui l'administra.",
 	TurnFailed:        "Alguna cosa ha fallat en contactar amb el model i el teu missatge s'ha quedat sense resposta. Torna-ho a provar d'aquí a un moment.",

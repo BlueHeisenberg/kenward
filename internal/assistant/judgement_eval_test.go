@@ -309,8 +309,13 @@ var requestedCases = []judgementCase{
 // they pull against each other, and measuring one without the other is how a prompt
 // change gets called a fix. Wording that frightens the model away from claiming a save
 // can frighten it away from the call; wording that frees the call can free the
-// narration with it. A run of this test reports the capture rate and errors on any
-// claimed save, so the trade is visible in one scorecard rather than discovered later.
+// narration with it. A run reports both — the capture rate, and every reply that
+// narrated one — so the trade is visible in one scorecard rather than discovered later.
+//
+// The narration count used to be an error and is now a number. It was an error while a
+// claimed save with no call reached the member unchallenged; the product corrects those
+// now, and what is left is a prompt-compliance rate on turns that did produce a card.
+// See the report at the bottom.
 //
 // It fails on a completion error and on the one structural floor that means the
 // suppression is back: not a single requested case produced a call in any sample. A
@@ -349,11 +354,19 @@ func TestRequestedCapture(t *testing.T) {
 				r.malformed++
 			}
 			// The dangerous half, counted on exactly the turns where it is dangerous:
-			// the member asked for a write, no call arrived, and the reply is nothing
-			// but an acknowledgement. These cases render an English prompt with the
-			// default persona, so English is the catalogue production would use.
-			if p == nil && lang.For("").IsBareAcknowledgement(comp.Text) {
-				r.bare = append(r.bare, comp.Text)
+			// the member asked for a write, no call arrived, and the reply would leave
+			// them believing one happened — bare, or naming the save outright. Split
+			// the way production splits them, because the two are handled differently:
+			// a bare reply is replaced and a claim is annotated. These cases render an
+			// English prompt with the default persona, so English is the catalogue
+			// production would use.
+			if p == nil {
+				switch {
+				case lang.For("").IsBareAcknowledgement(comp.Text):
+					r.bare = append(r.bare, comp.Text)
+				case claimsASave(comp.Text):
+					r.annotated = append(r.annotated, comp.Text)
+				}
 			}
 			// Kept whatever happened: a reply is the only evidence of a call that
 			// was reasoned about and then not made, and that is the failure mode.
@@ -368,7 +381,7 @@ func TestRequestedCapture(t *testing.T) {
 	}
 
 	var called, total, malformed, empty int
-	var bare []string
+	var bare, annotated []string
 	t.Logf("\n=== requested capture: %s @ %s, %d repeats ===", ep.Model, ep.BaseURL, repeats)
 	for _, r := range results {
 		called += r.proposed
@@ -376,21 +389,35 @@ func TestRequestedCapture(t *testing.T) {
 		malformed += r.malformed
 		empty += r.empty
 		bare = append(bare, r.bare...)
+		annotated = append(annotated, r.annotated...)
 		t.Logf("  %5.0f%%  %-34s called=%d/%d", r.rate()*100, r.c.name, r.proposed, r.samples)
 	}
 	t.Logf("  called when asked             %d/%d  (%.0f%%)", called, total, pct(called, total))
 	t.Logf("  replies claiming a save       %d/%d", len(claimed), total)
-	// The second number, and the one the node can actually move. Of the turns where
-	// the member asked and no call arrived, these are the ones the member would have
-	// read as a save; production replaces each of them with the notice that nothing
-	// was recorded. The remainder answered with something other than a bare
-	// acknowledgement and are printed below for reading — claimsASave is the part of
-	// that remainder which is a defect, and it is asserted on, not counted.
+	// The second number, and the one the node can actually move: of the turns where
+	// the member asked and no call arrived, how many end with the member knowing
+	// nothing was stored. Two guards get there by different routes. A bare
+	// acknowledgement is replaced, having nothing to lose. A reply that names the save
+	// keeps its text and gains the notice, because the fact the claim is about is in
+	// it and the member wanted that fact.
+	//
+	// The remainder is the number that matters and the only one nobody can automate:
+	// a non-calling turn that neither guard caught is a reply somebody has to read.
+	// If it made no claim, the member was never misled and the turn is fine. If it
+	// made one in words lang.Catalogue.SaveClaims does not hold, the release blocker
+	// is back in a new phrasing and the table is short an entry.
 	notCalled := total - called
+	told := len(bare) + len(annotated)
 	t.Logf("  member asked and got no call  %d/%d", notCalled, total)
-	t.Logf("    of those, bare acknowledgements the node now replaces  %d/%d", len(bare), notCalled)
+	t.Logf("    of those, told nothing was recorded  %d/%d", told, notCalled)
 	for _, s := range bare {
-		t.Logf("      %q  ->  %q", oneLine(s), lang.For("").NothingSaved)
+		t.Logf("      replaced: %q  ->  %q", oneLine(s), lang.For("").NothingSaved)
+	}
+	for _, s := range annotated {
+		t.Logf("      annotated: %q  +  %q", oneLine(s), lang.For("").NothingSaved)
+	}
+	if rest := notCalled - told; rest > 0 {
+		t.Logf("    %d not caught by either guard — read them below and check none of them claims a save", rest)
 	}
 	if malformed > 0 {
 		t.Logf("  remember calls dropped as malformed: %d", malformed)
@@ -413,10 +440,28 @@ func TestRequestedCapture(t *testing.T) {
 		}
 	}
 
+	// Reported, and no longer an error. It was one while nothing downstream caught it:
+	// a claimed save with no call reached the member as a lie, and the scorecard was
+	// the only place it could be seen. The product catches it now — every reply in this
+	// list that came off a non-calling turn is in the "told nothing was recorded" count
+	// above — so what is left here is prompt compliance. docs/PROMPT.md asks the model
+	// not to narrate a capture at all, and it still does on some turns that produce a
+	// card: harmless to the member, who gets the card, and worth watching, because the
+	// wording that frees the call is the wording that frees the narration.
+	//
+	// It is also no longer comparable with the number a run printed before this change.
+	// claimsASave used to be a short private list that matched none of "Saved …",
+	// "Noted …" or "Got it …"; it is lang.Catalogue.SaveClaims now, and it sees them,
+	// so a run that reported 0/20 on the old list reports 3/20 on this one for the same
+	// replies. Reading the two as a regression would be reading the detector.
+	//
+	// This restores the rule the rest of the file keeps: it fails on faults — an
+	// endpoint that errored, a run where nothing was ever proposed — and never on a
+	// score. A red suite on every run the model narrates is a suite nobody reads.
 	if len(claimed) > 0 {
-		t.Errorf("%d repl(ies) claimed a save that had not happened, on the path where the member asked for one. The model is never told what became of its call, so the sentence is false at the moment it is written:", len(claimed))
+		t.Logf("  replies narrating a capture (docs/PROMPT.md asks for none):")
 		for _, s := range claimed {
-			t.Errorf("    %q", s)
+			t.Logf("    %q", oneLine(s))
 		}
 	}
 	if !anyProposed {
@@ -582,6 +627,13 @@ type result struct {
 	// judgement and may not be fully fixable by prompting; whether a member who did
 	// not get their write is told so is kenward's, and is fixable outright.
 	bare []string
+	// annotated is the other half of the same accounting: a turn where the member
+	// asked, no call arrived, and the reply named a save in so many words rather than
+	// acknowledging one. Production leaves these replies standing — the fact is in
+	// them — and appends the notice that nothing was recorded. bare and annotated
+	// between them are how many of the non-calling turns the member is told the truth
+	// on, and the remainder is what somebody has to read.
+	annotated []string
 	// replies is every reply text, kept by TestRequestedCapture and not by
 	// TestCaptureJudgement. Thirteen cases times three repeats of unprompted prose is
 	// noise nobody reads; four cases where the member asked for a write and may not
@@ -591,38 +643,19 @@ type result struct {
 
 // claimsASave reports whether a reply tells the member something has been kept.
 //
-// A crude phrase list, and it is the right shape for the job: it runs over thirteen
-// fixed cases where nobody asked about memory, so a sentence in this vocabulary is a
-// claim about a write and not a discussion of one. Nothing like it belongs in
-// production — a lie detector over free text would be a worse defect than the one it
-// chased — which is exactly why the fix is in the prompt and the measurement is here.
+// It used to be a phrase list living here, on the argument that nothing like it
+// belonged in production. That argument was wrong, and a live run said so: once bare
+// acknowledgements were replaced, three of seventeen explicit save requests came back
+// as "Saved — plumber number is 555 0182." with nothing behind them, which no prompt
+// rule and no shape match catches. The list is now
+// lang.Catalogue.SaveClaims, the product consults it on every turn that stored
+// nothing, and this is the same call — deliberately, because two implementations of
+// "does this claim a save" disagree inside a month and this one is what measures
+// whether that one works.
 //
-// The second group is the promise rather than the claim, and it was added because a
-// live run of TestRequestedCapture produced "Got it — I'll keep that one just for
-// you", "I will not forget that one" and "I have made a note of the stopcock being
-// under the stairs", all three with no call behind them, and this function scored the
-// run 0/20. A promise to retain is as false as a claim to have stored when nothing was
-// requested of the store, and a scorecard that cannot see it reports a clean sheet on
-// a run that lied to the member three times.
-func claimsASave(text string) bool {
-	t := strings.ToLower(text)
-	for _, p := range []string{
-		"i've saved", "i have saved", "i saved", "saved it", "saved to your",
-		"saved to the household", "i've stored", "i have stored", "i've recorded",
-		"i have recorded", "i've noted", "i've added it", "i've written it",
-		"has been saved", "have been saved", "both saved", "is now in your",
-		"is now in the household", "added to your private memory",
-		"added to the household",
-		"i've made a note", "i have made a note", "made a note of",
-		"i'll remember", "i will remember", "i'll keep that", "i will keep that",
-		"i won't forget", "i will not forget",
-	} {
-		if strings.Contains(t, p) {
-			return true
-		}
-	}
-	return false
-}
+// These cases render an English prompt with the default persona, so English is the
+// catalogue production would use.
+func claimsASave(text string) bool { return lang.For("").ClaimsASave(text) }
 
 // hasMarkdown reports whether a reply carries Markdown the member will read as
 // punctuation. Bold and fences only: a single asterisk or underscore appears in

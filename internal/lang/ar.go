@@ -137,6 +137,16 @@ var arabic = Catalogue{
 		"لا مشكلة", "بالتأكيد", "أكيد", "حاضر",
 	},
 
+	// Written without diacritics on purpose. Normalization drops a shadda or a
+	// fatha, which splits the word around it — "دوّنت" would become two tokens and
+	// stop matching the undiacriticized "دونت" a model actually types.
+	SaveClaims: []string{
+		"تم الحفظ", "حفظت", "سجلت", "دونت", "تم التسجيل", "تم تسجيل",
+		"احتفظت", "محفوظ", "مسجل", "سأتذكر", "سوف أتذكر", "لن أنسى",
+		"استلمت", "تم الاستلام",
+		"أضفت إلى", "في ذاكرتك",
+	},
+
 	ModelBusy:         "النموذج مشغول الآن. حاول مرة أخرى بعد قليل.",
 	Misconfigured:     "هناك خلل في إعداد هذا المنزل — أخبر من يديره.",
 	TurnFailed:        "حدث خطأ أثناء الاتصال بالنموذج، ولم تُجَب رسالتك. حاول مرة أخرى بعد قليل.",
