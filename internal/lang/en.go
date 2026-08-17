@@ -36,6 +36,29 @@ var english = Catalogue{
 		"will do", "consider it done", "no problem", "sure thing",
 	},
 
+	// Words about a write, the promise to retain — the same lie in the future tense —
+	// and the claim to hold the fact, which is what "got it" is.
+	//
+	// "Got it" is here and "done" is not, and the line between them is possession
+	// against completion. "Done" says an errand finished and says nothing about
+	// memory: "Done — the boiler service code is 4471." is an answer, and the guard
+	// must leave it whole. "Got it — heron-ashfield-42." says the node is holding the
+	// thing the member just handed it, which on a turn that stored nothing is false.
+	// It is also where the residue actually lives — two of two non-calling turns in a
+	// twenty-sample live run, and the shape docs/PROMPT.md's narration rule was split
+	// out of the capture block to stop ("Got it — boiler service code is 4471, and
+	// I've kept it just to you").
+	SaveClaims: []string{
+		"saved", "stored", "recorded", "noted", "jotted", "written down",
+		"got it", "got that", "i have it", "i've got it",
+		"made a note", "make a note", "making a note", "got it down",
+		"added to your", "added to the household", "is now in your",
+		"is now in the household", "in your memory", "in the household memory",
+		"i'll remember", "i will remember", "i'll keep that", "i will keep that",
+		"i'll keep it", "i won't forget", "i will not forget", "i'll hold on to",
+		"i'll note", "i will note", "i'll save", "i will save",
+	},
+
 	ModelBusy:     "The model is busy right now. Try again in a moment.",
 	Misconfigured: "Something is wrong with this household's setup — tell whoever runs it.",
 	TurnFailed:    "Something went wrong reaching the model, and your message wasn't answered. Try again in a moment.",

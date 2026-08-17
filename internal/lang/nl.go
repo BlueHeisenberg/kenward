@@ -45,6 +45,15 @@ var dutch = Catalogue{
 		"oké", "ok", "okay", "in orde", "komt goed", "prima", "geen probleem",
 	},
 
+	SaveClaims: []string{
+		"opgeslagen", "genoteerd", "vastgelegd", "opgeschreven", "bewaard",
+		"ik heb genoteerd", "ik heb opgeslagen", "ik heb opgeschreven",
+		"ik noteer", "ik schrijf het op", "ik onthoud", "ik zal onthouden",
+		"ik heb het",
+		"ik vergeet het niet", "ik vergeet dat niet",
+		"toegevoegd aan je", "toegevoegd aan het geheugen", "staat nu in je",
+	},
+
 	ModelBusy:         "Het model is op dit moment bezet. Probeer het over een moment opnieuw.",
 	Misconfigured:     "Er klopt iets niet aan de instellingen van dit huishouden — zeg het tegen degene die het beheert.",
 	TurnFailed:        "Er ging iets mis bij het bereiken van het model, en je bericht is niet beantwoord. Probeer het over een moment opnieuw.",

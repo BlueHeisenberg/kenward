@@ -716,12 +716,47 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// cannot be. That is the model's judgement, it is measured in
 	// judgement_eval_test.go's TestRequestedCapture, and this is the half that stops it
 	// costing the member a false belief.
+	//
+	// Replacing the bare ones was not enough, and the way it failed is the reason the
+	// second arm below exists. A live run of seventeen "remember this for me: …" turns
+	// produced twelve cards and three replies that said "Saved — plumber number is 555
+	// 0182." and "Noted — the garden tap is shut off at the valve under the sink." with
+	// nothing in lore behind any of them. The guard above logged nothing, correctly:
+	// none of the three is bare. The residue had moved from "Done." to "Done — <the
+	// fact>", which is the same lie carrying the thing it is lying about, and worse,
+	// because a member who is told the plumber's number is stored will not check.
+	//
+	// Chasing the shape of the sentence is what fails here. The phrasing space is
+	// unbounded and the model varies it freely, so the second arm matches vocabulary
+	// instead: lang.Catalogue.SaveClaims holds the words that can only be about a
+	// write, in the member's language, and it is the same list the eval scores runs
+	// with — one implementation, because two would disagree inside a month and the
+	// eval's copy is what says whether this one works.
+	//
+	// Which leaves "Done — <the fact>" itself uncaught, and that is deliberate rather
+	// than missed. "Done" claims an errand finished and says nothing about memory, so
+	// "Done — the boiler service code is 4471." is an answer and has to reach the
+	// member whole. "Got it" is in the table and "done" is not, on that line: got it
+	// claims to be holding what the member just handed over. Only the prompt can reach
+	// the rest.
+	//
+	// This arm appends and does not replace, and that is the whole difference between
+	// the two. "Done." has nothing to lose. "Saved — plumber number is 555 0182" has
+	// the number in it, which is the thing the member wanted kept and can now at least
+	// read, so the reply goes out and the notice goes out under it saying this turn
+	// stored nothing.
 	unsaved := ""
-	if reply != "" && proposal == nil && publishID == "" && remindNotice == "" &&
-		u.cat.IsBareAcknowledgement(reply) {
-		u.deps.Logger.Warn("assistant: bare acknowledgement on a turn that did nothing",
-			"chat", in.ChatID, "reply", reply)
-		reply, unsaved = "", u.nothingSaved()
+	if reply != "" && proposal == nil && publishID == "" && remindNotice == "" {
+		switch {
+		case u.cat.IsBareAcknowledgement(reply):
+			u.deps.Logger.Warn("assistant: bare acknowledgement on a turn that did nothing",
+				"chat", in.ChatID, "reply", reply)
+			reply, unsaved = "", u.nothingSaved()
+		case u.cat.ClaimsASave(reply):
+			u.deps.Logger.Warn("assistant: claimed a save on a turn that stored nothing",
+				"chat", in.ChatID, "reply", reply)
+			unsaved = u.nothingSaved()
+		}
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -765,12 +800,17 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 				parts = append(parts, notice)
 			}
 			parts = append(parts, transport.Markdown(reply))
-		} else if unsaved != "" {
-			// The reply the guard above dropped, replaced by what was true. It goes
-			// out on its own: there was no answer behind the acknowledgement, and
-			// the retrieval line says nothing when there is nothing it informed.
+		}
+		if unsaved != "" {
+			// What was true, either instead of the reply or under it. On the bare
+			// path the reply is already gone and this goes out alone — there was no
+			// answer behind the acknowledgement, and the retrieval line says nothing
+			// when there is nothing it informed. On the claimed-save path the reply
+			// survives above it, because the claim is welded to a fact the member
+			// wanted kept and this notice is the only correction they need: it speaks
+			// for this turn and says nothing was recorded in it.
 			parts = append(parts, unsaved)
-		} else if remindNotice == "" {
+		} else if reply == "" && remindNotice == "" {
 			// Nothing here answers what the member said. A reply does, and a
 			// reminder notice does — the member asked for the reminder and this
 			// reports that it exists — but the dropped-proposal notice is the node

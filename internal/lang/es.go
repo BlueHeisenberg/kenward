@@ -65,6 +65,15 @@ var spanish = Catalogue{
 		"apuntado", "guardado", "de acuerdo", "vale", "ok", "okay", "sin problema",
 	},
 
+	SaveClaims: []string{
+		"guardado", "guardada", "anotado", "anotada", "apuntado", "apuntada",
+		"registrado", "he guardado", "he anotado", "he apuntado", "queda anotado",
+		"lo tengo", "ya lo tengo",
+		"tomo nota", "he tomado nota", "lo apunto", "lo anoto", "lo guardo",
+		"lo recordaré", "me acordaré", "no lo olvidaré", "no se me olvidará",
+		"añadido a tu", "añadido a la memoria", "está en tu memoria",
+	},
+
 	ModelBusy:         "El modelo está ocupado ahora mismo. Inténtalo de nuevo en un momento.",
 	Misconfigured:     "Algo va mal en la configuración de este hogar; díselo a quien lo administra.",
 	TurnFailed:        "Algo ha fallado al contactar con el modelo y tu mensaje se ha quedado sin respuesta. Inténtalo de nuevo en un momento.",

@@ -2557,12 +2557,14 @@ model's prompt and the operator's CLI, and it stays English, with
 `lang.Catalogue.When` as the member's copy and a test asserting the prompt path never
 sees a translation.
 
-`BareAcknowledgements` is the one field in the table that is neither. It is not read by
-the member and it is not sent to the model: it is matched against what the model *wrote*,
-which is in the member's language because the persona asked for it. It lives here because
-this is the package that knows ten languages, and the alternative — a second language
-table inside `internal/assistant`, which holds the model-facing English — is how the two
-would drift.
+`BareAcknowledgements` and `SaveClaims` are the two fields in the table that are neither.
+Neither is read by the member and neither is sent to the model: both are matched against
+what the model *wrote*, which is in the member's language because the persona asked for
+it. They live here because this is the package that knows ten languages, and the
+alternative — a second language table inside `internal/assistant`, which holds the
+model-facing English — is how the two would drift. The English column of each is the
+reviewed source and the other nine are generated content held to the completeness tests,
+exactly as the rest of the catalogue is.
 
 The two queue notices exist because turns are serialised (§5) and a member cannot see
 that. Waiting in silence and being ignored look identical from inside a chat; so do a
@@ -2617,6 +2619,69 @@ which half is true.
 
 **Nothing is retried.** The tool call is the member's decision to make; firing one off a
 near miss would be the node writing something nobody chose.
+
+**It was not enough on its own, and the way it failed is why there is a second guard.** A
+live run of seventeen `remember this for me: …` turns at the production temperature
+produced twelve cards, two shared proposals, and three replies with nothing behind them:
+`Done — bin collection noted as Tuesday morning.`, `Saved — plumber number is 555 0182.`,
+`Noted — the garden tap is shut off at the valve under the sink.` A separate `lore`
+process confirmed twelve entries and none of those three. The guard logged nothing at all,
+correctly — not one of the three is bare. The residue had moved from `Done.` to `Done —
+<the fact>`, which is about 18% of explicit save requests and is *worse* than what it
+replaced: it names the thing it did not store, so the false belief is specific, and a
+member told the plumber's number is kept will not check.
+
+Matching the shape of that sentence cannot work. The phrasing space is unbounded and the
+model varies it freely; `Done — the boiler service code is 4471.` is the same shape and is
+an answer that must reach the member untouched. So the second guard matches **vocabulary**
+instead. `lang.Catalogue.SaveClaims` is the second field the member never reads: the words
+that can only be about a write — *saved*, *noted*, *stored*; the promise forms *I'll
+remember*, *I won't forget*, which are the same lie in the future tense; and *got it*,
+which claims to be holding the thing the member just handed over — in each of the ten
+languages, matched as substrings anywhere in the reply, because that is where the claim
+sits in Chinese and Arabic and in any sentence that answers something else first.
+
+**The line between the two tables is possession against completion.** *Got it* is a save
+claim and *done* is not. `Done — the boiler service code is 4471.` is an answer and must
+reach the member whole, which
+`TestAnAcknowledgementCarryingAnAnswerIsLeftAlone` asserts; `Got it —
+heron-ashfield-42.` is the node saying it has the password, on a turn where it does not.
+That is not a fine distinction invented for the table — it is the shape
+`TestNarrationRuleIsNotInTheCaptureBlock` was written about (`Got it — boiler service code
+is 4471, and I've kept it just to you`) and it was both of the two non-calling turns in
+the twenty-sample run measured on this change. Several languages put *saved* or *noted* in
+both tables, and that is correct in both.
+
+**The known hole is `Done — <the fact>`.** A reply that claims completion and names a fact
+cannot be told apart by vocabulary from one that answers a question, and the answer has to
+win. Nothing here reaches it; only the prompt can.
+
+**This guard appends; the first one replaces.** That is the only structural difference and
+it follows from what each reply is worth. `Done.` has nothing to lose. `Saved — plumber
+number is 555 0182` has the number in it, which is the thing the member wanted kept and
+can now at least read, so the reply goes out and the notice goes out under it.
+
+**The same code scores the eval.** `claimsASave` in `judgement_eval_test.go` used to be a
+private phrase list on the argument that nothing like it belonged in production; that
+argument is what let this ship. It is now one call into the catalogue, because two
+implementations of "does this claim a save" disagree within a month and the eval's copy is
+what says whether the product's works. `TestRequestedCapture` reports, of the turns where
+the member asked and no call arrived, how many end with the member told nothing was
+recorded — and prints the remainder for somebody to read, since a claim phrased in words
+the table does not hold is the blocker returning under a new spelling.
+
+**The false positive is accepted, not fixed, and the trade is the judgement call in the
+change.** A member who asks "did you save the plumber number?" and is answered "Yes, I
+saved it earlier" gets the notice too: no capture happened this turn, the reply claims one,
+and the claim is true about a turn that is not this one. Every rule that could separate the
+two costs a false negative. Reading tense means a per-language list of past-reference words,
+which then swallows "I've already noted that" said about a note that never existed — the
+same lie, live-plausible, and silent. Gating on whether the turn retrieved anything is
+worse: retrieval runs on every turn, and a household with a dozen entries will surface
+something for most save requests, switching the guard off exactly where it exists. So the
+false positive is made cheap instead. The reply survives whole, and `NothingSaved` speaks
+only for this turn — *"I didn't record anything just then"* — so what the member reads is a
+redundant sentence, never a contradiction of a true claim above it.
 
 This addresses the harm and not the cause. How often the model calls the tool when asked
 is the model's judgement, is measured by `TestRequestedCapture` in

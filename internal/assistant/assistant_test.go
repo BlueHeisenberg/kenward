@@ -1074,34 +1074,207 @@ func TestAnAcknowledgementCarryingAnAnswerIsLeftAlone(t *testing.T) {
 	}
 }
 
-// TestAcknowledgementSurvivesWhenTheTurnActuallyDidSomething. "Done." is true on a turn
-// that proposed a capture, set a reminder or published an entry — the node did act, and
-// the capture engine or the reminder notice says so in its own words. The guard reads
-// what this turn did and not what the member typed, so it must not fire on any of them.
-func TestAcknowledgementSurvivesWhenTheTurnActuallyDidSomething(t *testing.T) {
+// TestAClaimedSaveWithNoCaptureIsCorrected is the release blocker in the form the
+// bare-acknowledgement guard let through.
+//
+// A live English run put seventeen "remember this for me: …" messages to a real model
+// at the production temperature. Twelve produced a card, two produced a shared
+// proposal, and three produced "Done — bin collection noted as Tuesday morning.",
+// "Saved — plumber number is 555 0182." and "Noted — the garden tap is shut off at the
+// valve under the sink." A separate lore process confirmed twelve entries and nothing
+// for any of the three, and the guard logged nothing at all, correctly: none of the
+// three is bare. The residue had moved from "Done." to "Done — <the fact>", which is
+// the same lie with the stored thing named in it, and worse for being specific.
+//
+// One language per table, because the reply is written in the member's language and a
+// household reading Catalan is owed the same protection as one reading English. What
+// is asserted is the pair: the member is told nothing was recorded, and the fact they
+// asked to have kept is still in front of them.
+func TestAClaimedSaveWithNoCaptureIsCorrected(t *testing.T) {
+	for _, c := range []struct{ tag, ask, reply string }{
+		{"en", "remember this for me: the plumber's number is 555 0182",
+			"Saved — the plumber's number is 555 0182."},
+		{"es", "apunta esto: el número del fontanero es el 555 0182",
+			"Guardado — el número del fontanero es el 555 0182."},
+		{"ca", "apunta això: el número del lampista és el 555 0182",
+			"Desat — el número del lampista és el 555 0182."},
+		{"pt", "guarda isto: o número do canalizador é 555 0182",
+			"Anotado — o número do canalizador é 555 0182."},
+		{"fr", "retiens ça : le numéro du plombier est le 555 0182",
+			"C'est noté — le numéro du plombier est le 555 0182."},
+		{"it", "ricorda questo: il numero dell'idraulico è 555 0182",
+			"Salvato — il numero dell'idraulico è 555 0182."},
+		{"nl", "onthoud dit: het nummer van de loodgieter is 555 0182",
+			"Genoteerd — het nummer van de loodgieter is 555 0182."},
+		{"de", "merk dir das: die Nummer des Klempners ist 555 0182",
+			"Gespeichert — die Nummer des Klempners ist 555 0182."},
+		{"zh", "帮我记住：水管工的电话是 555 0182",
+			"已记录——水管工的电话是 555 0182。"},
+		{"ar", "احفظ هذا: رقم السباك هو 555 0182",
+			"تم الحفظ — رقم السباك هو 555 0182."},
+	} {
+		t.Run(c.tag, func(t *testing.T) {
+			opts := testOptions()
+			opts.Persona = Persona{Language: c.tag}
+			rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{Text: c.reply, FinishReason: routing.FinishStop}, nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound(c.ask)); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 {
+				t.Fatalf("sent %v, want exactly one message", texts)
+			}
+			if !strings.Contains(texts[0], lang.For(c.tag).NothingSaved) {
+				t.Errorf("the member was sent %q, which claims a save on a turn that stored nothing and never says nothing was recorded", texts[0])
+			}
+			// The half that makes appending right rather than replacing. The claim is
+			// welded to the number the member wanted kept, and a member who is told
+			// the truth and loses the number has been served worse, not better.
+			if !strings.Contains(texts[0], "555 0182") {
+				t.Errorf("the member was sent %q, which threw away the fact they asked to have kept", texts[0])
+			}
+			if rig.mem.putCount() != 0 {
+				t.Error("something was written to memory on a turn the model never proposed one; the fix is a notice, never a retry")
+			}
+		})
+	}
+}
+
+// TestTheLiveResidueRepliesAreAllCorrected is the measurement, pinned.
+//
+// Every reply below came off a real model on a real "remember this for me: …" turn
+// that made no call, over two live runs. The first three are the seventeen-turn run
+// that reopened the blocker after bare acknowledgements were replaced. The last two
+// are the twenty-turn run measured on this change, where "got it" turned out to be
+// where the whole remaining residue lives — both of the two non-calling turns, one of
+// them with the acknowledgement buried mid-sentence after the answer to an unrelated
+// question.
+//
+// A live run is a measurement and cannot be a test, so this is the part of it that can
+// be: the exact sentences, asserted to be corrected. A new phrasing in a future run
+// belongs here beside them, with an entry in the catalogue behind it.
+func TestTheLiveResidueRepliesAreAllCorrected(t *testing.T) {
+	for _, body := range []string{
+		"Done — bin collection noted as Tuesday morning.",
+		"Saved — plumber number is 555 0182.",
+		"Noted — the garden tap is shut off at the valve under the sink.",
+		"Got it — heron-ashfield-42.",
+		"Here's how you bleed a radiator: open the valve at the top with the key until " +
+			"it hisses, then close it when water comes. On the stopcock — got it, under the stairs.",
+	} {
+		t.Run(body[:min(len(body), 24)], func(t *testing.T) {
+			rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{Text: body, FinishReason: routing.FinishStop}, nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound("remember this for me: the stopcock is under the stairs")); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 {
+				t.Fatalf("sent %v, want exactly one message", texts)
+			}
+			if !strings.Contains(texts[0], lang.For("").NothingSaved) {
+				t.Errorf("the member was sent %q: a real model wrote that on a turn where nothing was stored, and it never says so", texts[0])
+			}
+		})
+	}
+}
+
+// TestATrueClaimAboutAnEarlierTurnKeepsItsAnswer is the false positive, named and
+// priced rather than fixed.
+//
+// A member asks "did you save the plumber number?" and the model answers "Yes, I saved
+// it earlier." No capture happened this turn and the reply claims one, so the check
+// fires — and the claim is true, about a turn that is not this one.
+//
+// The trade, stated: every rule that could tell the two apart costs a false negative,
+// and the false negative is the release blocker. Reading tense means a list of
+// past-reference words per language, which then swallows "I've already noted that"
+// said about a note that never existed — a live-plausible failure and exactly the lie
+// being fixed. Gating on whether this turn retrieved anything is worse still:
+// retrieval runs on every turn and a household with a dozen entries will surface
+// something for most save requests, which would switch the guard off on the turns it
+// exists for.
+//
+// So the false positive is accepted and made cheap instead. The reply survives intact
+// — the member reads the answer they asked for — and the notice speaks only for this
+// turn ("I didn't record anything just then"), so it is a redundant sentence and never
+// a contradiction of the true claim above it.
+func TestATrueClaimAboutAnEarlierTurnKeepsItsAnswer(t *testing.T) {
+	const body = "Yes, I saved it earlier — the plumber's number is in your private memory."
 	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
-	rig.tr.answer = transport.Answer{ChoiceID: capture.ChoiceDecline, UserID: testUserID}
 	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
-		return routing.Completion{
-			Text: "Done.",
-			ToolCalls: []routing.ToolCall{{
-				ID:        "tc-1",
-				Name:      "remember",
-				Arguments: json.RawMessage(`{"title": "Coffee", "body": "Tarragon-brand beans.", "target": "unsure"}`),
-			}},
-			FinishReason: routing.FinishToolCalls,
-		}, nil
+		return routing.Completion{Text: body, FinishReason: routing.FinishStop}, nil
 	}
 
-	if err := rig.unit.Handle(context.Background(), directInbound("remember this for me: tarragon-brand beans")); err != nil {
+	if err := rig.unit.Handle(context.Background(), directInbound("did you save the plumber number?")); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	texts := rig.tr.sentTexts()
-	if len(texts) != 1 || texts[0] != "Done." {
-		t.Fatalf("sent %v, want the reply untouched on a turn that did propose a capture", texts)
+	if len(texts) != 1 {
+		t.Fatalf("sent %v, want exactly one message", texts)
+	}
+	if !strings.Contains(texts[0], body) {
+		t.Errorf("the member was sent %q; a true answer about an earlier turn must reach them whole", texts[0])
+	}
+	if !strings.Contains(texts[0], lang.For("").NothingSaved) {
+		t.Errorf("the member was sent %q; the accepted cost of this check is that the turn-scoped notice rides along here too, and losing it would mean the check had stopped firing", texts[0])
+	}
+}
+
+// TestAcknowledgementSurvivesWhenTheTurnActuallyDidSomething. "Done." is true on a turn
+// that proposed a capture, set a reminder or published an entry — the node did act, and
+// the capture engine or the reminder notice says so in its own words. The guard reads
+// what this turn did and not what the member typed, so it must not fire on any of them.
+//
+// The second body is the same rule for the second guard, and it was seen live: the model
+// narrates the save before the card on some turns that do produce one — "Saved — vet
+// appointment is at 9am Thursday." with a real proposal behind it. That sentence is the
+// blocker's exact vocabulary and is true here, so annotating it would put a notice
+// saying nothing was recorded directly above the card recording it.
+func TestAcknowledgementSurvivesWhenTheTurnActuallyDidSomething(t *testing.T) {
+	for _, body := range []string{"Done.", "Saved — vet appointment is at 9am Thursday."} {
+		t.Run(body, func(t *testing.T) {
+			rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.tr.answer = transport.Answer{ChoiceID: capture.ChoiceDecline, UserID: testUserID}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{
+					Text: body,
+					ToolCalls: []routing.ToolCall{{
+						ID:        "tc-1",
+						Name:      "remember",
+						Arguments: json.RawMessage(`{"title": "Coffee", "body": "Tarragon-brand beans.", "target": "unsure"}`),
+					}},
+					FinishReason: routing.FinishToolCalls,
+				}, nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound("remember this for me: tarragon-brand beans")); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 || texts[0] != body {
+				t.Fatalf("sent %v, want the reply untouched on a turn that did propose a capture", texts)
+			}
+		})
 	}
 }
 

@@ -48,6 +48,15 @@ var french = Catalogue{
 		"bien reçu", "d'accord", "enregistré", "ok", "okay", "pas de problème",
 	},
 
+	SaveClaims: []string{
+		"enregistré", "enregistrée", "noté", "notée", "c'est noté", "j'ai noté",
+		"j'ai enregistré", "j'ai gardé", "je note", "je le note", "je prends note",
+		"bien reçu",
+		"j'ai pris note", "je retiens", "je m'en souviendrai", "je n'oublierai pas",
+		"ajouté à ta", "ajouté à la mémoire", "gardé en mémoire",
+		"est maintenant dans ta",
+	},
+
 	ModelBusy:         "Le modèle est occupé pour le moment. Réessaie dans un instant.",
 	Misconfigured:     "Quelque chose ne va pas dans la configuration de ce foyer — préviens la personne qui s'en occupe.",
 	TurnFailed:        "Un problème est survenu en contactant le modèle, et ton message est resté sans réponse. Réessaie dans un instant.",

@@ -51,6 +51,14 @@ var chinese = Catalogue{
 		"记下了", "已记录", "已保存", "没问题", "行",
 	},
 
+	// Chinese puts no space anywhere useful, so every entry here is matched as a
+	// substring of a longer clause — "帮你记下了" has to hit "记下".
+	SaveClaims: []string{
+		"已记录", "已保存", "记下", "记住", "会记住", "记录下来", "保存好",
+		"收到了",
+		"存好了", "已经记", "帮你记", "添加到你的", "在你的记忆里",
+	},
+
 	ModelBusy:         "模型现在很忙。过一会儿再试。",
 	Misconfigured:     "这个家庭的配置有问题——请告诉负责运行它的人。",
 	TurnFailed:        "连接模型时出了问题，你的消息没有得到回答。过一会儿再试。",
