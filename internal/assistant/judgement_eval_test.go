@@ -61,9 +61,16 @@ package assistant
 // KENWARD_EVAL_REPEATS defaults to 3. Without an endpoint this fails rather than
 // skipping; KENWARD_E2E_SKIP=1 waives it. See evalEndpoint.
 //
-// It needs the endpoint to itself. One sample is a 27B reasoning turn, and a run
+// It wants the endpoint to itself. One sample is a 27B reasoning turn, and a run
 // sharing the GPU with anything else has been seen to blow evalTimeout and fail the
-// whole suite on a completion that would otherwise have arrived.
+// whole suite on a completion that would otherwise have arrived. Since that is not
+// always arrangeable, evalComplete retries a transport error once — which is the
+// difference between measuring the prompt and measuring the machine's diary — and
+// still fails the run when the second attempt misses too.
+//
+// TestRequestedCapture is the second population, scored separately: the same model, the
+// same prompt, on turns where the member asks for the write in plain words. See
+// requestedCases for why the two are never added together.
 
 import (
 	"context"
@@ -119,7 +126,11 @@ type judgementCase struct {
 // answer.
 //
 // Not one of them contains the word "remember". A case that names the tool is a
-// case about the write path, and those live in internal/e2e.
+// case about the write path, and those live in internal/e2e — and, for what the model
+// decides to do and say about one, in requestedCases below. The two populations are
+// scored separately and never merged: this one measures an unprompted judgement, and a
+// case where the member has already made the decision would raise its rate while
+// measuring something else entirely.
 var judgementCases = []judgementCase{
 	// -------------------------------------------------------------------------
 	// Durable, and arriving as an aside. The member is doing something else.
@@ -238,6 +249,159 @@ var judgementCases = []judgementCase{
 	},
 }
 
+// requestedCases: four turns where the member asks for the write in so many words.
+//
+// This is the second population, and it exists because the first cannot see the defect
+// that matters most. claimsASave runs over every reply in this file, but until now
+// every reply it saw came from a turn where nobody had mentioned memory — the one
+// population where a false claim is least likely, because the model has no reason to
+// talk about storage at all. The risk lives here: a member who says "remember this"
+// is owed an answer, is expecting some acknowledgement, and is the member the live
+// run's false claim was made to.
+//
+// want is true for all four. The member decided; the model's only job is to make the
+// call. That makes the rate here a different measurement from judgementCases' — not a
+// judgement but a compliance — which is why it is reported under its own heading and
+// never added to the other. Merging them would move the headline number for a reason
+// that has nothing to do with judgement.
+//
+// NamesTheToolOutright is a regression case with a date on it. After the reply-
+// truthfulness paragraph was added to captureText, this exact shape produced no tool
+// call at all, greedily and repeatably: the model worked the arguments out in its
+// reasoning trace and then declined to emit them, having read a dense block of
+// "do not mention the tool" as a reason not to use it. If this case ever reads 0/N
+// again, that is what has happened.
+var requestedCases = []judgementCase{
+	{
+		name: "NamesTheToolOutright",
+		text: `Call the remember tool now with title "Boiler service code" and body ` +
+			`"The boiler service code is 4471."`,
+		want: true,
+		why:  "the member named the tool and dictated its arguments; there is no judgement left to make",
+	},
+	{
+		name: "PlainRequestPrivate",
+		text: "Remember this just for me: the boiler service code is 4471.",
+		want: true,
+		why:  "an explicit request in a direct scope is the commonest way a member ever asks for a write",
+	},
+	{
+		name:  "PlainRequestToTheGroup",
+		group: true,
+		text:  "Remember for everyone: the wifi password is heron-ashfield-42.",
+		want:  true,
+		why:   "the group scope has one destination and the member has asked for it by name",
+	},
+	{
+		name: "RequestInsideAnOrdinaryQuestion",
+		text: "What's the best way to bleed a radiator? Also can you remember that " +
+			"the stopcock is under the stairs, I keep forgetting.",
+		want: true,
+		why:  "the request arrives alongside a question the model must also answer, which is where narration creeps in",
+	},
+}
+
+// TestRequestedCapture scores the member-requested path: does the call happen, and
+// does the reply stay quiet about it?
+//
+// Both halves are here on purpose. They are the two ways the same paragraph can fail,
+// they pull against each other, and measuring one without the other is how a prompt
+// change gets called a fix. Wording that frightens the model away from claiming a save
+// can frighten it away from the call; wording that frees the call can free the
+// narration with it. A run of this test reports the capture rate and errors on any
+// claimed save, so the trade is visible in one scorecard rather than discovered later.
+//
+// It fails on a completion error and on the one structural floor that means the
+// suppression is back: not a single requested case produced a call in any sample. A
+// member who says "remember this" and is answered by a model that called nothing is
+// looking at the defect this population was added to catch, and no rate reporting is
+// going to make that ambiguous enough to be worth softening.
+func TestRequestedCapture(t *testing.T) {
+	ep := evalEndpoint(t)
+	repeats := evalRepeats(t)
+	var (
+		results     []result
+		claimed     []string
+		anyProposed bool
+	)
+	for _, c := range requestedCases {
+		r := result{c: c, samples: repeats}
+		for i := range repeats {
+			comp, err := evalComplete(t, ep, c.request(), c.name, i+1)
+			var empty *llm.EmptyResponseError
+			switch {
+			case errors.As(err, &empty):
+				r.empty++
+				continue
+			case err != nil:
+				t.Fatalf("%s sample %d: completing against %s (%s): %v", c.name, i+1, ep.BaseURL, ep.Model, err)
+			}
+			if claimsASave(comp.Text) {
+				r.claimed = append(r.claimed, comp.Text)
+			}
+			p, warn := extractProposal(comp.ToolCalls)
+			switch {
+			case p != nil:
+				r.proposed++
+				r.titles = append(r.titles, p.Draft.Title)
+			case warn != "":
+				r.malformed++
+			}
+			// Kept whatever happened: a reply is the only evidence of a call that
+			// was reasoned about and then not made, and that is the failure mode.
+			r.replies = append(r.replies, comp.Text)
+		}
+		if r.proposed > 0 {
+			anyProposed = true
+		}
+		claimed = append(claimed, r.claimed...)
+		results = append(results, r)
+		t.Logf("%-34s asked for a write, called remember %d/%d  %s", c.name, r.proposed, r.samples, verdict(r))
+	}
+
+	var called, total, malformed, empty int
+	t.Logf("\n=== requested capture: %s @ %s, %d repeats ===", ep.Model, ep.BaseURL, repeats)
+	for _, r := range results {
+		called += r.proposed
+		total += r.samples
+		malformed += r.malformed
+		empty += r.empty
+		t.Logf("  %5.0f%%  %-34s called=%d/%d", r.rate()*100, r.c.name, r.proposed, r.samples)
+	}
+	t.Logf("  called when asked             %d/%d  (%.0f%%)", called, total, pct(called, total))
+	t.Logf("  replies claiming a save       %d/%d", len(claimed), total)
+	if malformed > 0 {
+		t.Logf("  remember calls dropped as malformed: %d", malformed)
+	}
+	if empty > 0 {
+		t.Logf("  samples the endpoint answered with nothing at all: %d/%d", empty, total)
+	}
+	for _, r := range results {
+		for _, title := range r.titles {
+			t.Logf("    [%s] %q", r.c.name, title)
+		}
+	}
+	// Printed always, not only on failure. A member-requested turn that made no call
+	// still produced a sentence, and reading that sentence is the whole diagnosis:
+	// "Done." with nothing behind it looks identical to a correct reply in a rate.
+	t.Logf("\n  replies:")
+	for _, r := range results {
+		for _, s := range r.replies {
+			t.Logf("    [%s] %q", r.c.name, oneLine(s))
+		}
+	}
+
+	if len(claimed) > 0 {
+		t.Errorf("%d repl(ies) claimed a save that had not happened, on the path where the member asked for one. The model is never told what became of its call, so the sentence is false at the moment it is written:", len(claimed))
+		for _, s := range claimed {
+			t.Errorf("    %q", s)
+		}
+	}
+	if !anyProposed {
+		t.Error("not one requested case produced a remember call in any sample: the member asked for a write in plain words and the model made none. That is the capture-suppression regression, not a judgement — read the replies above for the reasoning that talked it out of the call")
+	}
+}
+
 // evalEndpoint reads the endpoint under evaluation, and **fails rather than skips**
 // when there is not one — exactly as internal/e2e's live suite does now, and for the
 // same reason.
@@ -262,6 +426,42 @@ func evalEndpoint(t *testing.T) routing.Endpoint {
 		"This is a failure and not a skip on purpose — `go test` prints nothing for a package that skips, so skipping here reports `ok` having scored nothing. " +
 		"Set KENWARD_E2E_SKIP=1 to waive it deliberately.")
 	return routing.Endpoint{}
+}
+
+// evalComplete is one sample, with one retry on a transport error.
+//
+// The endpoint is a single box with two consumer GPUs, and the file's own advice is
+// that a run wants it to itself. That advice is not always followable: a scored run
+// takes ten minutes, other work shares the machine, and a 27B reasoning turn that
+// queues behind something else blows the header timeout and takes the whole suite with
+// it. Losing a run of thirty-nine samples to one queued request measures the GPU's
+// diary rather than the prompt.
+//
+// The retry is deliberately narrow and deliberately not a loop. One transient miss is
+// contention; two in a row is the endpoint being down, and that is still a fault in the
+// run rather than a data point — scoring it as "did not capture" would turn an outage
+// into a prompt regression, which is the thing the caller's t.Fatalf exists to prevent.
+// The retry is logged so a run that needed several is legible as a run made on a busy
+// machine.
+// One completer for the whole run, not one per sample: a fresh client per sample
+// discards its connection pool every time, which on a busy endpoint is a new TCP and a
+// new queue position for every turn — some of the contention this retry exists to
+// absorb.
+var evalCompleter = routing.NewHTTPCompleter(nil, nil, nil)
+
+func evalComplete(t *testing.T, ep routing.Endpoint, req routing.Request, name string, sample int) (routing.Completion, error) {
+	t.Helper()
+	completer := evalCompleter
+	for attempt := 1; ; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), evalTimeout)
+		comp, err := completer.Complete(ctx, ep, req)
+		cancel()
+		var empty *llm.EmptyResponseError
+		if err == nil || errors.As(err, &empty) || attempt == 2 {
+			return comp, err
+		}
+		t.Logf("%s sample %d: %v — retrying once; the endpoint is shared and a queued turn is contention, not a finding", name, sample, err)
+	}
 }
 
 func evalRepeats(t *testing.T) int {
@@ -350,6 +550,11 @@ type result struct {
 	// markdown are replies containing Markdown emphasis or fences. Telegram is sent
 	// HTML, so these reach the member as the characters the model typed.
 	markdown []string
+	// replies is every reply text, kept by TestRequestedCapture and not by
+	// TestCaptureJudgement. Thirteen cases times three repeats of unprompted prose is
+	// noise nobody reads; four cases where the member asked for a write and may not
+	// have got one is the diagnosis itself.
+	replies []string
 }
 
 // claimsASave reports whether a reply tells the member something has been stored.
@@ -404,15 +609,11 @@ func (r result) rate() float64 { return float64(r.correct()) / float64(r.samples
 func TestCaptureJudgement(t *testing.T) {
 	ep := evalEndpoint(t)
 	repeats := evalRepeats(t)
-	completer := routing.NewHTTPCompleter(nil, nil, nil)
-
 	results := make([]result, 0, len(judgementCases))
 	for _, c := range judgementCases {
 		r := result{c: c, samples: repeats}
 		for i := range repeats {
-			ctx, cancel := context.WithTimeout(context.Background(), evalTimeout)
-			comp, err := completer.Complete(ctx, ep, c.request())
-			cancel()
+			comp, err := evalComplete(t, ep, c.request(), c.name, i+1)
 			var empty *llm.EmptyResponseError
 			switch {
 			case errors.As(err, &empty):

@@ -114,6 +114,7 @@ func TestPromptTextMatchesPromptDoc(t *testing.T) {
 		{"flatRegisterText", flatRegisterText},
 		{"dateText", dateText},
 		{"formattingText", formattingText},
+		{"replyTruthText", replyTruthText},
 		{"personaGuardText", personaGuardText},
 		{"personaLanguageText", personaLanguageText},
 		{"directDisclosureText", directDisclosureText},
