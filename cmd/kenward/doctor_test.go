@@ -438,14 +438,27 @@ func TestDoctorJSON(t *testing.T) {
 //
 // This check exists because doctor was vouching for something the runtime cannot do.
 // internal/memory keys spaces on lore space ids, so a display name configured where an
-// id belongs fails every read — and lore's own arguments are lenient enough that writes
-// keep working, so nothing surfaces until the first retrieval comes back empty.
+// id belongs is refused at every call.
 //
 // It reported such a space as a fact ("does not exist yet — it is created when the
 // member claims their invite") and exited 0. Nothing in kenward creates a lore space,
 // so there was nothing to wait for: that was a green light for a household that could
 // not read its own memory. It is a fault in kenward.yaml, only an edit fixes it, and
 // the exit code says so.
+//
+// The remedy has to be true about writes as well, which is the second thing fixed here.
+// It used to say a name "fails only on reads — writes keep appearing to work", which
+// described the superseded subprocess client and told an operator that whatever had
+// already been captured was safe. Measured against a real lore store:
+//
+//	write to a REAL space id           -> ok
+//	write to an UNKNOWN well-formed id -> lore: space "…": space not found  (exit 1)
+//	write to a DISPLAY NAME (CLI)      -> ok
+//
+// The third line is the CLI only: cmd/lore's resolveSpace falls back to SpaceByName.
+// memory.Client.Put hands the configured string to lore.Store.PutEntry, which does
+// GetSpace on it and nothing else — so through the path kenward actually uses, a name
+// and a mistyped id fail identically and nothing was ever stored under either.
 func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, simpleYAML, fullEnvironment())
@@ -475,6 +488,7 @@ func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 		"is not a space this lore store holds",
 		"spaces are named by id here, not by display name",
 		"run `lore spaces` and configure the id column",
+		"nothing has been stored under this value: reads and writes both fail",
 	} {
 		if !strings.Contains(flat, want) {
 			t.Errorf("output does not say %q:\n%s", want, out)
@@ -482,6 +496,19 @@ func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 	}
 	if strings.Contains(out, "does not exist yet") {
 		t.Errorf("output still tells the operator to wait for a space kenward never creates:\n%s", out)
+	}
+	// The old remedy, which is false against lore's Go API and reassuring in the
+	// wrong direction: it tells an operator the household's captured memories
+	// survived a fault under which nothing was written at all.
+	for _, gone := range []string{
+		"fails only on reads",
+		"writes keep appearing to work",
+	} {
+		if strings.Contains(flat, gone) {
+			t.Errorf("the remedy still says %q; memory.Client.Put passes the configured "+
+				"string to lore.Store.PutEntry, which resolves it by id and refuses a "+
+				"name, so the write fails too:\n%s", gone, out)
+		}
 	}
 }
 

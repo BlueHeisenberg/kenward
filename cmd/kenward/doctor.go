@@ -423,8 +423,10 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 				s.Err.Error(),
 				"run `lore spaces` and configure the id column: kenward keys spaces on " +
 					"ids because lore does not enforce unique display names",
-				"a name here fails only on reads — writes keep appearing to work — so " +
-					"this is worth fixing before anything is written",
+				"nothing has been stored under this value: reads and writes both fail. " +
+					"kenward reaches lore as a Go package, and lore resolves a space by " +
+					"id only — `lore` the command accepts a display name because its own " +
+					"resolver falls back to a name lookup, and kenward never runs it",
 			}
 			// In a pod the likelier cause is not a mistyped id at all. Each pod has
 			// its own LORE_HOME and therefore its own lore account, so the household's

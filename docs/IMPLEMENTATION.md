@@ -727,14 +727,14 @@ member-supplied text (§12) rests on the client being able to check which space 
 actually lives in. That check is worth nothing if two spaces can answer to one name.
 
 The failure mode is what makes it worth a heading rather than a footnote. lore's own CLI
-accepts either form, so a name that reached a write once looks like it works. kenward
-resolves a space by id before every call and refuses a name outright (`ErrUnknownSpace`),
-which turns what would have been a household capturing memories for a week and finding
-nothing on the first retrieval into a refusal at the first call. `kenward doctor`
-therefore
-treats a name it cannot resolve to a space as a configuration fault and exits 2, telling
-the operator to run `lore spaces` and take the id column, and saying explicitly that a
-name fails only on reads.
+accepts either form — `cmd/lore`'s `resolveSpace` tries the id and falls back to a name
+lookup — so a name that reached a write through the command line looks like it works.
+kenward never runs that command: it reaches lore as a Go package, and `lore.Store.PutEntry`
+resolves `SpaceID` by id only and returns `space not found`. So a display name configured
+here fails **both** directions, refused at the first call rather than at the first
+retrieval, and nothing is ever stored under it. `kenward doctor` treats a space it cannot
+resolve as a configuration fault and exits 2, telling the operator to run `lore spaces`,
+take the id column, and that nothing has been written under the value it is reporting.
 
 Validation rules that are errors, not warnings:
 
@@ -1965,9 +1965,58 @@ supervisor already sets those; `deploy/compose.isolated.yml` sets them alongside
 refuses to start (D-022). Without it a member's pod would be marked unhealthy for every
 sibling secret it correctly does not hold, and restarted every thirty seconds forever.
 
-The file is read once when the supervisor is constructed and every pod is recreated from
+The file is read once when the supervisor is constructed and every pod is created from
 that snapshot, so a configuration edited while the household is running reaches pods on
 the next `kenward run` rather than on the next `Roll`.
+
+**That last sentence used to be false, and it broke this section's own first-run recipe.**
+Provisioning happens at `Create` and `Recreate` and nowhere else; `Roll` fires on an image
+change; and `pod.stale` asked about the invite seed and the revocation record only, and
+answered `false` for the group's pod unconditionally. So an operator could edit
+`kenward.yaml`, restart exactly as instructed, and get a host supervisor on the new file
+with every pod still serving the old one — the pods reported healthy, and host-side
+`doctor`, reading the new file, agreed. The recipe two sections above ends in precisely
+that state: the household's lore spaces can only be created *inside* a pod, so the ids are
+minted after the pods exist and written into a file the pods would never read. The
+household then failed days later, at the first turn touching memory, against the
+placeholder id it was built with — `✗ space "…" is not a space this lore store holds`.
+Found against real podman by `cmd/kenward`'s `TestPodConfigGoesStale`, which reads the
+file back out of a container with `podman cp`.
+
+`stale` now asks about the household configuration too, for every pod including the
+group's, by the mechanism the other two already use: `sandbox.Status.CreatedAt` against
+the file's mtime, so a pod older than the file is rebuilt once and a pod younger than it
+is left alone. Comparing a hash of the rendered bytes instead would be exact rather than
+conservative, but keel's `Spec` carries no labels and `Status` reports none, so the hash
+would have to live in host-side bookkeeping that a recreate performed out of band would
+silently invalidate — a second source of truth for a question `CreatedAt` already answers.
+The price of the mtime comparison is one needless rebuild after a no-op touch of
+`kenward.yaml`, which the rebuild itself then clears by advancing `CreatedAt` past the
+file. The price of the hash is a record that can lie.
+
+**This one file is compared without `createdAtSkew`, and that is the whole difference
+between it and the other two.** The tolerance exists because a coarse filesystem rounds
+an mtime *down*, which can hide a revocation record that is genuinely newer than the pod
+— and a revocation is written just before the restart that has to deliver it, so the
+window is worth buying. `kenward.yaml` runs the other way: it is written just before the
+pods are *created from it*, which is what every first run looks like. With the tolerance
+applied, a pod created 300 ms after the file it was built from was called stale, and
+`kenward setup` followed by `kenward run` rebuilt the entire household twice before the
+two timestamps drifted far enough apart to settle. `TestIsolatedPodman/HouseholdComesUp`
+caught it against real pods, where the whole household is created inside four seconds.
+The strict comparison gives up an edit made within one tick of a two-second-granularity
+filesystem of a pod's creation; that edit costs one further restart rather than being
+lost.
+
+**No in-flight turn is dropped for this, and there is deliberately no watcher.**
+`recreateStalePods` runs once inside `Start`, before the monitors, and `Stop` has already
+stopped every pod on the way out of the previous `kenward run` — so in the edit-and-restart
+sequence §8 tells the operator to perform there is nothing running to interrupt. Where a
+supervisor died without draining and left containers up, `replace` stops the pod first,
+and that stop is the SIGTERM the pod's runtime answers by finishing its turn and locking
+its sessions. Recreating a pod the moment its configuration file changed under a running
+household would be the opposite trade: it would drop turns for a saved file, so the
+recreate is bound to the restart the operator already performs.
 
 ### How a supervisor-started pod gets a passphrase
 
