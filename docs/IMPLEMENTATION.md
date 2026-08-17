@@ -26,8 +26,12 @@ Companion documents: `ARCHITECTURE.md` (why), this file (what and how).
   names them.
 - **Every package has table-driven tests.** Unit tests make no network calls and touch
   no real Telegram, provider or lore instance — all three are interfaces with fakes.
-- **Nothing writes to memory without an explicit user confirmation.** No exceptions, no
-  config flag to disable the confirmation.
+- **Nothing is written to memory without the member being told.** That is the invariant,
+  and it has no config flag. What *is* configurable is whether a write to a member's own
+  private space is proposed first or written and then announced with an Undo button —
+  `capture.private_writes: ask | save`, defaulting to `save`. Anything bound for the
+  household's shared space is always proposed first, under either policy, because
+  publishing to everybody cannot be taken back. See §6.
 
 ---
 
@@ -45,7 +49,12 @@ cmd/kenward-desktop/    optional status-bar wrapper: supervises one `kenward run
 internal/domain/        core types. Depends on nothing.
 internal/config/        YAML load, defaults, validation
 internal/scope/         message -> Scope resolution. THE authorization boundary.
-internal/memory/        Memory interface + lore MCP client
+internal/memory/        Memory interface + lore client (lore's Go API, in process)
+                        and the `lore serve` sync daemon isolated mode runs
+internal/lang/          the member-facing string catalogue, ten languages: every string
+                        the node itself says in Telegram. The system prompt, the tool
+                        descriptions and the JSON-schema descriptions stay English.
+                        Depends on nothing but the standard library.
 internal/transport/     Transport interface + Telegram implementation + Mux
   .../telegramtest/     a loopback Bot API server for tests. Ships in the module
                         rather than under _test.go because internal/e2e uses it.
@@ -84,7 +93,7 @@ Third-party dependencies, fixed:
 | Module | Version | Used by |
 | --- | --- | --- |
 | `github.com/go-telegram/bot` | v1.23.0 | `transport` |
-| `github.com/modelcontextprotocol/go-sdk` | v1.7.0 | `memory` |
+| `github.com/BlueHeisenberg/lore` | v0.4.0 | `memory` |
 | `gopkg.in/yaml.v3` | v3.0.1 | `config` |
 | `golang.org/x/sys` | v0.47.0 | `setup` (terminal echo suppression) |
 | `github.com/BlueHeisenberg/keel` | v0.5.5 | `routing` and `assistant` (llm), `session` and `dashboard` (vault), `supervisor` (sandbox), `updater`, `cmd/kenward` and `cmd/kenward-release` (update) |
@@ -98,9 +107,18 @@ certificate generation is `crypto/x509`; its admin password is Argon2id through
 dashboard is where a dependency list goes to die, so the rule for this one is that a
 Node toolchain must never be needed to fix a form on it.
 
-Note: the MCP SDK requires Go 1.25, which is why the module targets it.
+`lore` is a direct Go import and not a protocol. `internal/memory` opens the store in
+process through lore's Go API; there is no MCP SDK in the module, no server to run and no
+handshake to fail. The one thing still spawned is `lore serve`, the sync daemon an
+isolated pod runs so its copy of the shared space reaches the other pods — see §12.
+`memory.lore_command` names that binary and nothing else, and only its first element is
+read, so a file written when kenward spawned `lore mcp` still loads.
 
-The last two are reachable only from `cmd/kenward-desktop`. Nothing under `internal/`
+`lore` also brings a transitive SQLite (`modernc.org/sqlite`, pure Go) and the rest of
+the indirect block in `go.mod`. Pure Go is the load-bearing part: it is what keeps the
+`CGO_ENABLED=0` build the distroless image depends on.
+
+The last two direct dependencies are reachable only from `cmd/kenward-desktop`. Nothing under `internal/`
 and nothing in `cmd/kenward` imports either, which is what keeps the daemon's
 `CGO_ENABLED=0` build — the one the distroless image depends on — true. The rule is
 enforceable by inspection and is worth checking when either binary changes.
@@ -541,15 +559,27 @@ data_dir: /var/lib/kenward    # where kenward's own mutable state lives; empty m
 
 household:
   name: "Home"
+  # shared | per_member. Default shared. per_member requires mode: isolated —
+  # one agent each needs a bot each, and simple mode runs one bot.
+  # It is not `mode`; see ARCHITECTURE.md, "Personas, and one assistant or one each".
+  agents: shared
+  # How the household's own assistant writes. Nothing here is defaulted: every
+  # empty value is a meaning. No agent_name — kenward's name is not configurable,
+  # and stating one is a validation error.
+  persona:
+    language: "Spanish"       # free text, not a code; empty means English
+    tone: "warm but brief"    # empty means the flat register in PROMPT.md
+    character: "Knows the house well."   # up to 1000 runes; empty means none
   # A lore space id from `lore spaces`, never a display name. See below.
   shared_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
-  group_chat_id: -1001234567890
+  group_chat_id: -1001234567890   # required under agents: per_member
   tiers: [local, local-slow, cloud]
 
 telegram:
   # simple mode: one token for everything. bot_token_file is the alternative;
   # naming both is an error. With neither, the systemd credential `bot_token`.
   bot_token_env: KENWARD_BOT_TOKEN
+  # bot_token_file: /run/secrets/household-token   # or this; never both
   # isolated mode: per-member tokens, see members[].bot_token_env
 
 members:
@@ -557,6 +587,14 @@ members:
     name: David
     telegram_id: 12345678
     private_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8   # a space id, not a name
+    # Written by the member in the Telegram tutorial, not by an operator. Applies
+    # only under agents: per_member; carried and ignored under shared. Each field
+    # falls back to household.persona's independently.
+    persona:
+      agent_name: "Alfred"    # empty means "kenward"; 80 runes
+      language: "Spanish"
+      tone: "very terse"
+      character: "Answers in one line where one line will do."
     tiers: [local]            # local-only: refuses rather than reaching for cloud
     bot_token_env: KENWARD_BOT_TOKEN_DAVID   # isolated mode only
     # bot_token_file: /run/secrets/david-token   # or this; never both
@@ -581,7 +619,10 @@ endpoints:
     max_completion_tokens: 8192   # defaults to 4096; must be < context_window
 
 memory:
-  lore_command: ["lore", "mcp"]
+  # Only element zero is read: the `lore serve` sync daemon isolated mode spawns.
+  # kenward opens the store itself, in process, so a file still saying
+  # ["lore", "mcp"] loads unchanged and the trailing element is ignored.
+  lore_command: ["lore"]
   search_limit: 8
   announce_reads: true        # prefix each reply with what was searched; default true
 
@@ -604,6 +645,18 @@ update:
   channel: stable             # stable | edge | off
   check_interval: 6h
 
+# The one thing kenward sends that is not a reply. See §15.
+reminders:
+  timezone: Europe/Madrid     # IANA name; empty means the machine's own zone
+  max_per_day: 6              # per conversation, in that zone. Negative turns
+                              # delivery off entirely: reminders can still be set
+                              # and listed, none is ever sent. 0 means the default.
+  catch_up_window: 6h         # how late a REPEATING occurrence may be and still
+                              # be delivered after the node was off; at most one
+                              # is delivered however many were missed. Does not
+                              # apply to a one-off, which is always delivered.
+  max_stored: 20              # per conversation
+
 # Absent means off, which is what every configuration written before the dashboard
 # existed means. See §14.
 dashboard:
@@ -621,7 +674,7 @@ data. Left empty it resolves to the per-OS state location; the `--data-dir` flag
 `$KENWARD_DATA_DIR` override it in that order, which is how the container image runs with
 no arguments. See `CLI.md`.
 
-A handful of files live there, and **two of them are secret material** — which is the fact
+A handful of files live there, and **most of them are secret material** — which is the fact
 that decides how the directory is backed up, mounted and permissioned:
 
 | File | Contents | Sensitive |
@@ -1108,10 +1161,16 @@ The reply carries a line naming the memories that were searched and how many ent
 reached the answer:
 
 ```
-[searched your private memory (2 entries), the household memory (nothing)]
+<i>🔍 searched your private memory (2 entries), the household memory (nothing)</i>
 
 The boiler was serviced in March.
 ```
+
+That is the wire form: `transport.GlyphRead` and `transport.Italic`, wrapped by
+`Catalogue.Notice` so an Arabic household gets an RTL isolate. The glyph and the italics
+are structural and live in `internal/transport`; the words come from `internal/lang`, so
+the line is translated in all ten languages. It replaced a `[searched …]` bracket
+form, which is worth knowing only because older screenshots and older documents show it.
 
 Three decisions are in that line, and each was the other way at some point.
 
@@ -1522,9 +1581,12 @@ Telegram bot usernames are publicly discoverable and anyone may `/start`. Theref
    unlock that member's key, and greet them. Then a short setup conversation — language,
    the agent's name under `household.agents: per_member`, register, character — and the
    explanation of the two memories and how capture works. **The private space is not
-   created here.** Nothing in kenward creates a lore space, anywhere; the space named in
-   `private_space` must already exist, and enrolment binds a person to a configuration
-   entry rather than provisioning storage.
+   created here.** Enrolment binds a person to a configuration entry rather than
+   provisioning storage: the space named in `private_space` must already exist. kenward
+   *can* create a lore space — `memory.Client.CreateSpace`, used by the dashboard's
+   first-run wizard and its add-a-member form, and by nothing else; the terminal wizard
+   only offers the shared spaces lore already holds. Nothing on this path creates one,
+   because a member's space is named by id in the file before anybody redeems a code.
 
    The setup questions are a convenience and the explanation is not: it is sent on every
    ending, including the ones where the member answered nothing, and a node that died
@@ -2166,7 +2228,8 @@ it names the line to delete and stops before anything has been cleared.
   mismatched artifacts are refused, not warned about
 - download → verify → swap → restart → health check within 30s → keep, else
   **automatic rollback** to the retained previous version
-- health = process up, lore MCP responds, Telegram authorises. **Endpoint reachability
+- health = process up, the lore store opens and answers, Telegram authorises. **Endpoint
+  reachability
   is deliberately not part of health** — machines being asleep is normal and would
   cause endless rollbacks
 - never restart mid-conversation: drain until no unit has an active turn
@@ -2484,9 +2547,11 @@ unproved. This section is only the part that binds: the tests a change may not r
   worked, the one lore refused, the one lore never answered, and the one nobody tapped.
   The memory double carries `deleteErr` for that, because the two endings that are not
   "gone" do not exist unless the double can produce them.
-- `memory`'s parser is tested against a scripted fake MCP server over a corpus of 31
-  captured fixtures in `internal/memory/testdata`. A format change must fail there, in
-  one place, rather than in whatever calls it.
+- `memory` has no parser and no fixture corpus to test one with. It used to have both —
+  a scripted fake MCP server and 31 captured fixtures under `internal/memory/testdata` —
+  and the whole layer went when lore became an import (§12). The tests that replaced it
+  build a real lore store in a `t.TempDir` and are typed all the way down; there is
+  nothing left that a format change could break silently.
 - Refusal strings, rendered prompts and the privacy statements are golden files, so
   softening one is a visible edit to a fixture rather than an accident.
 - `internal/e2e` runs whole messages through the production wiring. Its
@@ -2553,19 +2618,29 @@ design and several of them contradict what the architecture originally supposed.
 - **Instances are isolated by `LORE_HOME`, not by machine.** Several lore daemons can
   run on one host, each holding a subset of spaces. This is what makes one lore per
   member pod viable in isolated mode.
-- **Separate `LORE_HOME`s do not converge on a shared space by themselves**, and this
-  document used to say they did. One `LORE_HOME` is one lore *account*, and `lore init`
-  gives each account its own space ids, so the id `household.shared_space` names exists
-  in at most one store — and in a household whose pods initialised themselves (§8), in
-  none of them, because no lore can be told to create a space at an id somebody already
-  wrote in a file. Where the id is not held, `doctor` reports `space "…" is not a space
-  this lore store holds` and that conversation reads nothing, silently, because a turn
-  that cannot read a space degrades that space rather than failing. Convergence is
-  lore's own sharing — `lore space invite`, `lore join`, and a reachable `lore serve` —
-  and **nothing in kenward calls any of the three**: not `internal/supervisor`, not
-  `internal/setup`, and `deploy/compose.isolated.yml` defines no port, peer or daemon.
-  Private spaces are unaffected. Treated as an open limitation rather than fixed,
-  because D-036 changes what the fix looks like.
+- **Separate `LORE_HOME`s do not converge on a shared space by themselves.** One
+  `LORE_HOME` is one lore *account*, and `lore init` gives each account its own space ids,
+  so the id `household.shared_space` names exists in at most one store — and in a
+  household whose pods initialised themselves (§8), in none of them, because no lore can
+  be told to create a space at an id somebody already wrote in a file. Where the id is not
+  held, `doctor` reports `space "…" is not a space this lore store holds` and that
+  conversation reads nothing, silently, because a turn that cannot read a space degrades
+  that space rather than failing.
+
+  Convergence is lore's own sharing, and it has two halves. **Membership is still out of
+  band**: `lore space invite` and `lore join` are run by the operator, and nothing in
+  kenward calls either. **The daemon is not** — `internal/memory/sync.go` supervises
+  `lore serve --lan` and `cmd/kenward/run.go`'s `startSyncDaemon` starts one, so an
+  isolated pod's copy of the shared space reaches the other pods without anybody keeping
+  a process alive by hand. It runs in isolated mode only, in a member or group pod only,
+  and there is no config key to turn it on: `mode: isolated` is the switch, and
+  `memory.lore_command` only says where the binary is. Failure is logged and retried with
+  backoff and never stops the node, because a household whose sync daemon will not start
+  still has a working assistant and working private memory. `memory.ReadSyncStatus` reads
+  the daemon's own admin endpoint and `kenward doctor` reports it.
+
+  Private spaces are unaffected by any of this: they have two members, the person and the
+  node, and both live in the same pod.
 - **Sync is last-writer-wins per entry**, compared on `(updated_at, author_account)`.
   It is not a CRDT: the losing version is discarded silently, with no conflict record.
   A machine with a fast clock wins every conflict. Household clocks should be synced,
@@ -2582,8 +2657,10 @@ design and several of them contradict what the architecture originally supposed.
   the wire exchange is over *blinded* space ids, so a store cannot even name a space it
   is not in. That is what makes one lore per pod safe, and it is lore's guarantee rather
   than kenward's.
-- **Invites are not on the Go API.** Enrolment drives the lore CLI, which has
-  non-interactive flags but emits no JSON.
+- **Space invites are not on the Go API**, and kenward does not drive the CLI for them
+  either. Adding a second account to a lore space is `lore space invite` and `lore join`,
+  run by an operator; nothing in kenward shells out to do it. This is not kenward's own
+  enrolment, which is claim codes in `internal/enrol` and touches lore not at all.
 - **Delete exists, by tombstone, and only by id.** It writes a signed tombstone that
   propagates to every synced device; the entry then stops coming back from search and
   from get, and a tombstone is never returned to a reader on any path. Deleting an
@@ -2757,23 +2834,29 @@ half is skipped: in isolated mode a code that is not exported to the member's se
 reaches a pod that has never heard of it, and a revocation the pod never reads leaves it
 serving the account. See `mintClaimCode` and `revokeMember`.
 
-### kenward cannot create a lore space, so this one shells out
+### This is the one place kenward creates a lore space
 
-lore's MCP server has five tools — search, get, put, share, spaces — and none of them
-creates anything. Space creation exists only on lore's command line. `memory.CreateSpace`
-therefore runs `lore space create <name>` as a one-shot subprocess against the same
-binary and the same `LORE_HOME` the MCP client uses, seamed through `memory.Config.RunCLI`
-so no test spawns a process.
+`memory.Client.CreateSpace` calls lore's `Store.CreateSpace(ctx, name, lore.Shared)`
+in process. There is no subprocess, no output to parse and no listing to diff — that
+whole arrangement existed because space creation was only on lore's command line, and it
+went with the rest of the parser when lore became an import (§12). The dashboard's
+first-run wizard and this form are the only callers; the terminal wizard offers the
+spaces lore already holds and creates none.
 
-The new space's id comes from **diffing the listing**, not from parsing the command's
-output: list, create, list again, take the id that was not there before. This package
-already carries five parsers for lore's prose and each is a hostage to a wording change;
-the diff costs one extra tool call on an operation performed once per household member
-and cannot be broken by rewording. Zero new spaces, or more than one, is reported rather
-than guessed at — that id becomes somebody's private space.
+**`shared` is the kind, and that is not a contradiction.** A member's private space is a
+lore space of kind `shared` with two members in it, the person and the node. lore's
+`personal` kind never crosses accounts, so a node could not read one.
 
-This is marked `ponytail:` in the source. Replace the exec with a tool call or a library
-call the moment lore offers either; nothing above `CreateSpace` knows which it got.
+A name another space already holds is `ErrSpaceExists` and nothing is created. There is
+deliberately no get-or-create: that id becomes a member's private space, and quietly
+handing back an existing space because the names matched is how one member's memory
+becomes another's. The form asks for a different name. The name is also refused if it is
+empty, contains a newline or a null byte, or starts with `-`, which lore's own command
+line would read as a flag — `lore space invite` is the very next thing an operator runs
+against a space kenward made.
+
+Neither lore nor kenward can create a space **at a given id**, which is why a
+self-initialised pod comes up with a working store and spaces that are not there (§8).
 
 ### Exposure
 

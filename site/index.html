@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>kenward — a household AI assistant where each person's memory is actually their own</title>
-<meta name="description" content="kenward is a self-hosted, Telegram-native household assistant. Per-person memory separated by separate stores, separate keys and separate processes. In development.">
+<meta name="description" content="kenward is a self-hosted, Telegram-native household assistant. Per-person memory separated by separate stores, separate keys and separate processes. Released and installable.">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%23a8391a'/%3E%3Cpath%20d='M10%208v16M10%2016l8-8M10%2016l8%208'%20stroke='%23faf8f5'%20stroke-width='2.6'%20fill='none'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E">
 <style>
@@ -351,9 +351,11 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
       </p>
 
       <p class="status">
-        <strong>Status: v0.1.0, first release.</strong> Binaries for Linux, macOS and Windows,
+        <strong>Status: released.</strong> Binaries for Linux, macOS and Windows,
         a container image, <code>.deb</code> and <code>.rpm</code> packages, and a signed
-        update manifest. It has not yet run a household for a week, so treat it as a first
+        update manifest, on the
+        <a href="https://github.com/BlueHeisenberg/kenward/releases">releases page</a>.
+        It has not yet run a household for a week, so treat it as a first
         release rather than a settled one. The binaries are
         <strong>unsigned</strong>: macOS needs right-click &rarr; Open the first time, and
         Windows will warn until the code-signing certificate exists.
@@ -468,8 +470,9 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
         </ul>
 
         <figcaption>
-          There is no line from the household group chat to anybody&rsquo;s private space. That absence
-          is the design, not an omission from the drawing.
+          A household with one assistant, which is the default. There is no line from the household
+          group chat to anybody&rsquo;s private space. That absence is the design, not an omission from
+          the drawing.
         </figcaption>
       </figure>
 
@@ -481,7 +484,7 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
           </thead>
           <tbody>
             <tr>
-              <th scope="row">Direct message from a member</th>
+              <th scope="row">Direct message with your own assistant</th>
               <td>their private space, then shared</td>
               <td>their private space</td>
             </tr>
@@ -490,9 +493,24 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
               <td>shared space only</td>
               <td>shared space</td>
             </tr>
+            <tr>
+              <th scope="row">Direct message with kenward itself</th>
+              <td>shared space only</td>
+              <td>shared space</td>
+            </tr>
           </tbody>
         </table>
       </div>
+
+      <p>
+        The diagram above is a household with one assistant, which is the default and has two kinds of
+        conversation. The third row is the other arrangement: a household can give every member an
+        agent of their own, and then kenward is the household&rsquo;s own agent, reachable privately as
+        well as in the group. That private chat with kenward reads and writes the shared space and
+        nothing else &mdash; it is where you add to the household&rsquo;s memory, or ask what is in it,
+        without doing it in front of everybody. It never touches your private memory. Knowing who is
+        asking is not permission to read them.
+      </p>
 
       <p>
         Private conversations can read shared memory, because that is useful &mdash; you should be able
@@ -504,11 +522,19 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
       <div class="callout">
         <h3>Nothing is written to memory silently</h3>
         <p>
-          The assistant may <em>propose</em> remembering something; you decide, with buttons, in the
-          chat. There is no configuration option to turn that confirmation off. A group conversation is
-          never offered a private destination, and only the member who was asked can answer &mdash; in a
-          group chat everyone can see the buttons, and without that filter somebody else could route
-          your memory for you. A proposal that times out counts as declined.
+          A note to your <em>own</em> memory is written and then shown to you &mdash; the exact words,
+          the space it went to, and an <strong>Undo</strong> button live for a few minutes. Anything
+          bound for the household&rsquo;s <em>shared</em> memory is proposed first and written only if
+          you say yes, because publishing to everybody is the one act here that cannot be taken back.
+          A household that prefers to be asked about its private writes too sets
+          <code>capture.private_writes: ask</code>; there is no setting that makes a write silent, and
+          that is the part with no configuration option.
+        </p>
+        <p>
+          A group conversation is never offered a private destination, and only the member who was
+          asked can answer &mdash; in a group chat everyone can see the buttons, and without that
+          filter somebody else could route your memory for you. A proposal that times out counts as
+          declined; an undo window that times out leaves the write standing, and says so.
         </p>
       </div>
     </div>
@@ -524,6 +550,11 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
         conversations?</em> A non-technical installer can answer that. They cannot answer
         &ldquo;do you want per-user pods?&rdquo;, and the pods are a consequence rather than the
         decision.
+      </p>
+      <p>
+        It is the only question setup asks about security. The other one that sounds like it &mdash;
+        one assistant, or one each &mdash; is about presentation, and neither the wizard nor this page
+        lets them be conflated.
       </p>
 
       <div class="scroller" tabindex="0" role="region" aria-label="Comparison of Simple and Isolated modes, scrollable table">
@@ -604,15 +635,26 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
           <h3>A Telegram bot</h3>
           <p>
             Message <a href="https://t.me/BotFather">@BotFather</a>, send <code>/newbot</code>, follow
-            two prompts, keep the token. Members need no client software beyond Telegram, which they
-            already have.
+            two prompts, keep the token. Then, in the same chat, send <code>/setprivacy</code>, choose
+            the bot and choose <strong>Disable</strong> &mdash; Telegram turns privacy mode on for
+            every new bot, and with it on the bot receives nothing at all in a group chat: not plain
+            messages, not a reply, not an @mention, and nothing is logged because nothing arrives. Do
+            it before adding the bot to any group; Telegram applies the change only to groups joined
+            afterwards. Setup asks Telegram whether it is off, says so plainly if it is not, and
+            offers to check again while you are still standing there; <code>kenward doctor</code>
+            checks it again later. Members need no client software beyond
+            Telegram, which they already have.
           </p>
         </li>
         <li>
-          <h3>lore, running</h3>
+          <h3>lore, initialised</h3>
           <p>
-            kenward owns no memory of its own; it talks to lore over MCP, and creates a space nowhere.
-            You create the shared space and one private space per member in lore first.
+            kenward owns no memory of its own. It imports lore as a Go module and opens the store in
+            process &mdash; there is no server to run and no protocol between them. What it needs is a
+            lore home with an account in it. The dashboard&rsquo;s wizard can create the spaces for
+            you; the terminal wizard only offers the ones lore already holds, and only the
+            <strong>shared</strong> ones, because a lore personal space cannot cross accounts and so
+            can hold neither the household&rsquo;s memory nor a member&rsquo;s.
           </p>
         </li>
         <li>
@@ -625,7 +667,9 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
         </li>
       </ul>
       <p>
-        One household runs one deployment. There is no multi-tenant runtime, no web dashboard, no
+        One household runs one deployment. There is an admin dashboard &mdash; one HTTP server, one
+        account, bound to loopback unless you say otherwise, with a first-run wizard that can set the
+        whole household up in a browser instead of a terminal. There is no multi-tenant runtime, no
         control plane, no SSO, no organisations and no usage quotas &mdash; none of it is designed
         around, and most of it is never going to exist.
       </p>
@@ -635,13 +679,16 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
   <section id="install" aria-labelledby="install-h">
     <div class="wrap">
       <p class="eyebrow">Installing</p>
-      <h2 id="install-h">One binary, one setup question</h2>
+      <h2 id="install-h">One binary, two questions</h2>
 
       <p class="status">
-        <strong>There is nothing to download yet.</strong> No release has been published, so the
-        commands below do not work today. They are the intended install, written down now rather than
-        after the fact. When binaries exist they will appear on the
-        <a href="https://github.com/BlueHeisenberg/kenward/releases">releases page</a>.
+        <strong>Setup asks two questions that shape the household.</strong> The first is about
+        security: <em>does everyone here trust whoever runs this machine to be able to read their
+        private conversations?</em> That is the one that chooses the mode. The second is about
+        presentation: <em>one assistant for the whole household, or one each?</em> A member&rsquo;s own
+        bot is a separate contact, not a separate secret &mdash; and because one bot is one contact is
+        one agent, one each needs Isolated mode&rsquo;s per-member bots, which setup says rather than
+        quietly handing everybody the same assistant under several names.
       </p>
 
       <h3>Simple mode, Linux</h3>
@@ -715,9 +762,11 @@ kenward setup</code></pre>
           and <code>kenward doctor</code> says so out loud.
         </li>
         <li>
-          <strong>Memory has no delete.</strong> lore does not support one, so anything kenward stores is
-          permanent from lore&rsquo;s side. This is why publishing something from a private space into
-          the shared one shows you the full text first.
+          <strong>A delete is a tombstone, not a shred.</strong> Undo really does remove an entry:
+          it stops coming back from search and from get, here and on every synced device. The row is
+          still on the disk. That is lore&rsquo;s model, it is what makes a delete survive a sync, and
+          it is why publishing something from a private space into the shared one shows you the full
+          text first &mdash; unpublishing is not the same as never having published.
         </li>
         <li>
           <strong>The privacy differentiator is a property of self-hosting.</strong> Isolated mode on
@@ -761,7 +810,8 @@ kenward setup</code></pre>
     <ul>
       <li>
         <a href="https://github.com/BlueHeisenberg/lore"><strong>lore</strong></a> &mdash; the memory
-        layer, reached over MCP. kenward owns no knowledge model, and does not fork this one.
+        layer, imported as a Go module and opened in process. kenward owns no knowledge model, and
+        does not fork this one.
       </li>
       <li>
         <a href="https://github.com/BlueHeisenberg/keel"><strong>keel</strong></a> &mdash; domain-free Go

@@ -11,8 +11,10 @@ boundary is separate stores, separate keys and separate processes — not a
 It runs on hardware you already own, routing each request to whichever of your machines
 is awake, and falling back to a cloud provider only where you allow it.
 
-> **Status: v0.1.0 — first release.** Six binaries, a container image at
-> `ghcr.io/blueheisenberg/kenward`, `.deb`/`.rpm` packages and a signed update manifest.
+> **Status: released.** Six binaries (Linux, macOS and Windows, amd64 and arm64), a
+> container image at `ghcr.io/blueheisenberg/kenward`, `.deb`/`.rpm` packages and a
+> signed update manifest. The current version is whatever the
+> [releases page](https://github.com/BlueHeisenberg/kenward/releases) says.
 > `curl -fsSL https://raw.githubusercontent.com/BlueHeisenberg/kenward/main/install.sh | sh`
 > installs it; see [docs/INSTALL.md](docs/INSTALL.md).
 >
@@ -44,10 +46,19 @@ the shape of your week. A lore space with exactly two members: you and the node.
 plans, decisions everyone should be able to recall. A lore space with every member in
 it.
 
+Three conversations, three answers:
+
 | Conversation | Reads | Writes |
 | --- | --- | --- |
-| Direct message from a member | their private space, then shared | their private space |
+| Direct message with a member's own assistant | their private space, then shared | their private space |
 | Household group chat | shared space only | shared space |
+| Direct message with kenward itself | shared space only | shared space |
+
+The third one exists only where a household gave every member an agent of their own
+(`household.agents: per_member`), so that there is something for kenward to be separate
+from. It is where you add to the household's memory, or ask what is in it, without doing
+it in front of everybody — and it never touches your private memory, because your own
+agent is where that lives.
 
 Private conversations can read shared memory, because that is useful. Group
 conversations can never read private memory, because that is the entire point. Copying
@@ -61,8 +72,14 @@ write into anyone's private space.
 
 ## Two modes, one binary
 
-Chosen during setup, by answering one question: *does everyone here trust whoever runs
-this machine to be able to read their private conversations?*
+Chosen during setup, by answering the one question setup asks about security: *does
+everyone in this household trust whoever runs this machine to be able to read their
+private conversations?* Setup asks a second question that looks similar and is not —
+*one assistant for the whole household, or one each?* — which is about presentation, not
+topology. A member's own bot is a separate **contact**, not a separate **secret**; the
+mode is what seals memory. One assistant each needs a bot per person, so it is available
+in Isolated mode only, and setup refuses the combination rather than quietly downgrading
+it.
 
 | | **Simple** | **Isolated** |
 | --- | --- | --- |
@@ -93,8 +110,9 @@ privacy and having it.
 
 ## Built on
 
-- **[lore](https://github.com/BlueHeisenberg/lore)** — the memory layer, reached over
-  MCP. kenward owns no knowledge model.
+- **[lore](https://github.com/BlueHeisenberg/lore)** — the memory layer, imported
+  directly as a Go module (`github.com/BlueHeisenberg/lore`), so kenward opens the store
+  in process rather than talking to a server. kenward owns no knowledge model.
 - **[keel](https://github.com/BlueHeisenberg/keel)** — domain-free mechanisms: sandbox
   isolation, sealed vault, model client, self-update.
 

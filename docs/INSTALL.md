@@ -1,14 +1,17 @@
 # Installing kenward
 
 kenward is one binary. Which mode you run is chosen during setup, by answering one
-question about trust — see [ARCHITECTURE.md](ARCHITECTURE.md) if you want the reasoning
-before you decide.
+question about trust. Setup asks a second question that is not about security at all —
+one assistant for the whole household, or one each — and answering "one each" changes
+what you need before you start, so it is worth deciding both now. See
+[ARCHITECTURE.md](ARCHITECTURE.md) if you want the reasoning.
 
 ---
 
 ## Before you start
 
-Three things, none of them kenward:
+Three things, none of them kenward — and a fourth if you are giving everybody their own
+assistant:
 
 **A Telegram bot.** Message [@BotFather](https://t.me/BotFather), send `/newbot`, follow
 two prompts, and keep the token it gives you. It looks like
@@ -30,11 +33,21 @@ already in will see nothing change and conclude the fix did not work. `kenward s
 the dashboard wizard both check this the moment they have the token, and `kenward doctor`
 reports it afterwards.
 
-**[lore](https://github.com/BlueHeisenberg/lore), running.** kenward owns no memory of
-its own; it talks to lore over MCP. You need lore installed, initialised, and holding a
-shared space for the household plus one private space per member. **Create them in lore
-first** — kenward creates a space nowhere, not at setup and not when somebody claims an
-invite.
+**[lore](https://github.com/BlueHeisenberg/lore), installed and initialised.** kenward
+owns no memory of its own. It imports lore as a Go module and opens the store in process,
+so there is no lore server to run and no protocol between them — but there does have to be
+a lore home with an account in it. You need one space for the household and one per
+member. **Create them with `lore space create` first**: neither `kenward setup` nor
+claiming an invite creates a space. The one thing that does is the admin dashboard's
+first-run wizard, which makes them for you and writes their ids into the file — so if you
+would rather not do this by hand, install the binary and run `kenward dashboard` instead
+of `kenward setup`.
+
+They must be **shared** spaces, all of them, including the private ones. A member's
+private space is a shared-kind lore space with two members in it, the person and the node;
+lore's `personal` kind never crosses accounts, so kenward could not read one. `kenward
+setup` filters its list to shared spaces for exactly this reason and will not offer you a
+personal one — if the list comes up empty, that is why.
 
 Then run `lore spaces` and keep the **id** column. That is what goes in `shared_space`
 and `private_space`, not the name you gave the space. lore does not enforce unique names,
@@ -59,6 +72,25 @@ in every isolated unit, so once they share a space they converge on it.
 Ollama, LM Studio, or a cloud provider. It does not need to be awake during setup —
 kenward is built for machines that are usually asleep, and setup will say so rather than
 refusing.
+
+**And, if you answer "one assistant each": the household's Telegram group, already made,
+with the bot already in it, and a message already sent in it.** Under `agents:
+per_member`, kenward itself lives in the group chat and nowhere else — every private chat
+belongs to somebody's own assistant — so `household.group_chat_id` is required, and setup
+asks for it with no default and no skip. It loops until you give it a number, because a
+per-member household without one has no kenward in it at all, in the group or anywhere.
+
+There is no second route to that number: nobody claims a group the way a member claims an
+invite. To find it, with the bot's token where `TOKEN` is:
+
+```
+https://api.telegram.org/botTOKEN/getUpdates
+```
+
+and look for `"chat":{"id":-1001234567890` — that number, minus sign and all. If nothing
+comes back, the message was sent before the bot joined, or privacy mode is still on, or
+the bot was added to the group before you disabled it (in which case remove it and add it
+again).
 
 ---
 
@@ -87,7 +119,7 @@ curl -fsSL https://raw.githubusercontent.com/BlueHeisenberg/kenward/main/install
   | sh -s -- --dir "$HOME/.local/bin" --no-service
 ```
 
-`--version v0.2.0` pins a release, `--force` reinstalls one you already have, `--help`
+`--version v0.1.0` pins a release, `--force` reinstalls one you already have, `--help`
 lists the rest.
 
 What it does not check is the release *signature*. That covers the update manifest and
@@ -109,11 +141,14 @@ sudo install -m 0755 kenward_linux_amd64 /usr/local/bin/kenward
 
 **From a package**, if you would rather your package manager knew about it. `.deb` and
 `.rpm` builds are attached to every release; they put the binary in `/usr/bin` and the
-systemd unit in `/usr/lib/systemd/system/kenward.service`:
+systemd unit in `/usr/lib/systemd/system/kenward.service`. The package filename carries
+the version, so name the one you want — the
+[releases page](https://github.com/BlueHeisenberg/kenward/releases) lists them:
 
 ```sh
-curl -fLO https://github.com/BlueHeisenberg/kenward/releases/latest/download/kenward_0.2.0_linux_amd64.deb
-sudo dpkg -i kenward_0.2.0_linux_amd64.deb
+V=0.1.0
+curl -fLO "https://github.com/BlueHeisenberg/kenward/releases/download/v$V/kenward_${V}_linux_amd64.deb"
+sudo dpkg -i "kenward_${V}_linux_amd64.deb"
 ```
 
 There is no apt or yum repository, and there is no plan for one — a repository is a second
@@ -252,7 +287,7 @@ bundle. `docs/DESKTOP.md` has the rest.
 
 The image is `ghcr.io/blueheisenberg/kenward`, published for linux/amd64 and linux/arm64
 on every release. `:latest` follows the newest non-prerelease; a version tag
-(`:v0.2.0`) pins one, and pinning is the better habit for something holding your
+(`:v0.1.0`) pins one, and pinning is the better habit for something holding your
 household's keys.
 
 ```sh

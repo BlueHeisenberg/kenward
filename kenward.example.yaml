@@ -25,13 +25,25 @@
 # in whichever mode you name here regardless of what you intended.
 mode: simple
 
-# data_dir is where kenward keeps the mutable state it writes about itself — today just
-# state.json, the record of which Telegram account is bound to which member. It is not
-# where lore's data lives and it never holds a secret. Left empty, kenward falls back to
-# a sensible per-OS location (XDG_STATE_HOME on Linux, Application Support on macOS,
-# %LOCALAPPDATA% on Windows); set it explicitly here because a container deployment's
-# home directory is not where anyone expects state to persist, and this is the path the
-# shipped compose files bind-mount.
+# data_dir is where kenward keeps the mutable state it writes about itself. It is not
+# where lore's data lives, but it DOES hold secret material and must be treated as such:
+#
+#   state.json                 enrolment bindings and the personas members wrote
+#   sessions.json              each member's WRAPPED KEY
+#   invites.json               hashed claim codes not yet redeemed
+#   invites/, revocations/     isolated mode's per-member copies of those
+#   dashboard/admin.json       the admin account's wrapped key (the password verifier)
+#   dashboard/key.pem          the dashboard's TLS private key, under lan exposure
+#
+# Nothing here is a plaintext secret except that TLS key, but a wrapped key is worth one
+# offline guessing campaign to whoever copies it. A BACKUP OF THIS DIRECTORY IS A BACKUP
+# OF EVERY MEMBER'S KEY MATERIAL — do not sync it to a shared drive, and keep it 0700.
+# docs/IMPLEMENTATION.md §4 lists every file and which ones are sensitive.
+#
+# Left empty, kenward falls back to a sensible per-OS location (XDG_STATE_HOME on Linux,
+# Application Support on macOS, %LOCALAPPDATA% on Windows); set it explicitly here
+# because a container deployment's home directory is not where anyone expects state to
+# persist, and this is the path the shipped compose files bind-mount.
 data_dir: /var/lib/kenward
 
 # household describes the group as a whole: the shared conversation every member can
@@ -80,14 +92,24 @@ household:
     # language is named the way a person names one, not as a code, because it is
     # passed to the model rather than looked up in a table. Empty means English.
     #
-    # It reaches the model AND the node's own strings — the capture announcements,
-    # the refusals, the retrieval line, the locked notice, the memory model at the end
-    # of onboarding — in the ten languages internal/lang holds a table for. The setup
-    # wizard and the four tutorial questions are English and Spanish only.
+    # It reaches two places under two different rules. To THE MODEL it goes verbatim.
+    # The node's OWN strings — the onboarding text, the capture announcements and
+    # buttons, the refusals, the retrieval line, the locked notice — come from a closed
+    # catalogue with ten languages in it: English, Spanish, Catalan, Portuguese,
+    # French, Italian, Dutch, German, Chinese and Arabic. Name one of those and the
+    # whole conversation is in it. Name anything else and the model still answers in
+    # that language while kenward's own machinery stays English.
+    #
+    # Codes, endonyms and exonyms all match — "es", "espanol", "castellano".
     #
     # It is a setting rather than a default: the assistant answers in this language
     # whatever language a message is written in, because everything else on the screen
-    # is already in it. Asking it outright to switch works, for that conversation.
+    # is already in it and a mirroring reply would be the only part that moved. Asking
+    # it outright to switch works, for that conversation.
+    #
+    # The setup wizard and the four tutorial questions are English and Spanish only.
+    # The system prompt and the tool descriptions are English in every case; they are
+    # addressed to the model, not to anybody here.
     language: "Spanish"
     # tone is the register, in a phrase. Empty means the flat register docs/PROMPT.md
     # specifies — useful, brief, specific, not a personality — which is the default
@@ -111,7 +133,14 @@ household:
   # that an entry really lives in the space it claims is worthless if two spaces answer
   # to one name. A display name here is the worst kind of wrong: lore's put accepts it,
   # so writes appear to work, and every read comes back empty. `kenward doctor` catches
-  # it and exits 2. kenward never creates a space — make it in lore first.
+  # it and exits 2.
+  #
+  # Nothing on this path creates a space: the terminal wizard offers the spaces lore
+  # already holds — the SHARED ones only, because a lore personal space never crosses
+  # accounts and so can hold neither this nor a member's private memory — and stops if
+  # there are none. Make it with `lore space create` first. The admin dashboard's
+  # first-run wizard is the one thing that does create spaces, for the household and
+  # for each member it adds, and it writes their ids here for you.
   shared_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
   # group_chat_id is the Telegram chat id kenward maps to shared_space. It is the
   # negative id Telegram assigns a supergroup, found by adding the bot to the group and
@@ -132,6 +161,14 @@ household:
   # nothing arrives. Send /setprivacy to @BotFather, choose the bot, choose Disable —
   # then remove it from the group and add it again, because Telegram applies the change
   # only to groups the bot joins afterwards. kenward doctor reports this.
+  #
+  # Disabling it does NOT make kenward answer everything. Every message in the group
+  # now arrives here, and kenward rebuilds the gate Telegram stopped applying: it
+  # answers only when addressed — an @mention of the bot, a reply to one of its own
+  # messages, or a bot command not aimed at another bot by name. A bare "kenward, ..."
+  # with no @ is not a mention and is not addressed. Everything else is heard and kept
+  # as context for the next question, and costs nothing: no retrieval, no model call,
+  # and no capture proposal interrupting a family conversation.
   group_chat_id: -1001234567890
   # tiers is the ordered endpoint tier chain the group conversation may use, tried in
   # the order written until one answers. It must be stated explicitly — see the long
@@ -153,6 +190,13 @@ telegram:
   # kenward refuses to start rather than serving a household with no way to receive
   # messages. Get this bound to the wrong token and kenward answers as a bot nobody in
   # the household is talking to.
+  #
+  # bot_token_file: /run/secrets/household-token is the alternative, and the better
+  # one in a container: an environment value is readable by every process in it and is
+  # inherited by every child kenward starts. The file's trailing newline is stripped,
+  # it must be 0600 (group- or world-readable is refused, on anything but Windows),
+  # and naming both this and bot_token_env is an error rather than a precedence. With
+  # neither, the systemd credential `bot_token` is used.
   bot_token_env: KENWARD_BOT_TOKEN
 
 # members lists every human in the household. Order here is the order errors are
@@ -226,6 +270,12 @@ members:
     # own token there. In simple mode (this file) it is ignored entirely; it is filled
     # in here anyway so the field is documented and so this file is ready to be adapted
     # for isolated mode without hunting for what belongs in it.
+    #
+    # bot_token_file: /run/secrets/david-token is the alternative, on the same terms as
+    # telegram.bot_token_file above: 0600, trailing newline stripped, naming both is an
+    # error, and the systemd credential `bot_token.david` covers naming neither. In
+    # isolated mode the file paths must be unique per member too — two members reading
+    # one token file are two members on one bot.
     bot_token_env: KENWARD_BOT_TOKEN_DAVID
     # passphrase_env names the variable holding the passphrase that wraps THIS MEMBER'S
     # session key. Required in isolated mode, ignored in simple mode (this file), and it
@@ -331,6 +381,12 @@ endpoints:
     # Unlike the two local machines, a cloud provider requires a key, and OPENROUTER_API_KEY
     # must be exported and non-empty or kenward refuses to start — a missing provider key
     # discovered mid-turn is a refusal a member cannot act on, so it is caught here instead.
+    #
+    # api_key_file: /run/secrets/openrouter is the alternative, on the same terms as the
+    # bot token files above: 0600, trailing newline stripped, naming both is an error,
+    # and the systemd credential `api_key.openrouter` covers naming neither. An endpoint
+    # that names no source at all is the local case — no authentication needed — and is
+    # not an error.
     api_key_env: OPENROUTER_API_KEY
     tags: [cloud]
     # Given an explicit, shorter timeout than the local machines: a cloud endpoint that
@@ -363,9 +419,12 @@ memory:
   # marginal context; too low and relevant entries silently never surface.
   search_limit: 8
   # announce_reads prefixes each reply with a line naming the memories that were
-  # searched and how many entries reached the answer — [searched your private memory
-  # (2 entries), the household memory (nothing)]. Kenward's default is true; set
-  # explicitly here to the same value.
+  # searched and how many entries reached the answer, in the conversation's own
+  # language, italicised behind a magnifying glass:
+  #
+  #     🔍 searched your private memory (2 entries), the household memory (nothing)
+  #
+  # Kenward's default is true; set explicitly here to the same value.
   #
   # This one is a setting because a read changes nothing: a household that finds the
   # line noisy turns it off and loses nothing but the line. The announcement kenward
