@@ -12,8 +12,7 @@ here; link to them.
 ## Ground rules
 
 - **Git identity**: commit as `BlueHeisenberg <2033896+BlueHeisenberg@users.noreply.github.com>`.
-  Never as any other personal account or the work identity — the global git config on this
-  machine is the work one, so set it locally.
+  Never as any other identity. Set it locally in every clone.
 - **Remotes** use the SSH host alias `github-personal`
   (`git@github-personal:BlueHeisenberg/<repo>.git`). Plain `github.com` SSH resolves to
   the wrong key.
@@ -83,9 +82,13 @@ GOWORK=off go build ./... && GOWORK=off go test ./...
 `-race` needs cgo, which the Windows development machine lacks. Run it on Linux:
 
 ```sh
-docker run --rm -v "$PWD:/src" -w /src -e CGO_ENABLED=1 -e GOWORK=off \
+MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/src" -w /src -e CGO_ENABLED=1 -e GOWORK=off \
     golang:1.25-bookworm go test -race ./...
 ```
+
+`MSYS_NO_PATHCONV=1` is not optional under Git Bash. Without it the shell rewrites `-w
+/src` into a Windows path, docker refuses the run — and the pipeline still exits 0, so the
+gate looks green and never executed.
 
 ## Working style
 
