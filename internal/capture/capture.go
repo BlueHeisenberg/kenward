@@ -104,8 +104,10 @@ type Proposal struct {
 	// also what keeps a household's existing entries findable on the day they
 	// switch languages — and the member's own words ride alongside it.
 	//
-	// Empty is the ordinary case for an English conversation, and an alias whose
-	// every word is already in the entry is dropped rather than repeated.
+	// Ignored outright in an English conversation, whatever the model supplies:
+	// there is nothing to bridge, so an alias there can only be invention. See
+	// Options.Language. In every other conversation an alias whose every word is
+	// already in the entry is dropped rather than repeated.
 	Aliases []string
 }
 
@@ -305,6 +307,17 @@ type Options struct {
 	// Language is the language this conversation's member reads, named the way a
 	// person names one. Empty is English.
 	//
+	// It decides two things, and the second was learned the hard way. It selects
+	// the catalogue every string this engine sends is written from; and, because
+	// aliases exist so that somebody not speaking English can find an English
+	// entry, it decides whether aliases are collected at all. In an English
+	// conversation there is nothing for one to bridge, so the model is free to
+	// invent, and it does: an English member's private note about a penicillin
+	// allergy was stored — and announced back to them — carrying "Also known as:
+	// penny allergy". usefulAliases cannot catch that, because it drops what the
+	// entry already says and "penny" is exactly a word the entry does not contain.
+	// The rule is the language or it is nothing.
+	//
 	// It is per engine because an engine belongs to one unit and a unit is one
 	// conversation. The group chat has no member to ask, so it gets the
 	// household's — which is the same resolution the assistant's persona already
@@ -370,6 +383,10 @@ type Engine struct {
 	// line travels on the Question so the transport can size the message against
 	// this language rather than against English.
 	cat lang.Catalogue
+	// english says this conversation is held in English, which is the case a
+	// member's own words for something cannot bridge anything from — see
+	// withAliases.
+	english bool
 
 	mu     sync.Mutex
 	states map[string]*scopeState
@@ -381,11 +398,12 @@ type Engine struct {
 // five-minute question timeout.
 func New(m memory.Memory, t transport.Transport, opts Options) *Engine {
 	return &Engine{
-		mem:    m,
-		tr:     t,
-		opts:   opts.normalized(),
-		cat:    lang.For(opts.Language),
-		states: make(map[string]*scopeState),
+		mem:     m,
+		tr:      t,
+		opts:    opts.normalized(),
+		cat:     lang.For(opts.Language),
+		english: lang.IsEnglish(opts.Language),
+		states:  make(map[string]*scopeState),
 	}
 }
 
@@ -451,7 +469,11 @@ func (e *Engine) Offer(ctx context.Context, sc domain.Scope, p Proposal, askUser
 	// A member shown a body that is not the body that was written would make
 	// "kenward tells you what it wrote" false in the small way that is hardest to
 	// notice.
-	p.Draft.Body = withAliases(e.cat, title, p.Draft.Body, p.Aliases)
+	//
+	// Not in an English conversation: see Options.Language.
+	if !e.english {
+		p.Draft.Body = withAliases(e.cat, title, p.Draft.Body, p.Aliases)
+	}
 
 	// Duplicate suppression comes before the budget check on purpose: a proposal the
 	// member already refused must not consume the one question this turn is allowed.
@@ -955,8 +977,9 @@ const (
 // matches over title, body and domain; markers are a filter and are not searched, so
 // there is nowhere else to put a word and have it retrieve anything.
 //
-// An empty alias set — the ordinary case for a household reading English — returns
-// the body unchanged, so nothing about an English conversation changes shape.
+// An empty alias set returns the body unchanged. It is never called at all in an
+// English conversation, where the whole mechanism has nothing to bridge and every
+// alias is therefore something the model made up.
 func withAliases(cat lang.Catalogue, title, body string, aliases []string) string {
 	kept := usefulAliases(title, body, aliases)
 	if len(kept) == 0 {
@@ -968,13 +991,15 @@ func withAliases(cat lang.Catalogue, title, body string, aliases []string) strin
 // usefulAliases reduces what the model proposed to what is worth storing: trimmed,
 // bounded, without repeats, and without anything the entry already says.
 //
-// The last of those is the load-bearing one. A model told to supply the member's own
-// words will supply them in an English conversation too, where they are the words
-// already in the title; storing them would put a line of duplication on the end of
-// every entry in every English household for no retrieval gain at all. "Already says"
-// is measured in lore's own tokens (memory.Terms), because those are the units a
-// search matches in — an alias adds something exactly when it adds a word that can
-// be searched for.
+// The last of those is the load-bearing one, within the conversations that get here
+// at all. "Already says" is measured in lore's own tokens (memory.Terms), because
+// those are the units a search matches in — an alias adds something exactly when it
+// adds a word that can be searched for.
+//
+// It was once expected to carry the English case as well, on the theory that a model
+// told to supply the member's own words would supply the words already in the title.
+// It does not: it supplies different words, which is precisely what a novelty test
+// lets through. That case is now decided by the language, before this is reached.
 func usefulAliases(title, body string, aliases []string) []string {
 	have := make(map[string]bool)
 	for _, w := range memory.Terms(title + " " + body) {

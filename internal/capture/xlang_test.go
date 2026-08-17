@@ -265,3 +265,72 @@ func TestUsefulAliases(t *testing.T) {
 		})
 	}
 }
+
+// TestNoAliasLineInAnEnglishConversation is D2 from the second live run.
+//
+// Aliases exist so a member who is not speaking English can find an English entry.
+// An English conversation has nothing to bridge, so there is no such thing as a
+// useful alias in one — but the model is still asked for them, and it obliges: an
+// English member's private note about a penicillin allergy was stored, and
+// announced to them, carrying "Also known as: penny allergy".
+//
+// usefulAliases cannot catch that. It drops aliases whose tokens the entry already
+// has, and "penny" is a word the entry does not contain — which is precisely what
+// makes it junk rather than a synonym. The rule has to be structural and it has to
+// be the language, which the engine already knows.
+func TestNoAliasLineInAnEnglishConversation(t *testing.T) {
+	junk := Proposal{
+		Draft: memory.Draft{
+			Domain: "household/health",
+			Title:  "Penicillin allergy",
+			Body:   "David is allergic to penicillin.",
+		},
+		Target:  TargetPersonal,
+		Aliases: []string{"penny allergy", "the pen thing"},
+	}
+	for name, opts := range map[string]Options{
+		"named English": {Language: "English"},
+		"unset":         {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, ids := newRealStore(t, "Ana", "Test House")
+			sc := spanishScope(ids)
+			tr := &stubTransport{answers: []transport.Answer{{TimedOut: true}}}
+			e := New(c, tr, opts)
+
+			out, err := e.Offer(context.Background(), sc, junk, davidID)
+			if err != nil {
+				t.Fatalf("Offer: %v", err)
+			}
+			if !out.Stored() {
+				t.Fatalf("nothing was stored: %v", out.Kind)
+			}
+			stored, err := c.Get(t.Context(), out.Space, out.EntryID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if stored.Body != junk.Draft.Body {
+				t.Errorf("an English conversation stored an alias line on a member's entry:\n%q\nwant the body as written: %q", stored.Body, junk.Draft.Body)
+			}
+			if len(tr.asks) == 1 && strings.Contains(tr.asks[0].q.Text, "penny") {
+				t.Errorf("the member was shown an invented alias:\n%s", tr.asks[0].q.Text)
+			}
+		})
+	}
+}
+
+// TestANonEnglishConversationKeepsItsAliases is the other side of the same rule:
+// the mechanism the alias line exists for must survive it.
+func TestANonEnglishConversationKeepsItsAliases(t *testing.T) {
+	c, ids := newRealStore(t, "Ana", "Test House")
+	sc := spanishScope(ids)
+	tr := &stubTransport{answers: []transport.Answer{{TimedOut: true}}}
+	e := New(c, tr, Options{Language: "Spanish"})
+
+	if _, err := e.Offer(context.Background(), sc, gardenGate(), davidID); err != nil {
+		t.Fatalf("Offer: %v", err)
+	}
+	if !findable(t, c, sc.Write, "código", "puerta", "jardín") {
+		t.Error("a Spanish conversation lost the aliases the English rule must not reach")
+	}
+}
