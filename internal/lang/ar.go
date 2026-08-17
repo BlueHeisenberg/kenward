@@ -362,13 +362,11 @@ var arabic = Catalogue{
 	// Two sentences rather than a dash. The struck entry below this line is Latin
 	// script, and a dash at the end of an Arabic clause detaches from it across that
 	// boundary the way the outcome dash does; a full stop does not.
-	RemovedOpener: func(private bool) string {
-		where := "من ذاكرة المنزل"
+	NotSaved: func(private bool) string {
 		if private {
-			where = "من ذاكرتك الخاصة"
+			return "لم يُحفظ في ذاكرتك الخاصة."
 		}
-		return "لم أسجّل هذا في النهاية. أزلته " + where +
-			". لن يظهر مرة أخرى في أي إجابة، لا هنا ولا على أي جهاز آخر في المنزل."
+		return "لم يُحفظ في ذاكرة المنزل."
 	},
 	PromotionOpener: "سيُنشر هذا للمنزل كما هو تمامًا، ولا يمكن التراجع عن نشره:",
 	PromotionCloser: "هل أنشره؟",
@@ -409,7 +407,8 @@ var arabic = Catalogue{
 	// BtnDontSave. «» are U+00AB and U+00BB, the standard Arabic quotation pair,
 	// and they are prose rather than markup, so Esc leaves them alone.
 	EnrolMemoryBodyDefault: "عندما يبدو شيء جديرًا بالحفظ في ذاكرتك الخاصة، أكتبه ثم أعرض عليك بالضبط ما كتبته " +
-		"وفي أي ذاكرة وضعته، مع زر تراجع يسترجعه. وأي شيء للذاكرة المشتركة في المنزل أسألك عنه أولًا " +
+		"وفي أي ذاكرة وضعته، مع زر تراجع يسترجعه — وإذا ضغطته، لن يظهر مرة أخرى في أي إجابة، لا هنا ولا على أي جهاز آخر في المنزل. " +
+		"وأي شيء للذاكرة المشتركة في المنزل أسألك عنه أولًا " +
 		"ولا أكتب شيئًا حتى تضغط «حفظ في ذاكرة المنزل».\n\n" +
 		"في الحالتين ترى كل شيء دائمًا. هذا كل ما في الأمر. تحدّث معي بشكل طبيعي.",
 	EnrolMemoryBodyAsk: "لا أحفظ أي شيء من تلقاء نفسي. عندما يبدو شيء جديرًا بالحفظ سأسألك — سترى ما كنت سأكتبه " +

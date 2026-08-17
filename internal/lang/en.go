@@ -264,15 +264,14 @@ var english = Catalogue{
 	// on the button label being a bare verb, which it barely is in Catalan and
 	// Portuguese and is not at all in Arabic.
 	WrittenHint: "The Undo button removes it.",
-	// Says the same thing Removed says, minus the title, which is struck through
-	// immediately below this line.
-	RemovedOpener: func(private bool) string {
-		where := "the household memory"
+	// "Not saved", not "I didn't save it": the member is reading the entry, struck
+	// through, immediately above — this is a label on it, not a second telling of
+	// what they just did.
+	NotSaved: func(private bool) string {
 		if private {
-			where = "your private memory"
+			return "Not saved to your private memory."
 		}
-		return "I didn't record this after all — I've taken it back out of " + where +
-			". It won't come back in an answer, not here and not on any other device in the household."
+		return "Not saved to the household memory."
 	},
 	PromotionOpener: "This would be published to the household exactly as it stands, and cannot be unpublished:",
 	PromotionCloser: "Publish it?",
@@ -305,8 +304,14 @@ var english = Catalogue{
 	// Names buttons that exist. This used to say "until you tap Save", and there is
 	// no Save button: the labels are Save to personal and Save to household. The
 	// onboarding was teaching a label the member would never see.
+	// The Undo sentence carries the bounded promise, because this is the card where
+	// the button is introduced and there is room here for the one thing a member
+	// needs to know about it: what tapping it actually buys. It used to be said on
+	// every undo, which was a paragraph in place of a label. It is a tombstone, not a
+	// shred — "won't come back in an answer", never "erased".
 	EnrolMemoryBodyDefault: "When something sounds worth keeping for your own memory, I write it down and then show you " +
-		"exactly what I wrote and which memory it went to, with an Undo button that takes it back. Anything for " +
+		"exactly what I wrote and which memory it went to, with an Undo button that takes it back — tap it and " +
+		"the entry won't come back in an answer, not here and not on any other device in the household. Anything for " +
 		"the household's shared memory I ask about first and write nothing until you tap Save to household.\n\n" +
 		"Either way you always see it. That's all of it. Just talk to me normally.",
 	EnrolMemoryBodyAsk: "I never save anything by myself. When something sounds worth keeping I'll ask — you'll see " +

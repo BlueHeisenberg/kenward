@@ -235,13 +235,11 @@ var german = Catalogue{
 		return "Ich habe das ins Haushaltsgedächtnis geschrieben:"
 	},
 	WrittenHint: "Der Rückgängig-Knopf entfernt es wieder.",
-	RemovedOpener: func(private bool) string {
-		where := "aus dem Haushaltsgedächtnis"
+	NotSaved: func(private bool) string {
 		if private {
-			where = "aus deinem privaten Gedächtnis"
+			return "Nicht in deinem privaten Gedächtnis gespeichert."
 		}
-		return "Ich habe das doch nicht aufgeschrieben — ich habe es " + where +
-			" entfernt. Es taucht in keiner Antwort mehr auf, weder hier noch auf einem anderen Gerät im Haushalt."
+		return "Nicht im Haushaltsgedächtnis gespeichert."
 	},
 	PromotionOpener: "Das würde genau in dieser Form im Haushalt veröffentlicht und kann nicht zurückgezogen werden:",
 	PromotionCloser: "Veröffentlichen?",
@@ -273,7 +271,8 @@ var german = Catalogue{
 	EnrolMemoryHeading: "Was passiert, wenn ich etwas aufschreibe",
 	EnrolMemoryBodyDefault: "Wenn etwas es wert klingt, für dein eigenes Gedächtnis aufgehoben zu werden, schreibe ich es auf " +
 		"und zeige dir dann genau, was ich geschrieben habe und in welches Gedächtnis es gegangen ist, mit einem " +
-		"Rückgängig-Knopf, der es zurückholt. Bei allem, was ins gemeinsame Gedächtnis des Haushalts soll, frage ich " +
+		"Rückgängig-Knopf, der es zurückholt — tippst du darauf, taucht es in keiner Antwort mehr auf, weder hier " +
+		"noch auf einem anderen Gerät im Haushalt. Bei allem, was ins gemeinsame Gedächtnis des Haushalts soll, frage ich " +
 		"vorher nach und schreibe nichts, bevor du auf Im Haushalt speichern tippst.\n\n" +
 		"So oder so siehst du es immer. Das ist alles. Rede einfach ganz normal mit mir.",
 	EnrolMemoryBodyAsk: "Ich speichere nie etwas von allein. Wenn etwas es wert klingt, aufgehoben zu werden, frage ich nach — " +

@@ -240,13 +240,11 @@ var italian = Catalogue{
 		return "Ho scritto questo nella memoria di casa:"
 	},
 	WrittenHint: "Il pulsante Rimuovi lo cancella.",
-	RemovedOpener: func(private bool) string {
-		where := "dalla memoria di casa"
+	NotSaved: func(private bool) string {
 		if private {
-			where = "dalla tua memoria privata"
+			return "Non salvato nella tua memoria privata."
 		}
-		return "Alla fine non l'ho registrato: l'ho rimosso " + where +
-			". Non tornerà più in una risposta, né qui né su nessun altro dispositivo di casa."
+		return "Non salvato nella memoria di casa."
 	},
 	PromotionOpener: "Questo verrebbe pubblicato nella memoria di casa esattamente com'è, e non potrà più essere ritirato:",
 	PromotionCloser: "Pubblicare?",
@@ -279,7 +277,8 @@ var italian = Catalogue{
 		"e ti mostrerò il testo esatto prima che si muova qualsiasi cosa.",
 	EnrolMemoryHeading: "Cosa succede quando annoto qualcosa",
 	EnrolMemoryBodyDefault: "Quando qualcosa mi sembra da tenere nella tua memoria personale, lo scrivo e poi ti mostro " +
-		"esattamente cosa ho scritto e in quale memoria è finito, con un pulsante Rimuovi che lo cancella. Per la memoria " +
+		"esattamente cosa ho scritto e in quale memoria è finito, con un pulsante Rimuovi che lo toglie: se lo tocchi, " +
+		"non tornerà più in una risposta, né qui né su nessun altro dispositivo di casa. Per la memoria " +
 		"condivisa di casa invece chiedo prima e non scrivo niente finché non tocchi Salva in casa.\n\n" +
 		"In entrambi i casi lo vedi sempre. È tutto qui. Parlami normalmente.",
 	EnrolMemoryBodyAsk: "Non salvo mai niente da solo. Quando qualcosa mi sembra da tenere te lo chiedo — vedrai cosa scriverei " +
