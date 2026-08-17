@@ -74,6 +74,178 @@ func Code(s string) string { return "<code>" + Esc(s) + "</code>" }
 // visibly the entry and not kenward's own sentence.
 func Quote(s string) string { return "<blockquote>" + Esc(s) + "</blockquote>" }
 
+// --- the model's own markup -------------------------------------------------
+
+// Markdown renders a model-written reply as Telegram HTML: the Markdown a model
+// emitted anyway becomes the formatting it meant, and everything else is escaped
+// exactly as Esc escapes it.
+//
+// **This is for model output and for nothing else, and that boundary is the whole
+// design.** Titles, bodies, names and every other piece of member-written text go
+// through Esc and the four marks above, which escape and never parse — a member
+// whose note says *this* is shown *this*. Nothing that has been through one of them
+// is ever handed to this function, so there is no path on which a quotation can be
+// reparsed, which is the fragility that made a converter the fallback rather than
+// the first move (docs/PROMPT.md).
+//
+// The prompt still asks for plain prose and is still doing the work: a live run took
+// Markdown from six replies down to two. Two is not zero, and a member shown
+// **bold** they never asked for is the defect whether it happens once or six times,
+// so the instruction keeps the frequency down and this keeps the residue off the
+// screen.
+//
+// What it recognises is what models actually emit: fenced blocks, inline backticks,
+// **bold**, *italic* and # headings. What it refuses to recognise matters as much —
+// a mark only pairs when it opens against a non-space and closes against one, so
+// "2 * 3 * 4" is arithmetic, "* milk" is a bullet, and an unclosed fence is the
+// characters the model typed. Anything not recognised is escaped and reaches the
+// member unchanged, which is what the old behaviour did to all of it.
+func Markdown(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 16)
+	for i := 0; i < len(s); {
+		atLineStart := i == 0 || s[i-1] == '\n'
+		switch {
+		case atLineStart && strings.HasPrefix(s[i:], "```"):
+			if body, n, ok := fenced(s[i:]); ok {
+				b.WriteString("<pre>" + Esc(body) + "</pre>")
+				i += n
+				continue
+			}
+		case atLineStart && s[i] == '#':
+			// A heading has nowhere to go in a chat message. Bold is what it was
+			// for; the hashes are not.
+			if text, n, ok := heading(s[i:]); ok {
+				b.WriteString("<b>" + Esc(text) + "</b>")
+				i += n
+				continue
+			}
+		case s[i] == '`':
+			// Escaped, not recursed: the point of a code span is that what is
+			// inside it is literal.
+			if body, n, ok := delimited(s[i:], "`"); ok {
+				b.WriteString("<code>" + Esc(body) + "</code>")
+				i += n
+				continue
+			}
+		case strings.HasPrefix(s[i:], "**"):
+			if body, n, ok := delimited(s[i:], "**"); ok {
+				b.WriteString("<b>" + Markdown(body) + "</b>")
+				i += n
+				continue
+			}
+		case s[i] == '*':
+			if body, n, ok := delimited(s[i:], "*"); ok {
+				b.WriteString("<i>" + Markdown(body) + "</i>")
+				i += n
+				continue
+			}
+		}
+		// Byte at a time, which is safe because the three characters Telegram's
+		// HTML mode reserves are ASCII and no UTF-8 continuation byte can equal
+		// one of them.
+		switch s[i] {
+		case '&':
+			b.WriteString("&amp;")
+		case '<':
+			b.WriteString("&lt;")
+		case '>':
+			b.WriteString("&gt;")
+		default:
+			b.WriteByte(s[i])
+		}
+		i++
+	}
+	return b.String()
+}
+
+// delimited reads a span opening at s with mark, returning its body and how many
+// bytes the whole span occupies.
+//
+// The flanking rules are the whole of what stops this touching prose. An opener is
+// never followed by a space and never by its own mark; a closer is never preceded by
+// a space; emphasis does not cross a blank line and a code span does not cross a
+// line at all. A mark that finds no partner under those rules is not a mark, and the
+// caller writes it out as the character it is.
+func delimited(s, mark string) (body string, n int, ok bool) {
+	rest := s[len(mark):]
+	if rest == "" || isSpace(rest[0]) || strings.HasPrefix(rest, mark) {
+		return "", 0, false
+	}
+	limit := len(rest)
+	if mark == "`" {
+		if i := strings.IndexByte(rest, '\n'); i >= 0 {
+			limit = i
+		}
+	} else if i := strings.Index(rest, "\n\n"); i >= 0 {
+		limit = i
+	}
+	for at := 0; at < limit; {
+		j := strings.Index(rest[at:limit], mark)
+		if j < 0 {
+			return "", 0, false
+		}
+		j += at
+		if j > 0 && !isSpace(rest[j-1]) {
+			return rest[:j], len(mark) + j + len(mark), true
+		}
+		at = j + len(mark)
+	}
+	return "", 0, false
+}
+
+// fenced reads a fenced block opening at s, returning the code inside it. The
+// closing fence must exist and must start a line: without that rule a model that
+// opened a fence and never closed it would have the rest of its reply swallowed.
+func fenced(s string) (body string, n int, ok bool) {
+	nl := strings.IndexByte(s, '\n')
+	if nl < 0 {
+		return "", 0, false // the info string ran to the end: no body, no close
+	}
+	rest := s[nl+1:]
+	end := -1
+	switch {
+	case strings.HasPrefix(rest, "```"):
+		end = 0
+	default:
+		if i := strings.Index(rest, "\n```"); i >= 0 {
+			end = i + 1
+		}
+	}
+	if end < 0 {
+		return "", 0, false
+	}
+	after := end + len("```")
+	if i := strings.IndexByte(rest[after:], '\n'); i >= 0 {
+		after += i
+	} else {
+		after = len(rest)
+	}
+	return strings.TrimSuffix(rest[:end], "\n"), nl + 1 + after, true
+}
+
+// heading reads an ATX heading opening at s, returning its text and the bytes up to
+// but not including the line ending — the caller writes that out itself.
+func heading(s string) (text string, n int, ok bool) {
+	i := 0
+	for i < len(s) && i < 6 && s[i] == '#' {
+		i++
+	}
+	if i == 0 || i >= len(s) || s[i] != ' ' {
+		return "", 0, false
+	}
+	end := strings.IndexByte(s, '\n')
+	if end < 0 {
+		end = len(s)
+	}
+	if text = strings.TrimSpace(s[i:end]); text == "" {
+		return "", 0, false
+	}
+	return text, end, true
+}
+
+func isSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
+
 // The glyph vocabulary.
 //
 // Six glyphs, each marking what kind of message this is, and that is the whole

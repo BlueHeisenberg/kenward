@@ -1648,3 +1648,42 @@ func TestLockedConversationShowsNoTypingIndicator(t *testing.T) {
 		t.Errorf("a locked conversation showed %d typing indicators; the turn stops at the notice", got)
 	}
 }
+
+// TestReplyMarkdownReachesTheMemberAsFormatting is D1 at the seam it actually
+// crosses.
+//
+// The reply is the only text on this path kenward did not write: it is converted.
+// Everything else in the message — the retrieval line, a question, an entry quoted
+// back — was escaped by transport's marks and is not reparsed.
+func TestReplyMarkdownReachesTheMemberAsFormatting(t *testing.T) {
+	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{
+			Text:     "- **Mains water** — the stopcock\n\nRun `kenward status`:\n```sh\nkenward status\n```",
+			Endpoint: "monster", Tier: "local",
+		}, nil
+	}
+	if err := rig.unit.Handle(context.Background(), directInbound("where is the stopcock?")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	texts := rig.tr.sentTexts()
+	if len(texts) != 1 {
+		t.Fatalf("sent %d messages, want 1: %v", len(texts), texts)
+	}
+	got := texts[0]
+	for _, want := range []string{
+		"<b>Mains water</b>",
+		"<code>kenward status</code>",
+		"<pre>kenward status</pre>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the reply reached the member without %s:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "**") || strings.Contains(got, "```") {
+		t.Errorf("the member was shown Markdown they never asked for:\n%s", got)
+	}
+}

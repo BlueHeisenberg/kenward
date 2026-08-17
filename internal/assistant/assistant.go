@@ -642,10 +642,13 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// Escaping is not a formatting policy for the model, and reading it as one
 		// is what let Markdown reach members: a reply written as **bold** survives
 		// escaping unchanged and lands as asterisks, with or without a parse mode.
-		// That is dealt with where it belongs — the prompt asks for plain prose in
-		// so many words (prompt.go's formattingText, docs/PROMPT.md) — rather than
-		// by a converter here, which would be a second markup parser reading text
-		// that quotes members and their entries.
+		// The prompt asks for plain prose in so many words (prompt.go's
+		// formattingText, docs/PROMPT.md) and that took a live run from six such
+		// replies to two — so transport.Markdown renders the residue rather than
+		// showing it. It is applied to the reply and to nothing else on this path:
+		// the notices below were written by the node, and everything a member wrote
+		// reaches a message through Bold, Quote or Esc, which escape and never
+		// parse. The converter never sees text that has already been escaped.
 		//
 		// The parts of one outbound message, in a fixed order: what was read, the
 		// reply itself, then what the node did about reminders. Each is omitted when
@@ -657,7 +660,7 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 			if notice := u.readNotice(shown, searched); notice != "" {
 				parts = append(parts, notice)
 			}
-			parts = append(parts, transport.Esc(reply))
+			parts = append(parts, transport.Markdown(reply))
 		}
 		if remindNotice != "" {
 			parts = append(parts, remindNotice)
