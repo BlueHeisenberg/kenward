@@ -113,7 +113,7 @@ func TestScheduledResetDropsTheHistoryAndSaysSo(t *testing.T) {
 	golden(t, "history_reset.golden", texts[1])
 	// The notice arrives before the answer it explains. A member who reads the answer
 	// first has already been surprised by it.
-	if !strings.Contains(texts[2], "ok") {
+	if !strings.Contains(texts[2], "the bins go out on Thursday") {
 		t.Errorf("the reply did not follow the notice: %v", texts)
 	}
 	// And it says the thing it exists to say. A member who reads this and believes

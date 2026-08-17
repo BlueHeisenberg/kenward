@@ -343,7 +343,7 @@ func TestPodForOneMemberDoesNotServeAnotherMember(t *testing.T) {
 	h := newPod(t, podOptions{member: "david"})
 	h.mem.seed(meiSpace, entry("m1", "Mei's cardiologist", "Appointment on the 3rd."))
 	h.local.setReply(func(wireRequest) providerReply {
-		return providerReply{Text: "Noted.", FinishReason: "stop"}
+		return providerReply{Text: "The bins go out on Thursday.", FinishReason: "stop"}
 	})
 	h.start()
 
@@ -515,7 +515,7 @@ func TestAnotherMembersCodeOnThisBotBindsThemButMintsNoUnitHere(t *testing.T) {
 	patCode := mint("Pat")
 	samCode := mint("Sam")
 	h.local.setReply(func(wireRequest) providerReply {
-		return providerReply{Text: "Noted.", FinishReason: "stop"}
+		return providerReply{Text: "The bins go out on Thursday.", FinishReason: "stop"}
 	})
 	h.start()
 

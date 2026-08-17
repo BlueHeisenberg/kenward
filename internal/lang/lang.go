@@ -45,6 +45,7 @@ import (
 	"reflect"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BlueHeisenberg/kenward/internal/remind"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
@@ -105,6 +106,38 @@ type Catalogue struct {
 	// nothing happened, because the member's request was an action and the honest
 	// worry after silence is whether half of it landed.
 	ToolMisfire string
+
+	// NothingSaved replaces a reply that was nothing but an acknowledgement on a
+	// turn where the node did nothing at all — see BareAcknowledgements.
+	//
+	// It says the one thing the member cannot see and would otherwise get wrong,
+	// and it invites them to ask again. It deliberately does not apologise for the
+	// model or explain what a tool call is: the member asked for something to be
+	// kept, and what they need is to know that it was not.
+	NothingSaved string
+
+	// BareAcknowledgements is every way this language says "done" and nothing else.
+	//
+	// It is the one entry in this table the member never reads. It is matched against
+	// what the *model* wrote, which is written in the member's language, and this is
+	// the only package that knows ten of those — the alternative is a second language
+	// table in internal/assistant, which holds the model-facing English and should go
+	// on holding only that.
+	//
+	// What belongs here: a reply that claims an action completed and carries no
+	// information — "Done.", "Got it.", "Noted." A turn that made no tool call and
+	// answered with one of these has told the member something happened when nothing
+	// did, which is D-059 arriving through the reply instead of through a claimed save.
+	//
+	// What must never be put here: an answer. "Yes", "No", "Correct" and their
+	// equivalents answer questions, and the caller *replaces* a matched reply rather
+	// than annotating it — so a word that can carry information would be information
+	// destroyed. Every entry is a word that cannot answer anything. That is what makes
+	// the replacement free: a reply that matches had nothing in it to lose.
+	//
+	// Entries are written naturally and normalized on both sides at match time, so
+	// apostrophes, diacritics and punctuation need no thought here.
+	BareAcknowledgements []string
 
 	// --- REF: refusals ------------------------------------------------------
 
@@ -288,6 +321,40 @@ type Catalogue struct {
 // its markup helpers — so the words travel on the Question instead.
 func (c Catalogue) OutcomeNotes() transport.OutcomeNotes {
 	return transport.OutcomeNotes{Dash: c.Dash, Declined: c.Declined, Withdrawn: c.Withdrawn}
+}
+
+// IsBareAcknowledgement reports whether the whole of a reply is one of this
+// language's contentless acknowledgements — see BareAcknowledgements.
+//
+// The whole of it, not the start of it: "Done — the code is 4471" carries the answer
+// and is not this. Only a reply with nothing in it but the acknowledgement matches,
+// which is what lets the caller drop it outright.
+//
+// Both sides are reduced to their letters and digits before comparing, so trailing
+// punctuation, an emoji, a French apostrophe and an Arabic diacritic all fall out
+// without a rule of their own. The length bound is what keeps this off the hot path
+// for an ordinary reply: an acknowledgement is short in every language here.
+func (c Catalogue) IsBareAcknowledgement(reply string) bool {
+	if len(reply) > 80 {
+		return false
+	}
+	got := letters(reply)
+	if got == "" {
+		return false
+	}
+	for _, ack := range c.BareAcknowledgements {
+		if got == letters(ack) {
+			return true
+		}
+	}
+	return false
+}
+
+// letters reduces a string to its lowercased letters and digits, single-spaced.
+func letters(s string) string {
+	return strings.ToLower(strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}), " "))
 }
 
 // tables is every language, keyed by tag, with English filled in for any field a

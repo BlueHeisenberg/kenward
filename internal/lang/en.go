@@ -25,7 +25,16 @@ var english = Catalogue{
 	Dropped:       "I'm backed up and had to drop that message. Send it again in a moment.",
 	NoAnswer:      "I didn't get a usable answer to that. Try asking again.",
 	ToolMisfire:   "I tried to do something for that and got it wrong, so nothing happened. Ask me again.",
+	NothingSaved:  "I didn't record anything just then. Say it again if you want me to remember it.",
 	ResetNotice:   "Starting fresh — I've cleared the earlier part of this conversation. Nothing in your memory changed; this is the scheduled reset.",
+
+	// Acknowledgements only. No "yes", no "no", no "correct": those answer
+	// questions, and a matched reply is dropped rather than annotated.
+	BareAcknowledgements: []string{
+		"done", "all done", "got it", "gotcha", "got that", "noted", "duly noted",
+		"saved", "stored", "recorded", "understood", "ok", "okay", "all set",
+		"will do", "consider it done", "no problem", "sure thing",
+	},
 
 	ModelBusy:     "The model is busy right now. Try again in a moment.",
 	Misconfigured: "Something is wrong with this household's setup — tell whoever runs it.",

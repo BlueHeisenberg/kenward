@@ -47,7 +47,13 @@ var italian = Catalogue{
 	Dropped:       "Sono sovraccarico e ho dovuto scartare quel messaggio. Rimandalo tra un momento.",
 	NoAnswer:      "Non ho ottenuto una risposta utilizzabile. Prova a chiedere di nuovo.",
 	ToolMisfire:   "Ho provato a fare qualcosa e ho sbagliato, quindi non è successo niente. Chiedimelo di nuovo.",
+	NothingSaved:  "Non ho salvato niente adesso. Dimmelo di nuovo se vuoi che me lo ricordi.",
 	ResetNotice:   "Ricominciamo da capo — ho cancellato la parte precedente di questa conversazione. Nella tua memoria non è cambiato nulla; è il reset programmato.",
+
+	BareAcknowledgements: []string{
+		"fatto", "è fatto", "tutto fatto", "capito", "ho capito", "annotato",
+		"salvato", "d'accordo", "va bene", "ok", "okay", "nessun problema",
+	},
 
 	ModelBusy:         "Il modello è occupato in questo momento. Riprova tra un momento.",
 	Misconfigured:     "C'è qualcosa che non va nella configurazione di questa casa — dillo a chi la gestisce.",

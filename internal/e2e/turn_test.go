@@ -196,7 +196,7 @@ func TestLocalOnlyChainRefusesInsteadOfReachingCloud(t *testing.T) {
 func TestSharedCaptureWritesNothingWithoutConfirmation(t *testing.T) {
 	proposing := func(wireRequest) providerReply {
 		return providerReply{
-			Text:         "Noted.",
+			Text:         "The bins go out on Thursday.",
 			FinishReason: "tool_calls",
 			ToolCalls: []providerToolCall{{
 				Name:      "remember",
@@ -390,7 +390,7 @@ func TestPrivateProposalIsWrittenAndAnnouncedEndToEnd(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	h.local.setReply(func(wireRequest) providerReply {
 		return providerReply{
-			Text:         "Noted.",
+			Text:         "The bins go out on Thursday.",
 			FinishReason: "tool_calls",
 			ToolCalls: []providerToolCall{{
 				Name:      "remember",
@@ -442,7 +442,7 @@ func TestUndoRemovesTheEntryEndToEnd(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	h.local.setReply(func(wireRequest) providerReply {
 		return providerReply{
-			Text:         "Noted.",
+			Text:         "The bins go out on Thursday.",
 			FinishReason: "tool_calls",
 			ToolCalls: []providerToolCall{{
 				Name:      "remember",
@@ -482,7 +482,7 @@ func TestFailedUndoTellsTheMemberTheEntryIsStillThere(t *testing.T) {
 	h.mem.deleteErr = errors.New("lore refused the delete")
 	h.local.setReply(func(wireRequest) providerReply {
 		return providerReply{
-			Text:         "Noted.",
+			Text:         "The bins go out on Thursday.",
 			FinishReason: "tool_calls",
 			ToolCalls: []providerToolCall{{
 				Name:      "remember",

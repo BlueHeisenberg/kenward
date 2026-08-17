@@ -388,7 +388,7 @@ func (f *fakeRouter) Complete(ctx context.Context, chain []string, req routing.R
 	if fn != nil {
 		return fn(ctx, chain, req)
 	}
-	return routing.Completion{Text: "ok", Endpoint: "fake", Tier: "local"}, nil
+	return routing.Completion{Text: "the bins go out on Thursday", Endpoint: "fake", Tier: "local"}, nil
 }
 
 func (f *fakeRouter) lastRequest() (routing.Request, bool) {

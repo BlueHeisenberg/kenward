@@ -394,7 +394,7 @@ func newFakeProvider(t *testing.T, name string) *fakeProvider {
 		name:     name,
 		received: make(chan struct{}, 32),
 		reply: func(wireRequest) providerReply {
-			return providerReply{Text: "Noted.", FinishReason: "stop"}
+			return providerReply{Text: "The bins go out on Thursday.", FinishReason: "stop"}
 		},
 	}
 	p.srv = httptest.NewServer(http.HandlerFunc(p.handle))

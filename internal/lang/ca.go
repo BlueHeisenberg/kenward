@@ -45,7 +45,13 @@ var catalan = Catalogue{
 	Dropped:       "Vaig saturat i he hagut de descartar aquest missatge. Torna a enviar-lo d'aquí a un moment.",
 	NoAnswer:      "No n'he obtingut cap resposta aprofitable. Prova de preguntar-ho una altra vegada.",
 	ToolMisfire:   "He intentat fer-hi alguna cosa i m'he equivocat, així que no ha passat res. Torna-m'ho a demanar.",
+	NothingSaved:  "No he desat res ara mateix. Torna-m'ho a dir si vols que ho recordi.",
 	ResetNotice:   "Comencem de nou: he esborrat la part anterior d'aquesta conversa. A la teva memòria no ha canviat res; és el reinici programat.",
+
+	BareAcknowledgements: []string{
+		"fet", "ja està", "llest", "tot llest", "entesos", "entès", "anotat",
+		"apuntat", "desat", "d'acord", "ok", "okay", "cap problema",
+	},
 
 	ModelBusy:         "El model està ocupat ara mateix. Torna-ho a provar d'aquí a un moment.",
 	Misconfigured:     "Hi ha alguna cosa malament a la configuració d'aquesta llar; digues-ho a qui l'administra.",

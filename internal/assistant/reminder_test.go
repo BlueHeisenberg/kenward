@@ -307,7 +307,7 @@ func TestReminderTextCannotForgeAPromptHeading(t *testing.T) {
 
 	// Render a second turn and confirm nothing the reminder carried begins a line.
 	rig.router.fn = func(context.Context, []string, routing.Request) (routing.Completion, error) {
-		return routing.Completion{Text: "ok"}, nil
+		return routing.Completion{Text: "the bins go out on Thursday"}, nil
 	}
 	if err := rig.unit.Handle(context.Background(), directInbound("hello there")); err != nil {
 		t.Fatalf("Handle: %v", err)

@@ -465,7 +465,7 @@ func TestDirectScopeWritesLandInTheSpeakersOwnSpaceWhateverTheToolCallNames(t *t
 			seedSentinels(h)
 			h.local.setReply(func(wireRequest) providerReply {
 				return providerReply{
-					Text:         "Noted.",
+					Text:         "The bins go out on Thursday.",
 					FinishReason: "tool_calls",
 					ToolCalls: []providerToolCall{{
 						Name: "remember",
@@ -788,7 +788,7 @@ func TestHouseholdChatWriteLandsInTheSharedSpaceOnlyAfterATap(t *testing.T) {
 	seedSentinels(h)
 	h.local.setReply(func(wireRequest) providerReply {
 		return providerReply{
-			Text:         "Noted.",
+			Text:         "The bins go out on Thursday.",
 			FinishReason: "tool_calls",
 			ToolCalls: []providerToolCall{{
 				Name: "remember",

@@ -305,6 +305,12 @@ func (u *Unit) noAnswer() string { return u.problem(u.cat.NoAnswer) }
 // kenward tried to act, and nothing happened.
 func (u *Unit) toolMisfire() string { return u.problem(u.cat.ToolMisfire) }
 
+// nothingSaved replaces a reply that was nothing but an acknowledgement on a turn
+// where the node did nothing at all — no proposal, no publication, no reminder. It
+// is the member being told the one thing they cannot see and would otherwise get
+// wrong. See the guard in Unit.turn.
+func (u *Unit) nothingSaved() string { return u.problem(u.cat.NothingSaved) }
+
 // problem marks a turn that produced nothing and says why.
 func (u *Unit) problem(text string) string { return transport.GlyphProblem + " " + text }
 
@@ -680,10 +686,47 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		u.deps.Logger.Warn("assistant: reminder call dropped", "reason", warn)
 	}
 
+	// An acknowledgement is a claim that something happened, and this node is the one
+	// party that knows whether anything did: it has just read the completion's tool
+	// calls. So a turn whose whole reply is "Done." and which produced no proposal, no
+	// publication and no reminder is a turn that told the member a job was finished and
+	// did nothing — D-059 arriving through the reply rather than through a sentence
+	// naming a memory, and worse than that one, because there is no verb in it to
+	// catch. A live English run put ten "remember this for me" messages to a real model
+	// and got "Done." and "Got it." to two of them, with nothing in lore behind either.
+	//
+	// The signal is the reply and deliberately not the member's message. Deciding "this
+	// looks like a request to store something" means matching free text in ten
+	// languages, and every phrasing such a matcher missed would be a member left
+	// believing something was kept — the failure would be silent and on the dangerous
+	// side. Whether this node acted is not a guess. And the one false positive worth
+	// worrying about cannot reach here: "remember when we went to Lisbon?" is answered
+	// with a sentence about Lisbon, which carries information and therefore never
+	// matches.
+	//
+	// The reply is dropped rather than annotated. A reply that matches has nothing in
+	// it to lose — lang.Catalogue.BareAcknowledgements holds acknowledgements only,
+	// never an answer — and leaving "Done." on screen above a line saying nothing was
+	// done leaves the member to work out which half is true. Nothing is retried: the
+	// tool call is the member's decision to make, and firing one off a near miss would
+	// be the node writing something nobody chose.
+	//
+	// The rate at which the model calls the tool when asked is not addressed here and
+	// cannot be. That is the model's judgement, it is measured in
+	// judgement_eval_test.go's TestRequestedCapture, and this is the half that stops it
+	// costing the member a false belief.
+	unsaved := ""
+	if reply != "" && proposal == nil && publishID == "" && remindNotice == "" &&
+		u.cat.IsBareAcknowledgement(reply) {
+		u.deps.Logger.Warn("assistant: bare acknowledgement on a turn that did nothing",
+			"chat", in.ChatID, "reply", reply)
+		reply, unsaved = "", u.nothingSaved()
+	}
+
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if reply != "" || remindNotice != "" || dropped != "" {
+	if reply != "" || remindNotice != "" || dropped != "" || unsaved != "" {
 		// The retrieval line rides on the reply rather than arriving as a message of
 		// its own. A turn already costs a reply and may cost a write announcement,
 		// and a third message on every single turn — most of them saying nothing was
@@ -721,6 +764,11 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 				parts = append(parts, notice)
 			}
 			parts = append(parts, transport.Markdown(reply))
+		} else if unsaved != "" {
+			// The reply the guard above dropped, replaced by what was true. It goes
+			// out on its own: there was no answer behind the acknowledgement, and
+			// the retrieval line says nothing when there is nothing it informed.
+			parts = append(parts, unsaved)
 		} else if remindNotice == "" {
 			// Nothing here answers what the member said. A reply does, and a
 			// reminder notice does — the member asked for the reminder and this
