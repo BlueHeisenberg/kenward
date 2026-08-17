@@ -157,7 +157,11 @@ func TestEveryWizardStepAfterTheFirstHasABack(t *testing.T) {
 		{"telegram", "/setup/install"},
 		{"endpoints", "/setup/telegram"},
 		{"trust", "/setup/endpoints"},
-		{"advanced", "/setup/trust"},
+		// This household is isolated, so it has the per-member bots step; a simple
+		// one does not, and TestSimpleModeNeverSeesTheBotsStep asserts Back steps
+		// over it there rather than bouncing off it.
+		{"bots", "/setup/trust"},
+		{"advanced", "/setup/bots"},
 		{"review", "/setup/advanced"},
 	} {
 		resp := h.get("/setup/" + tc.step)

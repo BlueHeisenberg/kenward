@@ -28,6 +28,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	keelupdate "github.com/BlueHeisenberg/keel/update"
@@ -183,6 +185,10 @@ type Scheduler struct {
 	wait     waitFunc
 	restart  func(ctx context.Context) error
 	health   keelupdate.HealthCheck
+	// target is the binary keel would replace, resolved the same way keel resolves
+	// it. Held so Resume can ask whether there is any update state beside it before
+	// keel reaches for the cross-process lock — see pendingUpdate.
+	target string
 
 	// declined remembers, per release version, why it will not be
 	// re-attempted: an explicit "no" from the household, or a
@@ -251,6 +257,7 @@ func New(opts Options) (*Scheduler, error) {
 		wait:     wait,
 		restart:  opts.Restart,
 		declined: make(map[string]string),
+		target:   resolveTarget(opts.targetPath),
 	}
 	s.health = healthCheck(opts.Health)
 
@@ -285,6 +292,24 @@ func New(opts Options) (*Scheduler, error) {
 	}
 	s.up = up
 	return s, nil
+}
+
+// resolveTarget is the binary keel/update will replace: the configured path, or the
+// running executable with its symlinks followed, exactly as keel resolves it. An
+// unresolvable executable is not an error here — keel tolerates one when the channel is
+// off, and the empty string simply means there is nothing beside it to inspect.
+func resolveTarget(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		return resolved
+	}
+	return exe
 }
 
 // drainHook wraps the household's drain so runOnce can tell whether a failed

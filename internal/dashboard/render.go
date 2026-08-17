@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/lang"
 )
 
@@ -55,6 +56,11 @@ var funcs = template.FuncMap{
 		names := lang.EnglishNames()
 		return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
 	},
+	// defaultwindow is the context window a configuration that states none gets, read
+	// from internal/config rather than written into the template. The review screen
+	// names it so that the number which will land in the file is on a screen before it
+	// does, whether it was learned from the machine or defaulted.
+	"defaultwindow": func() int { return config.DefaultContextWindow },
 	"yesno": func(b bool) string {
 		if b {
 			return "yes"

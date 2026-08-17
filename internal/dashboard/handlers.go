@@ -141,6 +141,13 @@ func (s *Server) handleWizardStep(w http.ResponseWriter, r *http.Request, sess *
 		http.Redirect(w, r, "/setup/admin", http.StatusSeeOther)
 		return
 	}
+	// A step this household does not have is walked past rather than 404ed: it is a
+	// step of this wizard, it is simply not one of this household's questions, and
+	// the flow arrives here by following its own Continue.
+	if !wizardSteps[idx].applies(sess.wizard) {
+		http.Redirect(w, r, "/setup/"+nextStep(idx, sess.wizard), http.StatusSeeOther)
+		return
+	}
 	s.renderWizard(w, http.StatusOK, sess, idx, page{Flash: flashOf(r)})
 }
 
@@ -154,11 +161,29 @@ func (s *Server) renderWizard(w http.ResponseWriter, status int, sess *session, 
 	p.CSRF = sess.csrf
 	p.SignedIn = sess.kind == kindAdmin
 	p.Nav = "setup"
+	if wizardSteps[idx].Slug == "bots" {
+		// Rebuilt from the household as it stands now, so that going Back and adding
+		// somebody does not leave this page asking about the old one.
+		st.syncMemberSecrets()
+	}
+	// The progress list shows the steps this household actually has, so the number of
+	// them does not change under somebody who chose simple mode.
+	var shown []wizardStep
+	current := 0
+	for i, step := range wizardSteps {
+		if !step.applies(st) {
+			continue
+		}
+		if i == idx {
+			current = len(shown)
+		}
+		shown = append(shown, step)
+	}
 	p.Data = wizardData{
-		Steps:          wizardSteps,
-		Current:        idx,
+		Steps:          shown,
+		Current:        current,
 		Slug:           wizardSteps[idx].Slug,
-		Back:           backStep(idx),
+		Back:           prevStep(idx, st),
 		State:          st,
 		ConfigPath:     s.deps.ConfigPath,
 		ExistingConfig: existing,
@@ -181,6 +206,14 @@ func (s *Server) handleWizardSubmit(w http.ResponseWriter, r *http.Request, sess
 	}
 	if idx > stepIndex("admin") && !s.admin.Exists() {
 		http.Error(w, "there is no admin account yet", http.StatusForbidden)
+		return
+	}
+	// A step this household does not have has no answers to record. Walked past rather
+	// than refused, the same way its GET is: the form is real, it is simply not this
+	// household's question, and recording what a stray POST said would leave the review
+	// screen restating per-member bots a simple-mode household does not have.
+	if !wizardSteps[idx].applies(sess.wizard) {
+		http.Redirect(w, r, "/setup/"+nextStep(idx, sess.wizard), http.StatusSeeOther)
 		return
 	}
 
@@ -265,6 +298,13 @@ func (s *Server) handleWizardSubmit(w http.ResponseWriter, r *http.Request, sess
 		}
 		st.Mode = mode
 
+	case "bots":
+		st.readMemberSecrets(r)
+		if err := checkMemberSecrets(st); err != nil {
+			s.wizardError(w, sess, idx, err.Error())
+			return
+		}
+
 	case "advanced":
 		// Everything the operator typed is recorded before anything is judged, so a
 		// refusal re-renders the form they submitted rather than the form they
@@ -309,24 +349,7 @@ func (s *Server) handleWizardSubmit(w http.ResponseWriter, r *http.Request, sess
 		return
 	}
 
-	http.Redirect(w, r, "/setup/"+wizardSteps[idx+1].Slug, http.StatusSeeOther)
-}
-
-// backStep is where the Back control on step idx goes.
-//
-// It steps over the account step rather than offering it, because that step is not
-// re-enterable: the account exists by the time anything after it is on screen, there is
-// no reset flow, and re-submitting the form is a 409. Everything else in the wizard is
-// a form that can be filled in again.
-func backStep(idx int) string {
-	prev := idx - 1
-	if prev >= 0 && wizardSteps[prev].Slug == "admin" {
-		prev--
-	}
-	if prev < 0 {
-		return ""
-	}
-	return wizardSteps[prev].Slug
+	http.Redirect(w, r, "/setup/"+nextStep(idx, st), http.StatusSeeOther)
 }
 
 func (s *Server) wizardError(w http.ResponseWriter, sess *session, idx int, msg string) {
@@ -405,6 +428,20 @@ func (s *Server) finishWizard(w http.ResponseWriter, r *http.Request, sess *sess
 			s.deps.ConfigPath))
 		return
 	}
+	// Belt to the bots step's braces, and the last place it can be caught: the file
+	// about to be written names two variables per member, and writing it without their
+	// values produces a household that cannot start. The step refuses a blank; this
+	// refuses a flow that reached here without passing through it — a step is a screen,
+	// and a screen is not a guarantee that a POST went through it. Synced first, so a
+	// household that never rendered the step is judged as the four blanks it is rather
+	// than as an empty list with nothing to complain about.
+	if st.Mode == config.ModeIsolated {
+		st.syncMemberSecrets()
+	}
+	if err := checkMemberSecrets(st); err != nil {
+		s.wizardError(w, sess, idx, err.Error())
+		return
+	}
 
 	lore, err := s.openLore(r)
 	if err != nil {
@@ -436,7 +473,7 @@ func (s *Server) finishWizard(w http.ResponseWriter, r *http.Request, sess *sess
 	wiz := setup.New(setup.NewScriptIO(), setup.Options{
 		ConfigPath: s.deps.ConfigPath,
 		DataDir:    dataDir,
-		GOOS:       hostOS(),
+		GOOS:       s.deps.goos(),
 		Probe:      s.deps.probe(),
 		Spaces:     lore.Spaces,
 		Answers:    st.answers(spaces),
@@ -471,7 +508,20 @@ func (s *Server) finishWizard(w http.ResponseWriter, r *http.Request, sess *sess
 	}
 
 	sess.wizard = nil
-	redirectWith(w, r, "/overview", "Written "+s.deps.ConfigPath+". Restart kenward for it to take effect, then invite the household.")
+	// What was written, and the one thing between it and a household that starts. The
+	// process serving this page was started before the .env existed and cannot see it,
+	// so Overview is about to list every secret in it as unreadable — which is true of
+	// this process and not of the node the operator is about to start. Saying so here
+	// is cheaper than letting them find a wall of red under a line that said "written".
+	done := "Written " + s.deps.ConfigPath + "."
+	if p := wiz.EnvFilePath(); p != "" {
+		done += " The secrets you gave are in " + p + " — load it into kenward's environment" +
+			" before restarting (env_file: in compose, EnvironmentFile= in a unit, or" +
+			" `set -a; . ./.env; set +a` in a shell). This process cannot see it, so they are" +
+			" listed below as unreadable until kenward is restarted with it."
+	}
+	done += " Restart kenward for it to take effect, then invite the household."
+	redirectWith(w, r, "/overview", done)
 }
 
 // ------------------------------------------------------------------- login

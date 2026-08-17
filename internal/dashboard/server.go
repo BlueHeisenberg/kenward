@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -68,6 +69,12 @@ type Deps struct {
 	// group chat. Nil means setup.DefaultTelegramProbe.
 	Telegram setup.TelegramProbe
 
+	// GOOS overrides the operating system the wizard writes for. Empty means
+	// runtime.GOOS, which is what production wants; it is a seam because isolated
+	// mode is Linux-only and the flow through it is otherwise untestable anywhere
+	// else.
+	GOOS string
+
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 	// Logger receives request-level events. Nil means discard.
@@ -100,6 +107,13 @@ func (d Deps) telegram() setup.TelegramProbe {
 		return setup.DefaultTelegramProbe
 	}
 	return d.Telegram
+}
+
+func (d Deps) goos() string {
+	if d.GOOS == "" {
+		return runtime.GOOS
+	}
+	return d.GOOS
 }
 
 func (d Deps) logger() *slog.Logger {
@@ -306,6 +320,23 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /exposure", s.withAdmin(s.csrf(s.handleExposureSubmit)))
 	mux.HandleFunc("GET /password", s.withAdmin(s.handlePassword))
 	mux.HandleFunc("POST /password", s.withAdmin(s.csrf(s.handlePasswordSubmit)))
+
+	// A GET of a POST-only route is a bookmark or a back button, not an attack: nobody
+	// reaches /members/add except by having been there once, when the form posted to
+	// it. Go's mux answers one with a bare 405 and no page at all — a blank white
+	// screen in the middle of a dashboard where everything else is styled — so each of
+	// these sends the browser to the page its form lives on. Nothing mutates: this is a
+	// redirect, and the POST above still carries the CSRF check.
+	for from, to := range map[string]string{
+		"/members/add":    "/members",
+		"/members/revoke": "/members",
+		"/members/invite": "/members",
+		"/logout":         "/overview",
+	} {
+		mux.HandleFunc("GET "+from, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, to, http.StatusSeeOther)
+		})
+	}
 
 	s.mux = mux
 }

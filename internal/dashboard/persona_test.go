@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -151,8 +150,9 @@ func runPersonaWizard(t *testing.T, h *harness, mode string, advanced url.Values
 	})
 	step("/setup/admin", url.Values{"password": {testPassword}, "password2": {testPassword}})
 	step("/setup/telegram", url.Values{
-		"bot_token":     {"123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"},
-		"bot_token_env": {"KENWARD_BOT_TOKEN"},
+		"bot_token":      {"123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"},
+		"bot_token_env":  {"KENWARD_BOT_TOKEN"},
+		"write_env_file": {"1"},
 	})
 	step("/setup/endpoints", url.Values{
 		"endpoint.0.name":     {"monster"},
@@ -161,6 +161,14 @@ func runPersonaWizard(t *testing.T, h *harness, mode string, advanced url.Values
 		"endpoint.0.tiers":    {"local"},
 	})
 	step("/setup/trust", url.Values{"mode": {mode}})
+	if mode == "isolated" {
+		// David's own bot and passphrase. Isolated mode names a variable for each
+		// and kenward will not start while either has no value, so the wizard asks.
+		step("/setup/bots", url.Values{
+			"member.david.bot_token":  {"111111111:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"},
+			"member.david.passphrase": {"david-passphrase-one"},
+		})
+	}
 	step("/setup/advanced", advanced)
 	step("/setup/review", nil)
 }
@@ -281,14 +289,12 @@ func TestSettingsRefusesOneEachInSimpleMode(t *testing.T) {
 
 // TestWizardWritesOneEach is the identity question's other answer reaching the file.
 //
-// Linux only, and not because the arrangement is: the dashboard's wizard refuses
-// isolated mode anywhere it cannot be delivered, and one agent each needs isolated
-// mode for its per-member bots. There is no other combination in which this value can
-// be written, so there is no version of this test that runs on Windows.
+// Isolated only, and not because the arrangement is: the dashboard's wizard refuses
+// isolated mode anywhere it cannot be delivered, and one agent each needs isolated mode
+// for its per-member bots. It used to skip on anything but Linux for that reason; the
+// harness now names the platform the wizard writes for, so the mode this product exists
+// for is tested on every machine that runs the suite rather than on one of them.
 func TestWizardWritesOneEach(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("isolated mode, and therefore one agent each, needs Linux with Podman or Docker")
-	}
 	h := newHarness(t)
 	runPersonaWizard(t, h, "isolated", url.Values{
 		"agents":         {"per_member"},

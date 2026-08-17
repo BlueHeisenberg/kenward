@@ -209,6 +209,21 @@ type Answers struct {
 	MemberSpaces map[string]string
 	// Endpoints are the machines that run the model.
 	Endpoints []EndpointAnswer
+	// MemberBotTokens and MemberPassphrases are each member's own two secrets in
+	// isolated mode, keyed by the id derived from their name: the token of the bot
+	// only they speak on, and the passphrase that wraps their key and nobody else's.
+	// Both are written to the .env file when WriteEnvFile is set and neither is ever
+	// written to the configuration, which names the variables and holds no values.
+	//
+	// A member left out of either map is one whose value the caller is not supplying,
+	// which is a legitimate answer — the terminal wizard never supplies one, because at
+	// a terminal these arrive later: the member makes their bot when they enrol and
+	// whoever runs their pod chooses the passphrase. What is not legitimate is a
+	// wizard that names four variables and mentions none of them, which is what the
+	// dashboard used to do; that refusal lives where the asking happens, in the form,
+	// not here. This package's job is only to carry a value it was given.
+	MemberBotTokens   map[string]string
+	MemberPassphrases map[string]string
 	// MemberTiers overrides a member's tier chain, keyed by the id derived from
 	// their name. A member not named here gets the local-only default, which is
 	// the point of the default: a scripted install does not widen anybody's

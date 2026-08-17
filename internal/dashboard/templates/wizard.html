@@ -185,15 +185,57 @@
   <p class="muted">This is the same text <code>kenward doctor</code> prints, in the same
   words. Change the choice above and submit to see the other one.</p>
 
+{{else if eq $d.Slug "bots"}}
+  <p>Isolated mode gives each person a pod of their own, and a pod serves nobody without
+  two secrets that are theirs alone: the Telegram bot only they speak on, and the
+  passphrase that unwraps their key and no other member's.</p>
+
+  <p class="muted">Both are asked for here rather than later because the file this wizard
+  writes names a variable for each of them, and kenward refuses to start while one has no
+  value — before anybody has claimed an invite as much as after, since each person's bot
+  has to be up for them to claim on. Nothing typed here reaches
+  <code>kenward.yaml</code>; it goes to the <code>.env</code> file beside it.</p>
+
+  {{range $st.MemberSecrets}}
+  <fieldset>
+    <legend>{{.Name}}</legend>
+    <label for="tok-{{.ID}}">Bot token
+      <span class="hint">{{.Name}} messages <strong>@BotFather</strong>, sends
+      <code>/newbot</code> and sends you the token. Then <code>/setprivacy</code> for that
+      bot, and <strong>Disable</strong>, before it joins any group. Read from
+      <code>{{.TokenEnv}}</code>.</span>
+    </label>
+    <input type="password" id="tok-{{.ID}}" name="member.{{.ID}}.bot_token"
+           autocomplete="off" value="{{.Token}}">
+    <label for="pass-{{.ID}}">Passphrase
+      <span class="hint">Chosen with {{.Name}}, and different from everybody else's: one
+      passphrase across two members is one wrapping secret for both keys, which is simple
+      mode's arrangement wearing isolated mode's name. It is never sent over Telegram and
+      kenward will not invent one for you — a passphrase this screen made up is a
+      passphrase whoever runs this machine holds. Read from
+      <code>{{.PassphraseEnv}}</code>.</span>
+    </label>
+    <input type="password" id="pass-{{.ID}}" name="member.{{.ID}}.passphrase"
+           autocomplete="off" value="{{.Passphrase}}">
+  </fieldset>
+  {{end}}
+
 {{else if eq $d.Slug "advanced"}}
   <p>One question worth reading, and then a set of settings that already have answers.</p>
 
   <section>
     <h2>Who kenward is</h2>
+    {{/* This paragraph used to end "and either answer works in either mode", three
+         lines under the banner that refuses one answer in one mode. It is a
+         presentation question and it changes nothing about who can read what — that
+         part was and is true — but one each needs a Telegram bot for each person, and
+         only isolated mode has them. */}}
     <p>This is not the question you answered a moment ago. That one was about security —
     whether everyone here trusts whoever runs this machine. This one is about how many
-    assistants the household has. It costs nothing, it needs no containers, and either
-    answer works in either mode.</p>
+    assistants the household has, and it seals nothing either way. One assistant for
+    everybody works in either mode. One each needs a Telegram bot for each person, so it
+    needs isolated mode; in simple mode two assistants behind one contact are one
+    assistant, and it is refused rather than quietly downgraded.</p>
     <div class="choice">
       <input type="radio" id="agents_shared" name="agents" value="shared" {{if ne $st.Agents "per_member"}}checked{{end}}>
       <label for="agents_shared">One assistant, kenward, for everybody
@@ -333,10 +375,25 @@
         {{if $st.Persona.Character}}character: {{$st.Persona.Character}}{{end}}
       {{end}}
     </td></tr>
+    {{/* The context window is stated because it is written whether or not anybody
+         asked: "Ask each machine" is optional, and the operator who skipped it used to
+         get kenward's modest default with no number on any screen. A 262144-token
+         machine configured at 16384 is a machine bought for its window and wasted in
+         silence. */}}
     <tr><th scope="row">Endpoints</th><td>
-      {{range $st.Endpoints}}{{.Name}} — {{.BaseURL}} ({{.Model}})<br>{{end}}
+      {{range $st.Endpoints}}{{.Name}} — {{.BaseURL}} ({{.Model}}),
+        {{if .ContextWindow}}{{.ContextWindow}}-token window
+        {{else}}{{defaultwindow}}-token window — kenward's default, because this machine
+          was not asked and nothing was typed{{end}}<br>{{end}}
     </td></tr>
     <tr><th scope="row">Bot token</th><td>{{if $st.BotToken}}given, going to the .env file{{else}}you will export {{$st.BotTokenEnv}} yourself{{end}}</td></tr>
+    {{if $st.MemberSecrets}}
+    <tr><th scope="row">Each member's own</th><td>
+      {{range $st.MemberSecrets}}{{.TokenEnv}}, {{.PassphraseEnv}}<br>{{end}}
+      <span class="hint">Given, going to the .env file. kenward will not start without
+      them, so they were asked for rather than left to be discovered.</span>
+    </td></tr>
+    {{end}}
     <tr><th scope="row">Reaches a provider</th><td>{{yesno $st.CloudEveryone}}</td></tr>
   </table>
 

@@ -122,8 +122,12 @@ func newHarness(t *testing.T) *harness {
 	deps := Deps{
 		ConfigPath: h.configPath,
 		DataDir:    dir,
-		Now:        func() time.Time { return h.now },
-		Lore:       func(context.Context) (SpaceClient, error) { return h.lore, nil },
+		// Isolated mode is Linux-only and the dashboard refuses it anywhere else, so
+		// a suite that took the host's own GOOS would skip every test of the mode
+		// this product exists for on two platforms out of three.
+		GOOS: "linux",
+		Now:  func() time.Time { return h.now },
+		Lore: func(context.Context) (SpaceClient, error) { return h.lore, nil },
 		Probe: func(_ context.Context, baseURL string) setup.ProbeResult {
 			return setup.ProbeResult{State: setup.Answered, Addr: baseURL, Elapsed: time.Millisecond}
 		},
@@ -309,6 +313,17 @@ func (h *harness) writeConfig() *config.Config {
 	return cfg
 }
 
+// loadConfig reads back whatever is on disk, for assertions about what a handler wrote
+// — or, more often, did not write.
+func (h *harness) loadConfig() *config.Config {
+	h.t.Helper()
+	cfg, err := h.srv.loadConfig()
+	if err != nil {
+		h.t.Fatalf("reading %s back: %v", h.configPath, err)
+	}
+	return cfg
+}
+
 func body(t *testing.T, resp *http.Response) string {
 	t.Helper()
 	b, err := io.ReadAll(resp.Body)
@@ -328,6 +343,7 @@ var mutatingRoutes = []string{
 	"/setup/telegram",
 	"/setup/endpoints",
 	"/setup/trust",
+	"/setup/bots",
 	"/setup/advanced",
 	"/setup/review",
 	"/login",
@@ -354,6 +370,7 @@ var readRoutes = []string{
 	"/setup/telegram",
 	"/setup/endpoints",
 	"/setup/trust",
+	"/setup/bots",
 	"/setup/advanced",
 	"/setup/review",
 }

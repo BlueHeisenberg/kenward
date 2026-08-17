@@ -3,6 +3,8 @@ package updater
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 
 	keelupdate "github.com/BlueHeisenberg/keel/update"
@@ -162,6 +164,18 @@ func (s *Scheduler) Resume(ctx context.Context) (keelupdate.ResumeReport, error)
 	if s == nil {
 		return keelupdate.ResumeReport{Outcome: keelupdate.OutcomeNone}, nil
 	}
+	if !pendingUpdate(s.target) {
+		// Nothing was ever staged on this install path, so there is nothing to
+		// commit, roll back or sweep. Skipping is not an optimisation: keel takes
+		// the cross-process lock before it looks at the journal, and the lock is a
+		// file beside the binary — which in both shipped compose files sits on a
+		// read-only filesystem, correctly. Every household running one opened its
+		// log with "could not finish a pending update: create lock file: ...
+		// read-only file system", immediately above the line saying updates were
+		// off. The intent that put Resume here is untouched: an update genuinely
+		// in flight leaves state on disk, and that state is what this looks for.
+		return keelupdate.ResumeReport{Outcome: keelupdate.OutcomeNone}, nil
+	}
 	rep, err := s.up.Resume(ctx)
 	switch rep.Outcome {
 	case keelupdate.OutcomeCommitted:
@@ -172,6 +186,31 @@ func (s *Scheduler) Resume(ctx context.Context) (keelupdate.ResumeReport, error)
 		s.log.Warn("updater: update aborted", "from", rep.From, "to", rep.To, "reason", rep.Reason)
 	}
 	return rep, err
+}
+
+// pendingUpdate reports whether there is anything on this install path for Resume to
+// finish: keel's journal, or the debris a crash can orphan before the journal exists,
+// which keel's own Resume sweeps.
+//
+// The names are keel's and are not exported by it, which is the cost of this check and
+// is worth stating plainly: if keel renames its journal, this goes quiet rather than
+// wrong — Resume is skipped when it should have run, on a path where there is in fact
+// nothing to run against in every deployment we ship, and TestResumeStillFinishesAnUpdateThatIsInFlight
+// fails the build. An empty target (keel could not resolve the running executable, which
+// it tolerates when the channel is off) has nothing to look at either.
+func pendingUpdate(target string) bool {
+	if target == "" {
+		return false
+	}
+	if _, err := os.Stat(target + ".update.json"); err == nil {
+		return true
+	}
+	for _, suffix := range []string{".staged-*", ".old", ".failed", ".prev.tmp", ".update.json.tmp"} {
+		if m, err := filepath.Glob(target + suffix); err == nil && len(m) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // sleepWait is the production waitFunc: a plain timer that yields to

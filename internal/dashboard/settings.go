@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -573,8 +572,6 @@ func ReachFor(d config.DashboardConfig) privacy.Reach {
 		return privacy.ReachLoopback
 	}
 }
-
-func hostOS() string { return runtime.GOOS }
 
 // URLFor is the address to type into a browser for a configured dashboard, without a
 // running server to ask. It is what `kenward doctor` names in its privacy paragraph.

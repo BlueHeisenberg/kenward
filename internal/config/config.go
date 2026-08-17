@@ -806,7 +806,10 @@ func Decode(r io.Reader) (*Config, error) {
 			cfg.ApplyDefaults()
 			return &cfg, nil
 		}
-		return nil, fmt.Errorf("config: parsing yaml: %w", err)
+		// A rejected key that is a real key in another block is told which one.
+		// See yamlhint.go: the strict decoder names a Go type, and nobody has one
+		// of those open in their editor.
+		return nil, fmt.Errorf("config: parsing yaml: %w", hintMisplacedFields(err))
 	}
 	cfg.ApplyDefaults()
 	return &cfg, nil
