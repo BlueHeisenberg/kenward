@@ -425,6 +425,50 @@ func TestPromptLeavesNoRoomToNarrateTheCapture(t *testing.T) {
 	}
 }
 
+// TestNarrationRuleIsNotInTheCaptureBlock is the regression guard for what happened
+// when it was.
+//
+// The rule above and the instruction to call the remember tool are separable — one
+// governs what the model says, the other what it does — and for one commit they were
+// three lines apart in the same paragraph. In that position the prohibition suppressed
+// the call: a member's message naming the tool produced "Done." and no call at all,
+// and on ordinary phrasing the model made no call and then wrote "Got it — boiler
+// service code is 4471, and I've kept it just to you". Measured over twenty
+// member-requested samples, the block that held both halves called the tool 15 times
+// and the split one 18. See replyTruthText and docs/PROMPT.md.
+//
+// Nothing here is a claim about a model. The three assertions are structural: the
+// prohibition is not in the capture block, the capture block still says a call is a
+// request, and the two are rendered in that order with the scope disclosure and the
+// memory between them. A future edit that tidies the rule back into the block where it
+// reads more naturally will fail this and read why.
+func TestNarrationRuleIsNotInTheCaptureBlock(t *testing.T) {
+	c := flattened(captureText)
+	for _, forbidden := range []string{
+		"do not mention it in your reply at all",
+		"has been saved, stored, recorded",
+		"not which memory it might have gone to",
+	} {
+		if strings.Contains(c, forbidden) {
+			t.Errorf("captureText has taken back %q. Held beside the sentence that introduces the remember tool, that clause stops the model calling it — the prohibition belongs in replyTruthText, which is rendered sections earlier", forbidden)
+		}
+	}
+	if !strings.Contains(c, "Calling that tool is a request, not a write.") {
+		t.Error("captureText no longer says a call is a request; that sentence is the mechanism the reply rule depends on and it has to sit with the tool it describes")
+	}
+	for name, sys := range everyScopeShape(t) {
+		truth, capture := strings.Index(sys, replyTruthText), strings.Index(sys, "propose storing it by calling the remember tool")
+		switch {
+		case truth < 0:
+			t.Errorf("the %s prompt never renders the never-narrate rule", name)
+		case capture < 0:
+			t.Errorf("the %s prompt never introduces the remember tool", name)
+		case truth > capture:
+			t.Errorf("the %s prompt renders the never-narrate rule after the capture block; the whole point of moving it was to put distance between \"do not talk about the tool\" and \"use the tool\"", name)
+		}
+	}
+}
+
 // TestMarkerCannotInstructTheModel is the entry-body defence, applied to the field
 // that was exempted from it.
 //
