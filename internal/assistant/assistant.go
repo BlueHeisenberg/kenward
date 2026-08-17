@@ -859,8 +859,24 @@ func (u *Unit) retrieve(ctx context.Context, sc domain.Scope, text string) ([]sp
 //
 // It renders nothing when nothing was searched, and nothing when the household has
 // turned it off.
+//
+// It also renders nothing when every space came back empty and none of them failed.
+// The reason the empty case is rendered at all is about the *prompt* — the model is
+// told "I looked and found nothing" rather than being handed an absent section, so a
+// later turn does not search again — and that reasoning never applied to the member.
+// It was printed to them because it was already being written. In front of a one-word
+// answer it is six words of bookkeeping about a read that informed nothing, and on a
+// question the household has no entry for it says "searched … (nothing)" above a reply
+// that already says so in a sentence.
+//
+// A space that could not be read is different and still speaks: that is a disclosure
+// about the answer's completeness, not an accounting of a successful search, and the
+// member is the only one who can act on it.
 func (u *Unit) readNotice(inp promptInput, searched bool) string {
 	if u.opts.ReadNotices == ReadNoticesOff || !searched {
+		return ""
+	}
+	if len(inp.private) == 0 && len(inp.shared) == 0 && !inp.privateErr && !inp.sharedErr {
 		return ""
 	}
 	var parts []string
