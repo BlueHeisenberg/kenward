@@ -317,6 +317,22 @@ func missing(c Catalogue) []string {
 // Anything this package does not hold gets English.
 func For(language string) Catalogue { return tables[TagFor(language)] }
 
+// IsEnglish reports whether language names English, which saying nothing does.
+//
+// It is not TagFor(language) == English and must not become it. TagFor falls back
+// to English for anything this package has never heard of, which is right for
+// choosing a table to read strings out of and wrong for every question of the form
+// "is this conversation in English?" — a household writing in a language kenward
+// holds no catalogue for is emphatically not one, and the caller that asks
+// (internal/capture, deciding whether an alias could bridge anything) would draw
+// exactly the wrong conclusion.
+func IsEnglish(language string) bool {
+	if strings.TrimSpace(language) == "" {
+		return true
+	}
+	return aliases[normalize(language)] == English
+}
+
 // Spoken reports whether kenward's own strings exist in this language.
 func Spoken(language string) bool {
 	_, ok := aliases[normalize(language)]

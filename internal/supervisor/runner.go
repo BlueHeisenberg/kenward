@@ -981,6 +981,8 @@ func (r *runner) runEnrol(view transport.Transport, ch <-chan transport.Inbound)
 				}
 			}
 			if res.Enrolled {
+				// Before the tutorial, not after it. See bound.
+				r.bound(res.Member)
 				r.startTutorial(view, res.Member, in.ChatID)
 			}
 		}
@@ -1123,11 +1125,10 @@ func orElse(v, fallback string) string {
 // member's key under its own passphrase, which is the one failure isolated mode
 // exists to prevent — worse than the bug this path fixes, and invisible.
 func (r *runner) enrolled(m domain.Member) {
-	// The binding is folded in regardless: scope resolution should know every
-	// member the household now has, even one served by a different process.
-	r.cfgMu.Lock()
-	r.cfg = configWithBinding(r.cfg, m)
-	r.cfgMu.Unlock()
+	// Already done at the claim, and repeated because enrolled is also reached by
+	// paths that did not come through this process's enrolment pump. It is a
+	// copy-on-write fold of the same values: doing it twice changes nothing.
+	r.bound(m)
 
 	if r.rc.serveOnEnrol != nil && !r.rc.serveOnEnrol(m) {
 		// Someone else's claim landed on this bot. Their unit lives in their
@@ -1169,6 +1170,33 @@ func (r *runner) enrolled(m domain.Member) {
 		r.logger.Error("supervisor: launching unit for new member", "member", string(m.ID), "error", err)
 	}
 	r.logger.Info("supervisor: member enrolled and serving", "member", string(m.ID))
+}
+
+// bound folds a claim into the running configuration, copy-on-write, at the moment
+// the code is redeemed.
+//
+// It is separate from enrolled, and earlier, because the two answer different
+// questions and only one of them can wait. Whether this process runs a unit for the
+// member is enrolled's business and genuinely does wait for their tutorial: until it
+// ends their messages have to keep reaching the enrolment pump, which is what reads
+// their answers. Whether the household's group chat recognises them is this, and it
+// waits for nothing — the binding exists from the redemption, the group unit serves
+// the chat rather than the member, and the only thing standing between the two was
+// scope.Resolve reading a configuration that had not been told.
+//
+// The cost of getting that wrong is a silence nobody can see. A member who claimed
+// mid-run, finished their DM and then spoke in the group got no reply and no log
+// line: resolution refused them exactly as it refuses a stranger, which is a Debug
+// line and is meant to be, because answering a stranger at all confirms the bot. The
+// remedy was a restart. There is now nothing to restart for.
+//
+// The fold is also what lets personaAnswered find a member the Binder created from
+// an invited name: it runs before enrolled, and before this it was searching a
+// configuration that did not yet have the row.
+func (r *runner) bound(m domain.Member) {
+	r.cfgMu.Lock()
+	r.cfg = configWithBinding(r.cfg, m)
+	r.cfgMu.Unlock()
 }
 
 func (r *runner) workerDone() {

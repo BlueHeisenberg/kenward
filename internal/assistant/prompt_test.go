@@ -348,10 +348,14 @@ func TestPromptSaysARememberCallIsNotAWrite(t *testing.T) {
 	// Flattened on both sides: the constants are hard-wrapped, so a sentence the
 	// model reads as one line spans two in the source, and a test that could be
 	// broken by rewrapping is a test somebody will delete.
+	// Reworded, not weakened, by D3 of the second live run: the prohibition covers
+	// the same verbs and the same destination and now also covers the wording the
+	// old paragraph sanctioned. TestPromptLeavesNoRoomToNarrateTheCapture is the
+	// half that was added.
 	want := []string{
 		"Calling that tool is a request, not a write.",
-		"never say or imply in a reply that anything has been saved",
-		"never say which memory it went to",
+		"not that anything has been saved, stored, recorded, noted down or added to a memory",
+		"not which memory it might have gone to",
 	}
 	for name, sys := range everyScopeShape(t) {
 		sys = flattened(sys)
@@ -388,5 +392,35 @@ func TestPromptAsksForPlainProse(t *testing.T) {
 	sys := everyScopeShape(t)["direct+persona"]
 	if strings.Index(sys, formattingText) < strings.Index(sys, personaClose) {
 		t.Error("the plain-prose rule is rendered before the persona block; it must come after, where a persona cannot read as relaxing it")
+	}
+}
+
+// TestPromptLeavesNoRoomToNarrateTheCapture is D3 from the second live run.
+//
+// The rule above was half-kept. A direct-scope reply read:
+//
+//	that's yours specifically, so I've proposed it to your private memory. You'll
+//	see exactly what was written and can undo it if the wording isn't right.
+//
+// Every clause of that is true and the whole of it is wrong. It names the memory,
+// which the rule forbids outright, and it describes a completed write in the same
+// breath as "proposed" — which the old last sentence positively invited, because it
+// left one sanctioned wording open and that wording is false in the direct scope:
+// a private capture is written first and announced with Undo, so by the time the
+// model writes "proposed" the entry exists.
+//
+// There is no wording that is correct in both scopes, so the prompt offers none.
+func TestPromptLeavesNoRoomToNarrateTheCapture(t *testing.T) {
+	for name, sys := range everyScopeShape(t) {
+		f := flattened(sys)
+		if !strings.Contains(f, "do not mention it in your reply at all") {
+			t.Errorf("the %s prompt does not forbid mentioning the capture outright; every softer rule so far has been obeyed in the letter and broken in the sentence", name)
+		}
+		if strings.Contains(f, "say only that you have proposed it") {
+			t.Errorf("the %s prompt still sanctions one wording for narrating a capture, and that wording is false wherever the write already happened", name)
+		}
+		if !strings.Contains(f, "not that you have proposed it either") {
+			t.Errorf("the %s prompt forbids the completed-write verbs but not \"proposed\", which is the word the live reply used", name)
+		}
 	}
 }

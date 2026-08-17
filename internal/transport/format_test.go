@@ -165,3 +165,76 @@ func wellFormed(s string) string {
 	}
 	return ""
 }
+
+// TestMarkdownRendersWhatTheModelMeant is D1 from the second live run.
+//
+// The prompt asks for plain prose and the frequency fell, but a member was still
+// shown "- **Mains water** — the stopcock" in a turn where they asked for no
+// formatting at all. Markdown reaching a member is a defect whether it arrives
+// once or six times, so the reply — and only the reply — is converted.
+func TestMarkdownRendersWhatTheModelMeant(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"bold", "- **Mains water** — the stopcock",
+			"- <b>Mains water</b> — the stopcock"},
+		{"italic", "that's *yours* specifically",
+			"that's <i>yours</i> specifically"},
+		{"inline code", "run `kenward status` first",
+			"run <code>kenward status</code> first"},
+		{"fence", "like this:\n```sh\nkenward status\n```\nand that is all",
+			"like this:\n<pre>kenward status</pre>\nand that is all"},
+		{"fence with no info string", "```\na & b\n```",
+			"<pre>a &amp; b</pre>"},
+		{"heading", "# Bins\nThursday.", "<b>Bins</b>\nThursday."},
+		{"markup inside a fence is still literal", "```\n<b>x</b>\n```",
+			"<pre>&lt;b&gt;x&lt;/b&gt;</pre>"},
+		{"markup inside bold is still literal", "**<b>x</b>**",
+			"<b>&lt;b&gt;x&lt;/b&gt;</b>"},
+		{"code inside bold", "**the `x` one**", "<b>the <code>x</code> one</b>"},
+		// Nothing that is not a pair is touched. A model writing prose about
+		// multiplication, a bullet list, or a lone asterisk must reach the member
+		// exactly as it wrote them.
+		{"arithmetic", "2 * 3 * 4 = 24", "2 * 3 * 4 = 24"},
+		{"bullet", "* milk\n* bread", "* milk\n* bread"},
+		{"lone asterisk", "a lone * stays", "a lone * stays"},
+		{"unclosed fence", "```sh\nnever closed", "```sh\nnever closed"},
+		{"unclosed backtick", "a ` stays", "a ` stays"},
+		{"escaping still happens", "5 > 3 && true", "5 &gt; 3 &amp;&amp; true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Markdown(tc.in)
+			if got != tc.want {
+				t.Errorf("Markdown(%q)\n = %q\nwant %q", tc.in, got, tc.want)
+			}
+			if bad := wellFormed(got); bad != "" {
+				t.Errorf("Markdown(%q) = %q: %s", tc.in, got, bad)
+			}
+		})
+	}
+}
+
+// TestMemberWrittenTextIsNeverParsed is the other half of D1, and the reason
+// conversion was refused the first time round.
+//
+// Entry titles and bodies are written by members and quoted into kenward's own
+// messages. A member whose note says *this* must be shown *this*: the marks escape
+// and never parse, and nothing that has been through one of them is ever handed to
+// Markdown.
+func TestMemberWrittenTextIsNeverParsed(t *testing.T) {
+	body := "she wrote *this* and **that**, in `code`, with a ``` fence"
+	for name, got := range map[string]string{
+		"Quote": Quote(body),
+		"Bold":  Bold(body),
+		"Code":  Code(body),
+	} {
+		if PlainText(got) != body {
+			t.Errorf("%s(body) renders as %q, want the member's own %q", name, PlainText(got), body)
+		}
+		for _, tag := range []string{"<b>", "<i>", "<pre>", "<code>"} {
+			// One of its own opening tag is allowed; a second is markup the
+			// member's asterisks were parsed into.
+			if strings.Count(got, tag) > 1 {
+				t.Errorf("%s(body) = %q: member text was parsed into %s", name, got, tag)
+			}
+		}
+	}
+}
