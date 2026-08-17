@@ -906,6 +906,16 @@ func (i *Isolated) Start(ctx context.Context) error {
 	default:
 	}
 	i.started = true
+	// The pods are counted onto the WaitGroup here, under the lock that has just
+	// found draining open, rather than one at a time in the launch loop below.
+	// Down there the Add sits after a roll and a stale-pod recreation, either of
+	// which can take as long as the backend does — and a Stop arriving in that
+	// window closes draining, stops the pods and reaches wg.Wait() before a single
+	// Add has happened. Adding to a WaitGroup another goroutine is already waiting
+	// on is the misuse the race detector reports; what it means here is a pod
+	// monitor still being launched while shutdown believes it has waited for them
+	// all. i.pods is fixed at construction, so its length is known now.
+	i.wg.Add(len(i.pods))
 	i.mu.Unlock()
 
 	i.logStartup()
@@ -913,7 +923,6 @@ func (i *Isolated) Start(ctx context.Context) error {
 	i.recreateStalePods(ctx)
 
 	for _, p := range i.pods {
-		i.wg.Add(1)
 		go i.runPod(ctx, p)
 	}
 
@@ -1427,7 +1436,13 @@ func (i *Isolated) Stop(ctx context.Context) error {
 
 func (i *Isolated) shutdown(ctx context.Context) error {
 	i.stopOnce.Do(func() {
+		// Under the lock, so that closing draining and Start's wg.Add cannot
+		// interleave: either Start got there first and its pods are on the group
+		// before the Wait below, or this did and Start returns "already stopped"
+		// without adding anything.
+		i.mu.Lock()
 		close(i.draining)
+		i.mu.Unlock()
 
 		var wg sync.WaitGroup
 		for _, p := range i.pods {

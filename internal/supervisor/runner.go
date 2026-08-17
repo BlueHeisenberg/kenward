@@ -692,13 +692,20 @@ func (r *runner) launchClock(pu pendingUnit) {
 	if pu.clock == nil {
 		return
 	}
+	// The Add happens under the same lock that shutdown takes to set stopping, and
+	// not after it has been dropped. Outside the lock there is a window: shutdown
+	// can set stopping, get as far as clockWg.Wait(), and only then does this Add
+	// land — a WaitGroup reused before the previous Wait returned, which is what
+	// the race detector calls it, and underneath that a reminder clock started by
+	// the shutdown that was supposed to have silenced it. A clock outliving stop is
+	// precisely what the comment at clockWg.Wait() says must not happen.
 	r.mu.Lock()
 	if r.stopping {
 		r.mu.Unlock()
 		return
 	}
-	r.mu.Unlock()
 	r.clockWg.Add(1)
+	r.mu.Unlock()
 	go func() {
 		defer r.clockWg.Done()
 		defer r.recoverPump(pu.key, "reminder clock")

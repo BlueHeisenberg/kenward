@@ -585,6 +585,15 @@ func TestAskRespectsContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan askResult, 1)
+	// Posted is the barrier, not the sendMessage call. The subject here is what
+	// cancelling does to a question that is already on screen, and waiting on the
+	// call would only prove the server had answered — leaving the cancellation to
+	// race Ask's own read of that answer. A send that loses the race fails with
+	// context.Canceled, which satisfies the error assertion below while leaving no
+	// message to retire, so the race would surface as the editMessageText that
+	// never comes. Posted fires once the id is in hand and the question is
+	// registered, which is exactly the state the test means to interrupt.
+	posted := make(chan struct{})
 	go func() {
 		a, err := tg.Ask(ctx, Question{
 			ChatID:        100,
@@ -592,11 +601,16 @@ func TestAskRespectsContextCancellation(t *testing.T) {
 			Choices:       []Choice{{ID: "yes", Label: "Save"}},
 			AllowedUserID: 7,
 			Timeout:       10 * time.Second,
+			Posted:        func(int) { close(posted) },
 		})
 		result <- askResult{a, err}
 	}()
 
-	api.WaitCall(t, "sendMessage", 1)
+	select {
+	case <-posted:
+	case <-time.After(4 * time.Second):
+		t.Fatal("the question was never posted")
+	}
 	cancel()
 
 	select {

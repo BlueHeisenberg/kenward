@@ -234,21 +234,44 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Recorded before the hold and before any scripted reply, so a poll answered
-	// with a failure is still counted. That is the point of counting them: a
-	// client that asks for the same offset again after a failure has correctly
-	// confirmed nothing, and that is only visible if the failed call was seen.
-	call := -1
+	// The offset is recorded on arrival, before the hold and before any scripted
+	// reply, so a poll answered with a failure is still counted. That is the point
+	// of counting them: a client that asks for the same offset again after a
+	// failure has correctly confirmed nothing, and that is only visible if the
+	// failed call was seen.
+	//
+	// Everything else is recorded on the way out instead, once the client has its
+	// answer — see served below.
 	if method == "getUpdates" {
 		offset, _ := strconv.ParseInt(form.Get("offset"), 10, 64)
 		s.mu.Lock()
 		s.offsets = append(s.offsets, offset)
 		s.mu.Unlock()
-	} else {
-		s.mu.Lock()
-		s.calls = append(s.calls, Call{Method: method, Form: form})
-		call = len(s.calls) - 1
-		s.mu.Unlock()
+	}
+
+	// A call becomes visible to a test only once it has been answered.
+	//
+	// CallsFor and WaitCall are how a test says "the client has made this call",
+	// and what it does next is built on that: it cancels a context, it reads the
+	// MessageID the server handed back, it pushes a callback_query at the keyboard
+	// a particular send drew. None of that is sound while the request is still in
+	// flight. Recording on arrival made both of those a race the fake itself
+	// manufactured — a cancellation that beat the send it had just waited for, and
+	// a MessageID read as the zero the field is filled in from — and both showed up
+	// as CI failures on the loaded runners and on no developer's machine.
+	//
+	// A nil served is a call that was never answered: the client gave up during a
+	// hold, and a call the client got nothing back from is not one it made.
+	var served *Call
+	if method != "getUpdates" {
+		defer func() {
+			if served == nil {
+				return
+			}
+			s.mu.Lock()
+			s.calls = append(s.calls, *served)
+			s.mu.Unlock()
+		}()
 	}
 
 	s.mu.Lock()
@@ -261,6 +284,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return // the client gave up; answer nothing
 		}
 	}
+	served = &Call{Method: method, Form: form}
 
 	if reply, ok := s.popScripted(method); ok {
 		writeJSON(w, reply.status, reply.body)
@@ -279,9 +303,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	case "sendMessage", "editMessageText":
 		body, id := s.messageResult(form)
-		s.mu.Lock()
-		s.calls[call].MessageID = id
-		s.mu.Unlock()
+		served.MessageID = id
 		writeJSON(w, http.StatusOK, body)
 
 	case "answerCallbackQuery":
