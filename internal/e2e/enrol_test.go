@@ -646,7 +646,15 @@ func personaOf(t *testing.T, h *household, id domain.MemberID) enrol.Persona {
 // composed by the reader that drops the message would go out in the wrong language.
 // And a member who types four times gets one reply, not four.
 func TestTypingAtAButtonQuestionIsAnsweredOnceInTheTutorialsLanguage(t *testing.T) {
-	h := newHousehold(t, harnessOptions{unenrolled: []domain.MemberID{"mei"}})
+	// One agent each, because this test needs a button question *after* the language
+	// one — that is the whole point, the nudge has to come out in the language the
+	// member chose rather than the household's. Under one shared assistant the
+	// language question is the only question there is: the register and the character
+	// are the household's, so they are not asked. See internal/enrol's step list.
+	h := newHousehold(t, harnessOptions{
+		unenrolled: []domain.MemberID{"mei"},
+		enrolOpts:  []enrol.Option{enrol.WithOneEach()},
+	})
 	code := h.mint("Mei", 0)
 
 	// The register question is held open, which is what a member looking at a
@@ -668,15 +676,62 @@ func TestTypingAtAButtonQuestionIsAnsweredOnceInTheTutorialsLanguage(t *testing.
 	})
 	h.start()
 
+	// nudges is every message so far that is the "those are buttons" sentence, in
+	// either language. Counting them by content rather than by a message-index delta
+	// is what makes the retry below safe: a nudge is armed when a button question goes
+	// up and swapped away by the first typed message that misses it, so what has to be
+	// asserted is that exactly one exists for this question, not which position in the
+	// transcript it landed at.
+	nudges := func() []string {
+		var out []string
+		for _, m := range h.sentTo(meiChatID) {
+			if strings.Contains(m.Text, "botones de arriba") || strings.Contains(m.Text, "buttons above") {
+				out = append(out, m.Text)
+			}
+		}
+		return out
+	}
+
 	h.tr.InjectText(meiChatID, meiTelegramID, code, false)
-	waitFor(t, "the register question to be on screen", held.Load)
-	before := len(h.sentTo(meiChatID))
+	// The name question is typed and sits between the language and the register under
+	// one agent each, so it is answered here rather than by the answer func above.
+	//
+	// The wait for it on screen comes first and is not optional: a message typed while
+	// the *language* question is up earns the nudge for that question, which is the
+	// household's English, and the assertions below would then be reading the wrong
+	// sentence.
+	waitFor(t, "the name question to be on screen", func() bool {
+		for _, m := range h.sentTo(meiChatID) {
+			if strings.Contains(m.Text, "Mi nombre") {
+				return true
+			}
+		}
+		return false
+	})
+	// From here the skip is retried rather than injected once. The pump hands a typed
+	// message to the tutorial only while the tutorial is blocked waiting for one, on an
+	// unbuffered channel with a non-blocking send, so an injection that lands in the
+	// gap between the question being sent and the tutorial reaching its receive is
+	// dropped on the floor and nothing ever arrives. Waiting for the question on screen
+	// narrows that gap and does not close it, and under a loaded machine it stayed open
+	// long enough to hang the whole test. A retry that misses at the name question
+	// costs nothing — no nudge is armed at a typed one — and the loop stops the moment
+	// the register question takes the screen.
+	waitFor(t, "the register question to be on screen", func() bool {
+		if held.Load() {
+			return true
+		}
+		h.tr.InjectText(meiChatID, meiTelegramID, "/skip", false)
+		return held.Load()
+	})
 
 	for range 4 {
 		h.tr.InjectText(meiChatID, meiTelegramID, "warm please", false)
 	}
-	sent := h.waitForReply(meiChatID, before+1)
-	nudge := sent[len(sent)-1].Text
+	waitFor(t, "the member to be told their typing was not an answer", func() bool {
+		return len(nudges()) > 0
+	})
+	nudge := nudges()[0]
 
 	if !strings.Contains(nudge, "botones de arriba") {
 		t.Errorf("the member was answered in the wrong language: %q\n"+
@@ -710,14 +765,12 @@ func TestTypingAtAButtonQuestionIsAnsweredOnceInTheTutorialsLanguage(t *testing.
 		t.Errorf("persona = %+v; a message typed at a button question was eaten by a later one", got)
 	}
 
-	// Four messages, one reply. A chatty member must not collect one nudge each.
-	n := 0
-	for _, m := range h.sentTo(meiChatID) {
-		if strings.Contains(m.Text, "botones de arriba") {
-			n++
-		}
-	}
-	if n != 1 {
-		t.Errorf("four typed messages at one button question produced %d nudges, want 1", n)
+	// Four messages, one reply. A chatty member must not collect one nudge each, and
+	// the character question above is the barrier that proves the pump has read all
+	// four. One is also the right answer whatever the skip retry contributed, which is
+	// the property that makes that retry safe: the nudge is armed once per button
+	// question and swapped away by whichever typed message misses it first.
+	if got := nudges(); len(got) != 1 {
+		t.Errorf("four typed messages at one button question produced %d nudges, want 1: %q", len(got), got)
 	}
 }

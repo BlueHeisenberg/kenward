@@ -541,7 +541,9 @@ If this conversation contains something worth remembering — a durable fact, a
 preference, a decision, something the household will want recalled later — you may
 propose storing it by calling the remember tool. Write its title and body in English
 whatever language you are answering in, and put the member's own words for what it is
-about in aliases, so they can find it again in the language they said it in.
+about in aliases, so they can find it again in the language they said it in. Always
+write summary as well: one line, in the language you are answering in, saying what the
+body says. It is what the member reads to see what they are approving.
 
 Calling that tool is a request, not a write. Nothing is stored because you asked for
 it, and you are never told what became of the request. So make the call whenever this
@@ -723,14 +725,14 @@ The tool schema:
   "description": "Propose storing something in memory. A proposal for the member's private memory may be written straight away and shown to them, with an undo button; anything for the household's shared memory is written only if they confirm.",
   "input_schema": {
     "type": "object",
-    "required": ["title", "body", "domain", "target"],
+    "required": ["title", "body", "domain", "summary", "target"],
     "properties": {
       "title":      {"type": "string", "description": "Short, specific, and searchable later."},
       "body":       {"type": "string", "description": "The fact itself, stated plainly and out of context — it will be read a year from now with none of this conversation around it."},
       "domain":     {"type": "string", "description": "A coarse category, e.g. household/logistics."},
       "confidence": {"type": "string", "enum": ["experimental", "provisional", "validated", "hardened"]},
       "aliases":    {"type": "array", "items": {"type": "string"}, "description": "The member's own words for what this is about, in the language they are speaking, when that is not English."},
-      "summary":    {"type": "string", "description": "One line, in the language the member is speaking, saying what the body says. It is shown to them so they can see what they are approving; it is not stored. Leave it out when you are answering in English."},
+      "summary":    {"type": "string", "description": "One line, in the language the member is speaking, saying what the body says. It is shown to them so they can see what they are approving; it is not stored. Always write it: whether it is shown is decided for you, from the language this conversation is held in."},
       "target":     {"type": "string", "enum": ["personal", "shared", "unsure"]}
     }
   }
@@ -799,7 +801,18 @@ therefore no gloss to show; a member publishing something is publishing what the
 already seen once, which is a weaker version of the same problem left open deliberately.
 
 Dropped in an English conversation, exactly as `aliases` is and by the same field: there
-is nothing to gloss, so a line there could only be a second copy of the body.
+is nothing to gloss, so a line there could only be a second copy of the body. **Dropped
+at render time, not asked for conditionally** — `internal/capture` decides, and the model
+is told to write the field always. It was the other way round once: the schema said
+*"leave it out when you are answering in English"* and the capture paragraph named title,
+body and `aliases` and stopped, so the only instruction to write a gloss at all was a
+property description. Live, in one Spanish session four minutes apart, one card had the
+line and the next did not — and the one without it was the private write, where the entry
+is already stored and Undo is the member's only recourse for wording they cannot read.
+Whether the person reading the card reads English is not a judgement to leave with the
+model: it is `household.persona.language`, this node has it, and `Engine.english` was
+already acting on it correctly. The cost is a field an English household writes and
+nobody reads.
 
 The second tool, offered in a direct conversation only — publishing *from* the group is
 meaningless, and a tool whose every call must be refused only teaches the model to call

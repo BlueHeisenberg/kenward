@@ -159,8 +159,9 @@ func TestTheGlossReachesTheProposalAndNotTheDraft(t *testing.T) {
 	if strings.Contains(p.Draft.Body, summary) || strings.Contains(p.Draft.Title, summary) {
 		t.Errorf("the gloss reached the entry that gets stored:\n%+v", p.Draft)
 	}
-	// A model that omits it — every English conversation, where the prompt says to —
-	// is not malformed and loses nothing else.
+	// A model that omits it is not malformed and loses nothing else. The schema
+	// requires the field and parseRemember does not, because a proposal thrown away
+	// for a missing gloss costs the member the capture in order to fix the card.
 	q, warn := extractProposal([]routing.ToolCall{call("remember",
 		`{"title": "T", "body": "B", "domain": "d", "target": "personal"}`)})
 	if warn != "" || q == nil || q.Summary != "" {
@@ -229,8 +230,8 @@ func TestRememberSchemaIsValidJSON(t *testing.T) {
 		t.Fatalf("remember schema is not valid JSON: %v", err)
 	}
 	req, ok := schema["required"].([]any)
-	if !ok || len(req) != 4 {
-		t.Fatalf("schema required = %v, want [title body domain target]", schema["required"])
+	if !ok || len(req) != 5 {
+		t.Fatalf("schema required = %v, want [title body domain summary target]", schema["required"])
 	}
 	var pub map[string]any
 	if err := json.Unmarshal([]byte(publishSchema), &pub); err != nil {
@@ -611,5 +612,44 @@ func TestUnknownToolWarningNamesTheNearMiss(t *testing.T) {
 		if !knownTool(real) {
 			t.Errorf("knownTool(%q) is false", real)
 		}
+	}
+}
+
+// TestTheGlossIsARequiredFieldAndNotTheModelsCall is the schema half of the same fix.
+//
+// The old description ended "Leave it out when you are answering in English", which
+// handed the model the judgement of whether the person in front of it can read English.
+// That is not the model's judgement to make: the conversation's language is
+// configuration, this process has it, and capture.glossLine already drops the line in an
+// English conversation without being asked. While the model held that decision it also
+// held the decision to write the field at all, and it declined about half the time.
+//
+// parseRemember still does not enforce it, deliberately — see rememberCall.Summary. A
+// required field a model omits must cost the member a card they cannot read, never the
+// capture itself.
+func TestTheGlossIsARequiredFieldAndNotTheModelsCall(t *testing.T) {
+	var schema struct {
+		Required   []string `json:"required"`
+		Properties struct {
+			Summary struct {
+				Description string `json:"description"`
+			} `json:"summary"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(rememberSchema), &schema); err != nil {
+		t.Fatalf("remember schema is not valid JSON: %v", err)
+	}
+	if !slices.Contains(schema.Required, "summary") {
+		t.Errorf("summary is not required: %v.\n\nA member in a non-English conversation is shown an English title and an English body and asked to approve them; the gloss is the only line on that card they can read.", schema.Required)
+	}
+	if strings.Contains(schema.Properties.Summary.Description, "Leave it out") {
+		t.Errorf("the schema still lets the model decide whether to write the gloss: %q", schema.Properties.Summary.Description)
+	}
+
+	// The field it is modelled on. aliases is not required and does not need to be —
+	// the capture paragraph asks for it and it arrives — so the required list is the
+	// belt and the paragraph is the braces, and neither is a substitute for the other.
+	if slices.Contains(schema.Required, "aliases") {
+		t.Errorf("aliases became required: %v — an English conversation has none to give", schema.Required)
 	}
 }

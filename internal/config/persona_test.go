@@ -48,21 +48,54 @@ func personaConfig(agents config.Agents) *config.Config {
 	return cfg
 }
 
-// TestPersonaForSharedIsEveryonesPersona is the claim the wizard has to make out loud
-// before an admin answers: under one agent there is no personal layer, so the persona
-// the admin chose for kenward is the persona every member gets in their own private
-// chat. A member's own fields are carried and ignored, never merged.
-func TestPersonaForSharedIsEveryonesPersona(t *testing.T) {
+// TestPersonaForSharedIsTheHouseholdsVoiceInTheMembersLanguage is the shape of the one
+// exception to "there is no personal layer under one assistant".
+//
+// The voice is the household's — name, register and character — because an assistant
+// that is a flat clerk to one member and a wry ship's captain to another is two
+// assistants wearing one name, and that distinction is what AgentsPerMember is for. The
+// language is the member's own, because language is not identity: the same person
+// answers in whichever language they are addressed in.
+//
+// It is a live defect and not a refinement. The tutorial asks a member their language
+// as its first question and simple mode is the default install, so under the old
+// resolution the answer went into state.json and no conversation ever read it —
+// confirmed in a real file holding a language, a tone and a character, none of them
+// used. What was thrown away was never the model's language: Persona.Language empty
+// leaves the model mirroring whatever the member writes. It was Options.Language, which
+// internal/capture turns into the button labels, the write announcement, the undo hint,
+// the alias line folded into a stored body, and whether the English-gloss line renders
+// at all — all of which a Spanish member of a default household got in English, with
+// the gloss and the aliases suppressed outright because Engine.english was true.
+func TestPersonaForSharedIsTheHouseholdsVoiceInTheMembersLanguage(t *testing.T) {
 	cfg := personaConfig(config.AgentsShared)
+	// On top of the name and the register the fixture already has him asking for,
+	// David asks for a language. Exactly one of the three is his to have.
+	cfg.Members[0].Persona.Language = "Catalan"
+
 	got := cfg.PersonaFor("david")
 	want := config.PersonaConfig{
 		AgentName: config.AgentName,
-		Language:  "Spanish",
+		Language:  "Catalan",
 		Tone:      "warm",
 		Character: "Knows the house well.",
 	}
 	if got != want {
-		t.Errorf("PersonaFor(david) under shared = %+v, want the household's %+v", got, want)
+		t.Errorf("PersonaFor(david) under shared = %+v, want %+v — the household's voice, his language", got, want)
+	}
+
+	// A member who asked for no language of their own keeps the household's, which is
+	// what the greeting's "same as the household" button records: nothing, so that a
+	// household changing its language later carries them with it.
+	jordan := cfg.PersonaFor("jordan")
+	if jordan != cfg.HouseholdPersona() {
+		t.Errorf("PersonaFor(jordan) = %+v, want the household's %+v", jordan, cfg.HouseholdPersona())
+	}
+
+	// And a member the file does not name resolves to the household's, rather than to
+	// something empty or to somebody else's.
+	if stranger := cfg.PersonaFor("nobody"); stranger != cfg.HouseholdPersona() {
+		t.Errorf("PersonaFor(nobody) = %+v, want the household's %+v", stranger, cfg.HouseholdPersona())
 	}
 }
 

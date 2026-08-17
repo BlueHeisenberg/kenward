@@ -317,9 +317,31 @@ func (c *Config) HouseholdPersona() PersonaConfig {
 
 // PersonaFor resolves the persona a member's private conversation is served with.
 //
-// Under AgentsShared there is no personal layer, so it is the household's — that is
-// what "one assistant for the household" means, and it is why the wizard has to say
-// that kenward's persona is everyone's persona at the point of asking.
+// Under AgentsShared the voice is the household's — one assistant means one name, one
+// register and one character, in the group chat and in every private chat alike — and
+// the language is the member's own, falling back to the household's. That split is
+// deliberate and it is the one exception to "there is no personal layer".
+//
+// The reason is that persona bundles two unlike things. Name, tone and character are
+// identity: an assistant that is a flat clerk to one member and a wry ship's captain to
+// another is two assistants wearing one name, which is the distinction AgentsPerMember
+// exists to sell. Language is not identity. It is a property of a conversation, the same
+// person answers in whichever language they are addressed in, and the prompt already
+// concedes as much — a persona with no language leaves the model mirroring whatever the
+// member writes, which is what English-by-saying-nothing has always meant.
+//
+// What a shared persona actually discarded was never the model's language. It was the
+// chrome: Options.Language reaches internal/capture, and internal/capture decides the
+// button labels, the write announcement, the undo hint, the alias line folded into a
+// stored body, and whether the English-gloss line renders at all. A Spanish member of a
+// default household got model prose in Spanish wrapped in English buttons, with the
+// gloss and the aliases suppressed outright because Engine.english was true. That is not
+// one assistant, it is one assistant half of whose interface the member cannot read —
+// and the tutorial asked them their language before doing it.
+//
+// Structurally it is free: a unit is built per member in every mode, each with its own
+// prompt and its own capture engine, so nothing here needs a topology that simple mode
+// cannot deliver. Contrast AgentName, which does: see internal/enrol's step list.
 //
 // Under AgentsPerMember the member's own fields win, one field at a time, and an empty
 // field falls back to the household's. Per field rather than all-or-nothing because the
@@ -337,12 +359,17 @@ func (c *Config) HouseholdPersona() PersonaConfig {
 // would give a member a persona for an agent that mode cannot deliver.
 func (c *Config) PersonaFor(memberID string) PersonaConfig {
 	household := c.HouseholdPersona()
-	if !c.AgentPerMember() {
-		return household
-	}
 	for _, m := range c.Members {
 		if m.ID != memberID {
 			continue
+		}
+		if !c.AgentPerMember() {
+			// The language, and nothing else. Written onto the household's persona
+			// rather than assembled fresh so that a field added to PersonaConfig
+			// later joins the household's voice by default, which is the answer
+			// that cannot accidentally split the assistant in two.
+			household.Language = orElse(m.Persona.Language, household.Language)
+			return household
 		}
 		return PersonaConfig{
 			AgentName: orElse(m.Persona.AgentName, household.AgentName),

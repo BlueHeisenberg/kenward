@@ -52,7 +52,9 @@ If this conversation contains something worth remembering — a durable fact, a
 preference, a decision, something the household will want recalled later — you may
 propose storing it by calling the remember tool. Write its title and body in English
 whatever language you are answering in, and put the member's own words for what it is
-about in aliases, so they can find it again in the language they said it in.
+about in aliases, so they can find it again in the language they said it in. Always
+write summary as well: one line, in the language you are answering in, saying what the
+body says. It is what the member reads to see what they are approving.
 
 Calling that tool is a request, not a write. Nothing is stored because you asked for
 it, and you are never told what became of the request. So make the call whenever this

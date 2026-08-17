@@ -59,16 +59,24 @@ type text struct {
 	// name is what the language calls itself, for the button.
 	name string
 
-	// greeting promises how many questions are coming, which is not a constant: the
-	// agent-name question only exists under one agent per member. The count is passed
-	// in rather than written into the sentence so that the promise and the step list
-	// cannot drift apart — see questionCount. It arrives already spelled in this
-	// language, because a table cannot reach into itself from inside its own literal.
+	// greeting promises how many questions are coming, which is not a constant: under
+	// one agent per member there are four, and under one shared assistant there is
+	// only the language question. The count is passed in rather than written into the
+	// sentence so that the promise and the step list cannot drift apart — see
+	// questionCount. It arrives already spelled in this language, because a table
+	// cannot reach into itself from inside its own literal.
+	//
+	// The rest of the sentence is written to hold for one question as well as four.
+	// That is not fussiness: the two counts the step list can produce are 1 and 4, and
+	// a greeting that says "One quick questions" is the first thing a member ever
+	// reads.
 	greeting func(member, questions string) string
-	// numbers is how this language writes the small counts a greeting can promise.
-	// Only the sizes the step list can produce need an entry; number falls back to
-	// digits, which is wrong-looking rather than blank.
-	numbers map[int]string
+	// questionsPhrase is the quantified noun this language puts in that slot — the
+	// whole phrase and not the numeral, because "one question" and "four questions"
+	// do not differ only in the number in either language this tutorial is written
+	// in. Only the sizes the step list can produce need an entry; questionCountPhrase
+	// falls back to digits, which is wrong-looking rather than blank.
+	questionsPhrase map[int]string
 
 	languageQ       string
 	languageOther   string
@@ -123,11 +131,12 @@ type text struct {
 // named Catalan should get that part in Catalan even though the four questions
 // before it were in English.
 
-// number is how this language spells a count in prose, falling back to digits for
-// one it has no word for. A digit in the middle of a sentence is ugly; a blank where
-// a number should be is a broken promise, and that is the one this guards against.
-func (t text) number(n int) string {
-	if w, ok := t.numbers[n]; ok {
+// questionCountPhrase is how this language quantifies the questions in prose, falling
+// back to digits for a count it has no phrase for. A digit in the middle of a sentence
+// is ugly; a blank where a number should be is a broken promise, and that is the one
+// this guards against.
+func (t text) questionCountPhrase(n int) string {
+	if w, ok := t.questionsPhrase[n]; ok {
 		return w
 	}
 	return strconv.Itoa(n)
@@ -183,11 +192,11 @@ var english = text{
 	tag:  LangEnglish,
 	name: "English",
 
-	numbers: map[int]string{3: "Three", 4: "Four"},
+	questionsPhrase: map[int]string{1: "One quick question", 4: "Four quick questions"},
 	greeting: func(member, questions string) string {
 		return fmt.Sprintf("Hello %s. You're in.\n\n"+
-			"%s quick questions to set me up for you, then I'll explain how I work. "+
-			"Skip any of them and you get my defaults, and you can change all of it later.",
+			"%s to set me up for you, then I'll explain how I work. "+
+			"Skip what you like and you get my defaults, and you can change all of it later.",
 			transport.Esc(member), questions)
 	},
 
@@ -236,11 +245,11 @@ var spanish = text{
 	tag:  LangSpanish,
 	name: "Español",
 
-	numbers: map[int]string{3: "Tres", 4: "Cuatro"},
+	questionsPhrase: map[int]string{1: "Una pregunta rápida", 4: "Cuatro preguntas rápidas"},
 	greeting: func(member, questions string) string {
 		return fmt.Sprintf("Hola %s. Ya estás dentro.\n\n"+
-			"%s preguntas rápidas para ajustarme a ti y luego te explico cómo funciono. "+
-			"Puedes saltarte cualquiera y te quedas con mis valores por defecto; todo esto "+
+			"%s para ajustarme a ti y luego te explico cómo funciono. "+
+			"Puedes omitir lo que quieras y te quedas con mis valores por defecto; todo esto "+
 			"se puede cambiar más adelante.",
 			transport.Esc(member), questions)
 	},

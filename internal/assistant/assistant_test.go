@@ -1542,8 +1542,9 @@ func TestRetrievalLineReportsWhatReachedTheModel(t *testing.T) {
 	// old budget only one entry survived and the assertion below needs a plural, and
 	// again when the capture block gained the paragraph saying a tool call is not a
 	// write and the identity section gained the plain-prose rule, which between them
-	// left no room for any entry at all.
-	opts.ContextBudget = 2000
+	// left no room for any entry at all; and again when the capture block gained the
+	// sentence asking for the member's-language reading of the entry.
+	opts.ContextBudget = 2100
 	opts.MaxTokens = 128
 	rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
 	if err != nil {

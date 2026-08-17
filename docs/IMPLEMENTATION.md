@@ -588,9 +588,10 @@ members:
     name: David
     telegram_id: 12345678
     private_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8   # a space id, not a name
-    # Written by the member in the Telegram tutorial, not by an operator. Applies
-    # only under agents: per_member; carried and ignored under shared. Each field
-    # falls back to household.persona's independently.
+    # Written by the member in the Telegram tutorial, not by an operator. All four
+    # apply under agents: per_member; under shared only language does and the other
+    # three are carried and ignored. Each field falls back to household.persona's
+    # independently.
     persona:
       agent_name: "Alfred"    # empty means "kenward"; 80 runes
       language: "Spanish"
@@ -1580,6 +1581,21 @@ on the screen either way. Dropped entirely in an English conversation, by the sa
 no gloss: it re-renders an entry out of lore with no proposal behind it, and a member
 publishing something is publishing what they have already seen once.
 
+**The field is required and the drop happens at render time.** Both halves of that were
+once the other way round, and the gloss appeared about half the time: `summary` was
+optional, its description told the model to *"leave it out when you are answering in
+English"*, and the capture paragraph of the prompt asked for a title, a body and aliases
+and stopped. Four minutes apart in one live Spanish session, the shared proposal carried
+the reading and the private write did not — and the private write is the worse card,
+because the entry is already stored and `[Undo]` is the member's only recourse for wording
+they cannot read. Whether the person reading the card reads English is not a judgement to
+leave with a model: it is `persona.language`, the node has it, and `Engine.english` was
+already acting on it correctly. So the paragraph asks for the field beside the sentence
+that asks for `aliases` — `aliases` is the control, it is not required either, and it has
+never gone missing — the schema lists `summary` in `required`, and an English conversation
+pays for a field nobody reads. `parseRemember` still does not enforce it: a proposal thrown
+away for a missing gloss costs the member the capture in order to fix the card.
+
 ---
 
 ## 7. Enrolment
@@ -1611,6 +1627,18 @@ Telegram bot usernames are publicly discoverable and anyone may `/start`. Theref
    started are the same thing downstream — unanswered fields are empty, and empty means
    "the household's". The member is served by no unit until the tutorial ends, because
    until then their messages have to keep reaching the enrolment pump for it to read.
+
+   **The step list depends on `household.agents`, and asks only what will be read back.**
+   Under `per_member` it is four questions — language, agent name, register, character.
+   Under `shared` it is the language question alone: `config.PersonaFor` resolves the name,
+   the register and the character to the household's whatever a member answered, so asking
+   would record three fields into `state.json` that no conversation ever reads. It did: a
+   live file held a language, a tone and a character, and the default install used none of
+   them. The greeting's promise is counted from the step list itself
+   (`enrol.questionCount`), and each language spells the whole quantified phrase — *"One
+   quick question"*, *"Una pregunta rápida"* — rather than a numeral, because the two
+   counts the list can produce are 1 and 4 and *"One quick questions"* would be the first
+   thing a member ever read.
 
    **A typed message at a button question is dropped, and said so.** The pump's hand-off
    is a non-blocking send onto an unbuffered channel, so a message reaches the tutorial
