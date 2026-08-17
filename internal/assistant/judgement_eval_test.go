@@ -5,10 +5,10 @@ package assistant
 // The capture judgement evaluation: does the model decide, unprompted, that
 // something is worth remembering?
 //
-// Every other test of capture in this repository tells the assistant to make the
-// tool call, in the member's own message ("Call the remember tool now with title
-// …"). Those tests prove the write path — a well-formed call becomes a row in lore
-// — and they prove nothing at all about the decision that precedes it. The
+// Every other test of capture in this repository asks for the write in the member's
+// own message ("Remember this just for me: …"). Those tests prove the write path — a
+// well-formed call becomes a row in lore — and they prove nothing at all about the
+// decision that precedes it, because the member made it. The
 // decision is the product. docs/PROMPT.md asks for it in so many words ("a durable
 // fact, a preference, a decision, something the household will want recalled
 // later … only when it is genuinely durable", and then a list of four things not
@@ -22,10 +22,11 @@ package assistant
 // a model asked whether a sentence is worth remembering gives an answer that
 // depends on the model, the endpoint's sampler, and the weather. So:
 //
-//   - It is behind the `integration` tag and skips without an endpoint, so
-//     `go test ./...` never reaches a model and CI is unaffected. The tag is the
-//     one this repository already uses, so `go vet -tags integration ./...`
-//     still type-checks this file.
+//   - It is behind the `integration` tag, so `go test ./...` never reaches a model
+//     and CI is unaffected — the tag does that on its own, and no CI workflow here
+//     passes it. The tag is the one this repository already uses, so `go vet -tags
+//     integration ./...` still type-checks this file. Without an endpoint it fails
+//     rather than skipping; see evalEndpoint for why that is the safer default.
 //   - It reports a rate, not a verdict. Each case prints its own result and the
 //     run prints a scorecard. A household changing models, or an author changing
 //     the prompt, runs it and compares numbers.
@@ -57,7 +58,12 @@ package assistant
 //	KENWARD_E2E_MODEL=monster \
 //	go test -tags integration -run TestCaptureJudgement -v ./internal/assistant/
 //
-// KENWARD_EVAL_REPEATS defaults to 3.
+// KENWARD_EVAL_REPEATS defaults to 3. Without an endpoint this fails rather than
+// skipping; KENWARD_E2E_SKIP=1 waives it. See evalEndpoint.
+//
+// It needs the endpoint to itself. One sample is a 27B reasoning turn, and a run
+// sharing the GPU with anything else has been seen to blow evalTimeout and fail the
+// whole suite on a completion that would otherwise have arrived.
 
 import (
 	"context"
@@ -232,16 +238,30 @@ var judgementCases = []judgementCase{
 	},
 }
 
-// evalEndpoint reads the endpoint under evaluation. A missing endpoint or model
-// skips, exactly as internal/e2e's live suite does, so no unattended run reaches a
-// model.
+// evalEndpoint reads the endpoint under evaluation, and **fails rather than skips**
+// when there is not one — exactly as internal/e2e's live suite does now, and for the
+// same reason.
+//
+// `go test` prints nothing at all for a package whose tests skip: no reason, no count,
+// just `ok`. So a scored evaluation that skips on a missing endpoint is indis-
+// tinguishable from one that ran and passed, which is worse here than anywhere else in
+// the repository — the whole output of this file is a number somebody is going to
+// compare against last week's. Nothing automated pays for it: the `integration` tag
+// already keeps this file out of `go test ./...`, and no CI workflow passes the tag.
+// KENWARD_E2E_SKIP waives it for somebody running the tagged suite for other reasons.
 func evalEndpoint(t *testing.T) routing.Endpoint {
 	t.Helper()
 	base, model := os.Getenv("KENWARD_E2E_ENDPOINT"), os.Getenv("KENWARD_E2E_MODEL")
-	if base == "" || model == "" {
-		t.Skip("set KENWARD_E2E_ENDPOINT and KENWARD_E2E_MODEL to evaluate capture judgement against a real model")
+	if base != "" && model != "" {
+		return routing.Endpoint{Name: "eval", BaseURL: base, Model: model, Timeout: evalTimeout}
 	}
-	return routing.Endpoint{Name: "eval", BaseURL: base, Model: model, Timeout: evalTimeout}
+	if v := os.Getenv("KENWARD_E2E_SKIP"); v != "" {
+		t.Skipf("KENWARD_E2E_SKIP=%s: capture judgement was waived. No model was evaluated.", v)
+	}
+	t.Fatalf("capture judgement has no endpoint: set KENWARD_E2E_ENDPOINT (e.g. http://192.168.1.20:8000/v1) and KENWARD_E2E_MODEL (e.g. monster).\n" +
+		"This is a failure and not a skip on purpose — `go test` prints nothing for a package that skips, so skipping here reports `ok` having scored nothing. " +
+		"Set KENWARD_E2E_SKIP=1 to waive it deliberately.")
+	return routing.Endpoint{}
 }
 
 func evalRepeats(t *testing.T) int {

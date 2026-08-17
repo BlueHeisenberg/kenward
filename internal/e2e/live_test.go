@@ -29,12 +29,16 @@ package e2e
 //
 // Run it with:
 //
-//	KENWARD_E2E_ENDPOINT=http://localhost:11434/v1 \
-//	KENWARD_E2E_MODEL=qwen2.5:0.5b \
+//	KENWARD_E2E_ENDPOINT=http://192.168.1.20:8000/v1 \
+//	KENWARD_E2E_MODEL=monster \
 //	go test -tags integration -run TestLive -v ./internal/e2e/
 //
 // The store is not configured, because the suite creates its own and throws it
-// away again; see newLoreStore. Only the model endpoint is external.
+// away again; see newLoreStore. Only the model endpoint is external. KENWARD_LORE_BIN
+// names the `lore` binary if it is not on PATH.
+//
+// **Without an endpoint this fails; it does not skip.** See liveEnv for why, and for
+// the one way to waive it.
 
 import (
 	"bytes"
@@ -60,6 +64,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/session"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
@@ -71,9 +76,20 @@ import (
 // turn is two model round trips plus a button.
 const liveTimeout = 2 * time.Minute
 
+// The environment this suite reads, named once because the same two variables are
+// quoted in the failure below, in the file header and in docs/TESTING.md.
+const (
+	endpointEnv = "KENWARD_E2E_ENDPOINT"
+	modelEnv    = "KENWARD_E2E_MODEL"
+	loreBinEnv  = "KENWARD_LORE_BIN"
+	// liveSkipEnv is the only way to run this package's tagged tests without an
+	// endpoint. It has to be typed out, and that is the whole point of it.
+	liveSkipEnv = "KENWARD_E2E_SKIP"
+)
+
 // live gathers what this suite runs against: the endpoint and model come from the
-// environment, the store from newLoreStore. A missing endpoint or model skips, so
-// `go test ./...` and CI never reach a model.
+// environment, the store from newLoreStore. The build tag is what keeps `go test
+// ./...` and CI away from a model; nothing in CI passes `-tags integration` at all.
 type live struct {
 	loreBin  string
 	loreHome string
@@ -83,20 +99,43 @@ type live struct {
 	model    string
 }
 
+// liveEnv reads the endpoint under test, and **fails rather than skips** when there
+// is not one.
+//
+// This is the opposite of what the file used to do and the reversal is deliberate.
+// `go test` prints nothing at all for a package whose tests skip — no reason, no
+// count, just `ok` and a duration — so a live suite that skips on a missing endpoint
+// reports exactly what a live suite that passed reports, having reached no model, no
+// store and no wire. That is not a hypothetical: it is how two runs were believed on
+// the day this was written.
+//
+// Nothing automated pays for the change. The `integration` tag already keeps this file
+// out of `go test ./...`, and no CI workflow in this repository passes the tag, so the
+// only thing that can reach this line is a person who asked for it. Somebody running
+// the whole tagged suite for a different piece of equipment — the real-Podman test,
+// say — waives it with KENWARD_E2E_SKIP, which is loud in the other direction: they
+// have to have typed the words.
 func liveEnv(t *testing.T) live {
 	t.Helper()
 	l := live{
-		loreBin:  os.Getenv("KENWARD_LORE_BIN"),
-		endpoint: os.Getenv("KENWARD_E2E_ENDPOINT"),
-		model:    os.Getenv("KENWARD_E2E_MODEL"),
+		loreBin:  os.Getenv(loreBinEnv),
+		endpoint: os.Getenv(endpointEnv),
+		model:    os.Getenv(modelEnv),
 	}
 	if l.loreBin == "" {
 		l.loreBin = "lore"
 	}
-	if l.endpoint == "" || l.model == "" {
-		t.Skip("set KENWARD_E2E_ENDPOINT and KENWARD_E2E_MODEL; the lore store is created and destroyed by the test and needs no configuration")
+	if l.endpoint != "" && l.model != "" {
+		t.Logf("live suite: %s against %s (lore store created and destroyed by the test)", l.model, l.endpoint)
+		return l
 	}
-	return l
+	if v := os.Getenv(liveSkipEnv); v != "" {
+		t.Skipf("%s=%s: the live suite was waived. No model, no store and no wire were exercised by it.", liveSkipEnv, v)
+	}
+	t.Fatalf("the live suite has no endpoint: set %s (e.g. http://192.168.1.20:8000/v1) and %s (e.g. monster).\n"+
+		"This is a failure and not a skip on purpose — `go test` prints nothing for a package that skips, so skipping here reports `ok` having tested nothing. "+
+		"Set %s=1 to waive it deliberately.", endpointEnv, modelEnv, liveSkipEnv)
+	return live{}
 }
 
 // newLoreStore gives this run a lore store it owns outright: a fresh LORE_HOME
@@ -255,8 +294,15 @@ func touchedIn(calls []memCall) []domain.SpaceID {
 }
 
 // recordingProxy relays /chat/completions to the real endpoint, keeping a copy
-// of every request body. It is not a fake provider: it adds nothing and answers
-// nothing, so the completion the pool reads is the model's own.
+// of every request body and of every response body. It is not a fake provider: it
+// adds nothing and answers nothing, so the completion the pool reads is the model's
+// own.
+//
+// The response copy is what makes an assertion about rendering possible at all. What
+// the member reads is transport.Markdown applied to the model's text, and a test that
+// only sees the member's end cannot tell "the converter ran" from "the model happened
+// to write no Markdown this time" — which is the difference between an assertion and
+// a coin toss against a model nobody controls.
 type recordingProxy struct {
 	srv    *httptest.Server
 	target string
@@ -264,6 +310,7 @@ type recordingProxy struct {
 	mu       sync.Mutex
 	requests []wireRequest
 	raw      [][]byte
+	replies  [][]byte
 }
 
 func newRecordingProxy(t *testing.T, target string) *recordingProxy {
@@ -307,13 +354,50 @@ func (p *recordingProxy) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	// Buffered rather than streamed, which costs nothing here: kenward sets
+	// stream=false, so the whole completion arrives as one JSON document anyway.
+	answer, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	p.mu.Lock()
+	p.replies = append(p.replies, answer)
+	p.mu.Unlock()
+
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = w.Write(answer)
+}
+
+// lastReplyText is the assistant text of the most recent completion, exactly as the
+// endpoint wrote it and before anything in kenward has touched it.
+func (p *recordingProxy) lastReplyText(t *testing.T) string {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.replies) == 0 {
+		t.Fatalf("the endpoint returned no completions")
+	}
+	var body struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	raw := p.replies[len(p.replies)-1]
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decoding the endpoint's completion: %v\n%s", err, raw)
+	}
+	if len(body.Choices) == 0 {
+		t.Fatalf("the endpoint's completion has no choices:\n%s", raw)
+	}
+	return body.Choices[0].Message.Content
 }
 
 func (p *recordingProxy) all() []wireRequest {
@@ -454,6 +538,16 @@ func newLiveHarness(t *testing.T, l live, opts liveOptions) *liveHarness {
 		h.stop()
 		_ = tr.Close()
 		_ = client.Close()
+		// What the model actually said, but only when something went wrong. A failure
+		// here is nearly always the model having decided differently — no tool call, a
+		// call with invented arguments, an empty completion — and none of that is
+		// visible from the member's end, which is where every assertion in this file
+		// looks. Printing it unconditionally would bury the run in JSON.
+		if t.Failed() {
+			for i, raw := range proxy.replies {
+				t.Logf("completion %d from the endpoint:\n%s", i+1, raw)
+			}
+		}
 	})
 	return h
 }
@@ -490,14 +584,26 @@ func (h *liveHarness) sentTo(chatID int64) []transport.Outbound {
 // with the patience a real model and a real subprocess need.
 func waitForLive(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(liveTimeout)
+	if !waitUpTo(liveTimeout, cond) {
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// waitUpTo is waitForLive without the fatal, reporting whether cond held inside d.
+//
+// It exists for the one thing in this file that a real model decides and a fake never
+// did: whether a turn produces a tool call at all. "It did not" is a finding to print
+// with the completion that shows why, not a harness fault to die on — and dying on it
+// costs the full liveTimeout of nothing happening before anybody is told anything.
+func waitUpTo(d time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if cond() {
-			return
+			return true
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %s", what)
+	return cond()
 }
 
 func (h *liveHarness) waitForReply(chatID int64, n int) []transport.Outbound {
@@ -799,6 +905,212 @@ func TestLive(t *testing.T) {
 		}
 	})
 
+	// 3b. The household group answers when it is spoken to and listens the rest of
+	// the time.
+	//
+	// Telegram's bot privacy mode is off in a kenward household — with it on the bot
+	// receives nothing and ignores the family in silence — so every sentence the
+	// household says to each other arrives here, and internal/transport rebuilds the
+	// gate Telegram used to apply (addressedTo). The unit tests own the three wire
+	// shapes that set the flag; what only a live run can price is the other half of
+	// the claim: that an unaddressed message costs no completion. A gate that merely
+	// swallowed the reply would still have spent a model call, its latency and its
+	// electricity on every word of a family conversation, and the member would never
+	// see the difference.
+	//
+	// No sleep and no negative wait. The Fake delivers in order and a Unit runs one
+	// turn at a time, so the aside is finished with by the time the answer to the
+	// question exists — which makes "exactly one request" an assertion rather than a
+	// race.
+	t.Run("GroupAsideIsHeardAndNotAnswered", func(t *testing.T) {
+		const aside = "we said we'd replace the boiler in the spring, not now"
+		h := newLiveHarness(t, l, liveOptions{})
+		h.start()
+		// Built by hand rather than with InjectText, which sets Addressed: that
+		// field is the entire subject here.
+		h.tr.Inject(transport.Inbound{
+			ChatID: groupChatID, UserID: davidTelegramID, Text: aside,
+			MessageID: 1, IsGroup: true, At: time.Now().UTC(),
+		})
+		h.tr.InjectText(groupChatID, davidTelegramID,
+			"@kenward_bot what did we decide about the boiler? One short sentence.", true)
+		sent := h.waitForReply(groupChatID, 1)
+
+		if n := h.proxy.count(); n != 1 {
+			t.Errorf("the endpoint saw %d requests for one aside and one question, want 1: an unaddressed message must not cost a completion", n)
+		}
+		if len(sent) != 1 {
+			t.Errorf("the group chat got %d messages for one question: %q", len(sent), sent)
+		}
+		if n := len(h.tr.Asked()); n != 0 {
+			t.Errorf("the household was asked %d questions; nothing here proposed anything", n)
+		}
+		// Heard, though. The aside is the context the question needs, so it has to be
+		// in the ring when the question is assembled — and the ring is only
+		// interesting once the reply is gone, because a turn that answered the aside
+		// would put it in history as a side effect and prove nothing about listening.
+		var carried bool
+		for _, m := range h.proxy.last(t).Messages {
+			if strings.Contains(m.Content, aside) {
+				carried = true
+			}
+		}
+		if !carried {
+			t.Errorf("the overheard message never reached the prompt; the messages sent were %+v", h.proxy.last(t).Messages)
+		}
+		t.Logf("group reply: %q", sent[0].Text)
+	})
+
+	// 3c. A Spanish household reads Spanish and the model still reads English.
+	//
+	// The two halves are one rule (internal/lang's package comment): everything a
+	// member reads is translated, everything the model reads is not, because
+	// docs/PROMPT.md is checked against those strings verbatim and translating an
+	// instruction changes what is being asked rather than who is being told.
+	// TestNodeStringsAreNotInThePrompt asserts it over the strings; this asserts it
+	// over the bytes that left the process, with a real persona in a real
+	// configuration and a real conversation on top.
+	//
+	// The member's half is asserted where it is unambiguous — the refusal, in
+	// LocalOnlyChainRefuses, which is node text and not the model's. Here the model
+	// answers, so the reply is the model's own Spanish and says nothing about the
+	// catalogue.
+	t.Run("SpanishConversationSendsAnEnglishPrompt", func(t *testing.T) {
+		h := newLiveHarness(t, l, liveOptions{persona: config.PersonaConfig{Language: "Spanish"}})
+		h.start()
+		h.tr.InjectText(davidChatID, davidTelegramID, "¿Puedes recordarme algo sobre la casa?", false)
+		h.waitForReply(davidChatID, 1)
+
+		// The whole body, not just the system message: the tool descriptions and the
+		// schema descriptions ride there too, and they are the half a persona could
+		// most plausibly have been allowed to reach.
+		raw := h.proxy.rawAll()
+		body := raw[len(raw)-1]
+		es := lang.For(lang.Spanish)
+		// Strings from the member's catalogue, taken from the table rather than
+		// written out, so a retranslation moves this with it. Each is a sentence the
+		// node says to a person and has no business in a model's instructions.
+		for name, s := range map[string]string{
+			"ProposalNoDest":      es.ProposalNoDest,
+			"EnrolMemoryHeading":  es.EnrolMemoryHeading,
+			"TurnFailed":          es.TurnFailed,
+			"NoAnswer":            es.NoAnswer,
+			"PublishNoShared":     es.PublishNoShared,
+			"EnrolPrivateHeading": es.EnrolPrivateHeading,
+		} {
+			if bytes.Contains(body, []byte(s)) {
+				t.Errorf("the Spanish catalogue's %s reached the model: %q", name, s)
+			}
+		}
+		// And the English instructions are still there. These are asserted in the
+		// sibling test above as well; both are here because "no Spanish" and "the
+		// English is intact" fail differently — a prompt that lost its capture block
+		// entirely would satisfy the first.
+		system := h.proxy.last(t).System()
+		for _, want := range []string{
+			"This is a private conversation with David.",
+			"propose storing it by calling the remember tool",
+			"Language:\n  Spanish",
+		} {
+			if !strings.Contains(system, want) {
+				t.Errorf("the prompt is missing %q:\n%s", want, system)
+			}
+		}
+	})
+
+	// 3d. Cross-language retrieval, across a restart.
+	//
+	// A household that chose Spanish says something in Spanish; kenward stores it with
+	// an English title and body and the member's own words alongside, because lore's
+	// index is a conjunctive lexical match with no stemming and no translation and
+	// English is the one language every entry is guaranteed to hold. Forty seconds
+	// later the member asked for it in Spanish and was told it had never been said.
+	// internal/capture/xlang_test.go owns the write half against a real store; this
+	// owns the half that only a live run can show — that the words survive into a
+	// *later process* and are found by a real search from a real turn.
+	//
+	// The restart is the whole point of the second harness. A single harness would
+	// answer from the history ring, which still holds the sentence the member typed,
+	// and prove nothing about the store at all. A new Unit has an empty ring, so the
+	// only path from the member's Spanish question to the token is retrieval.
+	//
+	// The entry is seeded through `lore put` rather than through a turn, and the alias
+	// line is built by the same lang.Catalogue.AlsoKnownAs the capture engine calls,
+	// so this is the row capture writes and not an approximation of it. Going through
+	// the model would make this a test of whether a 27B emits a tool call today; it
+	// does not at the time of writing (see DictatedToolCallWritesToLore), and the
+	// subject here is retrieval.
+	t.Run("CrossLanguageRetrievalSurvivesARestart", func(t *testing.T) {
+		token := "4821" + stamp()
+		es := lang.For(lang.Spanish)
+		body := "The code for the garden gate is " + token + ".\n\n" +
+			es.AlsoKnownAs([]string{"código de la cancela del jardín"})
+		loreCLI(t, l, body,
+			"put", "-space", string(l.private), "-domain", "kenward/e2e",
+			"-title", "Garden gate code",
+			"-confidence", "validated", "-body-file", "-")
+
+		h := newLiveHarness(t, l, liveOptions{persona: config.PersonaConfig{Language: "Spanish"}})
+		h.start()
+		// Not one English word in the question, and the token is not in it either, so
+		// the only way it can reach the prompt is the alias line.
+		h.tr.InjectText(davidChatID, davidTelegramID, "¿Cuál es el código de la cancela del jardín?", false)
+		sent := h.waitForReply(davidChatID, 1)
+		t.Logf("reply: %q", sent[0].Text)
+
+		system := h.proxy.last(t).System()
+		if !strings.Contains(system, token) {
+			t.Errorf("a Spanish question did not retrieve the entry the member's own words are on; the system prompt was:\n%s", system)
+		}
+	})
+
+	// 3e. The model's Markdown reaches the member as Telegram HTML.
+	//
+	// 71add9f put every message into HTML and the prompt asks for plain prose, which
+	// took Markdown from six replies in a live run down to two. Two is not zero, so
+	// transport.Markdown renders the residue rather than showing it, and this is that
+	// converter on the real path with a real model's output going through it.
+	//
+	// The assertion is a property and not a wording, because the wording belongs to a
+	// model nobody here controls: whatever the model wrote, what the member reads is
+	// that text converted, and the recorded completion is the only place the "before"
+	// exists. The stronger claim — asterisks became <b> — is made only when the model
+	// actually wrote asterisks, and logged either way, because a test that failed
+	// because a model declined to use bold would be a test of the endpoint.
+	t.Run("ModelMarkdownReachesTheMemberAsHTML", func(t *testing.T) {
+		h := newLiveHarness(t, l, liveOptions{})
+		h.start()
+		h.tr.InjectText(davidChatID, davidTelegramID,
+			"Reply with exactly this and nothing else: The bins go out on **Thursday**.", false)
+		sent := h.waitForReply(davidChatID, 1)
+
+		model := h.proxy.lastReplyText(t)
+		t.Logf("the model wrote: %q\nthe member read: %q", model, sent[0].Text)
+
+		// The property. What a member reads is transport.Markdown over the model's
+		// text with its surrounding whitespace taken off (assistant.sanitizeReply),
+		// and the retrieval line may ride in front of that, so this is a containment
+		// of the converted text and not an equality with it. The 27B here opens every
+		// reply with two newlines, which is exactly the kind of detail a test written
+		// against a fake would never have met.
+		if want := transport.Markdown(strings.TrimSpace(model)); !strings.Contains(sent[0].Text, want) {
+			t.Errorf("the member did not read the converted reply:\n  read      %q\n  converted %q", sent[0].Text, want)
+		}
+		// The stronger claim, made only when the model actually wrote asterisks.
+		// Failing because a model declined to use bold would be a test of the
+		// endpoint; saying out loud that this run did not test it is the honest
+		// alternative to a green tick over nothing.
+		if !strings.Contains(model, "**") {
+			t.Skipf("the model wrote no Markdown this time, so the conversion itself is untested here: %q", model)
+		}
+		if !strings.Contains(sent[0].Text, "<b>") {
+			t.Errorf("the model wrote **bold** and the member did not get <b>: %q", sent[0].Text)
+		}
+		if strings.Contains(sent[0].Text, "**") {
+			t.Errorf("the member read the asterisks the model typed: %q", sent[0].Text)
+		}
+	})
+
 	// 4. The write path, end to end: a confirmed capture lands in a real store.
 	// The model really emits the tool call, the member really presses the button,
 	// and a separate `lore` process — not the client under test — is asked
@@ -834,21 +1146,73 @@ func TestLive(t *testing.T) {
 	// extractProposal now defaults an absent domain to "household/general", the
 	// same way it defaults confidence, so a real capture no longer depends on the
 	// member having named one.
-	t.Run("DictatedToolCallWritesToLore", func(t *testing.T) {
+	//
+	// **The message is no longer the dictation the paragraphs above describe, and the
+	// reason is a live finding rather than a preference.** It used to read "Call the
+	// remember tool now with title …, body …, domain … and target personal", and
+	// against the current prompt a 27B answers that with "Done." and no tool call at
+	// all. It is not a sampling accident: greedy, three runs, same answer, and the
+	// reasoning trace shows the model working out the arguments and then deciding not
+	// to emit the call. Deleting either "and not that you have proposed it either" or
+	// "Answer what was said, and leave the memory out of it." from captureText
+	// restores it immediately. A message *about the tool* collides with a paragraph
+	// telling the model not to talk about the tool, and the model resolves the
+	// collision by dropping the tool.
+	//
+	// So the member now asks the way a member asks, which is what the comment above
+	// always said no household would do. Measured against the same endpoint, "Remember
+	// this just for me: …", "My … is …. Save that." and "Remember in my private memory
+	// that …" each produce one well-formed remember call with target personal, every
+	// time. Nothing about what this scenario measures has moved: the assertions below
+	// are the same ones, on the same path, and the only thing the message no longer
+	// dictates is the name of a function.
+	//
+	// The token is still dictated into the text so that the entry can be found, and
+	// the title is not: the model writes it now, and a title this test invented would
+	// be one more thing the model has to be persuaded to copy.
+	//
+	// **This scenario is flaky against a real model, and the flake is the product.**
+	// Measured over five runs of exactly this message at temperature zero, four
+	// produced a well-formed remember call and one produced no call and this reply:
+	// "Got it — your boiler service code is marlowbrick609852900, and I've noted that
+	// the engineer wrote it with stars around it." Nothing was written. Zero
+	// temperature does not make it deterministic because the token differs each run,
+	// which is enough to move the decision.
+	//
+	// That is not a reason to soften the assertion, because it is not an assertion
+	// about wording: either lore has the row or it does not, and a member who asked
+	// for something to be remembered and was told "I've noted that" over an empty
+	// store has been lied to about their own memory. TestCaptureJudgement scores the
+	// same failure across thirty-nine samples; this one shows it on the whole path,
+	// with the store underneath, and prints the reply that did the lying.
+	t.Run("MemberAskedForAWriteAndLoreGotOne", func(t *testing.T) {
 		token := "marlowbrick" + stamp()
-		title := "Boiler service code " + token
-		body := "The boiler service code is " + token + "."
 
 		h := newLiveHarness(t, l, liveOptions{})
 		h.tr.AnswerWithChoice(capture.ChoicePersonal)
 		h.start()
 		h.tr.InjectText(davidChatID, davidTelegramID,
-			fmt.Sprintf("Call the remember tool now with title %q, body %q, domain \"household/logistics\" and target personal.", title, body), false)
+			fmt.Sprintf("Remember this just for me: my boiler service code is *%s* — the engineer wrote it with stars around it.", token), false)
 
-		waitForLive(t, "a capture question", func() bool { return len(h.tr.Asked()) > 0 })
-		// The wait is on the completed write, not on the recorded call: the call
-		// is recorded on the way in, so waiting for it races the store.
-		waitForLive(t, "a write completing against lore", func() bool { return len(h.mem.writes()) > 0 })
+		// The wait is on the completed write, not on the recorded call: the call is
+		// recorded on the way in, so waiting for it races the store. It is bounded
+		// well short of liveTimeout and it does not fatal, because "the model did not
+		// call the tool" is the interesting outcome here rather than a stuck harness,
+		// and a member who asked for something to be remembered will not wait two
+		// minutes to find out either.
+		if !waitUpTo(45*time.Second, func() bool { return len(h.mem.writes()) > 0 }) {
+			t.Errorf("the member asked for something to be remembered and nothing reached lore: %d remember calls, %d questions, %d messages.",
+				len(h.mem.recorded()), len(h.tr.Asked()), len(h.sentTo(davidChatID)))
+			// The reply, verbatim, because the failure that matters is not the
+			// missing write — it is what the member was told instead. A live 27B
+			// answers this turn with "Got it — …, and I've noted that …" and writes
+			// nothing, which is the sentence docs/PROMPT.md's capture block exists to
+			// prevent, arriving on the one path where the member actually asked.
+			for _, o := range h.sentTo(davidChatID) {
+				t.Errorf("  the member read: %q", o.Text)
+			}
+			return
+		}
 
 		for _, c := range h.mem.recorded() {
 			if c.Op == "put" && (len(c.Spaces) != 1 || c.Spaces[0] != l.private) {
@@ -885,23 +1249,99 @@ func TestLive(t *testing.T) {
 			t.Errorf("`lore get %s` does not report space %s (%q); got:\n%s", w.entry.ID, l.private, name, out)
 		}
 		t.Logf("independent `lore get %s`:\n%s", w.entry.ID, strings.TrimSpace(out))
+
+		// The token has to be in the row, or the entry is about something else and
+		// every assertion above it was about the wrong write.
+		if !strings.Contains(w.draft.Body+w.draft.Title, token) {
+			t.Errorf("the entry does not carry the member's own token %q: %+v", token, w.draft)
+		}
+
+		// What the member was shown is what was written, byte for byte, escaped and
+		// not parsed.
+		//
+		// This is the boundary transport.Markdown must never cross. It is applied to
+		// the model's reply and to nothing else; an entry body reaches a member
+		// through transport.Quote, which escapes and has no parser in it, so a body
+		// with a * in it is a body with a * in it. Asserting the whole quoted body
+		// rather than hunting for asterisks makes the assertion true of whatever the
+		// model happened to write — the body is model-written text carrying the
+		// member's words, and a test that needed it to contain a particular character
+		// would be a test of the endpoint.
+		shown, ok := h.tr.LastAsked()
+		if !ok {
+			t.Fatal("nothing was put to the member, so there is no announcement to check")
+		}
+		if !strings.Contains(shown.Text, transport.Quote(w.draft.Body)) {
+			t.Errorf("the member was not shown the body that was written:\n  written %q\n  shown   %s", w.draft.Body, shown.Text)
+		}
+		// The member's message puts asterisks in the sentence the model is about to
+		// write back, so the containment above is normally an assertion about them
+		// specifically: a quoted body still holding its * is a body no converter
+		// touched. It is not guaranteed — the model may paraphrase them away — so
+		// whether this run got to test it is said out loud rather than assumed.
+		if !strings.Contains(w.draft.Body, "*") {
+			t.Logf("this run's body carries no asterisk (%q), so the containment above proved escaping and not the Markdown boundary", w.draft.Body)
+		}
 	})
 
 	// 5. A local-only chain whose one machine is asleep refuses, in the member's
 	// chat, naming the tier and the endpoint. Nothing widens.
+	//
+	// The expected sentence is assembled here from the same catalogue the node
+	// assembles it from, and not written out. It used to be three literals with
+	// MarkdownV2 backticks in them — "`local`", "`attic`" — and 71add9f moved every
+	// message kenward sends into Telegram HTML, where the tier is transport.Code's
+	// <code>local</code>. The suite is behind a build tag, so nothing said so: the
+	// assertion had been failing against every live endpoint since that commit while
+	// the default run stayed green. A literal cannot survive the next parse-mode
+	// change either; a call to the function that produced the string fails only when
+	// the sentence itself changes, which is the thing worth being told about.
+	//
+	// Both languages, because the refusal is translated now (internal/lang). Asserting
+	// only the English one would leave the Spanish path — the one where a member most
+	// needs the sentence to arrive — covered by nothing here at all.
 	t.Run("LocalOnlyChainRefuses", func(t *testing.T) {
-		h := newLiveHarness(t, l, liveOptions{endpointDown: true})
-		h.start()
-		h.tr.InjectText(davidChatID, davidTelegramID, "is the heating on?", false)
-		sent := h.waitForReply(davidChatID, 1)
+		for _, tc := range []struct {
+			name    string
+			persona config.PersonaConfig
+			tag     string
+		}{
+			{"English", config.PersonaConfig{}, lang.English},
+			{"Spanish", config.PersonaConfig{Language: "Spanish"}, lang.Spanish},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				h := newLiveHarness(t, l, liveOptions{endpointDown: true, persona: tc.persona})
+				h.start()
+				h.tr.InjectText(davidChatID, davidTelegramID, "is the heating on?", false)
+				sent := h.waitForReply(davidChatID, 1)
 
-		for _, want := range []string{"`local`", "`attic`", "won't send it anywhere else"} {
-			if !strings.Contains(sent[0].Text, want) {
-				t.Errorf("refusal %q does not contain %q", sent[0].Text, want)
-			}
-		}
-		if n := h.proxy.count(); n != 0 {
-			t.Errorf("the real endpoint saw %d requests; a chain with no reachable machine must reach none", n)
+				// The chain is the one tier this household configures and the machine
+				// is the one endpoint in it; everything else comes out of the table.
+				cat := lang.For(tc.tag)
+				want := transport.GlyphProblem + " " + cat.RefusalAssembled(
+					cat.WhoseDirect,
+					cat.Chain([]string{"local"}),
+					cat.Tried([]string{"attic"}),
+					cat.TierWord(1),
+				)
+				if sent[0].Text != want {
+					t.Errorf("the refusal was\n  %q\nwant\n  %q", sent[0].Text, want)
+				}
+				// One thing the equality above cannot catch, because both sides of it
+				// come from the catalogue: that the tier and the machine reach the
+				// member as identifiers rather than as bare words. A table that went
+				// back to backticks would move the expectation along with the message
+				// and pass — which is how the original assertion came to be checking a
+				// parse mode kenward had stopped using.
+				for _, name := range []string{"local", "attic"} {
+					if !strings.Contains(sent[0].Text, transport.Code(name)) {
+						t.Errorf("%q does not reach the member as an identifier; the refusal was %q", name, sent[0].Text)
+					}
+				}
+				if n := h.proxy.count(); n != 0 {
+					t.Errorf("the real endpoint saw %d requests; a chain with no reachable machine must reach none", n)
+				}
+			})
 		}
 	})
 }
