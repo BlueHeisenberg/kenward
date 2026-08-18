@@ -37,19 +37,6 @@ const (
 	envFileMode    = 0o600
 )
 
-// DefaultLoreCommand locates the lore executable. It is written into a generated
-// *isolated* configuration rather than asked about, because there is no useful answer
-// an operator could give that they would not have to look up first.
-//
-// A simple-mode file does not get the key at all. Nothing there executes lore — the
-// store is opened in process — and a program name in a configuration file is read as a
-// program the household has to install.
-//
-// The value itself lives in internal/config, which also applies it as the default for
-// an isolated configuration that omits the key; the wizard writes the same argv out
-// explicitly so the generated file says what it is doing.
-var DefaultLoreCommand = config.DefaultLoreCommand()
-
 // configHeader is the first thing anybody opening kenward.yaml reads.
 const configHeader = `# kenward.yaml — written by ` + "`kenward setup`" + `.
 #
@@ -188,11 +175,8 @@ type endpointDoc struct {
 }
 
 type memoryDoc struct {
-	// Empty in simple mode, and omitted from the file entirely: see
-	// DefaultLoreCommand.
-	LoreCommand   []string `yaml:"lore_command,flow,omitempty"`
-	SearchLimit   int      `yaml:"search_limit"`
-	AnnounceReads *bool    `yaml:"announce_reads,omitempty"`
+	SearchLimit   int   `yaml:"search_limit"`
+	AnnounceReads *bool `yaml:"announce_reads,omitempty"`
 }
 
 // historyDoc is the conversation's own lifetime, written next to memory and
@@ -231,7 +215,6 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 		},
 		Telegram: telegramDoc{BotTokenEnv: cfg.Telegram.BotTokenEnv},
 		Memory: memoryDoc{
-			LoreCommand:   cfg.Memory.LoreCommand,
 			SearchLimit:   cfg.Memory.SearchLimit,
 			AnnounceReads: cfg.Memory.AnnounceReads,
 		},

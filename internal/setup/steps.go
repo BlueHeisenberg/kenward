@@ -785,6 +785,18 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 		w.agents = config.DefaultAgents
 	}
 	w.persona = a.Persona
+	// The other half of the identity question's refusal, and the one the CLI could not
+	// reach until `--agents` existed: an agent is a Telegram contact, simple mode runs
+	// one bot for the whole household, and two agents behind one contact are one agent.
+	// See identityNeedsIsolated, which is what the terminal wizard prints.
+	//
+	// config.Validate refuses this combination too, so the file could never have been
+	// written — but it is refused here, before any lore space is created, and with a
+	// message that does not begin by calling the operator's own answers a bug in setup.
+	if w.agents == config.AgentsPerMember && w.mode != config.ModeIsolated {
+		return fmt.Errorf("setup: one assistant each needs mode %q: an agent is a Telegram contact, %s mode runs one bot for the whole household, and two agents behind one contact are one agent",
+			config.ModeIsolated, w.mode)
+	}
 	w.household.GroupChatID = a.GroupChatID
 	// The same refusal the interactive question makes, for the same reason: under one
 	// agent each kenward lives only in the group chat, so a household with no group

@@ -147,13 +147,6 @@ there also creates their lore space and mints their code.</p>
 {{end}}
 
 <h2>Memory</h2>
-{{if eq $c.Mode "isolated"}}
-<label for="lore_command">Where the lore binary is <span class="hint">Every pod runs it as
-  <code>lore serve --lan</code>, which is what carries the household's shared memory
-  between pods. Nothing else on this page needs it: kenward opens its own store itself.
-  Comma separated argv.</span></label>
-<input type="text" id="lore_command" name="lore_command" value="{{join $c.Memory.LoreCommand ", "}}" class="mono">
-{{end}}
 <label for="search_limit">Entries retrieved per space per turn</label>
 <input type="number" id="search_limit" name="search_limit" value="{{$c.Memory.SearchLimit}}" min="0">
 <label for="max_proposals">Capture proposals per turn</label>

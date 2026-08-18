@@ -209,9 +209,6 @@ func applySettingsForm(cfg *config.Config, r *http.Request) error {
 	}
 
 	cfg.Memory.SearchLimit = atoi(r.PostFormValue("search_limit"), cfg.Memory.SearchLimit)
-	if v := splitList(r.PostFormValue("lore_command")); len(v) > 0 {
-		cfg.Memory.LoreCommand = v
-	}
 	// Assigned unconditionally, exactly like idle_timeout below and for the same
 	// reason: zero is a meaning here, so an empty box has to be able to turn the
 	// schedule off.

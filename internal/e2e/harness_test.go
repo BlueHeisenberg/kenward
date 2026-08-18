@@ -824,7 +824,7 @@ func configYAML(dataDir, localURL string, cloud *fakeProvider, opts harnessOptio
 		fmt.Fprintf(&b, "  - name: openrouter\n    base_url: '%s'\n    model: cloud-model\n    api_key_env: %s\n    tags: [cloud]\n    timeout: 30s\n",
 			cloud.baseURL(), cloudKeyEnv)
 	}
-	fmt.Fprintf(&b, "memory:\n  lore_command: [lore, mcp]\n  search_limit: 8\n")
+	fmt.Fprintf(&b, "memory:\n  search_limit: 8\n")
 	fmt.Fprintf(&b, "session:\n  idle_timeout: 30m\n")
 	fmt.Fprintf(&b, "capture:\n  max_proposals_per_turn: 1\n")
 	fmt.Fprintf(&b, "update:\n  channel: stable\n  check_interval: 6h\n")

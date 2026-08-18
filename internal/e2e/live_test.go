@@ -642,7 +642,7 @@ func liveConfigYAML(l live, dataDir, url string, opts liveOptions) string {
 	fmt.Fprintf(&b, "    telegram_id: %d\n", davidTelegramID)
 	fmt.Fprintf(&b, "    private_space: %s\n    tiers: [%s]\n", l.private, tiers)
 	fmt.Fprintf(&b, "endpoints:\n  - name: attic\n    base_url: '%s'\n    model: '%s'\n    tags: [local]\n    timeout: 120s\n", url, l.model)
-	fmt.Fprintf(&b, "memory:\n  lore_command: [%s, mcp]\n  search_limit: 8\n", l.loreBin)
+	fmt.Fprintf(&b, "memory:\n  search_limit: 8\n")
 	fmt.Fprintf(&b, "session:\n  idle_timeout: 30m\n")
 	fmt.Fprintf(&b, "capture:\n  max_proposals_per_turn: 1\n")
 	fmt.Fprintf(&b, "update:\n  channel: stable\n  check_interval: 6h\n")
