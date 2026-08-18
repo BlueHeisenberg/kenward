@@ -374,13 +374,10 @@ func doctorAccess(e *env, cfg *config.Config) []check {
 // lore not answering is a failure: without it there is no retrieval, no capture and
 // no enrolment history, and the node cannot do its job.
 //
-// A space lore does not hold is a failure too, and this check exists to make it one.
-// The probe asks through internal/memory, so it resolves the configured value exactly
-// the way every turn will — a space id against lore's own listing — and a value that
-// does not resolve is a value no read will ever succeed with. kenward never creates a
-// lore space, so there is nothing for such a household to wait for; this once said the
-// space would appear when the member claimed their invite, which was a green light for
-// a node that could not read its own memory.
+// A space lore does not hold is reported on every line it applies to. The probe asks
+// through internal/memory, so it resolves the configured value exactly the way every
+// turn will — a space id against lore's own listing — and a value that does not resolve
+// is a value no read will ever succeed with.
 //
 // The common cause is a display name configured where a space id belongs, and it hides
 // well: lore's own arguments are lenient enough that writes keep working, so a
@@ -388,6 +385,17 @@ func doctorAccess(e *env, cfg *config.Config) []check {
 // comes back. That is why this is worth catching at doctor time rather than at the
 // first Get. The explanation comes from internal/memory's own error rather than a
 // second copy of it written here.
+//
+// # Whether it changes the exit code is judgeMemory's, not this function's
+//
+// This command is the image's HEALTHCHECK, so its exit code is not a severity rating —
+// it is an instruction to a container runtime to restart the node. It used to exit 2 on
+// any missing space while `run` served through the same condition, which produced a node
+// that worked and a container marked unhealthy forever over something no restart could
+// fix (deploy/compose.simple.yml had exactly that flow). So the rule is now one rule:
+// unhealthy means "this node would refuse to start on this", and everything else is a
+// line on the report. judgeMemory decides, `run` obeys the same verdict, and neither can
+// drift from the other.
 func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.UnitScope, rep *doctorReport) []check {
 	res := e.probes.loreProbe()(ctx, cfg, scope)
 	if res.Err != nil {
@@ -405,7 +413,32 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 		}}
 	}
 
+	verdict := judgeMemory(cfg, scope, res)
+	// One verdict for the whole section. A store holding none of its spaces is not
+	// this household's store, and `run` refuses to serve on it; a store holding some
+	// of them is one mistyped id that `run` serves through. The symbols follow.
+	missingStatus := statusWarn
+	if verdict.Fatal {
+		missingStatus = statusFail
+		if rep.Exit == exitOK {
+			rep.Exit = exitUsage
+		}
+	}
+
 	checks := []check{{Status: statusOK, Text: "lore answers"}}
+	if verdict.Fatal {
+		checks = append(checks, check{
+			Status: statusFail,
+			Text:   "this store holds none of the spaces kenward.yaml names, so it is not this household's store",
+			Detail: []string{
+				"kenward will not serve on it: a node on the wrong store authorises its " +
+					"bot, greets everybody and then remembers nothing anyone says to it",
+				"the usual cause is LORE_HOME naming a different store from the one the " +
+					"setup wizard created these spaces in — a container handed a fresh " +
+					"volume, a service running as another user, or a store that was moved",
+			},
+		})
+	}
 	for _, s := range res.Spaces {
 		switch {
 		case s.Err == nil:
@@ -414,11 +447,6 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 				Text:   fmt.Sprintf("space %q reachable", s.Space),
 			})
 		case errors.Is(s.Err, memory.ErrUnknownSpace):
-			// A configuration fault rather than a runtime one: the file names a
-			// space this lore store does not hold, and only an edit fixes it.
-			if rep.Exit == exitOK {
-				rep.Exit = exitUsage
-			}
 			detail := []string{
 				s.Err.Error(),
 				"run `lore spaces` and configure the id column: kenward keys spaces on " +
@@ -429,19 +457,16 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 					"resolver falls back to a name lookup, and kenward never runs it",
 			}
 			// In a pod the likelier cause is not a mistyped id at all. Each pod has
-			// its own LORE_HOME and therefore its own lore account, so the household's
-			// shared space exists in whichever store created it and in no other until
-			// that store invites this one into it. Sending an operator to check the id
-			// column for that would be sending them to the wrong place.
-			if isPod(scope) && string(s.Space) == cfg.Household.SharedSpace {
-				detail = append(detail,
-					"this pod holds its own lore store, so the household's shared space is "+
-						"here only once this store has been invited into it: `lore space "+
-						"invite <space> --lan --yes` in the pod that created it, then `lore "+
-						"join <code> --yes` in this one (docs/IMPLEMENTATION.md §8)")
+			// its own LORE_HOME and therefore its own lore account, so no space this
+			// pod did not create is here until an operator puts it here. Sending them
+			// to check the id column for that would be sending them to the wrong
+			// place — and until this said so, only the shared space got a remedy,
+			// which left the one space isolated mode exists for with none at all.
+			if isPod(scope) {
+				detail = append(detail, podSpaceRemedy(cfg, s.Space))
 			}
 			checks = append(checks, check{
-				Status: statusFail,
+				Status: missingStatus,
 				Text:   fmt.Sprintf("space %q is not a space this lore store holds", s.Space),
 				Detail: detail,
 			})
@@ -458,6 +483,46 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 	}
 
 	return append(checks, doctorSharedMemory(ctx, e, cfg, scope, sharedSpaceHeld(cfg, res))...)
+}
+
+// podSpaceRemedy is how an operator puts a missing space into a pod's own store, and it
+// is a different answer for each of the two kinds.
+//
+// The household's SHARED space is one space held by several stores, so it is created
+// once and joined: `lore space invite` in the pod that has it, `lore join` in this one.
+//
+// A member's PRIVATE space crosses nothing and never should. It has to be created in
+// this pod and in no other place — a private space minted by a wizard on the host lives
+// in the host's store, which is precisely the store isolated mode promises a member's
+// memory is not in. Until this existed the invite/join hint was appended only to the
+// shared space's line, so the one space the mode exists for was reported missing with no
+// remedy offered at all.
+//
+// That an id has to be pasted back into kenward.yaml is lore's missing half, not a
+// design choice: CreateSpace mints an id rather than accepting one, so nothing can
+// create a space AT the id a wizard already wrote down. The day lore can, both of these
+// become the pod's own first-boot work and this function goes with them. See
+// deploy/compose.isolated.yml step 4c.
+func podSpaceRemedy(cfg *config.Config, space domain.SpaceID) string {
+	if string(space) == cfg.Household.SharedSpace {
+		return "this pod holds its own lore store, so the household's shared space is " +
+			"here only once this store has been invited into it: `lore space invite " +
+			"<space> --lan --yes` in the pod that created it, then `lore join <code> " +
+			"--yes` in this one (deploy/compose.isolated.yml step 4b)"
+	}
+	whose, name := "this member's", "private"
+	for _, m := range cfg.Members {
+		if m.PrivateSpace == string(space) {
+			whose, name = m.Name+"'s", m.ID
+			break
+		}
+	}
+	return fmt.Sprintf("%s private memory is shared with nothing, so it belongs in this "+
+		"pod's own store and in no other: `lore space create %s` in THIS pod, then put "+
+		"the id it prints into that member's private_space in kenward.yaml and restart "+
+		"the pod. Do not create it on the host or in another pod — a member's private "+
+		"space in somebody else's store is the one thing isolated mode promises there is "+
+		"not (deploy/compose.isolated.yml step 4c)", whose, name)
 }
 
 // sharedSpaceHeld reports whether this store actually holds the household's shared

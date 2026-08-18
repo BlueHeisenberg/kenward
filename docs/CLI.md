@@ -299,10 +299,24 @@ directory is not where anyone expects state to live.
 **It refuses to start unless memory actually answers.** Before anything is built, `run`
 creates this node's lore home if the machine has never had one, then opens the store and
 searches it once — the same check `doctor` performs, through the same seam, so the two
-cannot drift. A space the store does not hold is *not* a refusal: that is one space's
-problem and `doctor` reports it. The isolated **host supervisor** is exempt, because it
-starts pods and holds no memory client of its own; each pod asks the question of itself
-on its own way up.
+cannot drift. The isolated **host supervisor** is exempt, because it starts pods and
+holds no memory client of its own; each pod asks the question of itself on its own way
+up.
+
+**And it refuses a store that is not this household's.** "Does the store answer" stopped
+being a sufficient question the moment `run` began creating its own lore home: a store
+kenward minted a second ago answers perfectly and holds nothing. So a store holding
+**none** of the spaces this unit is configured for is a refusal, naming the spaces and
+the store. That is what a household whose memory has been moved, restored or handed a
+fresh container volume looks like, and serving on it is worse than not starting — the
+node authorises its bot, greets everybody and remembers nothing anyone says to it.
+
+A store holding **some** of them is not a refusal. That is one member's mistyped id, one
+conversation's problem; it is logged at startup and the household is served. The one unit
+allowed to hold none of its spaces is an **isolated pod**, because a pod is provisioned by
+an operator running `lore space create`, `lore space invite` and `lore join` *inside a
+running pod* — one that refused to start until its spaces existed could never be given
+them (`deploy/compose.isolated.yml`, steps 4b and 4c).
 
 **No lore binary is looked for, in any mode.** `run` used to check
 `memory.lore_command[0]` against `$PATH` and refuse without it, on the reasoning that
@@ -618,8 +632,17 @@ out about by messaging the bot:
 **Note the space lines.** Those are lore space ids, because that is what `shared_space`
 and `private_space` must hold — the wizard that made the spaces wrote them there, and
 nobody types one. A display name in that field writes successfully and fails on the first
-read, so `doctor` reports one as a configuration fault and exits 2 rather than passing
-it. The reasoning is in [IMPLEMENTATION.md](IMPLEMENTATION.md) section 4.
+read, so `doctor` reports it rather than passing it. The reasoning is in
+[IMPLEMENTATION.md](IMPLEMENTATION.md) section 4.
+
+Whether that line also changes the **exit code** is the same judgement `run` makes about
+whether to serve, and deliberately the same code (`judgeMemory`). One mistyped id among
+several is a `!` and exit 0, because `run` serves that household. A store holding none of
+its spaces is a `✗` and a non-zero exit, because `run` refuses it. This used to be exit 2
+either way, and the disagreement was the defect: `doctor` is the image's `HEALTHCHECK`, so
+a condition the node starts through and the health check fails on is a container marked
+unhealthy forever and restarted into the same state. Unhealthy has one meaning here —
+*kenward would refuse to start on this* — and everything else is a line on the report.
 
 An endpoint that does not answer is reported as a fact, not a failure, and the report
 says so where it happens:
@@ -684,10 +707,13 @@ The privacy block gains a second paragraph, from the same `internal/privacy` the
 one comes from, saying what the listener means. "Whoever runs the machine" stopped being
 the whole truth the moment a port could be open.
 
-`doctor` exits non-zero only on configuration faults, an unreachable lore, or a Telegram
-authorisation failure. This matters beyond tidiness: the container's `HEALTHCHECK` runs
-`doctor`, so treating a sleeping GPU box as unhealthy would put a perfectly good
-household into a restart loop.
+`doctor` exits non-zero only on configuration faults, an unreachable lore, a store that
+holds none of this unit's spaces, or a Telegram authorisation failure — which is exactly
+the list of things `run` refuses to start on, and that is the rule rather than a
+coincidence. This matters beyond tidiness: the container's `HEALTHCHECK` runs `doctor`,
+so treating a sleeping GPU box as unhealthy would put a perfectly good household into a
+restart loop, and so would failing on anything the node itself is content to serve
+through.
 
 It takes `--member ID` and `--group`, and reads `KENWARD_MEMBER` / `KENWARD_GROUP` when
 neither is given, exactly as `run` does — the container's `HEALTHCHECK` is a separate

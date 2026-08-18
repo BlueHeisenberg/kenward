@@ -75,8 +75,13 @@ host that could write into it could read it back — so there is no operator
 step, and you should not run `lore init` against those volumes by hand. **In
 simple mode it is still yours**: that `LORE_HOME` is the household's one
 store, not a member's, and it needs its spaces created and their ids written
-into `kenward.yaml` regardless. `compose.simple.yml`'s header gives the exact
-commands; `compose.isolated.yml`'s explains what its containers do instead.
+into `kenward.yaml` regardless. That is the wizard's job, and the one thing to
+get right is that it must run against **the same directory the container
+mounts** — nothing can create a space at an id chosen in another store, so a
+wizard pointed elsewhere leaves every id in the file naming nothing.
+`compose.simple.yml`'s header gives the exact commands; `compose.isolated.yml`'s
+explains what its containers do instead, and its step 4c covers the one space
+those containers cannot be given automatically.
 
 `compose.isolated.yml` additionally needs one file per member holding that
 member's outstanding claim codes: run `kenward invite --name NAME` on the host

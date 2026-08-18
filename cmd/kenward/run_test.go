@@ -291,21 +291,27 @@ func TestRunRefusesToServeWhenLoreDoesNotAnswer(t *testing.T) {
 
 // TestRunStartsWhenOnlyOneSpaceIsUnknown draws the other edge of the same check.
 //
-// A space lore does not hold is one space's problem and `doctor`'s to report. Refusing
-// the whole household its assistant over a mistyped space id would be a second and
-// larger outage than the silent one this check exists to prevent, so lore answering is
-// the whole of the question `run` asks.
+// A space lore does not hold is one space's problem. Refusing the whole household its
+// assistant over one member's mistyped space id would be a second and larger outage
+// than the silent one this check exists to prevent, so the household is served and the
+// missing space is said out loud on the way past.
+//
+// This test used to make EVERY space unknown and assert that the node served anyway,
+// which is the state the next test refuses. That was the assertion that locked in the
+// blocker: it read as "one space's problem" and encoded "no memory at all is fine".
 func TestRunStartsWhenOnlyOneSpaceIsUnknown(t *testing.T) {
 	t.Parallel()
-	// simpleYAML's spaces are ids, so the harness's healthy probe answers for them;
-	// this one refuses every space while lore itself answers.
+	const missing = "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19" // jordan's private space
 	h := newHarness(t, simpleYAML, fullEnvironment())
-	base := healthyProbes()
-	h.e.probes = base
+	h.e.probes = healthyProbes()
 	h.e.probes.lore = func(_ context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
 		var res loreResult
 		for _, s := range configuredSpaces(cfg, scope) {
-			res.Spaces = append(res.Spaces, spaceResult{Space: s, Err: unknownSpaceErr(s)})
+			r := spaceResult{Space: s}
+			if string(s) == missing {
+				r.Err = unknownSpaceErr(s)
+			}
+			res.Spaces = append(res.Spaces, r)
 		}
 		return res
 	}
@@ -315,8 +321,131 @@ func TestRunStartsWhenOnlyOneSpaceIsUnknown(t *testing.T) {
 		return stubSupervisor{}, nil
 	}
 	if code := h.run("run"); code != exitOK || !built {
-		t.Fatalf("exit = %d, supervisor built = %v; lore answered, so the household must be served\n%s",
+		t.Fatalf("exit = %d, supervisor built = %v; one missing space is one conversation's problem\n%s",
 			code, built, h.both())
+	}
+	// Served, but not silently. Nothing downstream fails on a space that is not there,
+	// so without this line the only trace is a `doctor` nobody was told to run — and
+	// `doctor` no longer exits non-zero for it, because `run` does not refuse it.
+	// The id alone is not enough to assert: the startup summary prints every space.
+	if !strings.Contains(h.stderr(), "does not hold one space kenward.yaml names: "+missing) {
+		t.Errorf("nothing was said about the space that is not there:\n%s", h.stderr())
+	}
+}
+
+// TestRunRefusesAStoreHoldingNoneOfItsSpaces is the release blocker, and it is the one
+// case the check above must not be read to cover.
+//
+// Once `run` began creating its own lore home, the old refusal — "does this store
+// answer" — stopped being able to fire for the commonest way a household loses its
+// memory. Move the store aside, leave an empty LORE_HOME, and kenward mints a fresh
+// account in it: the store answers perfectly, holds nothing, and the node starts,
+// authorises its bot, enrols a member and serves. `.e2e/fresh-install.sh` step 9 walks
+// exactly that and caught it.
+//
+// A store holding NONE of the configured spaces is not this household's store, whatever
+// else is true of it, and that is the discriminator. It is not "kenward created it just
+// now": an isolated pod's legitimate first boot is exactly that shape — see the sibling
+// test below — and a store restored from before the household existed is amnesia
+// without it.
+func TestRunRefusesAStoreHoldingNoneOfItsSpaces(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		created bool
+	}{
+		{"kenward made the store a moment ago, on an empty volume", true},
+		{"the store was already there and is the wrong one", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			vars := fullEnvironment()
+			dir := filepath.Join(t.TempDir(), "lore")
+			vars["LORE_HOME"] = dir
+
+			h := newHarness(t, simpleYAML, vars)
+			h.e.probes = healthyProbes()
+			h.e.probes.loreInit = func(context.Context, string, string) (bool, error) {
+				return tc.created, nil
+			}
+			h.e.probes.lore = func(_ context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
+				var res loreResult
+				for _, s := range configuredSpaces(cfg, scope) {
+					res.Spaces = append(res.Spaces, spaceResult{Space: s, Err: unknownSpaceErr(s)})
+				}
+				return res
+			}
+			built := false
+			h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+				built = true
+				return stubSupervisor{}, nil
+			}
+
+			if code := h.run("run"); code != exitFailure {
+				t.Fatalf("exit = %d, want %d; a node with no memory must not serve\n%s", code, exitFailure, h.both())
+			}
+			if built {
+				t.Error("the supervisor was built anyway; nothing may be served on a store that is not this household's")
+			}
+			// Which spaces, which store, and where to look. The store is the fact an
+			// operator acts on: it is nearly always LORE_HOME pointing elsewhere.
+			for _, want := range []string{
+				"dac31e70-72e4-4b10-9cef-a6276c4a87b8",
+				"7d5047bb-d939-4539-b3db-8b6221a2e245",
+				dir,
+				"LORE_HOME",
+			} {
+				if !strings.Contains(h.stderr(), want) {
+					t.Errorf("the refusal does not mention %q:\n%s", want, h.stderr())
+				}
+			}
+			// A store kenward made thirty milliseconds ago and a store that was
+			// already wrong send an operator to different places, so the message says
+			// which it was.
+			if got := strings.Contains(h.stderr(), "created it a moment ago"); got != tc.created {
+				t.Errorf("says the store was just created = %v, want %v:\n%s", got, tc.created, h.stderr())
+			}
+		})
+	}
+}
+
+// TestRunStartsAPodThatHasNotBeenProvisionedYet is the case the refusal above must not
+// catch, and it is why the discriminator cannot be "kenward created the store".
+//
+// A pod's first boot is legitimately a store kenward just made holding none of the
+// configured spaces. Every step that puts one there — `lore space create`, `lore space
+// invite`, `lore join` — is `docker compose exec` INSIDE a running pod, so a pod that
+// refused to start until its spaces existed could never be given them. It would not be
+// a stricter policy, it would be an unprovisionable mode.
+func TestRunStartsAPodThatHasNotBeenProvisionedYet(t *testing.T) {
+	t.Parallel()
+	for _, args := range [][]string{{"run", "--member", "david"}, {"run", "--group"}} {
+		t.Run(strings.Join(args[1:], " "), func(t *testing.T) {
+			t.Parallel()
+			vars := fullEnvironment()
+			vars["LORE_HOME"] = filepath.Join(t.TempDir(), "lore")
+
+			h := newHarness(t, isolatedYAML, vars)
+			h.e.probes = healthyProbes()
+			h.e.probes.loreInit = func(context.Context, string, string) (bool, error) { return true, nil }
+			h.e.probes.lore = func(_ context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
+				var res loreResult
+				for _, s := range configuredSpaces(cfg, scope) {
+					res.Spaces = append(res.Spaces, spaceResult{Space: s, Err: unknownSpaceErr(s)})
+				}
+				return res
+			}
+			built := false
+			h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+				built = true
+				return stubSupervisor{}, nil
+			}
+
+			if code := h.run(args...); code != exitOK || !built {
+				t.Fatalf("exit = %d, supervisor built = %v; a pod that cannot start cannot be provisioned\n%s",
+					code, built, h.both())
+			}
+		})
 	}
 }
 

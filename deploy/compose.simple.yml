@@ -8,22 +8,78 @@
 # compose.isolated.yml instead.
 #
 # Before running:
-#   1. Write kenward.yaml next to this file (mode: simple) — see
-#      docs/IMPLEMENTATION.md §4 for the schema. Do NOT commit it.
+#   1. Run a wizard to write kenward.yaml, AND POINT IT AT ./kenward-data, the
+#      directory this file mounts:
+#
+#        mkdir -p ./kenward-data
+#        LORE_HOME="$PWD/kenward-data/lore" \
+#          kenward setup --data-dir ./kenward-data      # or the dashboard wizard
+#
+#      Both values matter and the first one is the whole of this step. The
+#      wizard CREATES this household's lore spaces and writes their ids into
+#      kenward.yaml — `household.shared_space`, each member's `private_space` —
+#      and nothing anywhere can create a space at an id that was chosen
+#      elsewhere. So the store the wizard made them in has to be the store this
+#      container opens. Point it somewhere else and every id in the file names a
+#      space this container will never hold: see WHY IT IS NOT A NAMED VOLUME
+#      below, which is the bug this instruction exists to prevent.
+#
+#      The data directory is the same story with a shorter reason. Claim codes,
+#      wrapped keys and the dashboard's admin account also live there, so a
+#      wizard writing to one directory and a container reading another loses the
+#      first member's claim code and the admin password with it.
+#
 #   2. Create a `.env` file next to this compose file — also NOT committed,
 #      see deploy/README.md — defining KENWARD_BOT_TOKEN, KENWARD_PASSPHRASE,
 #      and one variable per `api_key_env` referenced by an endpoint in
 #      kenward.yaml.
 #
-# THERE IS NO THIRD STEP, AND THERE IS NO LORE BINARY IN THIS FILE.
+#   3. Give the directory to the container's user:
+#
+#        sudo chown -R 65532:65532 ./kenward-data
+#
+#      This image runs as the fixed non-root uid 65532 (see the Dockerfile), and
+#      the wizard above ran as you. Without this the container cannot write its
+#      own store and refuses to start. It is one command, once; everything the
+#      container writes afterwards is already that uid's. (Rootless podman maps
+#      the container's 65532 into your own subuid range instead — there,
+#      `podman unshare chown -R 65532:65532 ./kenward-data`.)
+#
+# THERE IS NO FOURTH STEP, AND THERE IS NO LORE BINARY IN THIS FILE.
 #
 # There used to be two more: bind-mount a `lore` built for this image's
 # architecture, then `docker compose run --entrypoint /usr/local/bin/lore` twice
 # to initialise the volume's store and create a space, then copy an id out of
 # `lore spaces` into kenward.yaml. All of it is gone. kenward opens its store in
-# this process through lore's Go API and creates it on the data volume the first
-# time the container starts, and the spaces kenward.yaml names were made by
-# whichever wizard wrote that file — `kenward setup` or the dashboard.
+# this process through lore's Go API and creates it the first time the container
+# starts, and the spaces kenward.yaml names were made by whichever wizard wrote
+# that file — `kenward setup` or the dashboard.
+#
+# WHY IT IS NOT A NAMED VOLUME, WHICH IS WHAT THIS FILE USED TO SAY.
+#
+# It said steps 1 and 2 and then "THERE IS NO THIRD STEP", and it mounted
+# `kenward-data:/var/lib/kenward` — a fresh named volume no host wizard has ever
+# touched — with LORE_HOME inside it. Following it exactly produced a container
+# that came up, created an empty store of its own, and held none of the spaces
+# in the kenward.yaml it had just been handed:
+#
+#   kenward   unhealthy   (FailingStreak 5, exit codes 2 2 2 2 2)
+#   ✓ lore answers
+#   ✗ space "a8d426cf-…" is not a space this lore store holds
+#
+# The claim that there was no third step was true of the LORE BINARY, which is
+# genuinely gone, and false of the STORE, which had quietly moved from something
+# the operator initialised by hand to something the container initialised for
+# itself — in the wrong place. Two directories, one of them empty, and nothing
+# saying which was which. A bind mount is what makes the wizard's store and the
+# container's store the same store, and it costs simple mode nothing that it had:
+# this mode's stated limitation is already that whoever runs the machine can read
+# anyone's private memory, so a directory beside the compose file gives away
+# exactly nothing that a named volume on the same host was keeping.
+#
+# (Isolated mode is the opposite case and keeps its per-pod NAMED volumes for
+# that reason — there, a member's store on a host path the operator can read
+# would defeat the mode. See compose.isolated.yml.)
 #
 # compose.isolated.yml has one operator step this file does not, and it is not a
 # binary to supply either — the image carries the lore CLI. It is the membership
@@ -49,8 +105,8 @@
 # kenward.yaml is not one container's — compose.isolated.yml in this directory
 # mounts the same file into three more. `Z` would relabel it to whichever
 # container was started last and the others would lose access. Nothing is given
-# away by that: this configuration names secrets and holds none. The named
-# volume needs nothing — the runtime labels that itself.
+# away by that: this configuration names secrets and holds none. ./kenward-data
+# carries `z` too, for the narrower reason in its own comment below.
 #
 # NO `env_file:` HERE either — do not add it back. Unlike compose.isolated.yml,
 # this is not a privacy boundary: Simple mode is one process behind one bot
@@ -123,11 +179,16 @@ services:
       KENWARD_PASSPHRASE: ${KENWARD_PASSPHRASE}
       # Where this container's lore store lives. kenward opens it in process, so
       # this is the store the household actually remembers into. It must be under
-      # the data volume below and it must be stated: unset, lore falls back to
+      # the data directory below and it must be stated: unset, lore falls back to
       # $HOME/.lore — /home/nonroot/.lore in this image — which is on the
       # read_only root filesystem, so the store cannot be created and kenward
       # refuses to serve rather than running on with no memory. Same variable and
       # same path as every service in compose.isolated.yml, for the same reason.
+      #
+      # /var/lib/kenward is ./kenward-data on the host, so this resolves to
+      # ./kenward-data/lore — the store step 1 told the wizard to create the
+      # household's spaces in. That is not a coincidence to be tidied away: the
+      # two have to be the same store or the ids in kenward.yaml name nothing.
       LORE_HOME: /var/lib/kenward/lore
       # Add one line here (and in .env) per api_key_env your endpoints
       # reference, e.g.:
@@ -135,7 +196,17 @@ services:
 
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
-      - kenward-data:/var/lib/kenward
+      # The household's whole state: the lore store, the wrapped keys, the
+      # outstanding claim codes, the dashboard's admin account. A HOST DIRECTORY
+      # and not a named volume, deliberately — see "WHY IT IS NOT A NAMED VOLUME"
+      # in the header. It is the directory step 1 pointed the wizard at, and
+      # step 3 chowned to 65532.
+      #
+      # `z` and not `Z` for the same reason kenward.yaml carries `z`: a
+      # `docker compose run` against this service would otherwise relabel the
+      # household's store to a throwaway container's categories and the running
+      # one would lose access to its own memory.
+      - ./kenward-data:/var/lib/kenward:z
       # No lore binary. Simple mode executes none; see the header.
 
     # Declared here as well as in the image, and it is not a duplicate: the
@@ -148,6 +219,15 @@ services:
     # does NOT probe any routing endpoint: a household GPU box is legitimately
     # switched off, and treating that as unhealthy restarts a healthy container
     # in a loop.
+    #
+    # UNHEALTHY MEANS "kenward would refuse to start on this", exactly, and that
+    # is the rule the whole exit code follows (cmd/kenward's judgeMemory, which
+    # `run` and `doctor` share). It has to: an unhealthy container gets
+    # restarted, so a condition the node happily starts through can only produce
+    # a loop that fixes nothing. A store holding NONE of the configured spaces —
+    # the state the old named volume produced — is unhealthy and `run` refuses
+    # it. One mistyped space id among several is a `!` line on the report and the
+    # household stays up.
     healthcheck:
       test: ["CMD", "/usr/local/bin/kenward", "doctor",
              "--config", "/etc/kenward/kenward.yaml",
@@ -167,6 +247,3 @@ services:
       - /tmp
     cap_drop:
       - ALL
-
-volumes:
-  kenward-data:

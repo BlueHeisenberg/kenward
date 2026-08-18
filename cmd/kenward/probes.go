@@ -87,6 +87,70 @@ type spaceResult struct {
 	Err error
 }
 
+// memoryVerdict is what a unit should do about the spaces its store does not hold.
+//
+// It exists so that `run` and `doctor` cannot disagree. They used to: startup treated
+// a missing space as one space's problem and served, while `doctor` exited 2 on it —
+// and `doctor` is the image's HEALTHCHECK, so the same condition produced a node that
+// ran happily and a container marked unhealthy forever, with a restart that could not
+// possibly fix it. One judgement, two callers, and the rule below is the whole of it.
+type memoryVerdict struct {
+	// Missing is every configured space this store does not hold, in probe order.
+	Missing []domain.SpaceID
+	// Fatal is whether this unit should refuse to serve. It is also what decides
+	// `doctor`'s exit code, which is the point: a health check is only meaningful if
+	// unhealthy means "this node would not start on this", because that is the only
+	// condition a restart can act on.
+	Fatal bool
+}
+
+// judgeMemory decides what a store holding some, none or all of its spaces means.
+//
+// # None of them is a different fault from one of them
+//
+// A store holding NONE of the spaces this unit is configured for is not this
+// household's store at all — a fresh volume, another user's home, a restore from before
+// the household existed. Serving on it is the silent amnesia checkLore's own doc comment
+// describes: the node starts, authorises its bot, greets a member and remembers nothing.
+// So it is fatal.
+//
+// A store holding some of them is one mistyped id, and one conversation's problem.
+// Refusing a whole household its assistant over one member's typo would be a second,
+// larger outage than the one being prevented, so it is reported and served through.
+//
+// # The isolated pod is the exception, and it is not an arbitrary one
+//
+// A pod legitimately holds none of its spaces before it is provisioned, and every step
+// that provisions one — `lore space create`, `lore space invite`, `lore join` — is run
+// with `docker compose exec` INSIDE a running pod. A pod that refused to start until its
+// spaces existed could never be given them, which makes the refusal not a stricter
+// policy but an unprovisionable mode. The residual is real and worth naming: a pod whose
+// volume is wiped after provisioning comes back looking exactly like a first boot, and
+// nothing inside the pod can tell the two apart. It closes the day lore can create a
+// space at a chosen id — see deploy/compose.isolated.yml step 4c.
+func judgeMemory(cfg *config.Config, scope config.UnitScope, res loreResult) memoryVerdict {
+	var v memoryVerdict
+	for _, s := range res.Spaces {
+		if s.Err != nil {
+			v.Missing = append(v.Missing, s.Space)
+		}
+	}
+	v.Fatal = len(res.Spaces) > 0 &&
+		len(v.Missing) == len(res.Spaces) &&
+		!provisionedByHand(cfg, scope)
+	return v
+}
+
+// provisionedByHand reports whether this unit's spaces arrive by an operator running
+// commands inside it, rather than from the wizard that wrote kenward.yaml.
+//
+// Both halves are checked. `run` refuses a unit selector in simple mode, but `doctor`
+// accepts one from anybody at a terminal, and a simple-mode household must not be
+// excused the refusal because somebody typed `--member david`.
+func provisionedByHand(cfg *config.Config, scope config.UnitScope) bool {
+	return cfg.Mode == config.ModeIsolated && isPod(scope)
+}
+
 // probeLore opens this machine's lore home and asks each configured space one
 // bounded question.
 //

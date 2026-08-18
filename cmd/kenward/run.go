@@ -13,6 +13,7 @@ import (
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/dashboard"
+	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
@@ -382,22 +383,43 @@ func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog
 // Demanding memory of the host as well would refuse every correctly-configured
 // isolated household on a machine whose lore lives only where it is actually used.
 //
-// Only memory failing to answer is fatal. A space the store does not hold is one
-// space's problem and `doctor`'s to report; refusing a household its assistant over a
-// mistyped space id would be a second, larger outage than the one being prevented.
+// # A store that answers is not the same as this household's store
+//
+// The check above asks whether lore answers. It used to be the whole of this function,
+// and once kenward began creating its own home (see initLoreHome) that stopped being
+// enough: a store kenward minted a moment ago answers perfectly and holds none of this
+// household's memory. The refusal above could no longer fire for the commonest way
+// memory goes missing — LORE_HOME pointing somewhere else — because there is no longer
+// an uninitialised home to fail on. So the second question is asked here, and it is
+// judged by judgeMemory, which `doctor` uses for its exit code too so that the two
+// cannot say different things about one store.
+//
+// A store holding NONE of the spaces this unit is configured for is not this
+// household's store, and that is fatal for exactly the reason at the top. A store
+// holding some of them is one mistyped id, which is warned about and served through:
+// refusing a household its assistant over one member's typo would be a second, larger
+// outage than the one being prevented.
+//
+// The one unit that is allowed to hold none of them is an isolated pod, because that
+// is what a pod looks like before it is provisioned and provisioning happens INSIDE a
+// running pod — `lore space create`, `lore space invite`, `lore join`, all of them
+// `docker compose exec` (deploy/compose.isolated.yml steps 4b and 4c). A pod that
+// refused to start until its spaces existed could never be given them.
 func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 	if cfg.Mode == config.ModeIsolated && !sel.single() {
 		return exitOK
 	}
 	// A fresh machine has no lore home, and a pod's own volume starts empty. Either
 	// way kenward makes its own; see initLoreHome.
-	if code := initLoreHome(e, cfg, sel); code != exitOK {
+	created, code := initLoreHome(e, cfg, sel)
+	if code != exitOK {
 		return code
 	}
 
 	ctx, cancel := context.WithTimeout(e.context(), loreHandshakeTimeout)
 	defer cancel()
-	if res := e.probes.loreProbe()(ctx, cfg, sel.scope()); res.Err != nil {
+	res := e.probes.loreProbe()(ctx, cfg, sel.scope())
+	if res.Err != nil {
 		e.errorf("this node's lore store did not answer: %v\n\n"+
 			"kenward will not start without memory. It opens the store in this process, so\n"+
 			"there is no server to check and nothing to install — what failed is the store\n"+
@@ -408,7 +430,71 @@ func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 			res.Err, memory.DefaultLoreHome())
 		return exitFailure
 	}
+
+	v := judgeMemory(cfg, sel.scope(), res)
+	switch {
+	case v.Fatal:
+		e.errorf("%s", wrongStoreRefusal(v.Missing, loreHomeFor(e), created))
+		return exitFailure
+	case len(v.Missing) > 0:
+		// Served, and said out loud. Nothing downstream fails on a space that is not
+		// there — the conversation using it simply stores nothing and retrieves
+		// nothing — so without this line the only trace is a `doctor` nobody was told
+		// to run.
+		e.errorf("this store does not hold %s: %s\n"+
+			"Those conversations will retrieve nothing and store nothing, and nothing else\n"+
+			"will report it. Everything else serves normally; `kenward doctor` has the detail.",
+			plural(len(v.Missing), "one space kenward.yaml names", "spaces kenward.yaml names"),
+			joinSpaces(v.Missing))
+	}
 	return exitOK
+}
+
+// wrongStoreRefusal is what a node says when it has memory that is not its own.
+//
+// It names the space ids and the store, and nothing else. Space ids are already in
+// kenward.yaml and in every `doctor` report; what is *in* a space is never this
+// message's to show.
+func wrongStoreRefusal(missing []domain.SpaceID, home string, created bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "this node's lore store holds none of the %d %s kenward.yaml names:\n\n",
+		len(missing), plural(len(missing), "space", "spaces"))
+	for _, s := range missing {
+		fmt.Fprintf(&b, "  %s\n", s)
+	}
+	fmt.Fprintf(&b, "\nThe store is %s", home)
+	if created {
+		b.WriteString(", and kenward created it a moment ago because there\nwas nothing there")
+	}
+	b.WriteString(". Either way it is not the store this household's memory was\n" +
+		"put into, and kenward will not serve on it. A node that starts on the wrong store\n" +
+		"authorises its bot, greets everybody and then remembers nothing anyone says to\n" +
+		"it, with no error anywhere — which is worse than a node that will not start.\n\n" +
+		"The usual cause is LORE_HOME naming a different store from the one the setup\n" +
+		"wizard created these spaces in: a container handed a fresh volume, a service\n" +
+		"running as another user, or a store that was moved or restored. Point LORE_HOME\n" +
+		"at the store that holds them — `lore spaces` lists what a store holds — or run\n" +
+		"`kenward setup` again against this one.")
+	return b.String()
+}
+
+// joinSpaces renders a space list for one line of prose.
+func joinSpaces(spaces []domain.SpaceID) string {
+	out := make([]string, 0, len(spaces))
+	for _, s := range spaces {
+		out = append(out, string(s))
+	}
+	return strings.Join(out, ", ")
+}
+
+// loreHomeFor is the store this unit actually opened, for a message that has to name
+// it. LORE_HOME through this process's own environment seam first, so that a test says
+// what a test set; lore's own default otherwise.
+func loreHomeFor(e *env) string {
+	if home := loreHomeDir(e); home != "" {
+		return home
+	}
+	return memory.DefaultLoreHome()
 }
 
 // loreHomeDir is the lore home this process will open.
@@ -490,13 +576,19 @@ const loreDeviceName = "kenward"
 // the file when the spaces were made, and nothing in lore can create a space *at a given
 // id*. Both wizards make them with lore.CreateSpace on the machine they run on, which
 // settles simple mode entirely; a self-initialised *pod* still comes up with a store that
-// answers and spaces that are not in it, which `kenward doctor` reports per space and
-// checkLore deliberately does not treat as fatal. That remaining gap is the one
-// deploy/compose.isolated.yml documents at length under "SHARED SPACE, AND IT IS NOT
-// SOLVED HERE", and it closes with `lore space invite` and `lore join`.
-func initLoreHome(e *env, cfg *config.Config, sel unitSelection) int {
+// answers and spaces that are not in it, which `kenward doctor` reports per space. That
+// remaining gap is the one deploy/compose.isolated.yml documents at length in steps 4b
+// and 4c, and it closes with `lore space create`, `lore space invite` and `lore join`.
+//
+// # created is load-bearing, not bookkeeping
+//
+// It is returned rather than only printed because checkLore puts it in a refusal. "This
+// store holds none of your spaces" and "this store holds none of your spaces and kenward
+// made it thirty milliseconds ago" send an operator to two different places, and the
+// second is by far the commoner one — a container handed a fresh volume.
+func initLoreHome(e *env, cfg *config.Config, sel unitSelection) (created bool, code int) {
 	if cfg.Mode == config.ModeIsolated && !sel.single() {
-		return exitOK // the host supervisor; it holds no memory of its own.
+		return false, exitOK // the host supervisor; it holds no memory of its own.
 	}
 	home := loreHomeDir(e)
 	if home == "" && cfg.Mode != config.ModeIsolated {
@@ -506,7 +598,7 @@ func initLoreHome(e *env, cfg *config.Config, sel unitSelection) int {
 	if home == "" {
 		// An isolated unit with no LORE_HOME, or a user with no home directory at
 		// all. Neither is a store this process may create; the handshake says so.
-		return exitOK
+		return false, exitOK
 	}
 
 	device := loreDeviceName
@@ -525,10 +617,10 @@ func initLoreHome(e *env, cfg *config.Config, sel unitSelection) int {
 			"one. In a pod it is the member's own work volume, which nothing outside the pod\n"+
 			"can reach, so there is no operator step to fall back on — fix what the error\n"+
 			"above says and restart.", home, err)
-		return exitFailure
+		return false, exitFailure
 	}
 	if !created {
-		return exitOK // a store was already here, and it is not this process's to touch.
+		return false, exitOK // a store was already here, and it is not this process's to touch.
 	}
 	// The account and device ids lore minted went nowhere, and the recovery code with
 	// them; see memory.InitHome. This line says what happened and nothing that is the
@@ -541,7 +633,7 @@ func initLoreHome(e *env, cfg *config.Config, sel unitSelection) int {
 		"and a personal space; the spaces kenward.yaml names are not in it and no lore can\n"+
 		"create a space at a chosen id — `kenward doctor` reports which ones are missing.\n",
 		home, who)
-	return exitOK
+	return true, exitOK
 }
 
 // loreInitTimeout bounds the one-off store creation above. It generates two key pairs and
