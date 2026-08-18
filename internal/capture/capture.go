@@ -44,6 +44,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/lang"
@@ -1094,7 +1095,35 @@ const maxSummaryRunes = 240
 // Empty in an English conversation, where the entry is already in the member's
 // language and a gloss could only repeat it — the same rule as withAliases, for the
 // same reason, and decided by the same field.
+//
+// Empty, too, when the summary restates the body rather than translating it. The gloss
+// does not merely read the entry back: Catalogue.EnglishGloss says, in the member's
+// language, that *the text above is kept in English*, and that is kenward's own
+// sentence rather than the model's. It is false whenever the model ignored the
+// instruction to write the entry in English and wrote it in the member's language
+// instead — and then the card carries a Spanish entry, a line claiming it is English,
+// and the same Spanish sentence again underneath.
+//
+// What is checked is the restatement and not the language, deliberately. Detecting the
+// entry's language would mean shipping a language detector to decide the wording of one
+// italic line, and a detector that is wrong in the other direction suppresses a gloss a
+// member needed to read. Restatement is the observable that is actually available here,
+// it needs no new machinery, and it is exactly coextensive with the case where the line
+// has nothing to offer: if the summary is the body, there is nothing to read back
+// whether or not the body is English, so the line is at best redundant and at worst the
+// lie above.
+//
+// The honest fix for the entry itself is not here. A body written in the wrong language
+// is the prompt's problem — docs/PROMPT.md asks for English in so many words, and
+// aliases exist so the entry stays findable — and this node cannot rewrite it. What it
+// can do is stop asserting something about it that it does not know.
 func (e *Engine) glossLine(summary string) string {
+	return e.gloss(summary, "")
+}
+
+// gloss is glossLine with the body it is a reading of. The empty body is the caller
+// that has none to compare against.
+func (e *Engine) gloss(summary, body string) string {
 	if e.english {
 		return ""
 	}
@@ -1102,7 +1131,33 @@ func (e *Engine) glossLine(summary string) string {
 	if summary == "" || len([]rune(summary)) > maxSummaryRunes {
 		return ""
 	}
+	if restates(summary, body) {
+		return ""
+	}
 	return "\n\n" + transport.Italic(e.cat.EnglishGloss(summary))
+}
+
+// restates reports whether the summary says nothing the body does not already say, in
+// the same words. Either containment counts: a model that writes the body in the
+// member's language usually writes the summary out as the same sentence, and a model
+// that trims a trailing clause off one of them produces a prefix of the other.
+//
+// Compared on lowercased letters and digits so that punctuation, casing and a trailing
+// full stop do not decide it. Both sides are model-written text on their way to a
+// member's screen, and this only ever removes a line, so a near miss costs a redundant
+// sentence rather than a lost one.
+func restates(summary, body string) bool {
+	s, b := foldForCompare(summary), foldForCompare(body)
+	if s == "" || b == "" {
+		return false
+	}
+	return strings.Contains(b, s) || strings.Contains(s, b)
+}
+
+func foldForCompare(s string) string {
+	return strings.ToLower(strings.Join(strings.FieldsFunc(s, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}), " "))
 }
 
 // dest is which memory a question is about, when it is about one at all. An unsure
@@ -1119,7 +1174,7 @@ func (e *Engine) proposalText(p Proposal, title string, d dest) string {
 	// Between the entry and the question, because it is a reading of the entry and
 	// the question is what it exists to make answerable. Italic, like every other
 	// line where the node speaks about the message rather than writing part of it.
-	b.WriteString(e.glossLine(p.Summary))
+	b.WriteString(e.gloss(p.Summary, p.Draft.Body))
 	b.WriteString("\n\n")
 	if d.known {
 		b.WriteString(e.cat.ProposalWithDest(d.private))
@@ -1157,7 +1212,7 @@ func (e *Engine) writtenText(p Proposal, title string, private bool) string {
 	// The announcement needs it as much as the question does, and arguably more: the
 	// entry is already written, and Undo is the only thing the member can do about
 	// wording they cannot read.
-	b.WriteString(e.glossLine(p.Summary))
+	b.WriteString(e.gloss(p.Summary, p.Draft.Body))
 	b.WriteString("\n\n")
 	b.WriteString(transport.Italic(e.cat.WrittenHint))
 	return b.String()

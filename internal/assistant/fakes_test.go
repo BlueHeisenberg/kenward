@@ -1,8 +1,10 @@
 package assistant
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -527,6 +529,7 @@ type testRig struct {
 	router    *fakeRouter
 	sessions  *fakeSessions
 	reminders *remind.Store
+	logs      *lockedBuffer
 }
 
 func testOptions() Options {
@@ -550,6 +553,11 @@ func newTestRig(resolve ResolveFunc, opts Options) (*testRig, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The log is captured rather than discarded because two of this package's
+	// promises are only ever kept in it: a dropped tool call is dropped with a line
+	// and no other trace, and that line has to say what actually happened to the
+	// call. See TestARepairedCallIsNotLoggedAsADrop.
+	logs := &lockedBuffer{}
 	unit, err := New(Deps{
 		Resolve:   resolve,
 		Memory:    mem,
@@ -558,11 +566,32 @@ func newTestRig(resolve ResolveFunc, opts Options) (*testRig, error) {
 		Sessions:  sessions,
 		Capture:   capture.New(mem, tr, capture.Options{}),
 		Reminders: reminders,
+		Logger:    slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}, opts)
 	if err != nil {
 		return nil, err
 	}
-	return &testRig{unit: unit, mem: mem, tr: tr, router: router, sessions: sessions, reminders: reminders}, nil
+	return &testRig{unit: unit, mem: mem, tr: tr, router: router, sessions: sessions, reminders: reminders, logs: logs}, nil
+}
+
+// lockedBuffer is an io.Writer a slog handler can share with a test goroutine. A turn's
+// deferred work runs on its own goroutine, so the race detector sees the write and the
+// read otherwise.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // testRemindOptions fixes the clock reminders are stated in, so a rendered prompt and

@@ -436,6 +436,64 @@ func TestNoGlossInAnEnglishConversation(t *testing.T) {
 	}
 }
 
+// TestTheGlossIsDroppedWhenItWouldBeFalse is kenward's own sentence, checked.
+//
+// EnglishGloss does not merely read the entry back. It says *the text above is kept in
+// English*, and that clause is the node speaking, not the model — it is what stops a
+// member believing the store now holds a Spanish entry, and it is the whole reason the
+// line is safe to build out of text nobody reviewed.
+//
+// It is false whenever the model ignored the instruction to write the entry in English
+// and wrote it in the member's language instead. Then the card carries a Spanish entry,
+// a line claiming it is English, and the same Spanish sentence again underneath: a
+// demonstrably false statement, made by kenward, directly under the words it is false
+// about. Seen live.
+//
+// What is checked is the restatement, not the language. A language detector to decide
+// the wording of one italic line is a large dependency for a small sentence, and one
+// that is wrong the other way suppresses a gloss a member needed. Restatement is
+// exactly coextensive with the case where the line has nothing to say: if the summary
+// is the body, there is nothing to read back whether or not the body is English.
+//
+// The entry itself is not fixed here and cannot be. A body in the wrong language is the
+// prompt's problem — docs/PROMPT.md asks for English in so many words — and this node
+// cannot rewrite it. What it can do is stop asserting something about it that it does
+// not know.
+func TestTheGlossIsDroppedWhenItWouldBeFalse(t *testing.T) {
+	e := New(nil, nil, Options{Language: "Spanish"})
+
+	const spanishBody = "El código de la cancela del jardín es 4821."
+	if got := e.gloss(spanishBody, spanishBody); got != "" {
+		t.Errorf("the card says the text above is kept in English and then restates it identically in Spanish: %q", got)
+	}
+	// The same sentence with the casing, spacing and punctuation a model varies freely.
+	// Accents are not folded — that needs a Unicode normalisation dependency to decide
+	// the wording of one italic line, and a model writing the summary out of the body
+	// it just wrote produces the same accents with it.
+	if got := e.gloss("  EL CÓDIGO DE LA CANCELA DEL JARDÍN ES 4821  ", spanishBody); got != "" {
+		t.Errorf("a restatement differing only in casing and spacing still earns the false claim: %q", got)
+	}
+	// A summary that is a trimmed clause of the body, which is the other shape the
+	// same failure arrives in.
+	if got := e.gloss("El código de la cancela del jardín es 4821", spanishBody+" Se cambia cada año."); got != "" {
+		t.Errorf("a summary contained whole in the body still earns the false claim: %q", got)
+	}
+
+	// And the case the line exists for is untouched: an English body, a Spanish
+	// reading of it, and the sentence saying which is which.
+	got := e.gloss(spanishBody, "The code for the garden gate is 4821.")
+	if !strings.Contains(got, "inglés") {
+		t.Errorf("the gloss went missing on the case it exists for — an English entry a Spanish member has to be able to read: %q", got)
+	}
+	if !strings.Contains(got, spanishBody) {
+		t.Errorf("the gloss no longer carries the member's-language reading: %q", got)
+	}
+	// A body the caller does not have is not evidence of anything, so the gloss stands.
+	if got := e.gloss(spanishBody, ""); !strings.Contains(got, "inglés") {
+		t.Errorf("a caller with no body to compare against lost its gloss: %q", got)
+	}
+}
+
 // TestAGlossThatIsNotOneLineIsDropped. Summary is model-written text put on a member's
 // screen, and a model asked for one line can return three paragraphs. Dropped rather
 // than trimmed: a truncated reading of an entry is a misleading one, and the English

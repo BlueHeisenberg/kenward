@@ -48,6 +48,14 @@ const rememberToolName = "remember"
 //
 // A model that emits markers anyway is not malformed, only ignored: unknown fields are
 // tolerated below, so the value is dropped with the rest of the decoration.
+//
+// target grew a description, and it was the only property besides confidence without
+// one. That is not why it grew one: a description alone is what summary had for as long
+// as summary went missing, and the fix there was the prose (see captureText). The
+// description is here because a required field explained nowhere is a field the reader
+// of this file cannot check either, and because the enum on its own says what the three
+// values are spelled like and nothing about what they mean. What actually teaches the
+// field is the capture block, which now names it in every scope.
 const rememberSchema = `{
   "type": "object",
   "required": ["title", "body", "domain", "summary", "target"],
@@ -58,7 +66,7 @@ const rememberSchema = `{
     "confidence": {"type": "string", "enum": ["experimental", "provisional", "validated", "hardened"]},
     "aliases":    {"type": "array", "items": {"type": "string"}, "description": "The member's own words for what this is about, in the language they are speaking, when that is not English."},
     "summary":    {"type": "string", "description": "One line, in the language the member is speaking, saying what the body says. It is shown to them so they can see what they are approving; it is not stored. Always write it: whether it is shown is decided for you, from the language this conversation is held in."},
-    "target":     {"type": "string", "enum": ["personal", "shared", "unsure"]}
+    "target":     {"type": "string", "enum": ["personal", "shared", "unsure"], "description": "Which memory this belongs in: personal for the member's own, shared for the household's, unsure only when you genuinely cannot tell. The capture instructions in this conversation say which of the three it allows. It is the one field that decides what becomes of the proposal rather than what it says."}
   }
 }`
 
@@ -348,14 +356,102 @@ func extractPublishTitle(calls []routing.ToolCall) (title string, warn string) {
 // may still improvise one, and raw JSON must never reach the member.
 var strayRememberBlock = regexp.MustCompile("(?s)```remember[ \t]*\r?\n(.*?)\r?\n?```")
 
-// sanitizeReply strips improvised remember blocks from the reply text. They are not
+// toolTagNames are the words models put in the delimiter when they write a tool call
+// into their reply text instead of emitting one on the tool channel.
+//
+// The fenced ```remember block above was the encoding kenward's own prompt once taught,
+// and it is the one encoding no model in the wild produces. What they produce is their
+// own chat template's: ChatML's <tool_call>, the pipe-fenced <|tool_call|> family, and
+// the <function_call>/<tool_use>/<invoke> spellings. A member was sent, verbatim, a
+// message consisting of a stray glyph, a complete remember call as JSON, and a closing
+// </tool_call> — nothing stored, nothing said, and the invariant three lines above
+// broken by an encoding the regexp never looked for.
+//
+// U+2581 appears in the list because DeepSeek's template spells the tag with it.
+const toolTagNames = `tool_call|tool_calls|tool▁call|tool▁calls|toolcall|tool_use|tool_response|function_call|function_calls|functioncall|invoke`
+
+// strayToolBlock matches an opening delimiter and everything through its closing one —
+// or to the end of the reply, because a call the token limit cut off mid-JSON leaves an
+// opening tag and a fragment, and the fragment is exactly what must not be sent.
+var strayToolBlock = regexp.MustCompile(`(?is)<\|?\s*(?:` + toolTagNames + `)(?:_begin)?\s*\|?>.*?(?:<\|?\s*/\s*(?:` + toolTagNames + `)(?:_end)?\s*\|?>|$)`)
+
+// strayToolTag matches one delimiter on its own, opening or closing. It runs after
+// strayToolBlock and catches the orphan: the live leak had no opening tag at all,
+// because the model's own parser had consumed it and left the closing one in the text.
+var strayToolTag = regexp.MustCompile(`(?i)<\|?\s*/?\s*(?:` + toolTagNames + `)(?:_begin|_end|_sep)?\s*/?\s*\|?>`)
+
+// stripToolJSON removes JSON objects that are a call to one of kenward's own tools,
+// wherever they sit in the reply — the live leak's JSON was bare, with only a closing
+// tag after it, so tag removal alone would have sent the member the whole call.
+//
+// It decodes rather than pattern-matches. Brace counting is wrong on the first body
+// containing a "}", and encoding/json already knows where an object ends; InputOffset
+// says where, so the object is cut out and the prose either side of it survives.
+//
+// What it deliberately does not strip is any other JSON. The object must name one of
+// the four tools kenward offers and carry an arguments member, so a reply quoting
+// {"name": "David"}, a config example, or a fenced block of somebody else's JSON goes
+// out untouched — the same discipline transport's Markdown converter keeps, where the
+// rule is to remove what kenward knows is machinery and never to guess at prose.
+// A member's text that is byte-for-byte a kenward tool call is stripped, and that is
+// the right way round: the invariant is that raw tool JSON never reaches a member, and
+// nothing downstream can tell the two apart.
+//
+// ponytail: a call truncated mid-JSON with no delimiter around it is not matched — the
+// decode fails and there is nothing left to distinguish the fragment from prose. The
+// tagged case is covered above, which is where truncation actually lands, since the
+// opening tag is emitted before the arguments are.
+func stripToolJSON(text string) (string, int) {
+	n := 0
+	for i := 0; i < len(text); {
+		j := strings.IndexByte(text[i:], '{')
+		if j < 0 {
+			break
+		}
+		start := i + j
+		dec := json.NewDecoder(strings.NewReader(text[start:]))
+		var call struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := dec.Decode(&call); err != nil || call.Arguments == nil || !knownTool(call.Name) {
+			i = start + 1
+			continue
+		}
+		text = text[:start] + text[start+int(dec.InputOffset()):]
+		n++
+		i = start
+	}
+	return text, n
+}
+
+// sanitizeReply strips tool calls a model wrote into its reply text. They are not
 // honoured as proposals — proposals travel as tool calls and nothing else — they are
 // only removed, with a warning for the log.
+//
+// Three passes, because the leak arrives in three pieces and any one of them can turn
+// up without the others: a delimited block, an orphan delimiter, and bare tool JSON.
 func sanitizeReply(text string) (reply string, warn string) {
 	if n := len(strayRememberBlock.FindAllStringIndex(text, -1)); n > 0 {
-		warn = fmt.Sprintf("model wrote %d remember block(s) in its reply text; stripped, not honoured", n)
+		warn = joinWarn(warn, fmt.Sprintf("model wrote %d remember block(s) in its reply text; stripped, not honoured", n))
 	}
-	return strings.TrimSpace(strayRememberBlock.ReplaceAllString(text, "")), warn
+	text = strayRememberBlock.ReplaceAllString(text, "")
+
+	if n := len(strayToolBlock.FindAllStringIndex(text, -1)); n > 0 {
+		warn = joinWarn(warn, fmt.Sprintf("model wrote %d tool-call block(s) in its reply text; stripped, not honoured", n))
+	}
+	text = strayToolBlock.ReplaceAllString(text, "")
+
+	if n := len(strayToolTag.FindAllStringIndex(text, -1)); n > 0 {
+		warn = joinWarn(warn, fmt.Sprintf("model left %d stray tool-call delimiter(s) in its reply text; stripped", n))
+	}
+	text = strayToolTag.ReplaceAllString(text, "")
+
+	text, n := stripToolJSON(text)
+	if n > 0 {
+		warn = joinWarn(warn, fmt.Sprintf("model wrote %d tool call(s) as raw JSON in its reply text; stripped, not honoured", n))
+	}
+	return strings.TrimSpace(text), warn
 }
 
 func joinWarn(a, b string) string {

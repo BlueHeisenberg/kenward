@@ -85,6 +85,7 @@ import (
 
 	"github.com/BlueHeisenberg/keel/llm"
 
+	"github.com/BlueHeisenberg/kenward/internal/capture"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/lang"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
@@ -350,6 +351,10 @@ func TestRequestedCapture(t *testing.T) {
 			case p != nil:
 				r.proposed++
 				r.titles = append(r.titles, p.Draft.Title)
+				if r.targets == nil {
+					r.targets = map[capture.Target]int{}
+				}
+				r.targets[p.Target]++
 			case warn != "":
 				r.malformed++
 			}
@@ -380,11 +385,12 @@ func TestRequestedCapture(t *testing.T) {
 		}
 		claimed = append(claimed, r.claimed...)
 		results = append(results, r)
-		t.Logf("%-34s asked for a write, called remember %d/%d  %s", c.name, r.proposed, r.samples, verdict(r))
+		t.Logf("%-34s asked for a write, called remember %d/%d  target %s  %s", c.name, r.proposed, r.samples, r.targetTally(), verdict(r))
 	}
 
 	var called, total, malformed, empty int
 	var bare, annotated, uncaught []string
+	targets := map[capture.Target]int{}
 	t.Logf("\n=== requested capture: %s @ %s, %d repeats ===", ep.Model, ep.BaseURL, repeats)
 	for _, r := range results {
 		called += r.proposed
@@ -394,9 +400,18 @@ func TestRequestedCapture(t *testing.T) {
 		bare = append(bare, r.bare...)
 		annotated = append(annotated, r.annotated...)
 		uncaught = append(uncaught, r.uncaught...)
+		for tgt, n := range r.targets {
+			targets[tgt] += n
+		}
 		t.Logf("  %5.0f%%  %-34s called=%d/%d", r.rate()*100, r.c.name, r.proposed, r.samples)
 	}
 	t.Logf("  called when asked             %d/%d  (%.0f%%)", called, total, pct(called, total))
+	// The destination the call named, over the calls that survived. See result.targets:
+	// a proposal that says nothing lands on unsure, and unsure is what switches the
+	// announce-with-Undo path off in a direct scope. A run with a high call rate and
+	// everything on unsure is a run where D-038 never happens.
+	t.Logf("  of those, target personal=%d shared=%d unsure=%d",
+		targets[capture.TargetPersonal], targets[capture.TargetShared], targets[capture.TargetUnsure])
 	t.Logf("  replies claiming a save       %d/%d", len(claimed), total)
 	// The second number, and the one the node can actually move: of the turns where
 	// the member asked and no call arrived, how many end with the member knowing
@@ -617,6 +632,22 @@ type result struct {
 	// correct decision with a useless title is still a bad capture, and the only
 	// way to see that is to look at them.
 	titles []string
+	// targets is the destination each surviving proposal named, counted by value.
+	//
+	// It is here because a rate of calls says nothing about the one field that
+	// decides what happens to the call. `target` is required by the schema and
+	// degrades to unsure when it is missing, and unsure is the value that turns the
+	// announce-with-Undo path off: capture.Engine.writesPrivateDirectly needs
+	// TargetPersonal, so a proposal the model declined to address is a proposal the
+	// member is asked about instead of shown. The turn still produces a card, so the
+	// call rate above is blind to it — a run can read 20/20 with the whole of D-038
+	// switched off underneath.
+	//
+	// Counted off extractProposal's own Target and not off the raw JSON, for the
+	// reason every other number in this file is production's: the question is what
+	// the node did with the call, and an omitted field and an unreadable one are the
+	// same thing to it.
+	targets map[capture.Target]int
 	// claimed are replies that said something had been saved. The tool call is a
 	// request and the model is never told what became of it, so any such sentence
 	// is false at the moment it is written — see claimsASave.
@@ -689,6 +720,16 @@ func hasMarkdown(text string) bool {
 	return strings.Contains(text, "**") || strings.Contains(text, "```")
 }
 
+// targetTally renders this case's destinations. Per case and not only in aggregate,
+// because the right answer differs by scope: a group case can only be shared, and only
+// a direct case can be personal — which is the one value announce-with-Undo needs. A
+// single total mixes the two and hides a direct scope that never names a destination
+// behind a group scope that always does.
+func (r result) targetTally() string {
+	return fmt.Sprintf("personal=%d shared=%d unsure=%d",
+		r.targets[capture.TargetPersonal], r.targets[capture.TargetShared], r.targets[capture.TargetUnsure])
+}
+
 func (r result) correct() int {
 	if r.c.want {
 		return r.proposed
@@ -741,6 +782,10 @@ func TestCaptureJudgement(t *testing.T) {
 			case p != nil:
 				r.proposed++
 				r.titles = append(r.titles, p.Draft.Title)
+				if r.targets == nil {
+					r.targets = map[capture.Target]int{}
+				}
+				r.targets[p.Target]++
 			case warn != "":
 				r.malformed++
 			}

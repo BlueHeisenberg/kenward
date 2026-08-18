@@ -654,7 +654,19 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 		// and never a write. That matters more than it did when every write waited
 		// on a button: a proposal this parser half-understood could otherwise be
 		// stored before the member sees any of it.
-		u.deps.Logger.Warn("assistant: remember call dropped", "reason", warn)
+		//
+		// Which of the two happened is what the line has to say, because
+		// extractProposal warns about repairs as well as drops: an unknown target
+		// degrades to unsure and the proposal survives, and so does an unknown tool
+		// called alongside a good remember. Logging both as "dropped" was this tree's
+		// own defect in its own logs — an operator reading `reason="unknown target
+		// \"\" treated as unsure"` next to the word dropped went looking for a card
+		// the member had in fact been shown.
+		msg := "assistant: remember call dropped"
+		if proposal != nil {
+			msg = "assistant: remember call repaired"
+		}
+		u.deps.Logger.Warn(msg, "reason", warn)
 	}
 	reply, warn := sanitizeReply(comp.Text)
 	if warn != "" {
@@ -703,10 +715,13 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// The model answers, always; this adds an accounting line under the answer when the
 	// answer would otherwise mislead.
 	//
-	// One rule, three shapes: a reply that says a save has *already happened* is a lie
-	// whatever prompted it, and a reply that merely acknowledges or promises one is a
-	// lie only when it is answering a request to keep something. So the first is
-	// checked unconditionally and the other two are gated on the member's own message.
+	// One rule, three shapes: a reply that says a save has *already happened*, in words
+	// that can only mean that, is a lie whatever prompted it; a reply that acknowledges
+	// or promises one, or claims one in words that double as an acknowledgement, is a
+	// lie only when it is answering a request to keep something. So the first is checked
+	// unconditionally and the rest are gated on the member's own message. Which half a
+	// word falls in is decided by whether BareAcknowledgements also holds it, and
+	// falseSave is where that is argued.
 	//
 	// The unconditional arm reads nothing but the reply. Chasing the shape of that
 	// sentence is what fails — the phrasing space is unbounded and the model varies it
@@ -948,15 +963,40 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 // reply: the answer is always sent, and the caller's only choice is whether to append
 // the notice under it.
 //
-// Three shapes and one rule: a reply is a lie about memory if it says a save has
-// already happened, and it is a lie only in context if it merely acknowledges or
-// promises one. So ClaimsASave runs unconditionally and the other two are gated on the
-// member having asked.
+// One rule, and the line it draws is about the words rather than about the shape of the
+// reply: a reply is a lie about memory whatever prompted it when it says a save happened
+// in words that can only be about a save, and it is a lie only in context when the words
+// it says it in are also how the language answers a person.
+//
+// The unconditional arm used to be the whole of ClaimsASave, and that was the defect the
+// gate on the bare arm had already been written for, left standing one arm over. Half of
+// SaveClaims is deliberately the same vocabulary as BareAcknowledgements — "saved",
+// "noted", "got it", "anotado" — because a language says those when it has kept
+// something and when it is merely answering. Matched whole they are safe; matched as
+// substrings, inside a reply that carries an answer, they are ordinary conversational
+// filler. "Mañana viene el fontanero a las nueve." → "Perfecto, anotado. El fontanero
+// vendrá mañana a las nueve." → a notice telling the member nothing had been recorded,
+// on a turn where they had asked for nothing to be. That is the reported defect, in the
+// commonest turn a household has, and it is the same one the bare arm was narrowed for.
+//
+// So ClaimsASaveUnmistakably runs unconditionally and the ambiguous remainder is gated,
+// which collapses what used to be three arms into two: the ambiguous claim and the
+// promise are false under exactly the same condition and are now tested together.
+//
+// The gate is not applied to the whole of ClaimsASave, and that is the part worth
+// arguing. A reply claiming a *completed* save is a stronger signal than a bare
+// acknowledgement, and gating it identically would lose the one catch nothing else
+// makes: a model that names the memory unprompted — "I've added that to your private
+// memory" — on a turn where the member asked for nothing. That sentence is a specific,
+// checkable false belief and it is worse than the vague kind, precisely because a member
+// told where something is will not go and look. It is also a breach of the prompt's
+// never-narrate rule whoever prompted it. Keeping the unambiguous half unconditional
+// costs nothing, because there is no turn on which "in your memory" is an
+// acknowledgement.
 //
 // The bare arm is checked first and does not fall through, which matters: "Noted!" is
 // both a bare acknowledgement and a save claim, and outside a save request it is
-// neither — it is a person being answered. Falling through to ClaimsASave would put the
-// notice back under it and undo the fix.
+// neither — it is a person being answered.
 //
 // The reasoning for each arm is in Unit.turn where the result is acted on. It is a
 // function of its own for one reason: judgement_eval_test.go scores live runs by how
@@ -967,10 +1007,10 @@ func falseSave(cat lang.Catalogue, ask, reply string) bool {
 	if cat.IsBareAcknowledgement(reply) {
 		return cat.AsksForASave(ask)
 	}
-	if cat.ClaimsASave(reply) {
+	if cat.ClaimsASaveUnmistakably(reply) {
 		return true
 	}
-	return cat.PromisesASave(reply) && cat.AsksForASave(ask)
+	return (cat.ClaimsASave(reply) || cat.PromisesASave(reply)) && cat.AsksForASave(ask)
 }
 
 // publishTarget resolves a publish request to an entry id using this turn's own
