@@ -120,6 +120,7 @@ func TestPromptTextMatchesPromptDoc(t *testing.T) {
 		{"directDisclosureText", directDisclosureText},
 		{"groupDisclosureText", groupDisclosureText},
 		{"householdDisclosureText", householdDisclosureText},
+		{"readerUnknownText", readerUnknownText},
 		{"confidenceText", confidenceText},
 		{"untrustedEntryNote", untrustedEntryNote},
 		{"captureText", captureText},
