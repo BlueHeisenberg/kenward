@@ -265,8 +265,12 @@ var french = Catalogue{
 	Withdrawn: "question retirée",
 
 	EnrolPrivateHeading: "Cette conversation est privée",
-	EnrolPrivateBody: "Cette conversation — juste toi et moi — est ta mémoire privée. Ce que tu me dis ici reste dans ton espace. " +
-		"Personne d'autre dans le foyer ne peut le lire, et je n'en parlerai pas dans le groupe.",
+	EnrolPrivateBody: "Cette conversation — juste toi et moi — est ta mémoire privée. Ce que tu me dis ici est rangé " +
+		"dans ton propre espace, et le groupe du foyer ne peut jamais le lire. Je n'en parlerai pas non plus là-bas.",
+	EnrolPrivateSealed: "Ce foyer tourne en mode isolé" + nbsp + ": ton assistant a son propre processus et sa propre clé. " +
+		"Personne d'autre dans le foyer ne peut lire ta mémoire privée, ni la personne qui fait tourner cette " +
+		"machine. La limite honnête" + nbsp + ": qui a un accès root à cette machine peut atteindre ta clé pendant que ton " +
+		"assistant tourne.",
 	EnrolGroupHeading: "La conversation de groupe est partagée",
 	EnrolGroupBody: "La conversation de groupe du foyer est la mémoire partagée. Tout ce que j'y retiens est visible par tout le monde. " +
 		"Rien ne passe d'un côté à l'autre tout seul" + nbsp + ": si quelque chose de privé doit devenir partagé, demande-le-moi, " +

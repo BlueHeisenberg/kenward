@@ -11,6 +11,7 @@ import (
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/lang"
+	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -67,6 +68,10 @@ type Tutorial struct {
 	// AskPrivate mirrors the Claimer's: capture.private_writes decides which promise
 	// the last message of the explanation makes.
 	AskPrivate bool
+	// Mode is the household's deployment topology, and it decides how strong a claim
+	// the first message of the explanation is allowed to make. Unset means unknown,
+	// which makes the weaker claim. See Explanation.
+	Mode privacy.Mode
 	// Timeout bounds the wait for each answer. Zero means DefaultTutorialTimeout.
 	Timeout time.Duration
 	// Nudge, if set, is handed the sentence to send a member who types while a button
@@ -184,7 +189,7 @@ func (t *Tutorial) Run(ctx context.Context) error {
 		_ = t.send(ctx, t.cur.abandoned)
 	}
 
-	for _, out := range Explanation(t.ChatID, lang.For(cmp.Or(p.Language, t.Household)), t.AskPrivate) {
+	for _, out := range Explanation(t.ChatID, lang.For(cmp.Or(p.Language, t.Household)), t.AskPrivate, t.Mode) {
 		if err := t.Asker.Send(ctx, out); err != nil {
 			// The member has part of the explanation and the rest is not coming.
 			// Explained stays false, so the next start finishes the job.
@@ -538,7 +543,7 @@ type keyboardRetirer interface {
 // language question, which is exactly the member this sweep exists for. Their
 // persona's language is empty because empty means "the household's", and reading it
 // as English would explain the memory model in a language nobody here asked for.
-func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, household string, askPrivate bool, log *slog.Logger) error {
+func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, household string, askPrivate bool, mode privacy.Mode, log *slog.Logger) error {
 	if a == nil || ps == nil {
 		return nil
 	}
@@ -575,7 +580,7 @@ func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, household 
 		// Said first, as Run says it: a member coming back to three messages of memory
 		// model is owed the reason the questions stopped.
 		msgs := append([]transport.Outbound{{ChatID: p.ChatID, Text: cur.abandoned}},
-			Explanation(p.ChatID, lang.For(spoken), askPrivate)...)
+			Explanation(p.ChatID, lang.For(spoken), askPrivate, mode)...)
 		for _, out := range msgs {
 			if err := a.Send(ctx, out); err != nil {
 				errs = append(errs, err)

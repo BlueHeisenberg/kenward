@@ -2,6 +2,7 @@ package enrol
 
 import (
 	"github.com/BlueHeisenberg/kenward/internal/lang"
+	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -60,13 +61,28 @@ func Greeting(chatID int64, member string, t text, questions int) transport.Outb
 // in two languages and this is written in ten. A member who asked for a language the
 // tutorial cannot hold still gets the part of onboarding the product is obliged to
 // deliver, in their own language.
-func Explanation(chatID int64, c lang.Catalogue, askPrivate bool) []transport.Outbound {
+//
+// mode decides whether the first message may make the sealed-memory claim, and it is
+// a privacy.Mode rather than a bool because that is the vocabulary every other
+// surface making this decision already speaks — the wizard, `kenward doctor`, the
+// dashboard and the supervisor all map their own mode onto this one. Its zero value
+// is ModeUnknown, which adds nothing: a caller that forgets to pass a mode understates
+// isolated mode, which is a disappointment, rather than overstating simple mode, which
+// is the lie this product may not tell. The claim can only get louder deliberately.
+func Explanation(chatID int64, c lang.Catalogue, askPrivate bool, mode privacy.Mode) []transport.Outbound {
 	third := c.EnrolMemoryBodyDefault
 	if askPrivate {
 		third = c.EnrolMemoryBodyAsk
 	}
+	first := transport.Bold(c.EnrolPrivateHeading) + "\n\n" + c.EnrolPrivateBody
+	if mode == privacy.ModeIsolated {
+		// A household that went to the trouble of sealing itself is owed the fact.
+		// Appended rather than substituted: the sentences above are true here too,
+		// and one text that both modes send is one text that cannot drift.
+		first += "\n\n" + c.EnrolPrivateSealed
+	}
 	texts := []string{
-		transport.Bold(c.EnrolPrivateHeading) + "\n\n" + c.EnrolPrivateBody,
+		first,
 		transport.Bold(c.EnrolGroupHeading) + "\n\n" + c.EnrolGroupBody,
 		transport.Bold(c.EnrolMemoryHeading) + "\n\n" + third,
 	}

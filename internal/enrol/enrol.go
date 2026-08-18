@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/domain"
+	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -275,6 +276,17 @@ func WithOneEach() Option {
 	return func(c *Claimer) { c.oneEach = true }
 }
 
+// WithPrivacyMode tells the onboarding which topology it is describing, so the first
+// message a member reads can make the sealed-memory claim where it is true and not
+// where it is not.
+//
+// Unset is privacy.ModeUnknown, which makes the claim that holds either way. That is
+// the correct default and not a placeholder: a caller that never learns the mode owes
+// the member the weaker sentence, not a guess.
+func WithPrivacyMode(m privacy.Mode) Option {
+	return func(c *Claimer) { c.mode = m }
+}
+
 // WithPersonas gives the Claimer somewhere to record what members choose in the
 // tutorial. Without it the tutorial still runs and nothing it collects survives the
 // conversation.
@@ -311,6 +323,7 @@ type Claimer struct {
 	askPrivate      bool
 	language        string
 	oneEach         bool
+	mode            privacy.Mode
 	personas        PersonaStore
 	tutorialTimeout time.Duration
 	logger          *slog.Logger
@@ -472,6 +485,7 @@ func (c *Claimer) Tutorial(a Asker, m domain.Member, chatID int64, answers <-cha
 		Household:  c.language,
 		OneEach:    c.oneEach,
 		AskPrivate: c.askPrivate,
+		Mode:       c.mode,
 		Timeout:    c.tutorialTimeout,
 		Logger:     c.logger,
 	}
@@ -481,7 +495,7 @@ func (c *Claimer) Tutorial(a Asker, m domain.Member, chatID int64, answers <-cha
 // before it. See the package-level function of the same name; this is it with the
 // household's settings already filled in.
 func (c *Claimer) FinishInterrupted(ctx context.Context, a Asker) error {
-	return FinishInterrupted(ctx, a, c.personas, c.language, c.askPrivate, c.logger)
+	return FinishInterrupted(ctx, a, c.personas, c.language, c.askPrivate, c.mode, c.logger)
 }
 
 // Revoke unbinds a member's Telegram id.

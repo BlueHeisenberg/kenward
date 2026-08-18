@@ -298,6 +298,10 @@ func newClaimer(cfg *config.Config, logger *slog.Logger) (*enrol.Claimer, error)
 		enrol.WithPersonas(enrol.BinderPersonas(binder)),
 		enrol.WithLogger(logger),
 		enrol.WithLanguage(cfg.Household.Persona.Language),
+		// The explanation's first message tells a member who can read what they say
+		// here, and that answer is the mode's. Sealing against the operator exists
+		// only in isolated mode, so only an isolated household is told about it.
+		enrol.WithPrivacyMode(privacyModeFor(cfg.Mode)),
 	}
 	if cfg.Capture.PrivateWrites == config.PrivateWriteAsk {
 		opts = append(opts, enrol.WithAskPrivateWrites())

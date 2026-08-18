@@ -38,7 +38,7 @@ func rendered(c Catalogue) []string {
 		c.BtnUndo, c.BtnPublishHousehold, c.BtnCancel, c.BtnSavePersonal,
 		c.BtnDontSave, c.BtnPersonal, c.BtnHousehold, c.BtnSaveHousehold,
 		c.Dash, c.Declined, c.Withdrawn,
-		c.EnrolPrivateHeading, c.EnrolPrivateBody, c.EnrolGroupHeading, c.EnrolGroupBody,
+		c.EnrolPrivateHeading, c.EnrolPrivateBody, c.EnrolPrivateSealed, c.EnrolGroupHeading, c.EnrolGroupBody,
 		c.EnrolMemoryHeading, c.EnrolMemoryBodyDefault, c.EnrolMemoryBodyAsk,
 		c.RefusalAssembled("W", "C", "T", "X"),
 		c.Chain([]string{"local", "cloud"}),

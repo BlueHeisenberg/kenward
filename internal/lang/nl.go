@@ -255,8 +255,13 @@ var dutch = Catalogue{
 	Withdrawn: "vraag ingetrokken",
 
 	EnrolPrivateHeading: "Dit gesprek is privé",
-	EnrolPrivateBody: "Dit gesprek — alleen jij en ik — is je persoonlijke geheugen. Wat je me hier vertelt blijft in jouw ruimte. " +
-		"Niemand anders in het huishouden kan het lezen, en ik breng het niet ter sprake in de groep.",
+	EnrolPrivateBody: "Dit gesprek — alleen jij en ik — is je persoonlijke geheugen. Wat je me hier vertelt wordt in je " +
+		"eigen ruimte bewaard, en de groep van het huishouden kan het nooit lezen. Ik breng het daar ook niet ter " +
+		"sprake.",
+	EnrolPrivateSealed: "Dit huishouden draait in geïsoleerde modus: je assistent heeft een eigen proces en een eigen " +
+		"sleutel. Niemand anders in het huishouden kan je persoonlijke geheugen lezen, en degene die deze computer " +
+		"beheert ook niet. De eerlijke grens: wie root-toegang tot deze machine heeft, kan bij je sleutel komen " +
+		"zolang je assistent draait.",
 	EnrolGroupHeading: "De groepschat is gedeeld",
 	EnrolGroupBody: "De groepschat van het huishouden is het gedeelde geheugen. Alles wat ik daar onthoud, kan iedereen zien. " +
 		"Er gaat niets vanzelf van de ene kant naar de andere: als iets persoonlijks gedeeld moet worden, vraag het me, " +

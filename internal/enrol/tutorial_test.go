@@ -11,6 +11,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/lang"
+	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/transport"
 )
 
@@ -395,7 +396,7 @@ func TestTutorialSurvivesARestartMidQuestion(t *testing.T) {
 
 	// Second run: a fresh process sweeps for onboardings that never finished.
 	second := &scriptedAsker{}
-	if err := FinishInterrupted(context.Background(), second, ps, LangSpanish, false, nil); err != nil {
+	if err := FinishInterrupted(context.Background(), second, ps, LangSpanish, false, privacy.ModeSimple, nil); err != nil {
 		t.Fatalf("FinishInterrupted: %v", err)
 	}
 	all := second.transcript()
@@ -416,7 +417,7 @@ func TestTutorialSurvivesARestartMidQuestion(t *testing.T) {
 
 	// And it is not sent twice.
 	third := &scriptedAsker{}
-	if err := FinishInterrupted(context.Background(), third, ps, LangSpanish, false, nil); err != nil {
+	if err := FinishInterrupted(context.Background(), third, ps, LangSpanish, false, privacy.ModeSimple, nil); err != nil {
 		t.Fatalf("FinishInterrupted (second sweep): %v", err)
 	}
 	if got := len(third.sentTexts()); got != 0 {
@@ -493,7 +494,7 @@ func TestRestartRetiresTheKeyboardItLeftOnScreen(t *testing.T) {
 	}
 
 	second := &retiringAsker{}
-	if err := FinishInterrupted(context.Background(), second, ps, LangEnglish, false, nil); err != nil {
+	if err := FinishInterrupted(context.Background(), second, ps, LangEnglish, false, privacy.ModeSimple, nil); err != nil {
 		t.Fatalf("FinishInterrupted: %v", err)
 	}
 	want := transport.Retired{ChatID: 500, MessageID: questionMsgID}
@@ -539,7 +540,7 @@ func TestTutorialKilledBeforeTheFirstAnswerIsStillExplainedTo(t *testing.T) {
 	}
 
 	second := &scriptedAsker{}
-	if err := FinishInterrupted(context.Background(), second, ps, LangSpanish, false, nil); err != nil {
+	if err := FinishInterrupted(context.Background(), second, ps, LangSpanish, false, privacy.ModeSimple, nil); err != nil {
 		t.Fatalf("FinishInterrupted: %v", err)
 	}
 	all := second.transcript()
@@ -560,7 +561,7 @@ func TestTutorialKilledBeforeTheFirstAnswerIsStillExplainedTo(t *testing.T) {
 
 	// Exactly once: a sweep that sent it again on every start would be its own defect.
 	third := &scriptedAsker{}
-	if err := FinishInterrupted(context.Background(), third, ps, LangSpanish, false, nil); err != nil {
+	if err := FinishInterrupted(context.Background(), third, ps, LangSpanish, false, privacy.ModeSimple, nil); err != nil {
 		t.Fatalf("FinishInterrupted (second sweep): %v", err)
 	}
 	if got := len(third.sentTexts()); got != 0 {
@@ -887,7 +888,7 @@ func TestExplanationCopyInEveryLanguage(t *testing.T) {
 		c := lang.For(tag)
 		for _, ask := range []bool{false, true} {
 			all := ""
-			for _, m := range Explanation(500, c, ask) {
+			for _, m := range Explanation(500, c, ask, privacy.ModeSimple) {
 				all += m.Text + "\n"
 			}
 			want, reject := c.EnrolMemoryBodyDefault, c.EnrolMemoryBodyAsk
