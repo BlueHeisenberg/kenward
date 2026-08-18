@@ -65,8 +65,9 @@ What you supply is a `lore` binary in the image (see below) and the space ids in
 hold the space ids you configured, and lore has no way to create a space at an id you
 chose. Closing that is one `lore space invite` on the store that owns the household space
 and one `lore join` in each other pod — an operator step by design, printed by `doctor` as
-remediation. The pods find each other without help: `kenward run` starts `lore serve --lan`
-in every isolated unit, so once they share a space they converge on it.
+remediation. The pods find each other without help: `kenward run` runs lore's sync daemon
+inside every isolated unit — in its own process, on the store it already opened — so once
+they share a space they converge on it.
 
 **At least one inference endpoint.** Anything OpenAI-compatible: vLLM, llama.cpp,
 Ollama, LM Studio, or a cloud provider. It does not need to be awake during setup —
@@ -167,8 +168,9 @@ and a unit that fails on install is a unit people learn to ignore.
 
 The unit supplies secrets as **systemd credentials** rather than environment variables,
 because an `EnvironmentFile=` value stays in the process's environment for as long as it
-runs, is readable through `/proc`, and is inherited by every child it spawns — including
-the `lore serve` subprocess, which has no business seeing a Telegram token. Put one file
+runs, is readable through `/proc`, and is inherited by every child it spawns. kenward
+spawns none, but a service manager's environment is still the wrong custody for a
+Telegram token. Put one file
 per secret under `/etc/kenward/credentials/` — `bot_token` for the household bot,
 `bot_token.<member id>` and `api_key.<endpoint name>` where they apply — and name each on
 a `LoadCredential=` line. kenward looks for exactly those names with no configuration at

@@ -141,11 +141,7 @@ type spaceResult struct {
 // anything about what is in it — the contents of anyone's memory are not this
 // command's to show.
 func probeLore(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
-	cmd := cfg.Memory.LoreCommand
-	if len(cmd) == 0 {
-		return loreResult{Err: errors.New("memory.lore_command is empty")}
-	}
-	client, err := memory.NewClient(memory.Config{Command: cmd[0]})
+	client, err := memory.NewClient(memory.Config{})
 	if err != nil {
 		return loreResult{Err: err}
 	}

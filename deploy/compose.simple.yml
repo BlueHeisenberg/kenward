@@ -16,8 +16,8 @@
 #      kenward.yaml.
 #   3. Supply a `lore` binary — see the note at the top of ../Dockerfile. The
 #      bind mount below assumes you've built or copied one to ./bin/lore on the
-#      host. kenward reaches the store as a library, not a subprocess; the
-#      binary is for `lore serve` and for the one-off commands in step 4.
+#      host. kenward never runs it: the store, the sync daemon and every read and
+#      write are library calls. The binary is for the one-off commands in step 4.
 #   4. Initialise that lore store ONCE, and create the spaces kenward.yaml
 #      names, against the same LORE_HOME the service below sets:
 #
@@ -63,7 +63,7 @@
 # in every variable that happens to sit in `.env` — including keys for
 # providers this household's kenward.yaml never references, or secrets left
 # over from something else sharing the file — and hands all of it to this
-# process, and to any `lore serve` it starts. Listing only the variables
+# process, and to anything an operator runs inside it. Listing only the variables
 # kenward.yaml actually names keeps that surface to what is in use.
 
 services:
@@ -105,8 +105,8 @@ services:
       # wrapping secret for everything under kenward-data, not a login.
       #
       # A file is better than this variable if you can manage one, because an
-      # environment variable is inherited by every child process kenward starts,
-      # `lore serve` included. Two ways to do that, and pick exactly one:
+      # environment variable is readable by every process in the container and
+      # visible in /proc. Two ways to do that, and pick exactly one:
       #
       #   1. kenward.yaml's own `session: passphrase_file: /run/secrets/…`,
       #      mounted read-only at 0600. Drop the line below and the

@@ -42,9 +42,12 @@
 #      shared space and holds no member's key.
 #   2. Create a `.env` file next to this compose file (NOT committed — see
 #      deploy/README.md) defining every bot token and provider key below.
-#   3. Supply a `lore` binary per service (see ../Dockerfile's note) — each
-#      service gets its OWN copy/mount, never a shared one, since sharing the
-#      binary is fine but sharing the *instance* (same LORE_HOME) is not.
+#   3. Supply a `lore` binary per service (see ../Dockerfile's note). kenward
+#      itself does not use it — the store, the daemon and every read and write
+#      are in-process Go calls — but the membership handshake in step 4b is run
+#      inside these containers and lore's API exposes no invite and no join.
+#      Each service gets its OWN copy/mount, never a shared one, since sharing
+#      the binary is fine but sharing the *instance* (same LORE_HOME) is not.
 #   4. Nothing to do: each service initialises its own lore store on first
 #      start, and you should NOT run `lore init` against these volumes by hand.
 #
@@ -77,9 +80,11 @@
 #      property this mode exists for.
 #
 #      Two things make it work, and kenward now supplies one of them. Inside
-#      every service, `kenward run` starts lore's sync daemon (`lore serve
-#      --lan`) for as long as the unit serves, so the pods find each other on the
-#      compose network and converge on whatever spaces they have in common. That
+#      every service, `kenward run` runs lore's sync daemon in its own process
+#      for as long as the unit serves — the same daemon `lore serve --lan` runs,
+#      on the store kenward already has open, started as a library call and not
+#      as a subprocess — so the pods find each other on the compose network and
+#      converge on whatever spaces they have in common. That
 #      is automatic and there is nothing to configure — no port, no peer list, no
 #      address, and deliberately none: a container's address changes every time
 #      it is recreated, so anything written down here would be stale by the first

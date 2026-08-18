@@ -194,7 +194,7 @@ func dashboardDeps(e *env, path, dataDir string, logger *slog.Logger) dashboard.
 		Now:        e.clock,
 		Logger:     logger,
 		Lore: func(ctx context.Context) (dashboard.SpaceClient, error) {
-			return openLoreClient(path, dataDir)
+			return memory.NewClient(memory.Config{})
 		},
 		MintInvite: func(ctx context.Context, cfg *config.Config, id domain.MemberID, name string, ttl time.Duration) (string, error) {
 			return mintClaimCode(ctx, e, cfg, id, name, ttl)
@@ -204,20 +204,6 @@ func dashboardDeps(e *env, path, dataDir string, logger *slog.Logger) dashboard.
 			return err
 		},
 	}
-}
-
-// openLoreClient builds a memory client from whatever the configuration says, falling
-// back to kenward's own default argv when there is no configuration yet — which is the
-// first run, where the spaces have to be created before a configuration can name them.
-func openLoreClient(path, dataDir string) (dashboard.SpaceClient, error) {
-	argv := config.DefaultLoreCommand()
-	if f, err := os.Open(path); err == nil {
-		defer f.Close()
-		if cfg, err := config.Decode(f); err == nil && len(cfg.Memory.LoreCommand) > 0 {
-			argv = cfg.Memory.LoreCommand
-		}
-	}
-	return memory.NewClient(memory.Config{Command: argv[0]})
 }
 
 // renderDashboardBanner is what the process prints on the way up.

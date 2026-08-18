@@ -284,10 +284,10 @@ per-OS state location. It is what the container image sets, since a container's 
 directory is not where anyone expects state to live.
 
 **It refuses to start unless lore actually answers.** Before anything is built, `run`
-looks for `memory.lore_command[0]` on `$PATH` — the binary is still needed, for the
-`lore serve` sync daemon — and then opens the store and searches it once, the same check
-`doctor` performs. Both halves are needed: a missing binary and an uninitialised
-`LORE_HOME` produce different failures and only the second stops memory working. A home
+opens the store and searches it once, the same check `doctor` performs. It no longer looks
+for a binary on `$PATH` first: there is no `lore` binary in kenward's path to memory any
+more — the store, the sync daemon and every read and write are library calls — so a
+refusal over an absent program would refuse a node that works. A home
 with no account in it cannot be opened, which is the state every fresh container volume
 is in, so the refusal names `lore init` as the remedy — though a pod started by the
 supervisor initialises its own home before reaching this point. A space
@@ -513,8 +513,8 @@ Memory
   ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
   ✓ space "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19" reachable
   ! this lore store does not sync on its own
-      run `lore serve` on the same LORE_HOME if this store should reach another
-      machine
+      isolated mode runs a sync daemon in each pod; a simple-mode node has one
+      store holding every space and nothing to converge with
   ✓ conversations keep their recent turns until the node restarts
     (history.reset_every is off)
 

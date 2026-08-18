@@ -418,9 +418,6 @@ func newHousehold(t *testing.T, r *rig, yaml string, vars map[string]string) *ho
 	// against real container creation times and real file modification times, so it
 	// has to be the real one.
 	h.e.now = time.Now
-	// And the real PATH: this process is about to be the isolated host supervisor,
-	// which is the one process that legitimately has no lore of its own.
-	h.e.lookPath = exec.LookPath
 	h.e.probes = probes{}
 
 	return &household{

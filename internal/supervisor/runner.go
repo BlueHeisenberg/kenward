@@ -303,12 +303,11 @@ func (r *runner) buildDeps() error {
 		r.owned = append(r.owned, t)
 	}
 	if r.rc.memory == nil {
-		cmd := r.cfg.Memory.LoreCommand
-		if len(cmd) == 0 {
-			return errors.New("supervisor: memory.lore_command is empty")
-		}
+		// No command and no argv: lore is a library here. In an isolated pod this
+		// branch is not taken at all — cmd/kenward opens the store before the
+		// supervisor exists, so that the sync daemon and the units share one
+		// handle on one home — and it injects the result.
 		c, err := memory.NewClient(memory.Config{
-			Command:  cmd[0],
 			LoreHome: r.rc.loreHome,
 			Logger:   r.logger,
 		})

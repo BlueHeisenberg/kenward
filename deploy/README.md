@@ -60,9 +60,10 @@ bind-mount in, built with `CGO_ENABLED=0` for the image's platform — see the
 Dockerfile's note on why it isn't baked into the image and why the static build
 is not optional — and its store has to be **initialised**, once per `LORE_HOME`.
 Supplying only the binary is not enough: a home with no account in it cannot be
-opened, and kenward refuses to serve without memory, checking both halves before
-it starts — the binary on `$PATH`, which `lore serve` needs, and then the store
-itself.
+opened, and kenward refuses to serve without memory, checking that before it
+starts. It does not check for the binary: nothing kenward does runs one. The
+binary is here for the one-off operator commands — `lore space invite`, `lore
+join` — that lore's Go API deliberately does not expose.
 
 Who does that initialising differs by mode, and the difference is not
 cosmetic. **In isolated mode each container does it for itself** on first

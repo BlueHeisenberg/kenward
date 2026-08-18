@@ -50,7 +50,7 @@ internal/domain/        core types. Depends on nothing.
 internal/config/        YAML load, defaults, validation
 internal/scope/         message -> Scope resolution. THE authorization boundary.
 internal/memory/        Memory interface + lore client (lore's Go API, in process)
-                        and the `lore serve` sync daemon isolated mode runs
+                        and the sync daemon isolated mode runs, also in process
 internal/lang/          the member-facing string catalogue, ten languages: every string
                         the node itself says in Telegram. The system prompt, the tool
                         descriptions and the JSON-schema descriptions stay English.
@@ -109,10 +109,10 @@ Node toolchain must never be needed to fix a form on it.
 
 `lore` is a direct Go import and not a protocol. `internal/memory` opens the store in
 process through lore's Go API; there is no MCP SDK in the module, no server to run and no
-handshake to fail. The one thing still spawned is `lore serve`, the sync daemon an
-isolated pod runs so its copy of the shared space reaches the other pods — see §12.
-`memory.lore_command` names that binary and nothing else, and only its first element is
-read, so a file written when kenward spawned `lore mcp` still loads.
+handshake to fail. Nothing is spawned at all: the sync daemon an isolated pod runs so its
+copy of the shared space reaches the other pods is `lore.(*Store).Serve`, in this process,
+on the store this process already opened — see §12. `memory.lore_command` is read by
+nothing in the running node any more; a file that still carries it loads unchanged.
 
 `lore` also brings a transitive SQLite (`modernc.org/sqlite`, pure Go) and the rest of
 the indirect block in `go.mod`. Pure Go is the load-bearing part: it is what keeps the
@@ -621,9 +621,9 @@ endpoints:
     max_completion_tokens: 8192   # defaults to 4096; must be < context_window
 
 memory:
-  # Only element zero is read: the `lore serve` sync daemon isolated mode spawns.
-  # kenward opens the store itself, in process, so a file still saying
-  # ["lore", "mcp"] loads unchanged and the trailing element is ignored.
+  # Read by nothing in the running node. kenward opens the store, initialises it,
+  # creates spaces and runs the sync daemon in process, so a file still saying
+  # ["lore", "mcp"] loads unchanged and the whole value is ignored.
   lore_command: ["lore"]
   search_limit: 8
   announce_reads: true        # prefix each reply with what was searched; default true
@@ -818,8 +818,9 @@ it is the wrong instrument in the two deployments that matter most. In a pod, th
 environment is readable by every process in the container and visible in `/proc`, and a
 member's pod holds that member's bot token — whoever holds a bot token reads every
 message ever sent to it. Under systemd, an `EnvironmentFile=` value sits in the
-process's environment for as long as it runs and is inherited by every child it spawns,
-including the `lore serve` subprocess, which has no business seeing a Telegram token.
+process's environment for as long as it runs and is inherited by every child it spawns —
+and kenward spawns none now, but the exposure was real while it spawned `lore serve`, and
+a service manager's environment is still the wrong place for a token.
 
 So a secret has three possible sources:
 
@@ -1858,10 +1859,11 @@ memory: opening the lore store at /home/nonroot/.lore: memory: lore store is una
 
 — which is the state every fresh container volume is in. Measured against a real
 container, the binary was on `$PATH`, the check passed, and the node started into exactly
-the silence the check exists to prevent. So `run` now does both: the PATH lookup, which
-still matters because `lore serve` is a real binary this deployment has to have, and then
-one bounded open-and-search through the same seam `doctor` probes with, so the two cannot
-drift. Its refusal names `lore init`.
+the silence the check exists to prevent. So `run` asks the question that actually
+settles it: one bounded open-and-search through the same seam `doctor` probes with, so the
+two cannot drift. Its refusal names `lore init`. The PATH lookup that used to sit in front
+of it is gone with the subprocess it was checking for — refusing to start over an absent
+binary would now refuse a node that works.
 
 Two lines are drawn deliberately. **Only lore failing to answer is fatal** — a space lore
 does not hold is one space's problem and `doctor`'s to report, and refusing a household
@@ -1961,16 +1963,26 @@ invite handshake, which gives it the space's row and its key. And a sync daemon:
 mcp` reads and writes the local store and never syncs, so `lore serve` is what carries an
 entry from one lore home to another. Nothing in kenward ran one.
 
-**kenward runs the daemon; membership stays the operator's.** `run` starts `lore serve
---lan` for the life of an isolated unit (`cmd/kenward`'s `startSyncDaemon`, over
-`internal/memory`'s `RunSyncDaemon`) and restarts it on a backoff if it exits. Both
-deployment paths get it identically and neither has anything to configure, because it
-lives inside the binary the image already runs — which is what D-022 asks of a change
-like this. `--lan` is required rather than a widening: `lore serve` binds and advertises
-on loopback only by default, and a pod's siblings are separate network namespaces on the
-container runtime's bridge. mDNS is left on so no address has to be written down
-anywhere; a pod's address changes on every recreation, so a static peer list would be
-stale by the first rolling update.
+**kenward runs the daemon; membership stays the operator's.** `run` runs lore's own sync
+daemon in this process for the life of an isolated unit — `lore.(*Store).Serve`, reached
+through `internal/memory`'s `Client.Serve` and started by `cmd/kenward`'s
+`startSyncDaemon`. It runs on the same `*lore.Store` the unit reads and writes through, so
+a pod holds one handle on its home and one daemon on it. Both deployment paths get it
+identically and neither has anything to configure, because it lives inside the binary the
+image already runs — which is what D-022 asks of a change like this. It was `lore serve`
+as a supervised subprocess until lore v0.5.0 exported `Serve`; with that gone, **nothing
+kenward does needs a `lore` binary any more**, in any mode. `LAN` is required rather than
+a widening: the daemon binds and advertises on loopback only by default, and a pod's
+siblings are separate network namespaces on the container runtime's bridge. mDNS is left
+on so no address has to be written down anywhere; a pod's address changes on every
+recreation, so a static peer list would be stale by the first rolling update.
+
+There is no restart loop around it and that is deliberate. `Serve` returns nil on a clean
+shutdown and returns only *startup* errors — a listener that will not bind, an identity
+that will not load, a read-only or closed store — none of which a retry mends; per-round
+and per-peer failures go to the logger instead, at `warn`. The backoff that used to be
+here existed to babysit a process that could exit for a hundred reasons, and there is no
+longer a process to babysit.
 
 Membership is provisioned out of band, and that is a decision rather than an omission.
 (`lore init` is not beside it: a pod initialises its own store, per the previous section.
@@ -2898,9 +2910,9 @@ design and several of them contradict what the architecture originally supposed.
   `CreateSpace` refuses a name another space already holds (`ErrSpaceExists`) rather than
   returning the existing one: this id becomes a member's private space, and a
   get-or-create is how one member's memory becomes another's.
-- **The only remaining subprocess is `lore serve`.** It is a supervised long-running
-  daemon rather than a call, so it stays a process. `memory.lore_command` exists to
-  locate that binary and nothing else, and only its first element is read.
+- **There is no remaining subprocess.** `lore serve` was the last one; lore v0.5.0 runs
+  the same daemon in the embedder's process, on the embedder's store, and that is what
+  kenward calls. `memory.lore_command` is now read by nothing in the running node.
 - **Private memory must be a `shared`-kind space with two members.** lore's `personal`
   space never crosses accounts, so a node could not read it. This is what the
   architecture already specified, now confirmed as the only workable option rather than
@@ -2919,15 +2931,20 @@ design and several of them contradict what the architecture originally supposed.
 
   Convergence is lore's own sharing, and it has two halves. **Membership is still out of
   band**: `lore space invite` and `lore join` are run by the operator, and nothing in
-  kenward calls either. **The daemon is not** — `internal/memory/sync.go` supervises
-  `lore serve --lan` and `cmd/kenward/run.go`'s `startSyncDaemon` starts one, so an
-  isolated pod's copy of the shared space reaches the other pods without anybody keeping
-  a process alive by hand. It runs in isolated mode only, in a member or group pod only,
-  and there is no config key to turn it on: `mode: isolated` is the switch, and
-  `memory.lore_command` only says where the binary is. Failure is logged and retried with
-  backoff and never stops the node, because a household whose sync daemon will not start
-  still has a working assistant and working private memory. `memory.ReadSyncStatus` reads
-  the daemon's own admin endpoint and `kenward doctor` reports it.
+  kenward calls either — they are the last thing in this story that wants the `lore`
+  command, and it is a person's step. **The daemon is not** — `internal/memory/sync.go`
+  runs lore's daemon in kenward's own process, on the store the unit already has open,
+  and `cmd/kenward/run.go`'s `startSyncDaemon` starts one, so an isolated pod's copy of
+  the shared space reaches the other pods without anybody keeping a process alive by
+  hand. It runs in isolated mode only, in a member or group pod only, and there is no
+  config key to turn it on: `mode: isolated` is the switch. A simple-mode node still gets
+  none, and now that it costs no process that is a decision rather than an inheritance: a
+  household with one lore home holding every space has nobody to converge with, and a
+  daemon would advertise its store on the LAN for no gain. Failure is logged and never
+  stops the node — a household whose sync daemon will not start still has a working
+  assistant and working private memory — and it is not retried, because the only errors
+  that reach it are startup errors no retry mends. `memory.ReadSyncStatus` reads the
+  daemon's own admin endpoint and `kenward doctor` reports it.
 
   Private spaces are unaffected by any of this: they have two members, the person and the
   node, and both live in the same pod.
@@ -2935,7 +2952,7 @@ design and several of them contradict what the architecture originally supposed.
   It is not a CRDT: the losing version is discarded silently, with no conflict record.
   A machine with a fast clock wins every conflict. Household clocks should be synced,
   and nothing in kenward may assume a write it made is still there.
-- **Opening a store does not sync it.** Syncing requires a separate `lore serve`; a
+- **Opening a store does not sync it.** Syncing requires the sync daemon running; a
   write pokes it immediately (`lore.Options.NotifyOnWrite`, which kenward sets) so the
   entry leaves the machine now rather than at the daemon's next poll, thirty seconds by
   default. Losing that poke is silent — entries just arrive late, intermittently. Any
@@ -2986,7 +3003,7 @@ design and several of them contradict what the architecture originally supposed.
   free-form strings** — the familiar vocabulary is convention only, so kenward must not
   validate against it.
 - lore's SQLite runs WAL with a single connection and a 5s busy timeout, so concurrent
-  calls contend — `lore serve` and any `lore` command an operator runs open the same
+  calls contend — the sync daemon and any `lore` command an operator runs open the same
   file. lore retries a contended call itself and reports `ErrBusy` when its budget is
   exhausted, so kenward's own retry loop and backoff are gone. Every method on a
   `*lore.Store` is safe to call from any number of goroutines, which is the whole

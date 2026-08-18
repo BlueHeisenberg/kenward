@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	fyne.io/systray v1.12.2
 	github.com/BlueHeisenberg/keel v0.5.6
-	github.com/BlueHeisenberg/lore v0.4.0
+	github.com/BlueHeisenberg/lore v0.5.0
 	github.com/go-telegram/bot v1.23.0
 	github.com/godbus/dbus/v5 v5.1.0
 	golang.org/x/sys v0.47.0
@@ -13,14 +13,19 @@ require (
 )
 
 require (
+	github.com/BlueHeisenberg/agentmesh v0.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/libp2p/zeroconf/v2 v2.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/miekg/dns v1.1.72 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/exp v0.0.0-20250408133849-7e4ce0ab07d0 // indirect
+	golang.org/x/mod v0.33.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect
 	modernc.org/libc v1.65.10 // indirect

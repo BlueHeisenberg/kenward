@@ -44,6 +44,13 @@ func singleUnitOptions(e *env, cfg *config.Config, opts runOptions, logger *slog
 		Logger:    logger,
 		LookupEnv: e.env(),
 		Now:       e.now,
+		// The store cmdRun already opened, and the one lore's sync daemon is
+		// running on. Injected rather than left for the supervisor to open, so the
+		// pod holds a single handle on its home: two daemons on one home flap the
+		// advertised port and fight over daemon.json, and the way to have two is to
+		// let two different stores each start one. Nil in a test that supplies its
+		// own memory seam, and nil is what makes NewSingle open one.
+		Memory: opts.memory,
 	}
 
 	if !sel.group {

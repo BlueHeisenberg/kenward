@@ -6,24 +6,35 @@
 # copy just that binary onto a distroless base that carries nothing else.
 #
 # ---------------------------------------------------------------------------
-# IMPORTANT — lore is NOT in this image.
+# lore is NOT in this image, and kenward does not need it to be.
 #
-# kenward imports lore and opens its store in-process, so it does not need the
-# binary to read or write memory. It needs it for one thing: `lore serve`, the
-# sync daemon, which is what carries a household's shared memory between pods
-# and between machines (kenward.yaml: memory.lore_command, default ["lore"]).
-# Without a `lore` binary on $PATH inside the container, an isolated pod's
-# shared memory reaches nobody. This image
-# deliberately does not bundle it — lore is a sibling project with its own
-# release cadence, and baking a copy in here would pin kenward to whatever
-# lore version happened to be current at image build time.
+# kenward imports lore and calls it. The store is opened in-process, a fresh
+# home is initialised with lore.Init, spaces are made with Store.CreateSpace,
+# and since lore v0.5.0 the sync daemon — the thing that carries a household's
+# shared memory between pods and between machines — runs in kenward's own
+# process too, on the store it already has open (internal/memory/sync.go). There
+# is no mode in which this binary executes a `lore` command, and `kenward run`
+# no longer refuses to start over one being absent. Measured: an isolated
+# household of containers converges its shared space with no lore binary
+# anywhere inside them.
 #
-# Operators supply it one of two ways:
+# The one thing still wanting the command is not kenward's to do. Two lore homes
+# exchange a space only when both hold its id and its key, and the only thing
+# that grants that is the invite handshake — `lore space invite` on one side,
+# `lore join` on the other. lore's Go API exposes neither, deliberately: who may
+# read a household's memory is a person's decision. So an operator provisioning
+# membership needs a `lore` binary reachable inside the pod, once per household
+# and once per member, and never again:
+#
 #   1. Bind-mount a `lore` binary built for this image's OS/arch to
 #      /usr/local/bin/lore (read-only). See deploy/compose.simple.yml and
-#      deploy/compose.isolated.yml for the exact volume line.
-#   2. Build a derived image: `FROM ghcr.io/blueheisenberg/kenward:<tag>` and
-#      `COPY` a `lore` binary to /usr/local/bin/lore.
+#      deploy/compose.isolated.yml for the exact volume line and §4b for the
+#      commands.
+#   2. Or build a derived image: `FROM ghcr.io/blueheisenberg/kenward:<tag>` and
+#      `COPY` a `lore` binary to /usr/local/bin/lore. This is the only route open
+#      to a pod started by `kenward run` in isolated mode, which has no
+#      bind-mount to offer; pass the derived image with --image.
+#
 # Either way the binary must match this image's platform (linux/amd64 or
 # linux/arm64) AND be statically linked:
 #
@@ -39,14 +50,8 @@
 # naming a file that is plainly there. Measured, both ways: default build ->
 # dynamically linked -> that error; CGO_ENABLED=0 -> static -> works.
 #
-# Remedy 1 is not available to a pod started by `kenward run` in isolated mode:
-# keel's sandbox.Spec has no host bind-mount, so the host supervisor has nothing
-# to mount with, and remedy 2 with `--image` is the only route there. Since the
-# default for --image is this image, which has no lore, a supervisor-started
-# household needs a derived image or it has no memory. `kenward run` refuses to
-# start a unit whose memory.lore_command is not on PATH rather than serving one
-# that quietly records nothing — see docs/IMPLEMENTATION.md §8, "How a
-# supervisor-started pod gets lore".
+# A household that never shares a space needs none of this. Private memory is one
+# store in one pod and has never touched the binary.
 # ---------------------------------------------------------------------------
 
 # ---- builder ----
@@ -110,13 +115,13 @@ ENV KENWARD_CONFIG=/etc/kenward/kenward.yaml
 ENV KENWARD_DATA_DIR=/var/lib/kenward
 
 # Session keys, enrolment claim-code state, and (when the operator points
-# memory.lore_command's LORE_HOME here) lore's own on-disk store all live
+# LORE_HOME here) lore's own on-disk store all live
 # under the data directory. Bind-mount or name-volume this in production —
 # an ephemeral data dir means claim codes and lore's data disappear on
 # container recreation.
 VOLUME ["/var/lib/kenward"]
 
-# Health = process up, config loads, lore MCP responds, Telegram authorises.
+# Health = process up, config loads, the lore store answers, Telegram authorises.
 # Deliberately does NOT probe any routing endpoint tier: household machines
 # are legitimately powered off, and treating that as unhealthy would restart
 # a perfectly healthy container in a loop (see docs/IMPLEMENTATION.md §9).

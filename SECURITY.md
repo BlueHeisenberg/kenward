@@ -77,8 +77,10 @@ kenward's. It is why isolated mode gives each member their own token.
 
 **A secret supplied as an environment variable is visible to the whole process tree.**
 It sits in the environment for the life of the process, is readable through `/proc` by
-anything with access to it, and is inherited by every child — including the `lore serve`
-sync daemon, which has no business holding a Telegram token. This is why the shipped
+anything with access to it, and is inherited by every child. kenward starts no child of
+its own any more — the sync daemon that used to be one now runs in this process — but a
+container's whole process tree and anything an operator runs inside it still read it.
+This is why the shipped
 systemd unit uses `LoadCredential=` rather than `EnvironmentFile=`, and why
 `bot_token_file` and `api_key_file` exist. The compose path stays on environment
 variables because Compose has no portable equivalent, scoped as tightly as per-service
