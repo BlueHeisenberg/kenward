@@ -14,10 +14,10 @@
 #      see deploy/README.md — defining KENWARD_BOT_TOKEN, KENWARD_PASSPHRASE,
 #      and one variable per `api_key_env` referenced by an endpoint in
 #      kenward.yaml.
-#   3. Supply a `lore` binary — see the note at the top of ../Dockerfile. The
-#      bind mount below assumes you've built or copied one to ./bin/lore on the
-#      host. kenward reaches the store as a library, not a subprocess; the
-#      binary is for `lore serve` and for the one-off commands in step 4.
+#   3. Nothing to supply. The image carries the lore CLI at /usr/local/bin/lore,
+#      which is what the one-off commands in step 4 run; there is no binary to
+#      build and no bind mount for one. kenward itself reaches the store as a Go
+#      library and executes nothing. See the note at the top of ../Dockerfile.
 #   4. Initialise that lore store ONCE, and create the spaces kenward.yaml
 #      names, against the same LORE_HOME the service below sets:
 #
@@ -140,10 +140,6 @@ services:
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
       - kenward-data:/var/lib/kenward
-      # Supply lore — see ../Dockerfile's note. Replace the host path with
-      # wherever you keep a `lore` binary built for linux/<arch matching the
-      # image>.
-      - ./bin/lore:/usr/local/bin/lore:ro,z
 
     # Declared here as well as in the image, and it is not a duplicate: the
     # image's HEALTHCHECK instruction is Docker-format only, and `podman build`

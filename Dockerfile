@@ -6,47 +6,76 @@
 # copy just that binary onto a distroless base that carries nothing else.
 #
 # ---------------------------------------------------------------------------
-# IMPORTANT — lore is NOT in this image.
+# lore IS in this image, and this is the part to read before changing anything.
 #
-# kenward imports lore and opens its store in-process, so it does not need the
-# binary to read or write memory. It needs it for one thing: `lore serve`, the
-# sync daemon, which is what carries a household's shared memory between pods
-# and between machines (kenward.yaml: memory.lore_command, default ["lore"]).
-# Without a `lore` binary on $PATH inside the container, an isolated pod's
-# shared memory reaches nobody. This image
-# deliberately does not bundle it — lore is a sibling project with its own
-# release cadence, and baking a copy in here would pin kenward to whatever
-# lore version happened to be current at image build time.
+# It is here for ONE reason, and it is not anything kenward runs. Read that before
+# adding a second use or removing it.
 #
-# Operators supply it one of two ways:
-#   1. Bind-mount a `lore` binary built for this image's OS/arch to
-#      /usr/local/bin/lore (read-only). See deploy/compose.simple.yml and
-#      deploy/compose.isolated.yml for the exact volume line.
-#   2. Build a derived image: `FROM ghcr.io/blueheisenberg/kenward:<tag>` and
-#      `COPY` a `lore` binary to /usr/local/bin/lore.
-# Either way the binary must match this image's platform (linux/amd64 or
-# linux/arm64) AND be statically linked:
+# kenward reaches lore as a Go library. Opening a store, `lore init`, creating a
+# space, every read and every write are library calls in this process
+# (internal/memory, lore.Init, (*Store).CreateSpace), and as of lore v0.5.0 so is
+# the sync daemon — (*Store).Serve runs it in-process on a store kenward already
+# has open. kenward execs nothing.
 #
-#     CGO_ENABLED=0 GOOS=linux GOARCH=<amd64|arm64> go build -o lore ./cmd/lore
+# What has no Go API is the one step that makes a shared space SHARED across two
+# stores: the membership handshake. (*Store).CreateSpace mints a fresh id in the
+# store that calls it, so two pods each creating "household" end up with two
+# different spaces that will never converge. Making one space span pods is
 #
-# CGO_ENABLED=0 is not optional and is not belt-and-braces. The final stage below
-# is gcr.io/distroless/static-debian12, which has no dynamic loader at all, so a
-# stock `go build -o lore ./cmd/lore` produces a dynamically linked binary that
+#     lore space invite <space-id> --lan --yes     # in the pod that has it
+#     lore join <code> --yes                       # in each of the others
+#
+# and lore exports neither: v0.5.0's public API is Init, Open, CreateSpace,
+# Spaces, entries, search and Serve, and no Invite or Join. lore's position is
+# that membership is granted out of band by a person, not minted by an embedding
+# program, and kenward agrees with it — a household assistant granting itself
+# membership of a space is kenward taking a decision that is not its to take.
+#
+# So the invite and the join are operator commands, they run inside a pod, and
+# this image is distroless: no shell, no coreutils, nothing to run them with. The
+# only way `docker compose exec kenward-david /usr/local/bin/lore space invite …`
+# — which is verbatim what deploy/compose.isolated.yml step 5 tells an operator to
+# type — can work is if this image carries lore. Without it, an isolated household
+# of more than one pod cannot be provisioned at all: every pod initialises its own
+# store, every pod reports the household space missing, and shared memory is
+# unreachable by any route.
+#
+# It used to be left to the operator, bind-mounted from the host, on the reasoning
+# that lore is a sibling project with its own release cadence and baking a copy in
+# would pin kenward to whatever lore was current at image build time. The pinning
+# worry is answered by building it here rather than downloading it:
+#
+#     go build github.com/BlueHeisenberg/lore/cmd/lore
+#
+# is resolved by this module's own go.mod, so the CLI is built from precisely the
+# lore version kenward's library half is compiled against. Nothing to keep in step
+# by hand, and a store provisioned by this binary and opened by kenward is
+# provisioned and opened by one version of lore.
+#
+# What makes that build line work is `tool github.com/BlueHeisenberg/lore/cmd/lore`
+# in go.mod: cmd/lore imports packages kenward's own code does not, and without the
+# tool directive `go mod tidy` drops their go.sum entries and this build fails with
+# "missing go.sum entry". Delete that directive and this stage fails loudly rather
+# than silently shipping something stale — which is the point, and is the switch to
+# pull the day lore exports Invite and Join and this whole block can go.
+#
+# CGO_ENABLED=0 for the lore build is not optional and is not belt-and-braces. The
+# final stage below is gcr.io/distroless/static-debian12, which has no dynamic
+# loader at all, so a stock `go build` produces a dynamically linked binary that
 # matches the platform, is executable, and still dies as:
 #
 #     exec /usr/local/bin/lore: no such file or directory
 #
 # naming a file that is plainly there. Measured, both ways: default build ->
-# dynamically linked -> that error; CGO_ENABLED=0 -> static -> works.
+# dynamically linked -> that error; CGO_ENABLED=0 -> static -> works. The ENV
+# below covers both builds in this stage, so it cannot be set for one and missed
+# for the other.
 #
-# Remedy 1 is not available to a pod started by `kenward run` in isolated mode:
-# keel's sandbox.Spec has no host bind-mount, so the host supervisor has nothing
-# to mount with, and remedy 2 with `--image` is the only route there. Since the
-# default for --image is this image, which has no lore, a supervisor-started
-# household needs a derived image or it has no memory. `kenward run` refuses to
-# start a unit whose memory.lore_command is not on PATH rather than serving one
-# that quietly records nothing — see docs/IMPLEMENTATION.md §8, "How a
-# supervisor-started pod gets lore".
+# /usr/local/bin is on this base image's PATH — checked, `--entrypoint lore` runs
+# it — so the compose files' `exec … lore` lines work with or without the absolute
+# path. They keep the absolute path anyway, because an exec-form ENTRYPOINT does no
+# shell lookup and the surrounding documentation is easier to follow when every
+# invocation names the same file.
 # ---------------------------------------------------------------------------
 
 # ---- builder ----
@@ -86,6 +115,25 @@ RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -o /out/kenward \
     ./cmd/kenward
 
+# The lore CLI, for the membership handshake and nothing else — see the block at
+# the top. An import path in a dependency module, not a directory in this
+# repository, and that is what makes it the version go.mod requires. `-s -w` and no
+# -X: kenward's version variables do not exist in lore's main package, and stamping
+# lore with kenward's tag the day it grows a `main.version` would be a lie that
+# nothing would catch.
+RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -trimpath \
+    -ldflags "-s -w" \
+    -o /out/lore \
+    github.com/BlueHeisenberg/lore/cmd/lore
+
+# lore's own licence, out of the module cache, so the image carries the licence of
+# the exact lore it carries. Same holder and the same BSL 1.1 as kenward's, but
+# the two texts differ in Licensed Work, Change Date and Additional Use Grant, so
+# one cannot stand in for the other. The module cache is read-only; chmod after.
+RUN cp "$(go list -m -f '{{ .Dir }}' github.com/BlueHeisenberg/lore)/LICENSE" /out/LICENSE.lore && \
+    chmod 0644 /out/LICENSE.lore && cp LICENSE /out/LICENSE
+
 # ---- final ----
 # distroless "static" + "nonroot": CA certificates and an /etc/passwd entry
 # for a fixed, non-root uid/gid (65532:65532) and nothing else — no shell, no
@@ -102,6 +150,17 @@ USER nonroot:nonroot
 WORKDIR /var/lib/kenward
 
 COPY --from=builder /out/kenward /usr/local/bin/kenward
+
+# The lore CLI. Nothing in this image executes it: it is here so an operator can,
+# for the one provisioning step lore exposes no Go API for. See the top of the file.
+COPY --from=builder /out/lore /usr/local/bin/lore
+
+# Both licences, because this image now redistributes two programs. Same licence
+# family and the same copyright holder — both BSL 1.1, both David Perez
+# (BlueHeisenberg) — so this is redistribution of one's own work, but the two texts
+# differ in Licensed Work, Change Date and Additional Use Grant and neither can
+# stand in for the other.
+COPY --from=builder /out/LICENSE /out/LICENSE.lore /usr/share/doc/kenward/
 
 # Default config path and data directory. Override by passing different
 # arguments after the image name (see compose files in deploy/), not by
