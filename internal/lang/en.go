@@ -48,12 +48,38 @@ var english = Catalogue{
 	// twenty-sample live run, and the shape docs/PROMPT.md's narration rule was split
 	// out of the capture block to stop ("Got it — boiler service code is 4471, and
 	// I've kept it just to you").
+	//
+	// The first-person forms on the second line are what every other table in this
+	// package already carries — "he guardado", "ich habe gespeichert", "j'ai
+	// enregistré", "ho salvato", "帮你记下了" — and English was the one language
+	// missing them. That gap only became visible once the bare participles moved
+	// behind a gate: they are also this language's bare acknowledgements, so
+	// ClaimsASaveUnmistakably steps over them, and without "i saved" beside them a
+	// reply like "Yes, I saved it earlier — the plumber's number is in your private
+	// memory" claims a completed write in words nothing unconditional could see.
+	//
+	// A subject and a past-tense verb cannot be an acknowledgement in the way the bare
+	// participle can: "Saved." answers a person, "I saved it" states a thing that
+	// happened. That is the whole of why these belong on the unconditional side.
 	SaveClaims: []string{
 		"saved", "stored", "recorded", "noted", "jotted", "written down",
+		"i saved", "i've saved", "i have saved", "i noted", "i've noted",
+		"i have noted", "i stored", "i've stored", "i recorded", "i've recorded",
 		"got it", "got that", "i have it", "i've got it",
 		"made a note", "make a note", "making a note", "got it down",
 		"added to your", "added to the household", "is now in your",
 		"is now in the household", "in your memory", "in the household memory",
+		// The destination named with the verb's object in between: "I've added that
+		// to your private memory" slips past "added to your", and the phrases above
+		// are truncated before the noun precisely so the qualifier does not matter —
+		// which does not help when the gap is in the middle. These two are the tail
+		// instead, so any verb reaches them.
+		//
+		// Not the bare noun phrase, deliberately. "your private memory" on its own is
+		// in a sentence the prompt itself teaches — the household scope's disclosure
+		// says the assistant cannot see one — and a table holding it would annotate a
+		// model correctly repeating a scope rule.
+		"to your memory", "to your private memory",
 	},
 
 	// The future tense of the same lie, and only a lie when it answers a request.

@@ -578,6 +578,11 @@ about in aliases, so they can find it again in the language they said it in. Alw
 write summary as well: one line, in the language you are answering in, saying what the
 body says. It is what the member reads to see what they are approving.
 
+Set target on every call. It says which memory the entry is for — personal for the
+member's own, shared for the household's, unsure when you genuinely cannot tell — and
+it is the one field that changes what becomes of the proposal rather than what it says.
+The paragraph below says which of the three this conversation can use.
+
 Calling that tool is a request, not a write. Nothing is stored because you asked for
 it, and you are never told what became of the request. So make the call whenever this
 turn warrants one, and always when the member asks you outright to remember something —
@@ -595,7 +600,61 @@ has already declined.
 
 ```
 
-**The second paragraph is what a tool call is and is not**, and it is in every scope on
+**The second paragraph is `target`**, and it is the `summary` fix applied to a field that
+had been missing for longer and cost more.
+
+`target` is required by the schema below. Until this paragraph it appeared **nowhere else
+in this document, in any prompt constant, or in any rendered golden** — the prose taught
+title, body, aliases and summary, a checklist of four, and a model that completes the
+checklist it is given and stops has done what the prompt asked. That is the mechanism the
+`summary` sentence above was written from, with `aliases` as its control, and `target` was
+sitting in exactly the position `summary` had been in.
+
+It cost more than `summary` did, because `summary` only decided what the member could
+read. An omitted `target` degrades to `unsure` in `extractProposal`, and `unsure` is the
+one value `capture.Engine.writesPrivateDirectly` will not act on — so every proposal
+became a question, and the **announce-with-Undo path (D-038), promised to every member at
+enrolment, never ran**. The turn still produces a card, which is why no rate caught it:
+the loss is invisible in a capture rate and visible only in what the member is shown.
+
+Two things made the old prompt worse than merely silent. `target` was the only property
+besides `confidence` with **no `description`**, so a model that did consult the schema
+found an enum and no meaning. And the only value of that enum the prompt ever spoke was
+`unsure`, in the direct-scope paragraph's closing sentence — the whole of what the prompt
+said about the field was advice to hedge, with nothing anywhere saying `personal` and
+`shared` were values it could write. Both are fixed: the property has a description, and
+every scope's block now names the values it allows.
+
+Measured, and the measurement is thinner than this document's others — say so rather than
+dress it up. `192.168.1.20:8000` answered ICMP and served nothing on any port, so this is
+**not** Qwen3.8-27B: it is `qwen2.5:14b` and `qwen2.5:3b` over local ollama,
+`TestRequestedCapture`, 4 cases × 5 samples, the two prompts run back to back on the same
+daemon. `TestRequestedCapture` now counts the destination each surviving call named, which
+is the instrument this row needed and did not have.
+
+| | 14b before | 14b after | 3b before | 3b after |
+|---|---|---|---|---|
+| called when asked | 18/20 | **19/20** | 15/20 | **16/20** |
+| direct-scope `personal` | 13/15 | **14/14** | 10/10 | **10/10** |
+| direct-scope `unsure` | 2/15 | **0/14** | 0/10 | **0/10** |
+| group-scope `shared` | 3/3 | **5/5** | 5/5 | **5/5** |
+
+**Neither local model reproduces the defect, and that is the headline.** Both fill
+`target` from the schema alone, on both prompts, so there was almost nothing here for the
+paragraph to move. The only movement is the 14b's two `unsure` samples going to zero, and
+at five samples over four cases that is one case's worth of noise — read it as unchanged.
+What this run is evidence of is that the paragraph does not *cost* anything: the call rate
+did not drop, which is the failure mode every previous edit to this block produced and the
+reason each one is measured.
+
+The observation the change was made from — a 27B omitting the field under the full prompt
+and supplying it under a minimal prompt carrying the identical schema, with the direct
+write firing once in twenty explicit save requests — **stands unreproduced on the hardware
+available** and should be re-run against Qwen3.8-27B when that endpoint is back. Two
+things do not depend on a model: a required field was documented nowhere, and its absence
+silently disables a behaviour the product promises every member at enrolment.
+
+**The third paragraph is what a tool call is and is not**, and it is in every scope on
 purpose: it reads as redundant in the two where every write already waits on a tap, and
 one of those two is where it was found missing. A model that believes its call is the
 write will narrate one.
@@ -695,8 +754,9 @@ one destination, and it is never written without being asked about:
 
 ```
 This is a group conversation, so anything remembered here goes to the household's shared
-memory. You cannot propose storing anything in a private memory from here. Nothing is
-written there unless the member who asked says yes to it first.
+memory. You cannot propose storing anything in a private memory from here, so target is
+always shared. Nothing is written there unless the member who asked says yes to it
+first.
 ```
 
 **A private conversation with kenward adds** the same rule, restated for the scope
@@ -707,8 +767,8 @@ memory they are writing to is still everybody's:
 Anything remembered in this conversation goes to the household's shared memory, where
 everyone can read it. You cannot propose storing anything in a private memory from
 here, even though this chat is private: a member's own assistant is where their private
-memory lives. Nothing is written to the household's memory unless {{.MemberName}} says
-yes to it first.
+memory lives, so target is always shared. Nothing is written to the household's memory
+unless {{.MemberName}} says yes to it first.
 ```
 
 `capture.private_writes` does not reach either of these two. It governs what happens to
@@ -723,8 +783,10 @@ the only one where what happens next depends on which the model names:
 Proposing something for {{.MemberName}}'s private memory may store it immediately.
 They are shown exactly what was written and can undo it, but they were not asked
 first, so propose only what you would be comfortable having written. Nothing reaches
-the household's shared memory until they say yes to it. If you are unsure which of the
-two something belongs in, say unsure rather than guessing — they will be asked.
+the household's shared memory until they say yes to it. All three targets are open
+here: personal for what is {{.MemberName}}'s alone, shared for what the household
+needs, and unsure when you genuinely cannot tell — they are asked either way, so unsure
+is for when you do not know and not for when you would rather not choose.
 ```
 
 This paragraph carries the asymmetry the product is built on, and it is stated to the
@@ -766,7 +828,7 @@ The tool schema:
       "confidence": {"type": "string", "enum": ["experimental", "provisional", "validated", "hardened"]},
       "aliases":    {"type": "array", "items": {"type": "string"}, "description": "The member's own words for what this is about, in the language they are speaking, when that is not English."},
       "summary":    {"type": "string", "description": "One line, in the language the member is speaking, saying what the body says. It is shown to them so they can see what they are approving; it is not stored. Always write it: whether it is shown is decided for you, from the language this conversation is held in."},
-      "target":     {"type": "string", "enum": ["personal", "shared", "unsure"]}
+      "target":     {"type": "string", "enum": ["personal", "shared", "unsure"], "description": "Which memory this belongs in: personal for the member's own, shared for the household's, unsure only when you genuinely cannot tell. The capture instructions in this conversation say which of the three it allows. It is the one field that decides what becomes of the proposal rather than what it says."}
     }
   }
 }

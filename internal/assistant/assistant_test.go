@@ -1084,6 +1084,113 @@ func TestAnAcknowledgementInOrdinaryConversationIsLeftAlone(t *testing.T) {
 	}
 }
 
+// TestAnAcknowledgementInsideAnOrdinaryReplyIsLeftAlone is the same defect as the test
+// above, reported again from a real chat, on the arm the fix did not reach.
+//
+// The bare arm was gated on the member having asked. The claim arm was not, and it is a
+// substring match over a list that deliberately overlaps the acknowledgements: "anotado",
+// "noted", "got it" are how a language says it has kept something and also how it answers
+// a person. Matched whole they are safe, which is what the bare arm relies on. Matched
+// inside a reply that carries an answer they are ordinary conversational filler, and the
+// member who told kenward the plumber was coming read:
+//
+//	Perfecto, anotado. El fontanero vendrá mañana a las nueve. ¿Algo más?
+//	⚠️ No he guardado nada ahora mismo. Dímelo otra vez si quieres que lo recuerde.
+//
+// Every message below is a household saying an ordinary thing and being answered. None
+// asks for anything to be kept, so none of them has anything to correct — and the
+// vocabulary in each reply is the vocabulary that used to fire, so a fix that only moved
+// the words between lists would fail here.
+func TestAnAcknowledgementInsideAnOrdinaryReplyIsLeftAlone(t *testing.T) {
+	for _, c := range []struct{ tag, said, reply string }{
+		{"es", "Mañana viene el fontanero a las nueve.",
+			"Perfecto, anotado. El fontanero vendrá mañana a las nueve. ¿Algo más?"},
+		{"en", "The plumber's coming tomorrow at nine.",
+			"Noted — tomorrow at nine, then. Anything else?"},
+		{"en", "I'm taking the bins out now.",
+			"Got it. Thursday is the usual day, so you're a little early."},
+		{"fr", "Le plombier passe demain à neuf heures.",
+			"C'est noté, demain à neuf heures. Autre chose ?"},
+		{"de", "Der Klempner kommt morgen um neun.",
+			"Notiert, morgen um neun also. Sonst noch etwas?"},
+		{"it", "Domani viene l'idraulico alle nove.",
+			"Annotato, domani alle nove. Altro?"},
+	} {
+		t.Run(c.tag+"/"+c.said[:min(len(c.said), 20)], func(t *testing.T) {
+			opts := testOptions()
+			opts.Persona = Persona{Language: c.tag}
+			rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{Text: c.reply, FinishReason: routing.FinishStop}, nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound(c.said)); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 || texts[0] != c.reply {
+				t.Fatalf("member said %q and was sent %v; want just %q — they asked for nothing to be kept, so there is nothing to correct",
+					c.said, texts, c.reply)
+			}
+		})
+	}
+}
+
+// TestAReplyThatNamesTheMemoryIsCorrectedWhoeverPromptedIt is what the gate above must
+// not cost, and the reason the whole of SaveClaims did not go behind it.
+//
+// A reply claiming a completed save is a stronger signal than a bare acknowledgement, so
+// gating it identically would lose the catch nothing else makes: a model that names the
+// memory unprompted, on a turn where the member asked for nothing. That sentence is a
+// specific, checkable false belief, and it is worse than the vague kind precisely because
+// a member told where something is will not go and look for it.
+//
+// The line the fix draws is therefore about the words and not about the arm: vocabulary
+// that is also how the language says "done" is a claim only in context; vocabulary that
+// names the act or the destination is a claim whatever prompted it. Each message below
+// asks for nothing and each reply is corrected anyway.
+func TestAReplyThatNamesTheMemoryIsCorrectedWhoeverPromptedIt(t *testing.T) {
+	for _, c := range []struct{ tag, said, reply string }{
+		{"en", "the plumber's coming tomorrow at nine",
+			"I've added that to your private memory so you don't lose it."},
+		{"en", "the spare key lives under the third plant pot",
+			"That's in your memory now — third plant pot."},
+		{"en", "the boiler code is 4471",
+			"I made a note of the boiler code for you."},
+		{"es", "el fontanero viene mañana a las nueve",
+			"Ya está en tu memoria, no te preocupes."},
+	} {
+		t.Run(c.tag+"/"+c.reply[:min(len(c.reply), 24)], func(t *testing.T) {
+			opts := testOptions()
+			opts.Persona = Persona{Language: c.tag}
+			rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{Text: c.reply, FinishReason: routing.FinishStop}, nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound(c.said)); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 {
+				t.Fatalf("sent %v, want exactly one message", texts)
+			}
+			if !strings.HasPrefix(texts[0], c.reply) {
+				t.Errorf("the member was sent %q; the model's own reply must reach them first and whole", texts[0])
+			}
+			if !strings.Contains(texts[0], lang.For(c.tag).NothingSaved) {
+				t.Errorf("the member was sent %q, which names a memory on a turn that stored nothing and never says so", texts[0])
+			}
+		})
+	}
+}
+
 // TestAPromiseIsCorrectedOnlyWhenTheMemberAsked is the second half of the same
 // distinction, and it came out of the live run of the first.
 //
@@ -1837,8 +1944,10 @@ func TestRetrievalLineReportsWhatReachedTheModel(t *testing.T) {
 	// again when the capture block gained the paragraph saying a tool call is not a
 	// write and the identity section gained the plain-prose rule, which between them
 	// left no room for any entry at all; and again when the capture block gained the
-	// sentence asking for the member's-language reading of the entry.
-	opts.ContextBudget = 2100
+	// sentence asking for the member's-language reading of the entry; and again when
+	// it gained the paragraph naming target, which is the field the whole block had
+	// never mentioned.
+	opts.ContextBudget = 2300
 	opts.MaxTokens = 128
 	rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
 	if err != nil {

@@ -524,6 +524,61 @@ func (c Catalogue) ClaimsASave(reply string) bool {
 	return containsAny(reply, c.SaveClaims)
 }
 
+// ClaimsASaveUnmistakably reports whether a reply claims a save in words that cannot
+// also be an ordinary acknowledgement — SaveClaims, less every entry BareAcknowledgements
+// also holds.
+//
+// The two tables overlap by design and the overlap is exactly the ambiguous vocabulary:
+// "saved", "noted", "got it", "anotado", "apuntado" are what this language says when it
+// has kept something and also what it says when it is simply answering. That was
+// harmless while the overlap was only read whole — IsBareAcknowledgement needs the
+// acknowledgement to be the entire reply, and a reply that is nothing but "Noted." means
+// only what the message before it meant. It stopped being harmless once the same words
+// were matched as substrings, because then "Perfecto, anotado. El fontanero vendrá
+// mañana a las nueve." is a claimed save, and a member who reported the plumber's visit
+// was told "No he guardado nada ahora mismo" for their trouble.
+//
+// So the difference between the two lists is the difference between the two arms. What
+// is left here is vocabulary that names the act or the destination and nothing else —
+// "written down", "made a note", "added to your", "in your memory", "queda anotado",
+// "está en tu memoria" — and that is false the moment it is written on a turn that
+// stored nothing, whatever the member asked for. The rest is a claim only in the
+// context of a request, exactly as a bare acknowledgement and a promise are, and the
+// caller gates all three the same way.
+//
+// The derivation is deliberate rather than a fourth table. A fourth table is a fourth
+// thing to keep in step across ten languages, and the fact this needs — "is this word
+// also how the language says done?" — is already written down, once, in the table whose
+// documentation says that is what it holds.
+func (c Catalogue) ClaimsASaveUnmistakably(reply string) bool {
+	got := letters(reply)
+	if got == "" {
+		return false
+	}
+	for _, p := range c.SaveClaims {
+		if c.alsoAnAcknowledgement(p) {
+			continue
+		}
+		if strings.Contains(got, letters(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+// alsoAnAcknowledgement reports whether a save-claim phrase is one of this language's
+// bare acknowledgements. Compared whole, the way IsBareAcknowledgement compares a
+// reply: "noted" and "noted" are the same word, and "made a note" is not "noted".
+func (c Catalogue) alsoAnAcknowledgement(phrase string) bool {
+	p := letters(phrase)
+	for _, ack := range c.BareAcknowledgements {
+		if p == letters(ack) {
+			return true
+		}
+	}
+	return false
+}
+
 // PromisesASave reports whether a reply promises to keep something in future — see
 // SavePromises. Substring-matched like ClaimsASave, and meaningful only alongside
 // AsksForASave: on its own a promise is not a false statement about this turn.

@@ -301,6 +301,189 @@ func TestSanitizeReplyStripsStrayBlocks(t *testing.T) {
 	}
 }
 
+// TestARepairedCallIsNotLoggedAsADrop: the log line has to say what happened to the
+// call, and there are two things that can.
+//
+// extractProposal warns about repairs as well as drops. An unknown or absent target
+// degrades to unsure and the proposal survives; an unknown tool called beside a
+// well-formed remember is dropped and the remember survives; a missing domain is
+// defaulted and the proposal survives. Every one of those returns a proposal and a
+// warning, and the caller logged all of them as "remember call dropped".
+//
+// Observed on a turn where the member was shown the card:
+//
+//	WARN assistant: remember call dropped reason="unknown target \"\" treated as unsure"
+//
+// An operator reading that went looking for a capture that had in fact happened. In a
+// tree whose subject is not claiming things that did not happen, a log claiming a drop
+// that did not happen is the same defect written for a different reader — and the log is
+// the only place a dropped call is ever visible, so it is the one line that has to be
+// right.
+func TestARepairedCallIsNotLoggedAsADrop(t *testing.T) {
+	for _, c := range []struct {
+		name, args string
+		dropped    bool
+	}{{
+		name:    "target omitted: repaired to unsure, proposal survives",
+		args:    `{"title": "Bin day", "body": "Bins go out Thursday.", "domain": "household"}`,
+		dropped: false,
+	}, {
+		name:    "target unreadable: repaired to unsure, proposal survives",
+		args:    `{"title": "Bin day", "body": "Bins go out Thursday.", "target": "everyone"}`,
+		dropped: false,
+	}, {
+		name:    "no body: nothing survives, and this one really was dropped",
+		args:    `{"title": "Bin day", "target": "personal"}`,
+		dropped: true,
+	}, {
+		name:    "not JSON at all: dropped",
+		args:    `not json`,
+		dropped: true,
+	}} {
+		t.Run(c.name, func(t *testing.T) {
+			rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.tr.answer = transport.Answer{ChoiceID: capture.ChoiceDecline, UserID: testUserID}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{
+					Text: "Right.",
+					ToolCalls: []routing.ToolCall{{
+						ID: "tc-1", Name: "remember", Arguments: json.RawMessage(c.args),
+					}},
+					FinishReason: routing.FinishToolCalls,
+				}, nil
+			}
+			if err := rig.unit.Handle(context.Background(), directInbound("the bins go out on Thursday")); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+
+			logs := rig.logs.String()
+			if !strings.Contains(logs, "remember call") {
+				t.Fatalf("nothing was logged about the remember call; the log is the only place a dropped call is visible.\n%s", logs)
+			}
+			gotDropped := strings.Contains(logs, "remember call dropped")
+			if gotDropped != c.dropped {
+				t.Errorf("log says dropped=%v, want %v — the proposal %s reach the member.\n%s",
+					gotDropped, c.dropped, map[bool]string{true: "did not", false: "did"}[c.dropped], logs)
+			}
+		})
+	}
+}
+
+// TestTheEncodingModelsActuallyLeakIsStripped is the defect a member met in Telegram.
+//
+// sanitizeReply held one invariant — "raw JSON must never reach the member" — against
+// one encoding, and it was the encoding kenward's own prompt used to teach and that no
+// model in the wild emits. What models emit is their chat template's, and the message
+// below arrived verbatim: a stray glyph, a complete remember call as JSON, and a closing
+// </tool_call> with no opening one, because the model's own parser had eaten that half.
+// Nothing was stored, nothing was said, and the member read the tool call.
+//
+// The first case is that message. The rest are the encodings the same failure arrives in
+// — ChatML paired, the pipe-fenced variant, the <function_call> and <tool_use> spellings,
+// a call the token limit cut off mid-JSON, and a bare object with no delimiter at all —
+// each of which is a chat template somebody's household is running.
+//
+// What is deliberately not covered is in the last four cases, and they are the point of
+// the test as much as the first six. Any JSON that is not a call to one of kenward's own
+// four tools goes out untouched: an object with no arguments member, an object naming
+// something else, a fenced example, a member's own text quoted back. The sanitizer knows
+// what kenward's machinery looks like and strips that; it does not guess at prose, which
+// is the discipline transport's Markdown converter keeps and the reason a reply about
+// JSON survives being about JSON.
+//
+// The one thing that does not survive is a reply whose text is byte-for-byte a kenward
+// tool call, and that is the right way round: nothing downstream can tell that from the
+// leak, and the invariant is the one above.
+func TestTheEncodingModelsActuallyLeakIsStripped(t *testing.T) {
+	const call = `{"name": "remember", "arguments": {"title": "Alergia amoxicilina", ` +
+		`"body": "David es alérgico a la amoxicilina.", "confidence": "hardened", ` +
+		`"domain": "salud", "summary": "Alergia a la amoxicilina."}}`
+
+	for _, tc := range []struct {
+		name      string
+		text      string
+		wantReply string
+		wantWarn  bool
+	}{{
+		name:      "the live leak: bare JSON and an orphan closing tag",
+		text:      "遆\n" + call + "\n</tool_call>",
+		wantReply: "遆",
+		wantWarn:  true,
+	}, {
+		name:      "chatml pair",
+		text:      "Vale.\n<tool_call>\n" + call + "\n</tool_call>",
+		wantReply: "Vale.",
+		wantWarn:  true,
+	}, {
+		name:      "pipe-fenced variant",
+		text:      "Vale.\n<|tool_call|>" + call + "<|tool_call|>",
+		wantReply: "Vale.",
+		wantWarn:  true,
+	}, {
+		name:      "function_call spelling",
+		text:      "<function_call>" + call + "</function_call>\nVale.",
+		wantReply: "Vale.",
+		wantWarn:  true,
+	}, {
+		name:      "tool_use spelling",
+		text:      "<tool_use>" + call + "</tool_use>",
+		wantReply: "",
+		wantWarn:  true,
+	}, {
+		// The token limit landed inside the arguments. The JSON will not decode, so
+		// the opening delimiter is what carries it out — which is where truncation
+		// lands in practice, since the tag is emitted before the arguments are.
+		name:      "cut off mid-JSON",
+		text:      `Vale.<tool_call>{"name": "remember", "arguments": {"title": "Alergia`,
+		wantReply: "Vale.",
+		wantWarn:  true,
+	}, {
+		name:      "publish call, bare",
+		text:      `Right.` + "\n" + `{"name": "publish", "arguments": {"title": "Boiler"}}`,
+		wantReply: "Right.",
+		wantWarn:  true,
+	}, {
+		name:      "a plain reply is untouched",
+		text:      "The bins go out on Thursday.",
+		wantReply: "The bins go out on Thursday.",
+	}, {
+		name:      "an object with no arguments is not a tool call",
+		text:      `The record reads {"name": "David", "role": "owner"} exactly as stored.`,
+		wantReply: `The record reads {"name": "David", "role": "owner"} exactly as stored.`,
+	}, {
+		name:      "an object naming something else survives",
+		text:      `Try {"name": "backup", "arguments": {"path": "/srv"}} in the config.`,
+		wantReply: `Try {"name": "backup", "arguments": {"path": "/srv"}} in the config.`,
+	}, {
+		name:      "JSON a member asked about survives",
+		text:      "You asked what a webhook body looks like:\n{\"event\": \"ping\", \"id\": 7}\nThat is all of it.",
+		wantReply: "You asked what a webhook body looks like:\n{\"event\": \"ping\", \"id\": 7}\nThat is all of it.",
+	}, {
+		name:      "prose naming the tool survives",
+		text:      "I can call the remember tool for that if you want.",
+		wantReply: "I can call the remember tool for that if you want.",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			reply, warn := sanitizeReply(tc.text)
+			if reply != tc.wantReply {
+				t.Errorf("reply %q, want %q", reply, tc.wantReply)
+			}
+			if (warn != "") != tc.wantWarn {
+				t.Errorf("warn %q, wantWarn=%v", warn, tc.wantWarn)
+			}
+			// Restated as its own assertion on the cases that are leaks, because
+			// wantReply passing on a typo would pass this too, and this is the
+			// invariant the file claims: no call to a kenward tool survives.
+			if tc.wantWarn && strings.Contains(reply, `"remember"`) {
+				t.Errorf("reply %q still names the remember tool in JSON; raw JSON must never reach the member", reply)
+			}
+		})
+	}
+}
+
 // TestSecondRememberCallIsToldToTheMember is the second half of the defect the
 // truthfulness paragraph fixes, and it is the half no prompt can reach.
 //

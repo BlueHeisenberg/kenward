@@ -2,6 +2,7 @@ package assistant
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -465,6 +466,81 @@ func TestNarrationRuleIsNotInTheCaptureBlock(t *testing.T) {
 			t.Errorf("the %s prompt never introduces the remember tool", name)
 		case truth > capture:
 			t.Errorf("the %s prompt renders the never-narrate rule after the capture block; the whole point of moving it was to put distance between \"do not talk about the tool\" and \"use the tool\"", name)
+		}
+	}
+}
+
+// TestThePromptTeachesTheTargetField is the field the prompt required and never
+// mentioned.
+//
+// `target` is in rememberSchema's required list. Before this test the string appeared
+// nowhere in prompt.go, in any rendered golden, or in docs/PROMPT.md outside the schema
+// block — and the schema's own property was the only one besides confidence with no
+// description, so a model consulting it found three spellings and no meaning. The one
+// value of the enum the prompt ever spoke was "unsure", in the direct scope's closing
+// sentence: the whole of what the prompt said about the field was advice to hedge.
+//
+// What that cost is not a dropped call. An absent target degrades to unsure in
+// extractProposal, unsure is the one value capture.Engine.writesPrivateDirectly will not
+// act on, so every proposal became a question and the announce-with-Undo path — D-038,
+// and what EnrolMemoryBodyDefault promises every member at enrolment — never ran. The
+// turn still produced a card, which is why no capture rate could see it.
+//
+// The assertions are structural, like the three D-059 tests above, and not claims about
+// a model: the field is named in every scope, every scope says which values it may use,
+// and the two scopes with one destination say which one. Whether a model then fills it
+// is measured in judgement_eval_test.go, which now counts the targets it named.
+func TestThePromptTeachesTheTargetField(t *testing.T) {
+	for name, sys := range everyScopeShape(t) {
+		f := flattened(sys)
+		if !strings.Contains(f, "Set target on every call.") {
+			t.Errorf("the %s prompt never tells the model to set target. It is required by the schema, and a proposal that omits it degrades to unsure — which is the one value that turns the announce-with-Undo path off", name)
+		}
+		// Every value, spelled, in every scope: an enum in a schema says how the
+		// strings are spelled and nothing about which to choose.
+		for _, v := range []string{"personal", "shared", "unsure"} {
+			if !strings.Contains(f, v) {
+				t.Errorf("the %s prompt never says the word %q; the enum is in the schema and the meaning has to be in the prose", name, v)
+			}
+		}
+	}
+	// The two scopes with one destination say which one, rather than leaving the model
+	// to infer it from a prohibition on the other.
+	for _, name := range []string{"group", "household"} {
+		if !strings.Contains(flattened(everyScopeShape(t)[name]), "target is always shared") {
+			t.Errorf("the %s prompt has one destination and never says what to put in target", name)
+		}
+	}
+	// And the direct scope, which is the only one with a choice, offers all three
+	// rather than naming only the one that asks a question.
+	direct := flattened(everyScopeShape(t)["direct"])
+	if !strings.Contains(direct, "All three targets are open here") {
+		t.Error("the direct prompt does not tell the model all three targets are available to it; it is the only scope where the choice exists")
+	}
+	if strings.Contains(direct, "say unsure rather than guessing") {
+		t.Error("the direct prompt still names unsure as the only value it mentions, which is what made hedging the one instruction the model had about the field")
+	}
+
+	// The schema's own half. It is not what teaches the field — summary had a
+	// description for as long as summary went missing, and the prose is what fixed
+	// that — but a required property explained nowhere is one nobody reading this
+	// repository can check either.
+	var schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(rememberSchema), &schema); err != nil {
+		t.Fatalf("remember schema is not valid JSON: %v", err)
+	}
+	for prop, p := range schema.Properties {
+		if prop == "confidence" {
+			// Its enum is lore's vocabulary and confidenceText explains it at
+			// length; it is the one property whose meaning lives elsewhere.
+			continue
+		}
+		if strings.TrimSpace(p.Description) == "" {
+			t.Errorf("schema property %q has no description", prop)
 		}
 	}
 }
