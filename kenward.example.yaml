@@ -198,7 +198,7 @@ telegram:
   #
   # bot_token_file: /run/secrets/household-token is the alternative, and the better
   # one in a container: an environment value is readable by every process in it and is
-  # inherited by every child kenward starts. The file's trailing newline is stripped,
+  # visible in /proc. The file's trailing newline is stripped,
   # it must be 0600 (group- or world-readable is refused, on anything but Windows),
   # and naming both this and bot_token_env is an error rather than a precedence. With
   # neither, the systemd credential `bot_token` is used.
@@ -295,7 +295,7 @@ members:
     #
     # passphrase_file: /run/secrets/david-passphrase is the alternative, and the better
     # one for a pod: an environment value is readable by every process in the container
-    # and is inherited by every child kenward starts, `lore serve` included. Naming
+    # and visible in /proc. Naming
     # both is an error, not a precedence. With neither, the systemd credential
     # `passphrase.david` is used.
     passphrase_env: KENWARD_PASSPHRASE_DAVID
@@ -414,15 +414,15 @@ memory:
   # has never had one, so a simple-mode household executes no lore and needs none
   # installed.
   #
-  # An ISOLATED household is the one exception, and it is the only one left: each pod
-  # has its own lore home, and the pods exchange the household's shared space by each
-  # running `lore serve --lan`. That is a program, so an isolated kenward.yaml needs
+  # An ISOLATED kenward.yaml still carries the key —
   #
   #   lore_command: ["lore"]
   #
-  # and a lore binary in the image (deploy/compose.isolated.yml bind-mounts one). Only
-  # the first element is read; trailing elements are accepted and ignored, so a
-  # configuration written when kenward spawned `lore mcp` still loads unchanged.
+  # — defaulted and validated there rather than omitted, but read by nothing in the
+  # running node. Every pod runs lore's sync daemon in its own process, on the store
+  # it already opened, so no mode executes a lore binary. The value is accepted whole
+  # and ignored whole, and a configuration written when kenward spawned `lore mcp`
+  # still loads unchanged.
   # search_limit is the per-space retrieval budget for one turn: how many entries lore
   # may return from each space in scope before assembly stops asking. Kenward's default
   # is 8; set explicitly here to the same value. Too high and prompts bloat with
@@ -498,8 +498,8 @@ session:
   # LoadCredential=kenward-passphrase should leave both of these out.
   #
   # passphrase_file: /run/secrets/kenward-passphrase is the better form in a container,
-  # where an environment variable is readable by every process in it and is inherited
-  # by every child kenward starts, `lore serve` included. One source only: naming both
+  # where an environment variable is readable by every process in it and visible in
+  # /proc. One source only: naming both
   # is an error.
   passphrase_env: KENWARD_PASSPHRASE
 

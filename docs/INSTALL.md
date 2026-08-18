@@ -165,8 +165,9 @@ and a unit that fails on install is a unit people learn to ignore.
 
 The unit supplies secrets as **systemd credentials** rather than environment variables,
 because an `EnvironmentFile=` value stays in the process's environment for as long as it
-runs, is readable through `/proc`, and is inherited by every child it spawns — including
-the `lore serve` subprocess, which has no business seeing a Telegram token. Put one file
+runs, is readable through `/proc`, and is inherited by every child it spawns. kenward
+spawns none, but a service manager's environment is still the wrong custody for a
+Telegram token. Put one file
 per secret under `/etc/kenward/credentials/` — `bot_token` for the household bot,
 `bot_token.<member id>` and `api_key.<endpoint name>` where they apply — and name each on
 a `LoadCredential=` line. kenward looks for exactly those names with no configuration at
@@ -293,9 +294,9 @@ docker compose -f deploy/compose.simple.yml up -d
 ```
 
 Edit the compose file first: it expects a config file and a data directory bind-mounted,
-and the bot token supplied through a `.env` file beside it. The image does **not**
-contain lore — bind-mount the binary or build a derived image, as the Dockerfile's own
-comments explain.
+and the bot token supplied through a `.env` file beside it. There is nothing to supply
+for lore: kenward opens its store in process and creates it on the data volume the first
+time the container starts.
 
 ---
 
@@ -330,19 +331,25 @@ what the mode exists to prevent.
 There is a second path, and it manages the pods for you:
 
 ```sh
-kenward run --config kenward.yaml --image localhost/kenward-with-lore:dev
+kenward run --config kenward.yaml
 ```
 
-`--image` is not optional in practice. The published image deliberately carries no lore,
-and this path has no bind-mount to add one with, so build a derived image —
-`FROM ghcr.io/blueheisenberg/kenward:<tag>` plus a `COPY` of a `lore` binary for that
-image's OS and architecture — and name it here. Build that binary with
-`CGO_ENABLED=0 GOOS=linux GOARCH=<amd64|arm64> go build -o lore ./cmd/lore`: the base is
-distroless static and has no dynamic loader, so a default `go build` produces a binary
-for the right platform that still fails as `exec /usr/local/bin/lore: no such file or
-directory`, naming a file that is plainly there. Everything else is handled: the volumes,
-the per-member secrets, each pod's own lore store, and rolling every pod onto a new image
-after an update.
+`--image` is optional now, and only names a different build if you have one; the
+published image works as-is. It used to be effectively required, because the image
+carried no lore and this path has no bind-mount to add one with, so a derived image was
+the only route. Neither half of that is true any more: kenward reaches lore as a Go
+library and runs its sync daemon in its own process, so a pod needs no binary to work,
+and the published image carries the lore CLI anyway for the one operator step below.
+Everything else is handled: the volumes, the per-member secrets, each pod's own lore
+store, and rolling every pod onto a new image after an update.
+
+The one manual step left is membership. Each pod creates its own store, so the id in
+`household.shared_space` is one space per pod rather than one space across them until an
+operator joins them up — `lore space invite` in the pod that holds it and `lore join` in
+each of the others, run inside the pods with the CLI the image carries. lore exposes no
+Go API for either, deliberately: who may read a household's memory is a person's
+decision. `kenward doctor` prints the remediation, and once the pods share a space their
+sync daemons converge it without further help.
 
 **Two things to know before you point it at a household.** A member whose `tiers:` reach
 a cloud endpoint gets that endpoint's API key in their pod — they need it to route there

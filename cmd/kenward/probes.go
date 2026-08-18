@@ -95,8 +95,6 @@ type spaceResult struct {
 // anything about what is in it — the contents of anyone's memory are not this
 // command's to show.
 func probeLore(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
-	// No Command. Nothing this probe does is a subprocess: the store is opened in
-	// process, and memory.Config.Command exists only for `lore serve`.
 	client, err := memory.NewClient(memory.Config{})
 	if err != nil {
 		return loreResult{Err: err}

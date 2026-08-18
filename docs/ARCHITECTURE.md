@@ -142,10 +142,11 @@ of these constrain the design:
   error having written nothing. There is no third case, and kenward no longer carries an
   `ErrWriteUncertain` for one — that existed because a lost MCP response left an entry
   that might exist under an id kenward never received.
-- **Opening a store does not sync it**; that needs a separate `lore serve` process, and
-  kenward pokes it after each write (`lore.Options.NotifyOnWrite`) so the write leaves
-  the machine now rather than at the daemon's next poll. Any deployment running more than
-  one lore instance must run both.
+- **Opening a store does not sync it**; that needs the sync daemon running, which kenward
+  starts in its own process on the store it opened (`lore.(*Store).Serve`), and it pokes
+  it after each write (`lore.Options.NotifyOnWrite`) so the write leaves the machine now
+  rather than at the daemon's next poll. Any deployment running more than one lore
+  instance must run both.
 - Space invites and joins are not on the Go API — `Init`, `CreateSpace` and `Members` are,
   membership changes are not — so they stay operator steps run against lore's CLI. kenward's
   own enrolment is unrelated: a claim code is kenward's, not lore's.
@@ -163,11 +164,12 @@ amount of new work, and every one of these limits is survivable for a household.
 
 This section used to be an open limitation: per-pod lore instances did not converge on the
 household's shared space, and nothing in either deployment path made them. **D-044 closed
-it, and `internal/memory.RunSyncDaemon` (`internal/memory/sync.go`) is the symbol that says
-so.** Every isolated unit starts `lore serve --lan` — `memory.SyncCommandArgs`, supervised
-with a backoff for the unit's lifetime — and `cmd/kenward/run.go`'s `startSyncDaemon` starts
-exactly one per pod. It lives in the binary the image already runs, so both deployment paths
-get it with no compose or service change.
+it, and `internal/memory.(*Client).Serve` (`internal/memory/sync.go`) is the symbol that
+says so.** Every isolated unit runs lore's own sync daemon — `lore.(*Store).Serve`, in this
+process, on the very store the unit reads and writes through — and `cmd/kenward/run.go`'s
+`startSyncDaemon` starts exactly one per pod. It lives in the binary the image already runs,
+so both deployment paths get it with no compose or service change, and since it is a library
+call rather than `lore serve`, **kenward needs no `lore` binary in any mode**.
 
 The defect it closed is worth keeping, because it explains the shape of the fix. One
 `LORE_HOME` per pod is one lore *account* per pod, and `lore init` gives each account its
@@ -222,9 +224,12 @@ by the change.
 **The never-fork rule survives unchanged.** kenward imports lore, defines no knowledge
 model, reimplements nothing.
 
-What still shells out, and why: `lore serve`, because a supervised long-running daemon is
-a process and not a call. That is the whole list. `memory.lore_command` survives to locate
-that binary and nothing else — only its first element is read.
+What still shells out: nothing. `lore serve` was the last of it, and lore v0.5.0's
+`(*Store).Serve` runs the same daemon in kenward's process on the store it already has
+open, so **no mode of kenward needs a `lore` binary**. The command survives in the wider
+story only as a person's tool: `lore space invite` and `lore join` grant membership of a
+shared space, lore's API exposes neither on purpose, and that is an operator's decision
+rather than an assistant's.
 
 ## Identity and enrolment
 

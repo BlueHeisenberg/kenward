@@ -304,17 +304,17 @@ problem and `doctor` reports it. The isolated **host supervisor** is exempt, bec
 starts pods and holds no memory client of its own; each pod asks the question of itself
 on its own way up.
 
-**No lore binary is looked for, in simple mode or anywhere else that reads or writes.**
-`run` used to check `memory.lore_command[0]` against `$PATH` and refuse without it, on
-the reasoning that spawning `lore mcp` was kenward's only route to memory. That route is
-gone — the store is opened in this process — and a simple-mode household needs no lore
-installed at all.
+**No lore binary is looked for, in any mode.** `run` used to check
+`memory.lore_command[0]` against `$PATH` and refuse without it, on the reasoning that
+spawning `lore mcp` was kenward's only route to memory. That route is gone, and so is the
+last one after it: the store, every read and write, and — since lore v0.5.0 — the sync
+daemon are all library calls in this process. A refusal over an absent program would
+refuse a node that works, and an isolated household of pods has been measured converging
+its shared space with no `lore` on `$PATH` anywhere inside them.
 
-*Isolated mode keeps one check, and it is the last of them.* Every pod runs
-`lore serve --lan`, which is the only thing carrying an entry from one pod's lore home to
-another's, so a pod whose `memory.lore_command[0]` is not on `$PATH` is refused with an
-explanation naming shared memory rather than memory. When that daemon becomes a library
-call, this paragraph goes and nothing else changes.
+The published image does still carry the lore CLI, and that is not a contradiction. It is
+there for the one step with no Go API — the `lore space invite` / `lore join` membership
+handshake an operator runs by hand inside a pod. `run` never invokes it.
 
 `--member` and `--group` exist for **isolated mode only**, where each pod runs exactly
 one unit: a member's pod is started with `--member david`, the household's with
@@ -534,8 +534,8 @@ Memory
   ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
   ✓ space "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19" reachable
   ! this lore store does not sync on its own
-      run `lore serve` on the same LORE_HOME if this store should reach another
-      machine
+      isolated mode runs a sync daemon in each pod; a simple-mode node has one
+      store holding every space and nothing to converge with
   ✓ conversations keep their recent turns until the node restarts
     (history.reset_every is off)
 

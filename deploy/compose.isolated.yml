@@ -44,10 +44,11 @@
 #      deploy/README.md) defining every bot token and provider key below.
 #   3. Nothing to supply. The image carries the lore CLI at /usr/local/bin/lore,
 #      so every service already has the one it needs for step 5's invite and
-#      join, and there is no per-service bind mount to get wrong. Note what is
-#      and is not shared: sharing the BINARY was always fine, sharing the
-#      INSTANCE — the same LORE_HOME — never is, and each service below still
-#      gets its own named volume for exactly that reason.
+#      join, and there is no per-service bind mount to get wrong. kenward itself
+#      never runs it — the store, the sync daemon and every read and write are
+#      in-process Go calls. Note what is and is not shared: sharing the BINARY
+#      was always fine, sharing the INSTANCE — the same LORE_HOME — never is,
+#      and each service below still gets its own named volume for that reason.
 #   4. Nothing to do: each service initialises its own lore store on first
 #      start, and you should NOT run `lore init` against these volumes by hand.
 #
@@ -80,9 +81,11 @@
 #      property this mode exists for.
 #
 #      Two things make it work, and kenward now supplies one of them. Inside
-#      every service, `kenward run` starts lore's sync daemon (`lore serve
-#      --lan`) for as long as the unit serves, so the pods find each other on the
-#      compose network and converge on whatever spaces they have in common. That
+#      every service, `kenward run` runs lore's sync daemon in its own process
+#      for as long as the unit serves — the same daemon `lore serve --lan` runs,
+#      on the store kenward already has open, started as a library call and not
+#      as a subprocess — so the pods find each other on the compose network and
+#      converge on whatever spaces they have in common. That
 #      is automatic and there is nothing to configure — no port, no peer list, no
 #      address, and deliberately none: a container's address changes every time
 #      it is recreated, so anything written down here would be stale by the first

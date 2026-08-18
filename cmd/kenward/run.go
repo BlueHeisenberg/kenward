@@ -41,6 +41,12 @@ type runOptions struct {
 	// isolated deployment paths; empty everywhere else, and a path that does not
 	// exist is simply no revocation.
 	revoked string
+	// memory is the lore store this process has already opened, when it has: an
+	// isolated unit opens one up front so that lore's sync daemon and the unit's own
+	// reads and writes share a single handle on the pod's home. Nil everywhere else,
+	// which leaves the supervisor to open its own as it always did. It is the
+	// caller's to close, and startSyncDaemon's stop function is what closes it.
+	memory memory.Memory
 }
 
 // supervisorFactory builds the thing `run` runs. It is a seam so that argument
@@ -120,8 +126,9 @@ func cmdRun(e *env, args []string) int {
 	}
 
 	// Started before the supervisor and stopped after it, so a pod is syncing for the
-	// whole of the time it is serving.
-	stopSync := startSyncDaemon(e, cfg, sel, logger)
+	// whole of the time it is serving. The store it opens is the one the unit then
+	// uses: one handle, one daemon, one home.
+	loreClient, stopSync := startSyncDaemon(e, cfg, sel, logger)
 	defer stopSync()
 
 	factory := e.supervisors
@@ -135,6 +142,7 @@ func cmdRun(e *env, args []string) int {
 		image:      *image,
 		invites:    *invites,
 		revoked:    *revoked,
+		memory:     loreClient,
 	}, logger)
 	if buildErr != nil {
 		err := buildErr
@@ -247,48 +255,83 @@ func stopDashboard(e *env, srv *dashboard.Server, logger *slog.Logger) {
 	}
 }
 
-// startSyncDaemon runs `lore serve` beside this unit for as long as it serves, and
-// returns the function that stops it.
+// startSyncDaemon opens this pod's lore store and runs lore's sync daemon on it for as
+// long as this unit serves. It returns the client the unit is to use — so that the
+// daemon and every read and write in the process share one handle on one home — and the
+// function that stops the daemon and closes the store, in that order.
 //
 // It is what makes the household's shared space real in isolated mode. Each pod has
 // its own LORE_HOME and therefore its own lore account and its own id space, so the
 // one `household.shared_space` in kenward.yaml is one space held by several accounts,
-// and `lore mcp` — which never syncs — carries nothing between them. Until this
-// existed, a member's pod reported the shared space missing and the household group
-// conversation had memory in exactly one container; both deployment paths had it and
-// neither said so. Membership in that space is still provisioned out of band, by the
-// operator, exactly as `lore init` is — see internal/memory's sync.go and
-// docs/IMPLEMENTATION.md §8.
+// and opening a store carries nothing between them. Until this existed, a member's pod
+// reported the shared space missing and the household group conversation had memory in
+// exactly one container; both deployment paths had it and neither said so. Membership
+// in that space is still provisioned out of band, by the operator — see internal/memory's
+// sync.go and docs/IMPLEMENTATION.md §8.
 //
-// Only an isolated unit gets one, and the condition is the one checkLore already
-// draws. A simple-mode node has one lore home holding every space, so there is
-// nothing for a second instance to converge with and a daemon would advertise a
-// household's whole store on its LAN for no gain. The isolated host supervisor gets
-// none either: it holds no lore home at all, and each pod runs its own.
+// # Which units get one
 //
-// Failure to start is never fatal here, deliberately: the daemon is what makes shared
-// memory move, and private memory — the property the mode exists for — works without
-// it. Refusing to serve would turn a partial outage into a total one. What tells an
-// operator is `kenward doctor`, which asks the daemon itself.
-func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog.Logger) func() {
-	if cfg.Mode != config.ModeIsolated || !sel.single() || len(cfg.Memory.LoreCommand) == 0 {
-		return func() {}
+// Only an isolated unit, and that is a decision rather than an inheritance: it was worth
+// re-asking once the daemon stopped costing a process. It still holds. A simple-mode
+// node has one lore home holding every space, so there is nothing for a second instance
+// to converge with; the daemon would find no peer it could exchange anything with and
+// would advertise the household's store on the LAN for no gain at all. Cheap is not the
+// same as free, and nothing is not the same as nothing useful. The isolated host
+// supervisor gets none either: it holds no lore home, and each pod runs its own.
+//
+// # Failure
+//
+// Never fatal, deliberately, and unchanged: the daemon is what makes shared memory
+// move, and private memory — the property the mode exists for — works without it.
+// Refusing to serve would turn a partial outage into a total one. What tells an operator
+// is `kenward doctor`, which asks the daemon itself over its admin port.
+//
+// A store that will not open returns no client, and the supervisor then builds its own
+// and fails on the same fault with the message that path already has. It is not
+// silenced: checkLore has already opened this same home successfully a moment ago, so
+// reaching it means the store went away between the two.
+func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog.Logger) (memory.Memory, func()) {
+	if cfg.Mode != config.ModeIsolated || !sel.single() {
+		return nil, func() {}
 	}
+	client, err := memory.NewClient(memory.Config{LoreHome: loreHomeDir(e), Logger: logger})
+	if err != nil {
+		logger.Warn("kenward", "event", "memory",
+			"detail", "this pod's lore store could not be opened for the sync daemon", "err", err.Error())
+		return nil, func() {}
+	}
+
 	ctx, cancel := context.WithCancel(e.context())
+	// A channel closed by the goroutine's own defer, created before the goroutine
+	// exists: there is no counter to increment and therefore nothing to increment
+	// outside a lock, and the stop function below cannot observe a half-registered
+	// worker.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		memory.RunSyncDaemon(ctx, memory.Config{
-			Command: cfg.Memory.LoreCommand[0],
-			Logger:  logger,
-		}, e.stderr, logger)
+		// Zero interval: lore's own thirty seconds, plus a round on every local
+		// write, because the store was opened with NotifyOnWrite. A non-nil return
+		// is a daemon that never started, and there is nothing transient in the
+		// list of ways that happens — see memory.Client.Serve. Logged, not retried,
+		// and not fatal.
+		if err := client.Serve(ctx, 0); err != nil {
+			logger.Error("kenward", "event", "memory",
+				"detail", "lore's sync daemon did not start; this pod's shared memory reaches nobody "+
+					"and receives nothing, and its private memory is unaffected. `kenward doctor` reports it",
+				"err", err.Error())
+		}
 	}()
 	logger.Info("kenward", "event", "memory",
-		"detail", "running lore's sync daemon so this pod's shared space reaches the household's other pods",
+		"detail", "running lore's sync daemon in this process so this pod's shared space reaches the household's other pods",
 		"lore_home", memory.DefaultLoreHome())
-	return func() {
+	return client, func() {
 		cancel()
 		<-done
+		// After the daemon, never before: it holds this store for as long as it
+		// runs, and the units that also hold it have already been drained.
+		if err := client.Close(); err != nil {
+			logger.Warn("kenward", "event", "memory", "detail", "this pod's lore store did not close cleanly", "err", err.Error())
+		}
 	}
 }
 
@@ -304,17 +347,24 @@ func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog
 // quietly stopped being one is worse than one that will not start, so it does not
 // start.
 //
-// # It does not ask whether lore is installed
+// # It does not ask whether lore is installed, in any mode
 //
 // It used to, with a PATH lookup for memory.lore_command, on the reasoning that
-// "spawning `lore mcp` is its only route to memory". That route is gone: the store is
-// opened in this process through lore's Go API, and this function creates the home
-// itself if the machine has never had one. A simple-mode node needs no lore binary
-// anywhere and now says so by not looking for one.
+// "spawning `lore mcp` is its only route to memory". That route is gone, and so is the
+// last one after it. kenward opens the store in this process through lore's Go API,
+// creates the home itself if the machine has never had one (lore.Init), creates spaces
+// with lore.CreateSpace, and runs lore's own sync daemon in this process rather than as
+// a subprocess (see startSyncDaemon). Every route to memory in every mode is a Go call,
+// so there is no binary to look for and nothing to install. A refusal to start because
+// one was absent would refuse a node that works, which is the strongest form of the
+// thing this check exists to prevent — and the container measurement says so plainly:
+// an isolated household of pods syncs its shared space with no `lore` on PATH anywhere
+// inside them.
 //
-// One subprocess is left, `lore serve --lan` in an isolated pod, and checkSyncBinary
-// below is the whole of what remains of the old check. When the sync daemon becomes an
-// API call, that function and this paragraph go together.
+// The published image does carry the `lore` CLI, and that is not a contradiction. It is
+// there for the one step that has no Go API — the `lore space invite` / `lore join`
+// membership handshake, which an operator runs by hand inside a pod (see
+// internal/memory/sync.go and docs/IMPLEMENTATION.md §8). kenward execs none of it.
 //
 // # Why a PATH lookup was never enough anyway
 //
@@ -329,6 +379,8 @@ func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog
 // not an exemption but the plain fact of what it runs: it starts pods and holds no
 // memory client, no transport and no key (see supervisor.Isolated). Each pod opens its
 // own store over its own LORE_HOME and asks this question of itself on its own way up.
+// Demanding memory of the host as well would refuse every correctly-configured
+// isolated household on a machine whose lore lives only where it is actually used.
 //
 // Only memory failing to answer is fatal. A space the store does not hold is one
 // space's problem and `doctor`'s to report; refusing a household its assistant over a
@@ -336,9 +388,6 @@ func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog
 func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 	if cfg.Mode == config.ModeIsolated && !sel.single() {
 		return exitOK
-	}
-	if code := checkSyncBinary(e, cfg); code != exitOK {
-		return code
 	}
 	// A fresh machine has no lore home, and a pod's own volume starts empty. Either
 	// way kenward makes its own; see initLoreHome.
@@ -360,39 +409,6 @@ func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 		return exitFailure
 	}
 	return exitOK
-}
-
-// checkSyncBinary refuses an isolated pod that has no lore binary to run `lore serve
-// --lan` with.
-//
-// It is the last thing in kenward that requires lore to be installed, and it requires
-// it in one place only: a pod in a household of pods, where each pod has its own lore
-// home and the daemon is what carries the household's shared space between them.
-// Everything else — the store, its creation, every read and write — is a library call
-// against a store this process opened, on a machine that may have no lore on it at all.
-//
-// Delete this function, its call, and memory.Config.Command when internal/memory/sync.go
-// stops being an exec. Nothing else has to change.
-func checkSyncBinary(e *env, cfg *config.Config) int {
-	if cfg.Mode != config.ModeIsolated || len(cfg.Memory.LoreCommand) == 0 {
-		return exitOK
-	}
-	if _, err := e.look()(cfg.Memory.LoreCommand[0]); err == nil {
-		return exitOK
-	}
-	e.errorf("memory.lore_command starts %q, and there is no such program on this machine's\n"+
-		"PATH. This pod's memory does not need it — the store is opened in this process —\n"+
-		"but the household's shared space does: every pod runs `lore serve --lan`, and that\n"+
-		"is the only thing that carries an entry from one pod's lore home to another's.\n"+
-		"Without it each pod remembers only what was said to it.\n\n"+
-		"In a container the image deliberately does not carry lore (see the Dockerfile).\n"+
-		"Supply it one of two ways, built for the image's own OS and architecture:\n"+
-		"  - bind-mount it at /usr/local/bin/lore, which is what\n"+
-		"    deploy/compose.isolated.yml does for every service;\n"+
-		"  - or build a derived image that COPYs it there. That is the only route open to\n"+
-		"    a pod started by `kenward run` in isolated mode, which has no bind-mount to\n"+
-		"    offer; pass the derived image with --image.", cfg.Memory.LoreCommand[0])
-	return exitFailure
 }
 
 // loreHomeDir is the lore home this process will open.

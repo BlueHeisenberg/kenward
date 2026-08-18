@@ -303,9 +303,10 @@ func (r *runner) buildDeps() error {
 		r.owned = append(r.owned, t)
 	}
 	if r.rc.memory == nil {
-		// No Command: this client opens the store in process, and a simple-mode
-		// configuration has no memory.lore_command at all. The one thing that argv
-		// is for — `lore serve` — is started by cmd/kenward, not from here.
+		// No command and no argv: lore is a library here. In an isolated pod this
+		// branch is not taken at all — cmd/kenward opens the store before the
+		// supervisor exists, so that the sync daemon and the units share one
+		// handle on one home — and it injects the result.
 		c, err := memory.NewClient(memory.Config{
 			LoreHome: r.rc.loreHome,
 			Logger:   r.logger,

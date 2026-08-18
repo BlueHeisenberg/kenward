@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -218,79 +217,23 @@ func TestRunSelectsSupervisorByMode(t *testing.T) {
 	}
 }
 
-// TestRunRefusesToServeWithoutLore covers the one thing left that needs the binary,
-// and — just as importantly — the modes that do not.
-//
-// A pod in a household of pods runs `lore serve --lan`, and that daemon is the only
-// thing that carries an entry from one pod's lore home to another's. Without it each
-// pod remembers only what was said to it, in silence, and that is a container's
-// default outcome rather than an exotic one: the image deliberately carries no lore,
-// and a pod started by `kenward run` cannot be bind-mounted one, because keel's
-// sandbox.Spec has no bind-mount.
-//
-// Simple mode is the case this table exists to pin down. It used to be refused here
-// too, on the reasoning that spawning `lore mcp` was kenward's only route to memory;
-// that route is gone, the store is opened in this process, and a simple-mode household
-// on a machine with no lore anywhere on it must start and work. The old refusal is why
-// the documentation told people to install lore.
-//
-// The isolated HOST supervisor is exempt as well: it starts pods and holds no memory
-// client of its own, so refusing it would refuse every correct isolated household
-// whose lore lives in the pods that use it. That was not theoretical — it is what the
-// first real-podman run of this check did.
-func TestRunRefusesToServeWithoutLore(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name    string
-		yaml    string
-		args    []string
-		refused bool
-	}{
-		{"simple: no lore anywhere, and none needed", simpleYAML, []string{"run"}, false},
-		{"isolated: a member's pod", isolatedYAML, []string{"run", "--member", "david"}, true},
-		{"isolated: the group's pod", isolatedYAML, []string{"run", "--group"}, true},
-		{"isolated: the host supervisor, which never touches lore", isolatedYAML, []string{"run"}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			h := newHarness(t, tc.yaml, fullEnvironment())
-			h.e.lookPath = func(string) (string, error) { return "", exec.ErrNotFound }
-			built := false
-			h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
-				built = true
-				return stubSupervisor{}, nil
-			}
-			code := h.run(tc.args...)
-			if !tc.refused {
-				if code != exitOK || !built {
-					t.Fatalf("exit = %d, supervisor built = %v; the host supervisor holds no lore client and must start\n%s",
-						code, built, h.both())
-				}
-				return
-			}
-			if code != exitFailure {
-				t.Fatalf("exit = %d, want %d — a node with no memory must not start\n%s", code, exitFailure, h.both())
-			}
-			if built {
-				t.Error("the supervisor was built anyway; nothing may be served without memory")
-			}
-			for _, want := range []string{"lore", "PATH", "/usr/local/bin/lore", "--image"} {
-				if !strings.Contains(h.stderr(), want) {
-					t.Errorf("stderr does not mention %q, so an operator is not told how to fix it:\n%s", want, h.stderr())
-				}
-			}
-		})
-	}
-}
+// The refusal that used to live here, TestRunRefusesToServeWithoutLore, is gone with
+// the check it covered. It asserted that `run` stops when the program
+// memory.lore_command names is not on PATH, which was right while spawning `lore mcp`
+// was kenward's only route to memory. It is not one any more: the store is opened as a
+// library, a fresh home is initialised with lore.Init, and lore's sync daemon runs in
+// this process. Refusing to start over an absent binary would now refuse a node that
+// works — measured, in a container with no lore in it at all, syncing its shared space.
+// What survives is the half below, which is the half a PATH lookup could never make.
 
-// TestRunRefusesToServeWhenLoreDoesNotAnswer is the half of the check above that a
-// PATH lookup cannot make, and the half that a real container actually hits.
+// TestRunRefusesToServeWhenLoreDoesNotAnswer is the check that survives, and the one a
+// real container actually hits.
 //
-// An uninitialised LORE_HOME is the state every fresh volume is in. `lore mcp` exits
-// before the MCP handshake against one — "no account at /home/nonroot/.lore/account.json
-// (run `lore init`)" — so exec.LookPath succeeds, the guard passes, and the node starts
-// into exactly the silence the guard exists to prevent: it authorises, greets, and
-// records nothing. Measured on a real container before this test existed.
+// An uninitialised LORE_HOME is the state every fresh volume is in, and a store cannot
+// be opened against one. Nothing about the machine says so from the outside — this is
+// precisely what the PATH lookup could not see — so a node would start into exactly the
+// silence the check exists to prevent: it authorises, greets, and records nothing.
+// Measured on a real container before this test existed.
 //
 // The exemption is unchanged and is in the table for the same reason it is in the one
 // above: the isolated host supervisor holds no memory client, and demanding lore of it

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -21,22 +20,11 @@ import (
 // wide setting precisely so that a deployment can run one lore per member pod: the
 // home is the only thing that isolates two lore instances on a host.
 type Config struct {
-	// Command is the lore executable. Nothing on Client needs it: the store is
-	// opened in this process and every operation is a library call. It is here
-	// for the one thing that is still a subprocess and cannot be anything else —
-	// `lore serve`, the sync daemon, which is a long-running process with a
-	// lifecycle of its own rather than a call. See sync.go.
-	Command string
 	// LoreHome is the lore home this client opens. Empty means DefaultLoreHome —
 	// $LORE_HOME, then ~/.lore — which is almost never what a deployment wants.
 	LoreHome string
-	// Env holds extra KEY=VALUE pairs for the sync daemon, appended after the
-	// inherited environment and LoreHome, so they win. It has no effect on the
-	// store, which is opened in this process.
-	Env []string
-	// Dir is the sync daemon's working directory.
-	Dir string
-	// Logger receives lifecycle events. Default: discard.
+	// Logger receives lifecycle events and, while Serve runs, the sync daemon's
+	// own diagnostics. Default: discard.
 	Logger *slog.Logger
 }
 
@@ -49,15 +37,6 @@ func (c Config) withDefaults() Config {
 		c.Logger = slog.New(slog.DiscardHandler)
 	}
 	return c
-}
-
-// childEnv builds the environment for the sync daemon in sync.go.
-func (c Config) childEnv() []string {
-	env := os.Environ()
-	if c.LoreHome != "" {
-		env = append(env, "LORE_HOME="+c.LoreHome)
-	}
-	return append(env, c.Env...)
 }
 
 // Client is a Memory backed by an embedded lore store.
@@ -73,11 +52,11 @@ func (c Config) childEnv() []string {
 // # Operator notes
 //
 //   - Opening the store does not sync it. Entries written here reach the
-//     household's other lore homes only if a `lore serve` is running on this one;
+//     household's other lore homes only while a sync daemon runs on this one;
 //     writes poke it immediately (lore.Options.NotifyOnWrite) so it does not wait
 //     for its next poll. Without a daemon, entries written through this client
 //     never leave the machine and entries written elsewhere never arrive. In
-//     isolated mode kenward runs one itself — see sync.go.
+//     isolated mode kenward runs one on this very store — see Serve in sync.go.
 //   - The home must already be initialised: NewClient on one that is not is
 //     ErrStoreUnavailable. In a pod kenward initialises it for itself with
 //     lore.Init before this client is built; anywhere else it is `lore init`,

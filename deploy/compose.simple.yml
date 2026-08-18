@@ -25,10 +25,12 @@
 # time the container starts, and the spaces kenward.yaml names were made by
 # whichever wizard wrote that file — `kenward setup` or the dashboard.
 #
-# compose.isolated.yml is the one that still bind-mounts a lore binary, and it
-# is the only place left that needs one: each pod there has its own store, and
-# they exchange the household's shared space by each running `lore serve --lan`.
-# Simple mode has one store holding every space and nothing to converge with.
+# compose.isolated.yml has one operator step this file does not, and it is not a
+# binary to supply either — the image carries the lore CLI. It is the membership
+# handshake: each pod there has its own store, and one space is made to span them
+# by `lore space invite` in one pod and `lore join` in the others, which lore
+# exposes no Go API for. Simple mode has one store holding every space, nothing to
+# converge with and nobody to invite, so it needs none of it.
 #
 # Secrets never appear in this file: every token/key is named by environment
 # variable only, sourced from `.env`, exactly as kenward.yaml itself only ever
@@ -99,8 +101,8 @@ services:
       # wrapping secret for everything under kenward-data, not a login.
       #
       # A file is better than this variable if you can manage one, because an
-      # environment variable is inherited by any child process kenward starts.
-      # Two ways to do that, and pick exactly one:
+      # environment variable is readable by every process in the container and
+      # visible in /proc. Two ways to do that, and pick exactly one:
       #
       #   1. kenward.yaml's own `session: passphrase_file: /run/secrets/…`,
       #      mounted read-only at 0600. Drop the line below and the

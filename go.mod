@@ -5,9 +5,10 @@ go 1.25.0
 require (
 	fyne.io/systray v1.12.2
 	github.com/BlueHeisenberg/keel v0.5.6
-	github.com/BlueHeisenberg/lore v0.4.0
+	github.com/BlueHeisenberg/lore v0.5.0
 	github.com/go-telegram/bot v1.23.0
 	github.com/godbus/dbus/v5 v5.1.0
+	github.com/google/uuid v1.6.0
 	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -16,7 +17,6 @@ require (
 	github.com/BlueHeisenberg/agentmesh v0.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/libp2p/zeroconf/v2 v2.2.0 // indirect
 	github.com/mark3labs/mcp-go v0.20.1 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

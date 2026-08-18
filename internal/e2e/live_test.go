@@ -485,10 +485,7 @@ func newLiveHarness(t *testing.T, l live, opts liveOptions) *liveHarness {
 
 	// The real client, over a real lore store — the embedded library, not a
 	// subprocess.
-	client, err := memory.NewClient(memory.Config{
-		Command:  l.loreBin,
-		LoreHome: l.loreHome,
-	})
+	client, err := memory.NewClient(memory.Config{LoreHome: l.loreHome})
 	if err != nil {
 		t.Fatalf("building the lore client: %v", err)
 	}

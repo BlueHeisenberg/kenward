@@ -76,6 +76,9 @@
 # path. They keep the absolute path anyway, because an exec-form ENTRYPOINT does no
 # shell lookup and the surrounding documentation is easier to follow when every
 # invocation names the same file.
+#
+# A household that never shares a space needs none of this. Private memory is one
+# store in one pod, and it has never touched the binary.
 # ---------------------------------------------------------------------------
 
 # ---- builder ----
@@ -169,13 +172,13 @@ ENV KENWARD_CONFIG=/etc/kenward/kenward.yaml
 ENV KENWARD_DATA_DIR=/var/lib/kenward
 
 # Session keys, enrolment claim-code state, and (when the operator points
-# memory.lore_command's LORE_HOME here) lore's own on-disk store all live
+# LORE_HOME here) lore's own on-disk store all live
 # under the data directory. Bind-mount or name-volume this in production —
 # an ephemeral data dir means claim codes and lore's data disappear on
 # container recreation.
 VOLUME ["/var/lib/kenward"]
 
-# Health = process up, config loads, lore MCP responds, Telegram authorises.
+# Health = process up, config loads, the lore store answers, Telegram authorises.
 # Deliberately does NOT probe any routing endpoint tier: household machines
 # are legitimately powered off, and treating that as unhealthy would restart
 # a perfectly healthy container in a loop (see docs/IMPLEMENTATION.md §9).
