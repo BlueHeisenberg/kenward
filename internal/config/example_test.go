@@ -144,7 +144,6 @@ func TestExampleStatesEveryDefaultedKey(t *testing.T) {
 	for _, path := range []string{
 		"data_dir",
 		"household.agents",
-		"memory.lore_command",
 		"memory.search_limit",
 		"history.reset_every",
 		"session.idle_timeout",
@@ -287,6 +286,14 @@ var allowedZeroFields = map[string]string{
 	// its fingerprint shown once. The keys are documented in a comment in the example.
 	"Dashboard.TLSCertFile": "generated when LAN exposure is chosen; this example is loopback and needs none",
 	"Dashboard.TLSKeyFile":  "generated when LAN exposure is chosen; this example is loopback and needs none",
+
+	// The example is simple mode, and simple mode executes no lore: the store is
+	// opened in this process. The value locates the binary an isolated pod runs as
+	// `lore serve --lan`, so stating it here would put a program name in front of
+	// every household that will never run one — which is what taught people kenward
+	// needed lore installed. The isolated case is documented in a comment in the
+	// example, and deploy/compose.isolated.yml sets it for real.
+	"Memory.LoreCommand": "simple mode runs no lore; see the comment in the memory block",
 }
 
 // TestExampleExercisesEveryField reflects over the loaded configuration and fails if any
@@ -362,8 +369,16 @@ func collectZeroFields(v reflect.Value, path string, out *[]string) {
 	}
 }
 
+// addZero records a zero-valued field unless it is allow-listed.
+//
+// The lookup is on the stripped path, the same form TestAllowedZeroFieldsAreReal
+// compares against. Without that the two disagreed for every non-scalar: an empty
+// slice is recorded as "X (empty)", so an entry spelled "X" never suppressed it while
+// an entry spelled "X (empty)" was reported as naming no real field. Nothing in the
+// allow-list was a slice or a pointer until now, so the disagreement had never been
+// reached.
 func addZero(out *[]string, path string) {
-	if _, allowed := allowedZeroFields[path]; allowed {
+	if _, allowed := allowedZeroFields[strippedPath(path)]; allowed {
 		return
 	}
 	*out = append(*out, path)

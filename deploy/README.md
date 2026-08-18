@@ -55,24 +55,22 @@ also accepts the `*_file` form (a path to a file holding the value) — pair it
 with a secret mounted read-only at 0600, e.g. a Docker/Podman secret or a
 bind-mounted file, rather than `environment:`.
 
-For the container paths you also need a `lore` binary on the host to
-bind-mount in, built with `CGO_ENABLED=0` for the image's platform — see the
-Dockerfile's note on why it isn't baked into the image and why the static build
-is not optional — and its store has to be **initialised**, once per `LORE_HOME`.
-Supplying only the binary is not enough: a home with no account in it cannot be
-opened, and kenward refuses to serve without memory, checking both halves before
-it starts — the binary on `$PATH`, which `lore serve` needs, and then the store
-itself.
+**Neither compose file needs a lore store prepared, and `compose.simple.yml`
+needs no lore binary at all.** kenward opens its store in process through lore's
+Go API and creates it on the volume the first time the container starts, so
+there is no `lore init` step in either path and none you should run by hand —
+least of all against an isolated member's work volume, which is reachable from
+nowhere else precisely so that a host cannot write into it and read it back. The
+spaces `kenward.yaml` names were made by whichever wizard wrote that file.
 
-Who does that initialising differs by mode, and the difference is not
-cosmetic. **In isolated mode each container does it for itself** on first
-start, because a member's work volume is reachable from nowhere else and a
-host that could write into it could read it back — so there is no operator
-step, and you should not run `lore init` against those volumes by hand. **In
-simple mode it is still yours**: that `LORE_HOME` is the household's one
-store, not a member's, and it needs its spaces created and their ids written
-into `kenward.yaml` regardless. `compose.simple.yml`'s header gives the exact
-commands; `compose.isolated.yml`'s explains what its containers do instead.
+`compose.isolated.yml` does still bind-mount a `lore` binary, and it is the last
+place that needs one: each pod has its own store, and they exchange the
+household's shared space by each running `lore serve --lan`. Build it with
+`CGO_ENABLED=0` for the image's platform — see the Dockerfile's note on why it
+is not baked into the image and why the static build is not optional. A pod
+whose `memory.lore_command[0]` is not on `$PATH` is refused at startup with a
+message about shared memory; a *simple* container without it is not refused,
+because it runs nothing.
 
 `compose.isolated.yml` additionally needs one file per member holding that
 member's outstanding claim codes: run `kenward invite --name NAME` on the host

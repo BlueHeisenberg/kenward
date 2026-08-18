@@ -119,8 +119,8 @@ func TestNotWrittenNamesRealFields(t *testing.T) {
 func TestTheWizardWritesTheEnvFormOfEverySecret(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
 	answers := []string{
-		"2", "Home", "1", realToken, "n",
-		"David", "", "1",
+		"2", "Home", realToken, "n",
+		"David", "",
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "q", "n", "local", "y",
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud", "n",
@@ -237,7 +237,6 @@ func TestTheFileReadsLikeSomebodyWroteIt(t *testing.T) {
 		"# kenward.yaml",
 		"# The household itself",
 		"tiers: [local]",            // a chain reads as a chain, not as a bullet list
-		"lore_command: [lore]",      // and so does an argv
 		"idle_timeout: 0s",          // defaults are visible rather than implied, including "off"
 		"max_proposals_per_turn: 1", //
 		// The wizard cannot learn an endpoint's window or its completion cap — it
@@ -255,6 +254,10 @@ func TestTheFileReadsLikeSomebodyWroteIt(t *testing.T) {
 		"group_chat_id: 0", // no group is configured yet; saying "0" invites editing it to something wrong
 		"telegram_id: 0",   // nobody has enrolled yet
 		`api_key_env: ""`,  // the local machine needs no key
+		// A simple-mode node never executes lore. A program name in the file is
+		// read as a program the household has to go and install, and this one is
+		// the reason people believed kenward needed lore on their PATH.
+		"lore_command",
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("the written file contains the noise field %q", unwanted)

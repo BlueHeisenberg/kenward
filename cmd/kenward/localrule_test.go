@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/setup"
 )
 
@@ -105,14 +108,17 @@ func runWizard(t *testing.T, baseURL string) (local bool, configPath string) {
 			return setup.ProbeResult{State: setup.NoAnswer, Elapsed: time.Millisecond}
 		},
 		LookupEnv: lookup(map[string]string{"KENWARD_BOT_TOKEN": fakeBotToken}),
+		// The wizard makes the spaces itself, and this test must not let it make
+		// them in whatever lore home the machine running it has. Naming ids
+		// instead would not do either: the ids would have to exist in that same
+		// real store, which is how this test used to pass on one developer's
+		// machine and fail in a clean container.
+		CreateSpace: func(_ context.Context, name string) (memory.Space, error) {
+			return memory.Space{ID: uuid.NewString(), Name: name, Kind: "shared"}, nil
+		},
 		Answers: &setup.Answers{
 			HouseholdName: "Casa",
-			// Space ids, because that is what the wizard now requires and what
-			// internal/memory resolves against — a display name here would be a
-			// configuration nothing could read from.
-			SharedSpace:  "dac31e70-72e4-4b10-9cef-a6276c4a87b8",
-			MemberNames:  []string{"David"},
-			MemberSpaces: map[string]string{"david": "7d5047bb-d939-4539-b3db-8b6221a2e245"},
+			MemberNames:   []string{"David"},
 			Endpoints: []setup.EndpointAnswer{{
 				Name:    "machine",
 				BaseURL: baseURL,

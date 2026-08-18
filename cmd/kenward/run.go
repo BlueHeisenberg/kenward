@@ -292,107 +292,110 @@ func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog
 	}
 }
 
-// checkLore refuses to serve unless lore actually answers on this machine. It returns
+// checkLore refuses to serve unless this node's memory actually answers. It returns
 // exitOK when it does.
 //
 // It is a refusal rather than a warning, and that is the whole point of it. Nothing
-// downstream fails on a missing lore: memory.NewClient only checks the command is
-// non-empty and does not spawn anything until the first call, and a turn that cannot
-// read a space degrades that space rather than failing the turn. So a node without
-// lore starts cleanly, reports itself ready, authorises its bot, greets a member and
-// then remembers nothing anyone says to it — no retrieval, no capture, no enrolment
-// history — with the only trace a "space could not be read" line inside a prompt. A
-// household assistant that has quietly stopped being one is worse than one that will
-// not start, so it does not start.
+// downstream fails on unreachable memory: a turn that cannot read a space degrades
+// that space rather than failing the turn. So such a node starts cleanly, reports
+// itself ready, authorises its bot, greets a member and then remembers nothing anyone
+// says to it — no retrieval, no capture, no enrolment history — with the only trace a
+// "space could not be read" line inside a prompt. A household assistant that has
+// quietly stopped being one is worse than one that will not start, so it does not
+// start.
 //
-// It matters most in isolated mode, where it is easiest to arrive here by accident.
-// The image deliberately carries no lore (see the Dockerfile), and a pod the host
-// supervisor starts cannot be given one by the compose file's route: keel's
-// sandbox.Spec has no bind-mount, so the operator's only option there is an image
-// that already carries it. Until this check existed, the default `kenward run` in
-// isolated mode — which starts pods from the published image — produced a household
-// of pods with no memory at all and said nothing about it.
+// # It does not ask whether lore is installed
 //
-// The one process it does NOT apply to is the isolated host supervisor, and that is
+// It used to, with a PATH lookup for memory.lore_command, on the reasoning that
+// "spawning `lore mcp` is its only route to memory". That route is gone: the store is
+// opened in this process through lore's Go API, and this function creates the home
+// itself if the machine has never had one. A simple-mode node needs no lore binary
+// anywhere and now says so by not looking for one.
+//
+// One subprocess is left, `lore serve --lan` in an isolated pod, and checkSyncBinary
+// below is the whole of what remains of the old check. When the sync daemon becomes an
+// API call, that function and this paragraph go together.
+//
+// # Why a PATH lookup was never enough anyway
+//
+// An uninitialised store is the state every fresh volume is in, and lore refuses to
+// open one. The program was on PATH, the old check passed, and the node started into
+// exactly the silence the check exists to prevent. So the question asked here is the
+// one that matters — not "is lore installed" but "does this store answer" — and it is
+// the same handshake `doctor` performs, through the same seam, so the two cannot
+// drift.
+//
+// The one process it does not apply to is the isolated host supervisor, and that is
 // not an exemption but the plain fact of what it runs: it starts pods and holds no
-// memory client, no transport and no key (see supervisor.Isolated). Each pod spawns
-// its own `lore mcp` inside itself, over its own LORE_HOME, and asks this question of
-// its own image on its own way up. Demanding lore of the host as well would refuse
-// every correctly-configured isolated household on a machine whose lore lives only
-// where it is actually used — which is exactly what happened the first time this was
-// run against real podman:
+// memory client, no transport and no key (see supervisor.Isolated). Each pod opens its
+// own store over its own LORE_HOME and asks this question of itself on its own way up.
 //
-//	$ kenward run --config kenward.yaml --image localhost/kenward:nolore
-//	kenward: memory.lore_command starts "lore", and there is no such program on this
-//	machine's PATH. …
-//
-// with no pod started, on a host that was never going to touch lore.
-//
-// # Why a PATH lookup is not enough
-//
-// It was, until the compose paths were run for the first time. `lore mcp` exits before
-// the MCP handshake when LORE_HOME holds no account — "no account at
-// /home/nonroot/.lore/account.json (run `lore init`)" — and an uninitialised store is
-// the state every fresh volume is in. The program was on PATH, the check passed, and
-// the node started into exactly the silence the check exists to prevent. So the
-// question asked here is the one that matters: not "is lore installed" but "does lore
-// answer", which only a handshake can settle. It is the same handshake `doctor`
-// performs, through the same seam, so the two cannot drift.
-//
-// Only lore failing to answer is fatal. A space lore does not hold is one space's
-// problem and `doctor`'s to report; refusing a household its assistant over a
+// Only memory failing to answer is fatal. A space the store does not hold is one
+// space's problem and `doctor`'s to report; refusing a household its assistant over a
 // mistyped space id would be a second, larger outage than the one being prevented.
 func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 	if cfg.Mode == config.ModeIsolated && !sel.single() {
 		return exitOK
 	}
-	cmd := cfg.Memory.LoreCommand
-	if len(cmd) == 0 {
-		return exitOK // internal/config has already reported this.
+	if code := checkSyncBinary(e, cfg); code != exitOK {
+		return code
 	}
-	if _, err := e.look()(cmd[0]); err != nil {
-		e.errorf("memory.lore_command starts %q, and there is no such program on this machine's\n"+
-			"PATH. kenward will not start without it: spawning `lore mcp` is its only route to\n"+
-			"memory, so this node would run, answer, and record nothing — and nothing else\n"+
-			"would report it.\n\n"+
-			"In a container the image deliberately does not carry lore (see the Dockerfile).\n"+
-			"Supply it one of two ways, built for the image's own OS and architecture:\n"+
-			"  - bind-mount it at /usr/local/bin/lore, which is what\n"+
-			"    deploy/compose.isolated.yml does for every service;\n"+
-			"  - or build a derived image that COPYs it there. That is the only route open to\n"+
-			"    a pod started by `kenward run` in isolated mode, which has no bind-mount to\n"+
-			"    offer; pass the derived image with --image.", cmd[0])
-		return exitFailure
-	}
-
-	// A pod's own volume starts empty, and only the pod may touch it. See initLoreHome.
-	if cfg.Mode == config.ModeIsolated {
-		if code := initLoreHome(e, cfg, sel); code != exitOK {
-			return code
-		}
+	// A fresh machine has no lore home, and a pod's own volume starts empty. Either
+	// way kenward makes its own; see initLoreHome.
+	if code := initLoreHome(e, cfg, sel); code != exitOK {
+		return code
 	}
 
 	ctx, cancel := context.WithTimeout(e.context(), loreHandshakeTimeout)
 	defer cancel()
 	if res := e.probes.loreProbe()(ctx, cfg, sel.scope()); res.Err != nil {
-		e.errorf("%q is on this machine's PATH but did not answer: %v\n\n"+
-			"kenward will not start without memory. Spawning `lore mcp` is its only route to\n"+
-			"it, so this node would run, answer, and record nothing — and nothing else would\n"+
-			"report it.\n\n"+
-			"The usual cause is a LORE_HOME that was never initialised. `lore mcp` exits before\n"+
-			"the MCP handshake when there is no account there. Initialise it once, against the\n"+
-			"same LORE_HOME this node uses, and create the spaces kenward.yaml names:\n\n"+
-			"    lore init --name kenward\n"+
-			"    lore space create <name>\n\n"+
-			"then put the ids `lore spaces` prints into household.shared_space and each\n"+
-			"member's private_space. `kenward doctor` reports the same thing in more detail.",
-			cmd[0], res.Err)
+		e.errorf("this node's lore store did not answer: %v\n\n"+
+			"kenward will not start without memory. It opens the store in this process, so\n"+
+			"there is no server to check and nothing to install — what failed is the store\n"+
+			"itself, at %s.\n\n"+
+			"The usual causes are a LORE_HOME pointing somewhere kenward cannot write, and a\n"+
+			"store written by a newer lore than this build. `kenward doctor` reports the same\n"+
+			"thing in more detail.",
+			res.Err, memory.DefaultLoreHome())
 		return exitFailure
 	}
 	return exitOK
 }
 
-// loreHomeDir is the LORE_HOME the `lore mcp` this process spawns will use.
+// checkSyncBinary refuses an isolated pod that has no lore binary to run `lore serve
+// --lan` with.
+//
+// It is the last thing in kenward that requires lore to be installed, and it requires
+// it in one place only: a pod in a household of pods, where each pod has its own lore
+// home and the daemon is what carries the household's shared space between them.
+// Everything else — the store, its creation, every read and write — is a library call
+// against a store this process opened, on a machine that may have no lore on it at all.
+//
+// Delete this function, its call, and memory.Config.Command when internal/memory/sync.go
+// stops being an exec. Nothing else has to change.
+func checkSyncBinary(e *env, cfg *config.Config) int {
+	if cfg.Mode != config.ModeIsolated || len(cfg.Memory.LoreCommand) == 0 {
+		return exitOK
+	}
+	if _, err := e.look()(cfg.Memory.LoreCommand[0]); err == nil {
+		return exitOK
+	}
+	e.errorf("memory.lore_command starts %q, and there is no such program on this machine's\n"+
+		"PATH. This pod's memory does not need it — the store is opened in this process —\n"+
+		"but the household's shared space does: every pod runs `lore serve --lan`, and that\n"+
+		"is the only thing that carries an entry from one pod's lore home to another's.\n"+
+		"Without it each pod remembers only what was said to it.\n\n"+
+		"In a container the image deliberately does not carry lore (see the Dockerfile).\n"+
+		"Supply it one of two ways, built for the image's own OS and architecture:\n"+
+		"  - bind-mount it at /usr/local/bin/lore, which is what\n"+
+		"    deploy/compose.isolated.yml does for every service;\n"+
+		"  - or build a derived image that COPYs it there. That is the only route open to\n"+
+		"    a pod started by `kenward run` in isolated mode, which has no bind-mount to\n"+
+		"    offer; pass the derived image with --image.", cfg.Memory.LoreCommand[0])
+	return exitFailure
+}
+
+// loreHomeDir is the lore home this process will open.
 //
 // It reads the environment by lore's own convention rather than from kenward.yaml,
 // because that is where the value actually lives: the supervisor sets LORE_HOME on every
@@ -400,12 +403,12 @@ func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 // Nothing in kenward.yaml names it, and inventing a second place to state it would be a
 // second thing to keep in step with lore.
 //
-// An unset variable yields "" rather than lore's other half of the convention, ~/.lore,
-// and that asymmetry is deliberate. Every isolated pod has LORE_HOME set — the supervisor
-// sets it and the compose file sets it — so the fallback can only be reached outside a
-// pod, where ~/.lore is a person's own lore store on their own machine and creating an
-// account in it is not kenward's to do. Returning "" leaves the handshake below to refuse
-// with the message it always gave, which for somebody running by hand is the right answer.
+// An unset variable yields "", and what happens then depends on the mode — see
+// initLoreHome. Every isolated pod has LORE_HOME set, by the supervisor and by the
+// compose file alike, so an isolated unit without one is somebody running a pod's
+// command by hand on a host, and their ~/.lore is their own store rather than that
+// member's. Simple mode is the opposite case: ~/.lore is exactly where this
+// household's memory belongs, and it is what memory.DefaultLoreHome opens.
 func loreHomeDir(e *env) string {
 	h, ok := e.env()("LORE_HOME")
 	if !ok {
@@ -414,67 +417,88 @@ func loreHomeDir(e *env) string {
 	return strings.TrimSpace(h)
 }
 
-// initLoreHome gives an isolated unit's own lore home an account, the first time it runs
-// and never again.
+// loreDeviceName is the lore device name a simple-mode node registers itself under.
+// An isolated pod uses the member's id instead, so that `lore devices` on a household's
+// store names people rather than four identical rows.
+const loreDeviceName = "kenward"
+
+// initLoreHome gives this node's lore home an account, the first time it runs and never
+// again.
 //
 // # Why this exists at all
 //
-// A pod's /work volume is created empty and LORE_HOME points inside it. `lore mcp` exits
-// before the MCP handshake against an uninitialised home — "no account at
-// /work/lore/account.json (run `lore init`)" — so checkLore, correctly, refuses to serve.
-// It then refuses on every restart, forever, because nothing ever initialises the volume:
-// not the supervisor, not the image, not `kenward setup`, not any documented step. The
-// compose path has an operator step for it (deploy/compose.isolated.yml, step 4) and a
+// A pod's /work volume is created empty and LORE_HOME points inside it. lore refuses to
+// open an uninitialised home, so checkLore, correctly, refuses to serve. It then refuses
+// on every restart, forever, because nothing ever initialises the volume: not the
+// supervisor, not the image, not `kenward setup`, not any documented step. The compose
+// path has an operator step for it (deploy/compose.isolated.yml, step 4) and a
 // bind-mount to reach the store with; a pod started by `kenward run` has neither, so
 // isolated mode via the supervisor could not bring up a household that had never been
 // brought up before — which is every household. It was found by driving real podman.
 //
+// A fresh simple-mode machine is the same problem with a friendlier failure. It used to
+// be answered by telling the household to install lore and run `lore init`, which is the
+// external install kenward is not supposed to have; the answer now is the same one the
+// pod gets, against ~/.lore rather than a volume. Anyone who already runs lore keeps
+// their store untouched — see Idempotence below — so kenward joins a machine that has
+// one and equips a machine that does not.
+//
 // # Why the pod and not the host
 //
-// The four places this could live are the host supervisor, `kenward setup`, the image's
-// entrypoint and the pod. The image's entrypoint *is* the pod — the final stage is
-// distroless, with no shell to run a script in and the kenward binary as its ENTRYPOINT —
-// so that is this. The other two are both the host reaching into a member's work volume
-// to create their memory store, and a host that can write into a member's volume is one
-// edit away from reading it back: the mode's whole claim is that the pod is the only
-// process that touches its own volume, and the supervisor deliberately holds no path into
-// one. So the pod does it, for itself, with what it already has.
+// In isolated mode the four places this could live are the host supervisor, `kenward
+// setup`, the image's entrypoint and the pod. The image's entrypoint *is* the pod — the
+// final stage is distroless, with no shell to run a script in and the kenward binary as
+// its ENTRYPOINT — so that is this. The other two are both the host reaching into a
+// member's work volume to create their memory store, and a host that can write into a
+// member's volume is one edit away from reading it back: the mode's whole claim is that
+// the pod is the only process that touches its own volume, and the supervisor
+// deliberately holds no path into one. So the pod does it, for itself, with what it
+// already has.
 //
 // # Idempotence
 //
 // It asks lore to initialise the home every time and lets lore refuse. lore.Init
 // creates nothing in a home that already holds an account.json, a device.json or a
-// lore.db, and says so with ErrAlreadyInitialised, which runLoreInit reports as
-// success. That check used to be made here, by reading the directory and treating any
-// non-empty one as taken — a rule written to stop a new account adopting an existing
-// lore.db. lore's names those three files instead of inferring them, so kenward's copy
-// has gone: an existing store is never written to, never migrated and never re-keyed,
-// and now that is enforced by the code that would have to do the writing.
+// lore.db, and says so with ErrAlreadyInitialised, which memory.InitHome reports as
+// created=false. That check used to be made here, by reading the directory and treating
+// any non-empty one as taken — a rule written to stop a new account adopting an existing
+// lore.db. lore names those three files instead of inferring them, so kenward's copy has
+// gone: an existing store is never written to, never migrated and never re-keyed, and
+// now that is enforced by the code that would have to do the writing.
 //
 // # What it does not do
 //
 // It does not create the spaces kenward.yaml names. Init makes an account, a device and
 // one personal space, all with ids it chooses, and lore.CreateSpace mints a fresh id
-// too; household.shared_space and members[].private_space are ids an operator put in
-// the file, and nothing in lore can create a space *at a given id*. So a
-// self-initialised pod comes up with a lore that answers and spaces that are not there,
-// which `kenward doctor` reports per space and checkLore deliberately does not treat as
-// fatal. That is the same gap deploy/compose.isolated.yml documents at length under
-// "SHARED SPACE, AND IT IS NOT SOLVED HERE". What this changes is that a fresh
-// household starts, and can then be finished, instead of crash-looping with nothing an
-// operator can do about it.
+// too; household.shared_space and members[].private_space are ids that were written into
+// the file when the spaces were made, and nothing in lore can create a space *at a given
+// id*. Both wizards make them with lore.CreateSpace on the machine they run on, which
+// settles simple mode entirely; a self-initialised *pod* still comes up with a store that
+// answers and spaces that are not in it, which `kenward doctor` reports per space and
+// checkLore deliberately does not treat as fatal. That remaining gap is the one
+// deploy/compose.isolated.yml documents at length under "SHARED SPACE, AND IT IS NOT
+// SOLVED HERE", and it closes with `lore space invite` and `lore join`.
 func initLoreHome(e *env, cfg *config.Config, sel unitSelection) int {
-	if !sel.single() {
+	if cfg.Mode == config.ModeIsolated && !sel.single() {
 		return exitOK // the host supervisor; it holds no memory of its own.
 	}
 	home := loreHomeDir(e)
+	if home == "" && cfg.Mode != config.ModeIsolated {
+		// Simple mode's own store, which is where this household's memory lives.
+		home = memory.DefaultLoreHome()
+	}
 	if home == "" {
-		return exitOK // LORE_HOME is unset; see loreHomeDir.
+		// An isolated unit with no LORE_HOME, or a user with no home directory at
+		// all. Neither is a store this process may create; the handshake says so.
+		return exitOK
 	}
 
-	device := sel.member
-	if sel.group {
+	device := loreDeviceName
+	switch {
+	case sel.group:
 		device = "group"
+	case sel.member != "":
+		device = sel.member
 	}
 	ctx, cancel := context.WithTimeout(e.context(), loreInitTimeout)
 	defer cancel()
@@ -491,12 +515,16 @@ func initLoreHome(e *env, cfg *config.Config, sel unitSelection) int {
 		return exitOK // a store was already here, and it is not this process's to touch.
 	}
 	// The account and device ids lore minted went nowhere, and the recovery code with
-	// them; see runLoreInit. This line says what happened and nothing that is the
+	// them; see memory.InitHome. This line says what happened and nothing that is the
 	// member's.
+	who := sel.describe()
+	if who == "no unit" {
+		who = "this household"
+	}
 	e.printf("kenward: initialised a new lore store at %s for %s. It has an account, a device\n"+
 		"and a personal space; the spaces kenward.yaml names are not in it and no lore can\n"+
 		"create a space at a chosen id — `kenward doctor` reports which ones are missing.\n",
-		home, sel.describe())
+		home, who)
 	return exitOK
 }
 

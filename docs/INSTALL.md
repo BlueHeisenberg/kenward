@@ -10,8 +10,18 @@ what you need before you start, so it is worth deciding both now. See
 
 ## Before you start
 
-Three things, none of them kenward — and a fourth if you are giving everybody their own
-assistant:
+**Nothing to install but kenward.** It keeps its own memory: it imports
+[lore](https://github.com/BlueHeisenberg/lore) as a Go module, opens the store inside
+its own process, and creates that store the first time it runs if this machine has
+never had one. There is no lore binary to fetch, no `lore init` to run, and no space to
+make by hand — `kenward setup` makes the household's shared space and one private space
+per person, and writes their ids into `kenward.yaml` itself. If you already use lore on
+this machine, kenward adds its spaces to the store you have and changes nothing else. If
+you want lore's own CLI for your own use, that is a separate thing you may install or
+not; kenward does not care either way.
+
+So: two things, neither of them a program — and a third if you are giving everybody
+their own assistant.
 
 **A Telegram bot.** Message [@BotFather](https://t.me/BotFather), send `/newbot`, follow
 two prompts, and keep the token it gives you. It looks like
@@ -32,41 +42,6 @@ added again — and somebody who flips the setting and then tests in the group i
 already in will see nothing change and conclude the fix did not work. `kenward setup` and
 the dashboard wizard both check this the moment they have the token, and `kenward doctor`
 reports it afterwards.
-
-**[lore](https://github.com/BlueHeisenberg/lore), installed and initialised.** kenward
-owns no memory of its own. It imports lore as a Go module and opens the store in process,
-so there is no lore server to run and no protocol between them — but there does have to be
-a lore home with an account in it. You need one space for the household and one per
-member. **Create them with `lore space create` first**: neither `kenward setup` nor
-claiming an invite creates a space. The one thing that does is the admin dashboard's
-first-run wizard, which makes them for you and writes their ids into the file — so if you
-would rather not do this by hand, install the binary and run `kenward dashboard` instead
-of `kenward setup`.
-
-They must be **shared** spaces, all of them, including the private ones. A member's
-private space is a shared-kind lore space with two members in it, the person and the node;
-lore's `personal` kind never crosses accounts, so kenward could not read one. `kenward
-setup` filters its list to shared spaces for exactly this reason and will not offer you a
-personal one — if the list comes up empty, that is why.
-
-Then run `lore spaces` and keep the **id** column. That is what goes in `shared_space`
-and `private_space`, not the name you gave the space. lore does not enforce unique names,
-so kenward keys everything on ids; put a name there and it will write memories quite
-happily and return nothing on the first read. `kenward doctor` refuses a configuration
-like that outright, which is the only reason it is a nuisance rather than a week of lost
-captures.
-
-**In isolated mode the "installed and initialised" half is not yours.** Each pod has its
-own lore store on its own volume, and it creates that store itself the first time it
-starts — nothing outside the pod can reach the volume, which is the point of the mode.
-What you supply is a `lore` binary in the image (see below) and the space ids in
-`kenward.yaml`; what you do not do is run `lore init` against a pod's volume. Read
-`kenward doctor`'s per-space lines afterwards: a pod that made its own store does not
-hold the space ids you configured, and lore has no way to create a space at an id you
-chose. Closing that is one `lore space invite` on the store that owns the household space
-and one `lore join` in each other pod — an operator step by design, printed by `doctor` as
-remediation. The pods find each other without help: `kenward run` starts `lore serve --lan`
-in every isolated unit, so once they share a space they converge on it.
 
 **At least one inference endpoint.** Anything OpenAI-compatible: vLLM, llama.cpp,
 Ollama, LM Studio, or a cloud provider. It does not need to be awake during setup —
@@ -91,6 +66,29 @@ and look for `"chat":{"id":-1001234567890` — that number, minus sign and all. 
 comes back, the message was sent before the bot joined, or privacy mode is still on, or
 the bot was added to the group before you disabled it (in which case remove it and add it
 again).
+
+---
+
+## Where the memory goes
+
+Worth knowing, though nothing here is a step.
+
+kenward's store is a lore home: `$LORE_HOME` if you set one, otherwise `~/.lore`. Setup
+creates it if it is not there, and creates one **shared** space for the household and one
+per person, named after the household — "Casa — household", "Casa — David". Everything
+kenward configures is a shared-kind space, including the private ones: a member's private
+space has two members in it, the person and the node, and lore's `personal` kind never
+crosses accounts, so kenward could not read one.
+
+The configuration names spaces by **id**, never by display name — lore does not enforce
+unique names, and a name in that field would write memories quite happily and return
+nothing on the first read. Setup writes the ids, so this is a trap you can no longer fall
+into; it is described because `kenward doctor` refuses a configuration that has one, and
+that refusal is easier to read if you know why it exists.
+
+Running setup again over a household that already exists reuses the spaces of those
+names rather than making a second set, so `--force` corrects a typo without splitting
+anybody's memory in half.
 
 ---
 

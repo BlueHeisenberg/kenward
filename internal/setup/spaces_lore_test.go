@@ -51,10 +51,30 @@ func TestLoreSpacesAgainstARealLore(t *testing.T) {
 		}
 	}
 
-	// The personal space is the wrong-kind path: it belongs to one account and can
-	// hold neither the household's memory nor a member's, so the wizard must not
-	// offer it.
-	if got := usableSpaces(spaces, nil); len(got) != 0 {
-		t.Errorf("the wizard would offer %+v; a personal space cannot serve as either kind of memory", got)
+	// And the space the wizard actually makes is a shared one, because a personal
+	// space belongs to one account and can hold neither the household's memory nor
+	// a member's.
+	made, err := loreCreateSpace(t.Context(), "Test household — household")
+	if err != nil {
+		t.Fatalf("creating a space: %v", err)
+	}
+	if made.Kind != "shared" {
+		t.Errorf("the wizard made a %q space; only a shared space can hold memory kenward reads", made.Kind)
+	}
+	if made.ID == "" || made.ID == made.Name {
+		t.Errorf("the space came back as %+v, and it is the id the configuration is written with", made)
+	}
+}
+
+// TestOpenLoreInitialisesAnEmptyHome is the standalone claim, at its narrowest: setup
+// against a machine that has never had lore does not fail, it makes the store.
+func TestOpenLoreInitialisesAnEmptyHome(t *testing.T) {
+	t.Setenv("LORE_HOME", t.TempDir())
+	spaces, err := loreSpaces(t.Context())
+	if err != nil {
+		t.Fatalf("listing spaces on a machine with no lore home: %v; setup must need nothing installed", err)
+	}
+	if len(spaces) != 1 {
+		t.Fatalf("a home setup had to create listed %+v, want the one personal space lore.Init makes", spaces)
 	}
 }

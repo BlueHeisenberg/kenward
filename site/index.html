@@ -621,7 +621,7 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
   <section id="hardware" aria-labelledby="hardware-h">
     <div class="wrap">
       <p class="eyebrow">What it needs</p>
-      <h2 id="hardware-h">Four things, three of them not kenward</h2>
+      <h2 id="hardware-h">Three things, and only one of them is software</h2>
       <ul class="cards">
         <li>
           <h3>A machine that is always on</h3>
@@ -647,14 +647,17 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
           </p>
         </li>
         <li>
-          <h3>lore, initialised</h3>
+          <h3>Nothing else installed</h3>
           <p>
-            kenward owns no memory of its own. It imports lore as a Go module and opens the store in
-            process &mdash; there is no server to run and no protocol between them. What it needs is a
-            lore home with an account in it. The dashboard&rsquo;s wizard can create the spaces for
-            you; the terminal wizard only offers the ones lore already holds, and only the
-            <strong>shared</strong> ones, because a lore personal space cannot cross accounts and so
-            can hold neither the household&rsquo;s memory nor a member&rsquo;s.
+            kenward keeps its own memory. It imports lore as a Go module, opens the store inside its own
+            process, and creates that store the first time it runs if this machine has never had one
+            &mdash; no lore binary to fetch, no <code>lore init</code>, no server, no protocol between
+            them. Both wizards make the household&rsquo;s shared space and one private space per person
+            and write their ids into <code>kenward.yaml</code> themselves, so there is nothing to copy
+            between two programs. A machine that already runs lore has kenward add its spaces to the
+            store already there. (The exception is an <em>isolated</em> household of several pods: each
+            pod runs lore&rsquo;s <code>lore serve --lan</code> to carry the shared space between them,
+            so those images need the binary.)
           </p>
         </li>
         <li>

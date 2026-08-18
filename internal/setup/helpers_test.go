@@ -2,11 +2,28 @@ package setup
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
+	"testing"
 	"time"
 
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 )
+
+// TestMain keeps this package's tests off any real lore home.
+//
+// The wizard creates spaces now, and a default that reached the real lore would have
+// every run of `go test ./internal/setup` write spaces into whatever ~/.lore the
+// machine has. It did exactly that once, into somebody's own store, before this
+// existed. Tests that want to exercise a real lore point LORE_HOME at a temp
+// directory and call loreSpaces or loreCreateSpace directly; see spaces_lore_test.go.
+func TestMain(m *testing.M) {
+	defaultSpaceLister = fixedSpaces(testSpaces)
+	defaultSpaceMaker = fakeSpaceMaker()
+	os.Exit(m.Run())
+}
 
 // testSpaces is a lore home in the shape of the real one this was developed
 // against: shared spaces for the household and for each person, and a personal
@@ -39,6 +56,22 @@ func unreachableLore(err error) SpaceLister {
 			memory.ErrStoreUnavailable)
 	}
 	return func(context.Context) ([]memory.Space, error) { return nil, err }
+}
+
+// fakeSpaceMaker mints a space with an id derived from its name, so that a test can
+// assert which space a member was given without the ids being a lottery.
+func fakeSpaceMaker() SpaceMaker {
+	return func(_ context.Context, name string) (memory.Space, error) {
+		return memory.Space{ID: fakeSpaceID(name), Name: name, Kind: "shared"}, nil
+	}
+}
+
+// fakeSpaceID is what fakeSpaceMaker would mint for a name, so a test can say what it
+// expects without copying a hash.
+func fakeSpaceID(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	h := hex.EncodeToString(sum[:16])
+	return fmt.Sprintf("%s-%s-4%s-8%s-%s", h[0:8], h[8:12], h[13:16], h[17:20], h[20:32])
 }
 
 // fixedProbe returns a Probe that always reports the same thing, so a test can

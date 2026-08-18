@@ -273,7 +273,6 @@ const (
 Two names. Neither is shown to anyone outside the house.`
 
 	questionHouseholdName = "What is this household called?"
-	questionSharedSpace   = "Which space is the household's shared memory?"
 
 	// This said "which nobody else in the household can read", three screens before
 	// the mode had printed its own statement contradicting it. Sealing against the
@@ -284,9 +283,9 @@ Two names. Neither is shown to anyone outside the house.`
   space of their own, which the group chat never reads. Who else can read one
   depends on the mode — the privacy statement at the end of setup says exactly.
 
-  Both are lore spaces, and kenward never creates one — a space is yours, and
-  who is in it is your decision. So it asks which of the ones you already have
-  to use.`
+  Both are lore spaces and setup makes them for you, here, named after this
+  household. Nothing to install and no ids to copy. If this machine already has
+  a lore store, kenward adds its spaces to it and touches nothing else.`
 
 	membersIntro = `Who lives here
 
@@ -571,51 +570,18 @@ kenward doctor prints where each secret was read from, and flags a token file
 other people on the machine can read, so you can check the change took effect
 without sending a message and waiting to see what happens.`
 
-// personalSpacesSkipped explains a space missing from the list, before somebody
-// goes looking for it.
-const personalSpacesSkipped = `  Your personal lore space is not in this list. A personal space belongs to one
-  account and can never cross accounts, so kenward cannot be the second member
-  of it — and being the second member is what lets it answer you at all.`
-
-// noSpaceFor is the end of the road when there is no space to use. It stops rather
-// than inventing a name, because a name kenward writes here is a configuration that
-// starts, accepts messages, saves memory, and then finds nothing the first time
-// somebody asks it to remember — which is the failure this whole step exists to
-// remove, not one to replace with another.
+// loreUnreachable is printed when this machine's store cannot be opened at all.
 //
-// It does not print a command to create a space. lore's own interface is lore's to
-// document, and a wizard that guesses at somebody else's verb sends the operator
-// off to debug an invented instruction.
-func noSpaceFor(use string, all []memory.Space) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "There is no lore space this household can use for %s.\n\n", use)
-	if len(all) == 0 {
-		b.WriteString("  This lore home holds no spaces at all.\n")
-	} else {
-		b.WriteString("  What it holds:\n\n")
-		for _, s := range all {
-			fmt.Fprintf(&b, "    %s   %s   %s\n", s.Name, shortID(s.ID), s.Kind)
-		}
-	}
-	b.WriteString(`
-  Nothing has been written. Create a shared space in lore — one for the
-  household, one for each person, each with that person and this machine in it
-  — check it appears in ` + "`lore spaces`" + `, and run setup again.`)
-	return b.String()
-}
-
-// loreUnreachable is printed when the listing cannot be fetched. The first line is
-// the one that matters: an operator whose lore home has never been initialised
-// needs to be told that, not handed the error underneath it.
-//
-// It used to distinguish "lore is not installed" from "lore ran and failed",
-// because the listing came from a `lore mcp` subprocess and a missing binary was
-// the common case. kenward opens the store itself now, so the binary's presence
-// says nothing and the common case is a home with no account in it.
+// It used to distinguish "lore is not installed" from "lore ran and failed", because
+// the listing came from a `lore mcp` subprocess and a missing binary was the common
+// case; then it printed `lore init`, because an uninitialised home was. Neither is a
+// case any more — nothing is spawned, and setup initialises the home itself — so what
+// is left is a home kenward cannot use, and the only thing worth saying is which
+// directory and why.
 func loreUnreachable(cause error) string {
-	first := "lore's store could not be opened, so setup cannot show you which spaces you have."
+	first := "kenward's memory store could not be opened, so setup cannot go on."
 	if loreNotInitialised(cause) {
-		first = "lore has not been set up on this machine yet — its home holds no account."
+		first = "kenward's memory store could not be created."
 	}
 	return fmt.Sprintf(`%s
 
@@ -623,14 +589,9 @@ func loreUnreachable(cause error) string {
 
   %v
 
-  Run `+"`lore init`"+` in another terminal if you have not, then create the spaces
-  this household needs.
-
-  Setup can carry on, but it needs the space ids rather than their names. Run
-  `+"`lore spaces`"+` and copy the id column. A display name will not work here:
-  lore does not make names unique, so kenward identifies a space by id, and a
-  name configured here fails the first time somebody asks the assistant to
-  remember something.`,
+  Nothing has been written. That directory is where this household's memory
+  lives; set LORE_HOME to somewhere this user can write, or fix what the error
+  above says, and run setup again.`,
 		first, loreHomeForMessage(), cause)
 }
 

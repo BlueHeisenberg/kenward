@@ -486,9 +486,9 @@ func isPod(scope config.UnitScope) bool {
 // The space check says the space is in this store. That is necessary and it is not
 // sufficient: in isolated mode every pod has its own LORE_HOME and therefore its own
 // lore account, so the household's shared space is one space held by several accounts
-// and something has to carry entries between them. `lore mcp` never does — it reads
-// and writes the local store — and until `run` started one, no `lore serve` existed in
-// any pod, so a household could pass every check above with a shared space that
+// and something has to carry entries between them. Opening the store does not — it
+// reads and writes the local one — and until `run` started one, no `lore serve` existed
+// in any pod, so a household could pass every check above with a shared space that
 // reached nobody. That is the state this section exists to name.
 //
 // It reports peers and rounds and nothing else. What is in the household's memory is
@@ -505,9 +505,10 @@ func doctorSharedMemory(ctx context.Context, e *env, cfg *config.Config, scope c
 		// lore home at all. Both still deserve the standing hint, because a household
 		// syncing to a laptop needs the same daemon and nothing else would say so.
 		return []check{{
-			Status: statusWarn,
-			Text:   "this lore store does not sync on its own",
-			Detail: []string{"run `lore serve` on the same LORE_HOME if this store should reach another machine"},
+			Status: statusOK,
+			Text:   "this household's memory is held here and needs no sync",
+			Detail: []string{"one lore store holds every space, so there is nothing to converge with and no daemon is run",
+				"if this store should also reach another machine, that is lore's `lore serve` on the same LORE_HOME"},
 		}}
 	}
 	if cfg.Household.SharedSpace == "" {

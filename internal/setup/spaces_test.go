@@ -17,6 +17,12 @@ import (
 // accepted by lore's Put and rejected by its Get, so a configuration naming one
 // starts, accepts messages, saves memory, and finds nothing the first time somebody
 // asks the assistant to remember something.
+//
+// It used to be the reason the wizard asked which space to use and printed ids beside
+// names: the id was the operator's to copy, and copying the wrong column was the
+// failure. The wizard makes the spaces now, so the id is never typed by anybody and
+// never can be wrong — what is asserted here is that the ids lore minted are what
+// reached the file, and that nothing derived from a person's name did.
 func TestSpacesAreWrittenAsIDs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
 	_, cfg, io, err := runWizard(t, "linux", Options{ConfigPath: path}, simpleAnswers()...)
@@ -24,23 +30,20 @@ func TestSpacesAreWrittenAsIDs(t *testing.T) {
 		t.Fatalf("run: %v\n%s", err, io.Transcript())
 	}
 
-	if cfg.Household.SharedSpace != householdSpaceID {
-		t.Errorf("shared_space = %q, want the id", cfg.Household.SharedSpace)
+	if want := fakeSpaceID("Casa — household"); cfg.Household.SharedSpace != want {
+		t.Errorf("shared_space = %q, want the id lore minted, %q", cfg.Household.SharedSpace, want)
 	}
-	if cfg.Members[0].PrivateSpace != davidSpaceID {
-		t.Errorf("David's private_space = %q, want the id", cfg.Members[0].PrivateSpace)
+	if want := fakeSpaceID("Casa — David"); cfg.Members[0].PrivateSpace != want {
+		t.Errorf("David's private_space = %q, want %q", cfg.Members[0].PrivateSpace, want)
 	}
 
-	// Every space in the file has to be an id lore actually holds. Nothing derived
-	// from a member's name may survive anywhere in it.
-	known := map[string]bool{}
-	for _, s := range testSpaces {
-		known[s.ID] = true
-	}
-	for _, space := range append([]string{cfg.Household.SharedSpace}, spacesOf(cfg.Members)...) {
-		if !known[space] {
-			t.Errorf("configured space %q is not a space lore holds", space)
+	// No two people share one, which would be one person reading another's memory.
+	seen := map[string]bool{cfg.Household.SharedSpace: true}
+	for _, space := range spacesOf(cfg.Members) {
+		if seen[space] {
+			t.Errorf("space %q was configured twice", space)
 		}
+		seen[space] = true
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -61,147 +64,96 @@ func spacesOf(members []config.MemberConfig) []string {
 	return out
 }
 
-// TestPersonalSpaceIsNeverOffered: a lore personal space belongs to one account and
-// can never cross accounts, so kenward can be neither the second member of it nor
-// the group in it. Offering one would produce a configuration that cannot work.
-func TestPersonalSpaceIsNeverOffered(t *testing.T) {
-	_, cfg, io, err := runWizard(t, "linux", Options{}, simpleAnswers()...)
+// TestTheWizardMakesTheSpacesItself is the standalone claim at the wizard's own seam.
+//
+// Nobody installs lore, nobody runs `lore space create`, nobody reads an id column.
+// An installer answers the questions and the household exists — which is what the
+// listing-and-choosing flow this replaced could never do, because every space it
+// offered had to have been made by hand first.
+func TestTheWizardMakesTheSpacesItself(t *testing.T) {
+	var made []string
+	maker := func(_ context.Context, name string) (memory.Space, error) {
+		made = append(made, name)
+		return memory.Space{ID: fakeSpaceID(name), Name: name, Kind: "shared"}, nil
+	}
+	// Nothing is listed either: a lore home with no spaces in it is the ordinary
+	// case now, and a wizard that consulted one would be back to needing it seeded.
+	lister := func(context.Context) ([]memory.Space, error) {
+		t.Error("the wizard listed lore's spaces; it has no reason to on a first run")
+		return nil, nil
+	}
+	_, cfg, io, err := runWizard(t, "linux",
+		Options{Spaces: lister, CreateSpace: maker}, simpleAnswers()...)
 	if err != nil {
 		t.Fatalf("run: %v\n%s", err, io.Transcript())
 	}
-	if cfg.Household.SharedSpace == personalSpaceID {
-		t.Fatal("a personal space was configured as the household's shared memory")
+
+	want := []string{"Casa — household", "Casa — David", "Casa — María"}
+	if len(made) != len(want) {
+		t.Fatalf("made %v, want one space for the household and one per person: %v", made, want)
 	}
-	transcript := io.Transcript()
-	if strings.Contains(transcript, personalSpaceID) {
-		t.Error("a personal space appeared in the list of choices")
+	for i, name := range want {
+		if made[i] != name {
+			t.Errorf("space %d was named %q, want %q", i, made[i], name)
+		}
 	}
-	// And the operator is told why the space they can see in lore is missing here,
-	// rather than being left to wonder.
-	if !strings.Contains(transcript, "personal space belongs to one") {
-		t.Error("nothing explained why the personal space is not listed")
+	if cfg.Household.SharedSpace != fakeSpaceID(want[0]) {
+		t.Errorf("shared_space = %q, want the id of the space just made", cfg.Household.SharedSpace)
+	}
+
+	// And the operator is told, rather than having spaces appear in their lore
+	// store with no explanation.
+	if !strings.Contains(io.Transcript(), "setup makes them for you") {
+		t.Errorf("nothing said the spaces were being created:\n%s", io.Transcript())
 	}
 }
 
-// TestNoUsableSpaceStopsRatherThanInventingOne covers a lore home with nothing
-// kenward can use, which is what a household that has installed lore and not yet
-// made a space looks like.
-func TestNoUsableSpaceStopsRatherThanInventingOne(t *testing.T) {
-	only := []memory.Space{{ID: personalSpaceID, Name: "personal", Kind: "personal", Entries: 480}}
+// TestSetupRunAgainReusesTheSpacesItAlreadyMade.
+//
+// `kenward setup --force` over a household that already exists is somebody fixing an
+// endpoint address, not somebody asking for a second memory. lore refuses a duplicate
+// name, and the wrong answer to that refusal is to fail the install; the right one is
+// to keep using the space of that name, which is the one the household has been
+// talking into.
+func TestSetupRunAgainReusesTheSpacesItAlreadyMade(t *testing.T) {
+	existing := []memory.Space{
+		{ID: "e1000000-0000-4000-8000-000000000001", Name: "Casa — household", Kind: "shared"},
+		{ID: "e1000000-0000-4000-8000-000000000002", Name: "Casa — David", Kind: "shared"},
+		{ID: "e1000000-0000-4000-8000-000000000003", Name: "Casa — María", Kind: "shared"},
+	}
+	maker := func(_ context.Context, name string) (memory.Space, error) {
+		return memory.Space{}, fmt.Errorf("memory: creating lore space %q: %w", name, memory.ErrSpaceExists)
+	}
+	_, cfg, io, err := runWizard(t, "linux",
+		Options{Spaces: fixedSpaces(existing), CreateSpace: maker}, simpleAnswers()...)
+	if err != nil {
+		t.Fatalf("run: %v\n%s", err, io.Transcript())
+	}
+	if cfg.Household.SharedSpace != existing[0].ID {
+		t.Errorf("shared_space = %q, want the household's existing space %q; a second one splits their memory",
+			cfg.Household.SharedSpace, existing[0].ID)
+	}
+	if cfg.Members[0].PrivateSpace != existing[1].ID {
+		t.Errorf("David's private_space = %q, want %q", cfg.Members[0].PrivateSpace, existing[1].ID)
+	}
+}
+
+// TestAFailedSpaceCreationStopsRatherThanWritingAHouseholdWithNoMemory.
+func TestAFailedSpaceCreationStopsRatherThanWritingAHouseholdWithNoMemory(t *testing.T) {
+	maker := func(context.Context, string) (memory.Space, error) {
+		return memory.Space{}, errors.New("database disk image is malformed")
+	}
 	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
 	_, _, io, err := runWizard(t, "linux",
-		Options{ConfigPath: path, Spaces: fixedSpaces(only)},
-		"1", "Casa")
-	if !errors.Is(err, ErrStopped) {
-		t.Fatalf("err = %v, want ErrStopped", err)
+		Options{ConfigPath: path, CreateSpace: maker}, "1", "Casa")
+	if err == nil {
+		t.Fatalf("a household with no memory was written\n%s", io.Transcript())
+	}
+	if !strings.Contains(err.Error(), "disk image is malformed") {
+		t.Errorf("the underlying failure was not reported: %v", err)
 	}
 	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
 		t.Error("a configuration was written with no space to put memory in")
-	}
-	transcript := io.Transcript()
-	if !strings.Contains(transcript, "Nothing has been written") {
-		t.Error("the operator was not told that nothing was written")
-	}
-	if !strings.Contains(transcript, "run setup again") {
-		t.Error("the operator was not told they can run setup again")
-	}
-	// It must not guess at lore's own verb for making a space.
-	if strings.Contains(transcript, "lore space create") || strings.Contains(transcript, "lore new") {
-		t.Error("the wizard invented a lore command")
-	}
-}
-
-// TestRunningOutOfSpacesMidwayStops covers three people and two spaces.
-func TestRunningOutOfSpacesMidwayStops(t *testing.T) {
-	two := []memory.Space{
-		{ID: householdSpaceID, Name: "household", Kind: "shared"},
-		{ID: davidSpaceID, Name: "david", Kind: "shared"},
-	}
-	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
-	_, _, io, err := runWizard(t, "linux",
-		Options{ConfigPath: path, Spaces: fixedSpaces(two)},
-		"1", "Casa", "1", realToken, "n", "David", "María", "", "1")
-	if !errors.Is(err, ErrStopped) {
-		t.Fatalf("err = %v, want ErrStopped\n%s", err, io.Transcript())
-	}
-	if !strings.Contains(io.Transcript(), "María's private memory") {
-		t.Error("the message does not say which person has no space")
-	}
-	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
-		t.Error("a configuration was written for a household with a member who has no memory")
-	}
-}
-
-// TestOperatorCanSayNoneOfThese: the last option exists so that somebody who can see
-// their spaces and knows none of them is right is not forced to pick a wrong one.
-func TestOperatorCanSayNoneOfThese(t *testing.T) {
-	// Five shared spaces in the listing, so the escape is the sixth option.
-	_, _, io, err := runWizard(t, "linux", Options{}, "1", "Casa", "6")
-	if !errors.Is(err, ErrStopped) {
-		t.Fatalf("err = %v, want ErrStopped\n%s", err, io.Transcript())
-	}
-	if !strings.Contains(io.Transcript(), "None of these") {
-		t.Error("the escape option was not offered")
-	}
-}
-
-// TestLoreUnreachableFallsBackToAskingForTheID: usable without pretending. The one
-// thing it will not do is quietly accept a display name, because that is the
-// configuration this whole step exists to stop writing.
-func TestLoreUnreachableFallsBackToAskingForTheID(t *testing.T) {
-	answers := []string{
-		"1", "Casa",
-		householdSpaceID, // typed, because nothing could be listed
-		realToken, "n",
-		"David", "",
-		davidSpaceID,
-		"", "", "", "", // identity: one assistant, and kenward as it has always been
-		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
-		"n",
-		"", // conversation reset: off
-	}
-	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
-	w, cfg, io, err := runWizard(t, "linux",
-		Options{ConfigPath: path, Spaces: unreachableLore(nil)}, answers...)
-	if err != nil {
-		t.Fatalf("run: %v\n%s", err, io.Transcript())
-	}
-	if cfg.Household.SharedSpace != householdSpaceID || cfg.Members[0].PrivateSpace != davidSpaceID {
-		t.Errorf("the typed ids were not used: %q, %q", cfg.Household.SharedSpace, cfg.Members[0].PrivateSpace)
-	}
-	assertLoadable(t, path, w)
-
-	transcript := io.Transcript()
-	for _, want := range []string{
-		"lore has not been set up on this machine yet",
-		"lore init",
-		"lore spaces",
-		"A display name will not work here",
-	} {
-		if !strings.Contains(transcript, want) {
-			t.Errorf("the fallback does not say %q:\n%s", want, transcript)
-		}
-	}
-	// Said once, not before every question.
-	if n := strings.Count(transcript, "Looked in:"); n != 1 {
-		t.Errorf("the lore warning was printed %d times, want 1", n)
-	}
-}
-
-// TestLoreFailedForSomeOtherReasonSaysSo distinguishes "never initialised" from
-// "opened and broke", because the two have entirely different first moves.
-func TestLoreFailedForSomeOtherReasonSaysSo(t *testing.T) {
-	broken := unreachableLore(errors.New("database disk image is malformed"))
-	_, _, io, err := runWizard(t, "linux", Options{Spaces: broken}, "1", "Casa", householdSpaceID)
-	if !errors.Is(err, ErrInputClosed) {
-		t.Fatalf("err = %v", err)
-	}
-	transcript := io.Transcript()
-	if strings.Contains(transcript, "has not been set up on this machine") {
-		t.Error("a store that opened and failed was reported as never initialised")
-	}
-	if !strings.Contains(transcript, "could not be opened") || !strings.Contains(transcript, "disk image is malformed") {
-		t.Errorf("the underlying failure was not shown:\n%s", transcript)
 	}
 }
 
@@ -214,8 +166,9 @@ func TestLoreNotInitialisedRecognisesAnUnusableHome(t *testing.T) {
 	}
 }
 
-// TestScriptedInstallIsCheckedAgainstLore: a script cannot see the numbered list, so
-// the ids it supplies are checked instead.
+// TestScriptedInstallIsCheckedAgainstLore: a script may still name spaces it made
+// itself — that is how the dashboard's wizard drives this package — so the ids it
+// supplies are checked.
 func TestScriptedInstallIsCheckedAgainstLore(t *testing.T) {
 	base := func() *Answers {
 		return &Answers{
@@ -265,26 +218,47 @@ func TestScriptedInstallIsCheckedAgainstLore(t *testing.T) {
 
 	t.Run("unreachable lore does not block a script", func(t *testing.T) {
 		// Nothing to check against, and a script's ids are its author's
-		// responsibility. Refusing here would make setup impossible on a machine
-		// that has not installed lore yet.
+		// responsibility. Refusing here would make an install impossible on a
+		// machine whose store cannot be listed for some unrelated reason.
 		if err := run(t, base(), unreachableLore(nil)); err != nil {
 			t.Fatalf("run: %v", err)
 		}
 	})
 }
 
-// TestSpacesAreListedOnce: the listing spawns a subprocess, and asking a household of
-// four means four questions off one answer.
-func TestSpacesAreListedOnce(t *testing.T) {
-	calls := 0
-	lister := func(ctx context.Context) ([]memory.Space, error) {
-		calls++
-		return testSpaces, nil
+// TestScriptedInstallWithNoSpacesMakesThem is `kenward setup --non-interactive` as an
+// installer would actually run it: names and endpoints, no lore, no ids.
+func TestScriptedInstallWithNoSpacesMakesThem(t *testing.T) {
+	var made []string
+	w := New(NewScriptIO(), Options{
+		ConfigPath: filepath.Join(t.TempDir(), DefaultConfigFileName),
+		GOOS:       "linux",
+		Probe:      fixedProbe(Answered),
+		LookupEnv:  noEnv,
+		CreateSpace: func(_ context.Context, name string) (memory.Space, error) {
+			made = append(made, name)
+			return memory.Space{ID: fakeSpaceID(name), Name: name, Kind: "shared"}, nil
+		},
+		Answers: &Answers{
+			HouseholdName: "Casa",
+			MemberNames:   []string{"David", "María"},
+			Endpoints:     []EndpointAnswer{{Name: "m", BaseURL: "http://m.local:8000/v1", Model: "q"}},
+		},
+	})
+	cfg, err := w.Run(context.Background())
+	if err != nil {
+		t.Fatalf("run: %v", err)
 	}
-	if _, _, io, err := runWizard(t, "linux", Options{Spaces: lister}, simpleAnswers()...); err != nil {
-		t.Fatalf("run: %v\n%s", err, io.Transcript())
+	want := []string{"Casa — household", "Casa — David", "Casa — María"}
+	if len(made) != 3 {
+		t.Fatalf("made %v, want %v", made, want)
 	}
-	if calls != 1 {
-		t.Errorf("lore was listed %d times, want 1", calls)
+	if cfg.Household.SharedSpace != fakeSpaceID(want[0]) {
+		t.Errorf("shared_space = %q", cfg.Household.SharedSpace)
+	}
+	for i, m := range cfg.Members {
+		if m.PrivateSpace != fakeSpaceID(want[i+1]) {
+			t.Errorf("%s's private_space = %q, want %q", m.Name, m.PrivateSpace, fakeSpaceID(want[i+1]))
+		}
 	}
 }

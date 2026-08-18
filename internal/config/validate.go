@@ -587,22 +587,44 @@ func (c *Config) checkPassphraseSource(p *problems, where, field, kind, value st
 	seen[value] = i
 }
 
-// validateMemory checks the lore command is something that could be executed.
+// validateMemory checks the lore command, where there is anything for it to run.
 //
-// After ApplyDefaults an omitted command has already become DefaultLoreCommand, so the
-// empty case here is not reachable from a YAML file — it catches configurations built in
-// Go that never went through ApplyDefaults, which the setup wizard and other packages
-// do. That is worth a check rather than a comment: the failure it replaces is a spawn of
-// nothing at startup, reported far from the file that caused it.
+// # Why an omitted command is not an error in simple mode
 //
-// What it deliberately does not do is look for the program on PATH or stat it. Whether
-// lore is installed is a property of the machine, not of the configuration, and a
-// validation that fails on one host and passes on another would make `doctor` useless
-// for checking a file before shipping it. That check belongs to `doctor`, on the machine
-// that will run it.
+// It used to be required everywhere, with the reason "it is the argv kenward runs to
+// start lore's MCP server, and without it there is no memory to read or write". Both
+// halves of that stopped being true when kenward began importing lore: there is no MCP
+// server, and reads and writes are library calls against a store this process opens.
+// The requirement outlived its reason and was, in simple mode, a configuration file
+// naming a program nothing would ever execute — which read to anyone installing kenward
+// as a dependency they had to go and install.
+//
+// One subprocess is left, and it is the whole of what this value is for: `lore serve
+// --lan`, the cross-pod sync daemon started by cmd/kenward's startSyncDaemon when the
+// mode is isolated and this process is one member's or the group's pod. A simple-mode
+// node has one lore home holding every space, nothing to converge with, and so never
+// runs it. See internal/memory/sync.go.
+//
+// So the requirement is scoped to the mode that can reach the exec. When the daemon
+// stops being a subprocess this function loses its first branch and MemoryConfig loses
+// the field.
+//
+// # What it deliberately does not do
+//
+// It does not look for the program on PATH or stat it. Whether lore is installed is a
+// property of the machine, not of the configuration, and a validation that fails on one
+// host and passes on another would make `doctor` useless for checking a file before
+// shipping it. That check belongs to `doctor`, on the machine that will run it.
+//
+// After ApplyDefaults an isolated configuration has already had DefaultLoreCommand
+// filled in, so the required case here is not reachable from a YAML file — it catches
+// configurations built in Go that never went through ApplyDefaults, which the setup
+// wizard and other packages do.
 func (c *Config) validateMemory(p *problems) {
 	if len(c.Memory.LoreCommand) == 0 {
-		p.addf("memory.lore_command: required; it is the argv kenward runs to start lore's MCP server, and without it there is no memory to read or write")
+		if c.Mode == ModeIsolated {
+			p.addf("memory.lore_command: required in isolated mode; it locates the lore binary each pod runs as `lore serve --lan`, which is what carries the household's shared memory between pods")
+		}
 		return
 	}
 	if strings.TrimSpace(c.Memory.LoreCommand[0]) == "" {

@@ -6,22 +6,28 @@
 # copy just that binary onto a distroless base that carries nothing else.
 #
 # ---------------------------------------------------------------------------
-# IMPORTANT — lore is NOT in this image.
+# IMPORTANT — lore is NOT in this image, and a SIMPLE-MODE container does not
+# need it to be.
 #
-# kenward imports lore and opens its store in-process, so it does not need the
-# binary to read or write memory. It needs it for one thing: `lore serve`, the
-# sync daemon, which is what carries a household's shared memory between pods
-# and between machines (kenward.yaml: memory.lore_command, default ["lore"]).
-# Without a `lore` binary on $PATH inside the container, an isolated pod's
-# shared memory reaches nobody. This image
-# deliberately does not bundle it — lore is a sibling project with its own
-# release cadence, and baking a copy in here would pin kenward to whatever
-# lore version happened to be current at image build time.
+# kenward imports lore, opens its store in-process, and creates that store on
+# the data volume the first time it starts. Reading, writing and initialising
+# are all library calls, so a simple-mode container works with nothing else in
+# it, and there is no `lore init` to run against a fresh volume.
 #
-# Operators supply it one of two ways:
+# The binary is needed for one thing, in one mode: `lore serve --lan`, the sync
+# daemon each ISOLATED pod runs so its copy of the household's shared space
+# reaches the other pods (kenward.yaml: memory.lore_command, which is written
+# only into an isolated configuration). Without it on $PATH inside such a pod,
+# shared memory reaches nobody and `kenward run` refuses to start and says so.
+#
+# This image deliberately does not bundle it — lore is a sibling project with
+# its own release cadence, and baking a copy in here would pin kenward to
+# whatever lore version happened to be current at image build time.
+#
+# Operators running isolated mode supply it one of two ways:
 #   1. Bind-mount a `lore` binary built for this image's OS/arch to
-#      /usr/local/bin/lore (read-only). See deploy/compose.simple.yml and
-#      deploy/compose.isolated.yml for the exact volume line.
+#      /usr/local/bin/lore (read-only). See deploy/compose.isolated.yml for the
+#      exact volume line.
 #   2. Build a derived image: `FROM ghcr.io/blueheisenberg/kenward:<tag>` and
 #      `COPY` a `lore` binary to /usr/local/bin/lore.
 # Either way the binary must match this image's platform (linux/amd64 or

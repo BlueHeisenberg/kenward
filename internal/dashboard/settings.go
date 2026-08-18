@@ -532,8 +532,9 @@ func (s *Server) loadConfig() (*config.Config, error) {
 }
 
 // openLore builds a memory client for the request that needs one, and the caller closes
-// it. A client holds a `lore mcp` subprocess, so one per request beats one per process
-// held open against a household that opens the dashboard twice a year.
+// it. A client holds an open SQLite store, and lore allows one per home per process, so
+// one per request beats one held open for the life of a dashboard a household opens
+// twice a year.
 func (s *Server) openLore(r *http.Request) (SpaceClient, error) {
 	if s.deps.Lore == nil {
 		return nil, errors.New("this build has no way to reach lore")

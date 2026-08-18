@@ -35,9 +35,12 @@ func isolatedIdentityAnswers(language, tone, character string) []string {
 // does: the household group's chat id.
 func identityAnswersIn(answers []string, identity string, rest ...string) []string {
 	for i, a := range answers {
-		// The identity step sits between the members' spaces and the first endpoint,
-		// and simpleAnswers marks it with four empty answers in a row.
-		if a == "" && i+3 < len(answers) && answers[i+1] == "" && answers[i+2] == "" && answers[i+3] == "" {
+		// The identity step sits between the last member's name and the first
+		// endpoint, and simpleAnswers marks it with four empty answers in a row.
+		// The run of four must be the *whole* run: the answer that closes the list
+		// of members is itself empty and sits immediately before it, so a search
+		// that accepts a prefix of five finds the wrong place by one.
+		if a == "" && i+4 < len(answers) && answers[i+1] == "" && answers[i+2] == "" && answers[i+3] == "" && answers[i+4] != "" {
 			out := append([]string(nil), answers[:i]...)
 			out = append(out, identity)
 			out = append(out, rest...)

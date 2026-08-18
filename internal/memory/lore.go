@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -117,6 +118,57 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("memory: opening the lore store at %s: %w", cfg.LoreHome, mapErr(err))
 	}
 	return &Client{cfg: cfg, store: st}, nil
+}
+
+// InitHome gives a lore home an account, a device and a personal space, and reports
+// whether it made one. A home that already holds a store is left exactly as it was.
+//
+// It is how kenward needs nothing installed. Every other operation was already a
+// library call, but the *first* one was not: a fresh machine has no lore home, lore.Open
+// refuses one that was never initialised, and the only documented way to make one was
+// `lore init` — an external binary, run by hand, before kenward could do anything at
+// all. lore exports Init, so kenward does it for itself, in every path that opens its
+// own store: the setup wizard, the dashboard's first-run wizard, and a unit coming up.
+//
+// # Idempotence is lore's to decide, not this function's
+//
+// Init refuses a home that already holds an account.json, a device.json or a lore.db
+// and returns lore.ErrAlreadyInitialised having written nothing — the rule being "never
+// let a new account adopt an existing store", which lore states by naming those three
+// files rather than by inferring it from a directory being non-empty. That error is
+// this function's created=false, and it is the case that matters most: somebody who
+// already runs lore on this machine has kenward join their store, not replace it.
+//
+// # What it discards, and why
+//
+// Init returns a recovery code, once, and lore stores it nowhere. It is a KDF factor
+// for relay signup and backup, neither of which any kenward deployment configures, and
+// the alternative to dropping it is putting a member's account recovery factor into
+// `podman logs` — which the operator reads, in the one mode whose whole point is that
+// the operator holds nothing of a member's. A member who wants one mints it from inside
+// their own pod with `lore recovery new`, which needs no previous code. The account and
+// device ids go the same way for the same reason.
+//
+// # What it does not do
+//
+// It does not create the spaces kenward.yaml names. Init makes one personal space with
+// an id it chooses, and a personal space can never cross accounts; the household's
+// shared space and each member's private space are CreateSpace's job, and both wizards
+// call it.
+func InitHome(ctx context.Context, home, device string) (created bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	// The Identity is discarded at the call rather than bound to a variable, so there
+	// is nothing here for a later edit to log by reaching for the struct.
+	switch _, err := lore.Init(home, device); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, lore.ErrAlreadyInitialised):
+		return false, nil
+	default:
+		return false, fmt.Errorf("memory: initialising the lore store at %s: %w", home, mapErr(err))
+	}
 }
 
 var _ Memory = (*Client)(nil)

@@ -303,12 +303,10 @@ func (r *runner) buildDeps() error {
 		r.owned = append(r.owned, t)
 	}
 	if r.rc.memory == nil {
-		cmd := r.cfg.Memory.LoreCommand
-		if len(cmd) == 0 {
-			return errors.New("supervisor: memory.lore_command is empty")
-		}
+		// No Command: this client opens the store in process, and a simple-mode
+		// configuration has no memory.lore_command at all. The one thing that argv
+		// is for — `lore serve` — is started by cmd/kenward, not from here.
 		c, err := memory.NewClient(memory.Config{
-			Command:  cmd[0],
 			LoreHome: r.rc.loreHome,
 			Logger:   r.logger,
 		})

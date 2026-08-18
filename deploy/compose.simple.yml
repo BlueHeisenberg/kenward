@@ -14,47 +14,41 @@
 #      see deploy/README.md — defining KENWARD_BOT_TOKEN, KENWARD_PASSPHRASE,
 #      and one variable per `api_key_env` referenced by an endpoint in
 #      kenward.yaml.
-#   3. Supply a `lore` binary — see the note at the top of ../Dockerfile. The
-#      bind mount below assumes you've built or copied one to ./bin/lore on the
-#      host. kenward reaches the store as a library, not a subprocess; the
-#      binary is for `lore serve` and for the one-off commands in step 4.
-#   4. Initialise that lore store ONCE, and create the spaces kenward.yaml
-#      names, against the same LORE_HOME the service below sets:
 #
-#        docker compose -f compose.simple.yml run --rm \
-#          --entrypoint /usr/local/bin/lore kenward init --name kenward
-#        docker compose -f compose.simple.yml run --rm \
-#          --entrypoint /usr/local/bin/lore kenward space create home
+# THERE IS NO THIRD STEP, AND THERE IS NO LORE BINARY IN THIS FILE.
 #
-#      then put the id `lore spaces` prints into household.shared_space and
-#      each member's private_space. A store with no account in it cannot be
-#      opened, and kenward will not serve without memory: `run` opens the store
-#      and searches it once before anything else, so this container exits 1
-#      saying the store was never initialised rather than running with no
-#      memory.
-#      Store the recovery code `init` prints; nothing else can recover this
-#      store.
+# There used to be two more: bind-mount a `lore` built for this image's
+# architecture, then `docker compose run --entrypoint /usr/local/bin/lore` twice
+# to initialise the volume's store and create a space, then copy an id out of
+# `lore spaces` into kenward.yaml. All of it is gone. kenward opens its store in
+# this process through lore's Go API and creates it on the data volume the first
+# time the container starts, and the spaces kenward.yaml names were made by
+# whichever wizard wrote that file — `kenward setup` or the dashboard.
+#
+# compose.isolated.yml is the one that still bind-mounts a lore binary, and it
+# is the only place left that needs one: each pod there has its own store, and
+# they exchange the household's shared space by each running `lore serve --lan`.
+# Simple mode has one store holding every space and nothing to converge with.
 #
 # Secrets never appear in this file: every token/key is named by environment
 # variable only, sourced from `.env`, exactly as kenward.yaml itself only ever
 # names an env var (`bot_token_env`, `api_key_env`) and never a literal value.
 #
-# BOTH BIND MOUNTS BELOW CARRY `z`, AND THAT IS AN SELINUX REQUIREMENT, NOT A
+# THE BIND MOUNT BELOW CARRIES `z`, AND THAT IS AN SELINUX REQUIREMENT, NOT A
 # STYLE CHOICE. On a host running SELinux in enforcing mode — Fedora, RHEL,
 # CentOS Stream, where rootless podman is most at home — a bind-mounted host
 # file keeps its own label and a container process (`container_t`) may not read
-# it, so both mounts would be denied and this container would exit on a
+# it, so the mount would be denied and this container would exit on a
 # permission error that names no cause. `z` relabels the source so the container
 # may read it. It is a no-op wherever SELinux is not enforcing (Docker Desktop,
 # Ubuntu and every other AppArmor host parse the option and skip the relabel).
 #
-# `z` (shared) rather than `Z` (private to one container) deliberately, for both:
-# neither file is one container's — the `docker compose run` steps above start a
-# second container against the same two paths, and compose.isolated.yml in this
-# directory mounts them into three more. `Z` would relabel them to whichever
+# `z` (shared) rather than `Z` (private to one container) deliberately: this
+# kenward.yaml is not one container's — compose.isolated.yml in this directory
+# mounts the same file into three more. `Z` would relabel it to whichever
 # container was started last and the others would lose access. Nothing is given
-# away by that: this configuration names secrets and holds none, and `lore` is a
-# binary. The named volume needs nothing — the runtime labels that itself.
+# away by that: this configuration names secrets and holds none. The named
+# volume needs nothing — the runtime labels that itself.
 #
 # NO `env_file:` HERE either — do not add it back. Unlike compose.isolated.yml,
 # this is not a privacy boundary: Simple mode is one process behind one bot
@@ -63,8 +57,8 @@
 # in every variable that happens to sit in `.env` — including keys for
 # providers this household's kenward.yaml never references, or secrets left
 # over from something else sharing the file — and hands all of it to this
-# process, and to any `lore serve` it starts. Listing only the variables
-# kenward.yaml actually names keeps that surface to what is in use.
+# process. Listing only the variables kenward.yaml actually names keeps that
+# surface to what is in use.
 
 services:
   kenward:
@@ -105,8 +99,8 @@ services:
       # wrapping secret for everything under kenward-data, not a login.
       #
       # A file is better than this variable if you can manage one, because an
-      # environment variable is inherited by every child process kenward starts,
-      # `lore serve` included. Two ways to do that, and pick exactly one:
+      # environment variable is inherited by any child process kenward starts.
+      # Two ways to do that, and pick exactly one:
       #
       #   1. kenward.yaml's own `session: passphrase_file: /run/secrets/…`,
       #      mounted read-only at 0600. Drop the line below and the
@@ -140,10 +134,7 @@ services:
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
       - kenward-data:/var/lib/kenward
-      # Supply lore — see ../Dockerfile's note. Replace the host path with
-      # wherever you keep a `lore` binary built for linux/<arch matching the
-      # image>.
-      - ./bin/lore:/usr/local/bin/lore:ro,z
+      # No lore binary. Simple mode executes none; see the header.
 
     # Declared here as well as in the image, and it is not a duplicate: the
     # image's HEALTHCHECK instruction is Docker-format only, and `podman build`

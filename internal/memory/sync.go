@@ -34,14 +34,13 @@ import (
 // memory was never affected — that is the property the mode exists for — but shared
 // memory did not work at all, in either deployment path, and neither said so.
 //
-// What kenward supplies here is the running daemon and nothing else. Membership in the
-// household space — `lore space create` on one store, `lore space invite` there and
-// `lore join` on the others — is provisioned out of band by the operator, exactly like
-// `lore init` already is, and deliberately so: lore's own embeddable API declines to
-// expose space creation or membership ("spaces are made out of band by a person who
-// chose a name and a sharing posture"), and a household assistant minting its own
-// memberships would be kenward taking a decision that is not its to take. See
-// docs/IMPLEMENTATION.md §8 for the provisioning recipe.
+// What kenward supplies here is the running daemon and nothing else. The space itself
+// is kenward's now — both wizards call lore.CreateSpace, and a pod initialises its own
+// home with lore.Init — but *membership* across accounts is not: carrying one space
+// into a second pod's store is `lore space invite` there and `lore join` here, and
+// lore's embeddable API exposes neither. So an isolated household of pods still has
+// one out-of-band step, and it is the last one. See docs/IMPLEMENTATION.md §8 for the
+// recipe.
 //
 // The isolation boundary is lore's, not kenward's, and it does not depend on kenward
 // getting this right. A sync exchange begins with a blinded space-id intersection —

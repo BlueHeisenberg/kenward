@@ -548,12 +548,14 @@ func (c *Config) ChainLimits(chain []string) (contextWindow, maxTokens int) {
 
 // MemoryConfig configures the lore client.
 type MemoryConfig struct {
-	// LoreCommand locates the lore executable. Omitted, it is DefaultLoreCommand.
+	// LoreCommand locates the lore executable, for isolated mode only. Omitted
+	// there, it is DefaultLoreCommand; omitted in simple mode it stays empty,
+	// because a simple-mode node never executes lore at all.
 	//
-	// Only the first element is used, and only to start `lore serve`: the store
-	// itself is opened in-process through lore's Go API. Trailing elements are
-	// accepted and ignored, so a configuration written when kenward spawned
-	// `lore mcp` still works.
+	// Only the first element is used, and only to start `lore serve --lan`, the
+	// cross-pod sync daemon: the store itself is opened in-process through lore's
+	// Go API. Trailing elements are accepted and ignored, so a configuration
+	// written when kenward spawned `lore mcp` still works.
 	LoreCommand []string `yaml:"lore_command"`
 	// SearchLimit is the per-space retrieval budget for one turn.
 	SearchLimit int `yaml:"search_limit"`
@@ -822,7 +824,11 @@ func (c *Config) ApplyDefaults() {
 	if c.DataDir == "" {
 		c.DataDir = DefaultDataDir()
 	}
-	if len(c.Memory.LoreCommand) == 0 {
+	// Only isolated mode ever executes lore — `lore serve --lan`, one per pod. A
+	// simple-mode node opens its store in process and runs nothing, so defaulting the
+	// value there wrote a program name into every generated kenward.yaml that nothing
+	// would ever run, and read as a dependency the household had to install.
+	if c.Mode == ModeIsolated && len(c.Memory.LoreCommand) == 0 {
 		c.Memory.LoreCommand = DefaultLoreCommand()
 	}
 	if c.Memory.SearchLimit == 0 {

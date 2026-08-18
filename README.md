@@ -11,6 +11,10 @@ boundary is separate stores, separate keys and separate processes — not a
 It runs on hardware you already own, routing each request to whichever of your machines
 is awake, and falling back to a cloud provider only where you allow it.
 
+One binary, nothing else to install. kenward keeps its own memory — it imports lore as
+a Go library and creates its store on first run — so setup is `kenward setup` and the
+questions it asks, with no other program to fetch and no ids to copy between them.
+
 > **Status: released.** Six binaries (Linux, macOS and Windows, amd64 and arm64), a
 > container image at `ghcr.io/blueheisenberg/kenward`, `.deb`/`.rpm` packages and a
 > signed update manifest. The current version is whatever the
@@ -112,7 +116,10 @@ privacy and having it.
 
 - **[lore](https://github.com/BlueHeisenberg/lore)** — the memory layer, imported
   directly as a Go module (`github.com/BlueHeisenberg/lore`), so kenward opens the store
-  in process rather than talking to a server. kenward owns no knowledge model.
+  in process rather than talking to a server, and creates it, and makes the household's
+  spaces in it. Nothing needs installing and kenward owns no knowledge model. (An
+  *isolated* household of pods is the one exception: each pod runs lore's `lore serve
+  --lan` to carry the shared space between them, so those images need the binary.)
 - **[keel](https://github.com/BlueHeisenberg/keel)** — domain-free mechanisms: sandbox
   isolation, sealed vault, model client, self-update.
 
