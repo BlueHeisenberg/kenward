@@ -269,8 +269,12 @@ var italian = Catalogue{
 	Withdrawn: "domanda ritirata",
 
 	EnrolPrivateHeading: "Questa chat è privata",
-	EnrolPrivateBody: "Questa chat — solo io e te — è la tua memoria privata. Quello che mi dici qui resta nel tuo spazio. " +
-		"Nessun altro in casa può leggerlo, e io non lo tirerò fuori nel gruppo.",
+	EnrolPrivateBody: "Questa chat — solo io e te — è la tua memoria privata. Quello che mi dici qui è conservato nel " +
+		"tuo spazio, e il gruppo di casa non può leggerlo mai. E nemmeno io lo tirerò fuori lì.",
+	EnrolPrivateSealed: "Questa casa gira in modalità isolata: il tuo assistente ha un processo suo e una chiave sua. " +
+		"Nessun altro in casa può leggere la tua memoria privata, e nemmeno la persona che gestisce questo " +
+		"computer. Il limite onesto: chi ha accesso root a questa macchina può arrivare alla tua chiave mentre " +
+		"il tuo assistente è in funzione.",
 	EnrolGroupHeading: "La chat di gruppo è condivisa",
 	EnrolGroupBody: "La chat di gruppo di casa è la memoria condivisa. Tutto quello che ricordo lì lo possono vedere tutti. " +
 		"Niente passa da una parte all'altra da solo: se qualcosa di privato deve diventare condiviso, chiedimelo, " +

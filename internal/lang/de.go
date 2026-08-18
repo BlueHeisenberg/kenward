@@ -262,8 +262,13 @@ var german = Catalogue{
 	Withdrawn: "Frage zurückgezogen",
 
 	EnrolPrivateHeading: "Dieser Chat ist privat",
-	EnrolPrivateBody: "Dieser Chat — nur du und ich — ist dein privates Gedächtnis. Was du mir hier erzählst, bleibt in deinem Bereich. " +
-		"Niemand sonst im Haushalt kann es lesen, und ich bringe es in der Gruppe nicht zur Sprache.",
+	EnrolPrivateBody: "Dieser Chat — nur du und ich — ist dein privates Gedächtnis. Was du mir hier erzählst, wird in " +
+		"deinem eigenen Bereich gespeichert, und die Haushaltsgruppe kann es nie lesen. Ich bringe es dort auch " +
+		"nicht zur Sprache.",
+	EnrolPrivateSealed: "Dieser Haushalt läuft im isolierten Modus: dein Assistent hat einen eigenen Prozess und einen " +
+		"eigenen Schlüssel. Niemand sonst im Haushalt kann dein privates Gedächtnis lesen, und die Person, die " +
+		"diesen Rechner betreibt, auch nicht. Die ehrliche Grenze: Wer Root-Zugriff auf diesen Rechner hat, kommt " +
+		"an deinen Schlüssel, solange dein Assistent läuft.",
 	EnrolGroupHeading: "Der Gruppenchat ist gemeinsam",
 	EnrolGroupBody: "Der Gruppenchat des Haushalts ist das gemeinsame Gedächtnis. Was ich mir dort merke, können alle sehen. " +
 		"Nichts wechselt von allein hinüber: Wenn etwas Privates gemeinsam werden soll, sag es mir, und ich zeige dir " +

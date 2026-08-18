@@ -422,8 +422,35 @@ type Catalogue struct {
 
 	// --- ENR: the memory model, explained to the person it applies to -------
 
-	EnrolPrivateHeading    string
-	EnrolPrivateBody       string
+	EnrolPrivateHeading string
+	// EnrolPrivateBody says what a private chat protects, in words that are true in
+	// both deployment modes.
+	//
+	// It used to say "nobody else in the household can read it", which is isolated
+	// mode's claim borrowed by every household that ran kenward. In simple mode every
+	// member's key is in one process, so the person operating the machine can read
+	// every member's private memory — internal/privacy says so in as many words, and
+	// the first message a member ever read said the opposite.
+	//
+	// So what this promises is what holds either way: the entry is stored in the
+	// member's own space and the household group can never read it. The English
+	// wording of that clause is internal/privacy's, verbatim, and internal/enrol
+	// checks that it still is; the other nine are translations of it.
+	EnrolPrivateBody string
+	// EnrolPrivateSealed is the paragraph appended to EnrolPrivateBody in isolated
+	// mode, and only there.
+	//
+	// Scoping the body to what is true in both modes would, on its own, leave a
+	// household that went to the trouble of sealing itself told nothing about it.
+	// This is the other half: the strong claim, in the mode where it is true, with the
+	// bound internal/privacy always puts on it in the same breath.
+	//
+	// It is one field rather than a second full body because that is what makes the
+	// ban checkable in ten languages without reading ten languages: sealed-memory
+	// language is allowed to live here and nowhere else, and enrol.Explanation renders
+	// this on one path. A mode nobody set renders nothing, so the failure of the
+	// plumbing understates isolated mode rather than overstating simple mode.
+	EnrolPrivateSealed     string
 	EnrolGroupHeading      string
 	EnrolGroupBody         string
 	EnrolMemoryHeading     string

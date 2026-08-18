@@ -253,8 +253,12 @@ var catalan = Catalogue{
 	Withdrawn: "pregunta retirada",
 
 	EnrolPrivateHeading: "Aquest xat és privat",
-	EnrolPrivateBody: "Aquest xat —només tu i jo— és la teva memòria privada. El que m'expliquis aquí es queda al teu espai. " +
-		"Ningú més de la llar no ho pot llegir, i jo no ho trauré al grup.",
+	EnrolPrivateBody: "Aquest xat —només tu i jo— és la teva memòria privada. El que m'expliquis aquí es desa al teu " +
+		"propi espai, i el grup de la llar no ho pot llegir mai. Jo tampoc no ho trauré allà.",
+	EnrolPrivateSealed: "Aquesta llar funciona en mode aïllat: el teu assistent té un procés propi i una clau pròpia. " +
+		"Ningú més de la llar no pot llegir la teva memòria privada, ni tampoc la persona que fa anar aquest " +
+		"ordinador. El límit honest: qui tingui accés root a aquesta màquina pot arribar a la teva clau mentre " +
+		"el teu assistent s'estigui executant.",
 	EnrolGroupHeading: "El xat de grup és compartit",
 	EnrolGroupBody: "El xat de grup de la llar és la memòria compartida. Tot el que hi recordi ho pot veure tothom. " +
 		"No passa res d'un costat a l'altre tot sol: si alguna cosa privada ha de passar a compartida, demana-m'ho " +

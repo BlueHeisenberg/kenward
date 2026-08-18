@@ -292,8 +292,20 @@ var english = Catalogue{
 	Withdrawn: "question withdrawn",
 
 	EnrolPrivateHeading: "This chat is private",
-	EnrolPrivateBody: "This chat — just you and me — is your private memory. What you tell me here stays in your space. " +
-		"Nobody else in the household can read it, and I won't bring it up in the group.",
+	// The second sentence is internal/privacy's simple-mode statement, word for word,
+	// and enrol.TestSimpleOnboardingClaimsOnlyWhatPrivacySays fails if it stops being.
+	// A claim a member reads in a chat and a claim an operator reads from `kenward
+	// doctor` that have drifted apart are two claims, and the softer one is the lie.
+	EnrolPrivateBody: "This chat — just you and me — is your private memory. What you tell me here is " +
+		"stored in your own space, and the household group can never read it. I won't bring it up there either.",
+	// Both strong sentences are internal/privacy's isolated-mode statement, word for
+	// word, including the limit. The limit travels with the claim: a member who finds
+	// out on their own that root on the box can reach a running key stops believing
+	// the sentence before it.
+	EnrolPrivateSealed: "This household runs in isolated mode: your assistant has a process of its own and a key " +
+		"of its own. Nobody else in the household can read your private memory, and neither can the person who " +
+		"runs this machine. The honest limit: someone with root access to this machine, while your assistant is " +
+		"running, could reach your key.",
 	EnrolGroupHeading: "The group chat is shared",
 	EnrolGroupBody: "The household group chat is the shared memory. Whatever I remember there, everyone can see. " +
 		"Nothing crosses over on its own: if something private should become shared, ask me, and I'll show you " +

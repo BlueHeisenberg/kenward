@@ -275,9 +275,14 @@ Two names. Neither is shown to anyone outside the house.`
 	questionHouseholdName = "What is this household called?"
 	questionSharedSpace   = "Which space is the household's shared memory?"
 
+	// This said "which nobody else in the household can read", three screens before
+	// the mode had printed its own statement contradicting it. Sealing against the
+	// operator exists only in isolated mode; the wizard cannot make that promise here
+	// and does not need to, because privacyBlock makes the mode's real one at the end.
 	sharedSpaceNote = `  The shared memory is what the group chat reads and writes. Everyone in the
-  household can see it. Each person also gets their own private memory, which
-  nobody else in the household can read.
+  household can see it. Each person also gets their own private memory, in a
+  space of their own, which the group chat never reads. Who else can read one
+  depends on the mode — the privacy statement at the end of setup says exactly.
 
   Both are lore spaces, and kenward never creates one — a space is yours, and
   who is in it is your decision. So it asks which of the ones you already have
@@ -662,8 +667,12 @@ func memberSummary(members []config.MemberConfig) string {
 	for _, m := range members {
 		fmt.Fprintf(&b, "  %s  id %s, private memory %s\n", pad(m.Name, width), m.ID, m.PrivateSpace)
 	}
-	b.WriteString("\n  Nobody else in the household can read a private memory, and kenward will\n")
-	b.WriteString("  not bring one up in the group chat.")
+	// Was "Nobody else in the household can read a private memory", which is isolated
+	// mode's claim printed under a simple-mode household's member list. What is true
+	// of both is what the group chat sees, so that is what this says; the rest is
+	// privacyBlock's, and it is a few screens away.
+	b.WriteString("\n  The group chat never reads a private memory, and kenward will not bring\n")
+	b.WriteString("  one up there.")
 	return b.String()
 }
 

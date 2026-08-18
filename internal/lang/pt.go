@@ -243,8 +243,12 @@ var portuguese = Catalogue{
 	Withdrawn: "pergunta retirada",
 
 	EnrolPrivateHeading: "Esta conversa é privada",
-	EnrolPrivateBody: "Esta conversa — só tu e eu — é a tua memória privada. O que me contares aqui fica no teu espaço. " +
-		"Mais ninguém na casa o pode ler, e eu não o trago para o grupo.",
+	EnrolPrivateBody: "Esta conversa — só tu e eu — é a tua memória privada. O que me contares aqui fica guardado no " +
+		"teu próprio espaço, e o grupo da casa nunca o pode ler. Eu também não o trago para lá.",
+	EnrolPrivateSealed: "Esta casa corre em modo isolado: o teu assistente tem um processo próprio e uma chave própria. " +
+		"Mais ninguém na casa pode ler a tua memória privada, nem a pessoa que gere este computador. O limite " +
+		"honesto: quem tiver acesso root a esta máquina consegue chegar à tua chave enquanto o teu assistente " +
+		"estiver a correr.",
 	EnrolGroupHeading: "A conversa de grupo é partilhada",
 	EnrolGroupBody: "A conversa de grupo da casa é a memória partilhada. Tudo o que eu guardar aí, toda a gente pode ver. " +
 		"Nada passa de um lado para o outro sozinho: se alguma coisa privada tiver de passar a partilhada, pede-me, " +
