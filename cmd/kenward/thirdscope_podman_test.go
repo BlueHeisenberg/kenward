@@ -424,7 +424,6 @@ endpoints:
     tags: [local]
     timeout: 180s
 memory:
-  lore_command: [lore, mcp]
 `
 
 // The telegram ids perMemberYAML enrols, and one it does not.

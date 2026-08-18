@@ -17,14 +17,25 @@ import (
 // a tester two failed starts.
 var unknownField = regexp.MustCompile(`field ([A-Za-z0-9_]+) not found in type`)
 
-// hintMisplacedFields appends, to a strict-decoding error, the block each rejected key
-// does belong under — when it belongs under one at all.
+// removedFields are keys that were real and are not any more, with what to do about
+// each. A deleted key is indistinguishable from a typo to the strict decoder, and the
+// difference matters: a typo is fixed by correcting it and a removed key is fixed by
+// deleting the line, which is not advice anybody can guess from "field X not found".
 //
-// A key with no home anywhere is a typo, and it is left with the plain refusal. Sending
-// somebody to a block that will reject the key just as hard is worse than saying
-// nothing, so the homes are read off the schema itself rather than listed by hand: a
-// field moved between blocks moves this advice with it, and a field deleted stops being
-// advertised.
+// Only keys that once shipped in a generated file belong here.
+var removedFields = map[string]string{
+	"lore_command": "lore_command has been removed; delete the line. kenward executes no lore binary in any mode — the store and the sync daemon are both library calls in this process",
+}
+
+// hintMisplacedFields appends, to a strict-decoding error, the block each rejected key
+// does belong under — when it belongs under one at all — or, for a key that used to
+// exist, what became of it.
+//
+// A key with no home anywhere and no history is a typo, and it is left with the plain
+// refusal. Sending somebody to a block that will reject the key just as hard is worse
+// than saying nothing, so the homes are read off the schema itself rather than listed
+// by hand: a field moved between blocks moves this advice with it, and a field deleted
+// stops being advertised.
 func hintMisplacedFields(err error) error {
 	matches := unknownField.FindAllStringSubmatch(err.Error(), -1)
 	if len(matches) == 0 {
@@ -34,12 +45,19 @@ func hintMisplacedFields(err error) error {
 	var seen, hints []string
 	for _, m := range matches {
 		key := m[1]
-		where, ok := homes[key]
-		if !ok || contains(seen, key) {
+		if contains(seen, key) {
 			continue
 		}
-		seen = append(seen, key)
-		hints = append(hints, key+" belongs under "+where)
+		gone, wasRemoved := removedFields[key]
+		where, ok := homes[key]
+		switch {
+		case wasRemoved:
+			seen = append(seen, key)
+			hints = append(hints, gone)
+		case ok:
+			seen = append(seen, key)
+			hints = append(hints, key+" belongs under "+where)
+		}
 	}
 	if len(hints) == 0 {
 		return err

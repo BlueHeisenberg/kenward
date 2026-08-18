@@ -409,20 +409,16 @@ endpoints:
 
 # memory configures the lore client every unit uses for retrieval and capture.
 memory:
-  # There is no lore_command here, and that is not an omission. kenward opens its own
-  # store in process through lore's Go API, creating it on first run if this machine
-  # has never had one, so a simple-mode household executes no lore and needs none
-  # installed.
+  # There is no lore_command here, in either mode, and there is no key of that name to
+  # write. kenward opens its own store in process through lore's Go API, creating it on
+  # first run if this machine has never had one, and every pod runs lore's sync daemon
+  # in its own process on the store it already opened. No mode executes a lore binary,
+  # so no mode needs one configured — and a file that still has the key is refused, with
+  # a line saying to delete it.
   #
-  # An ISOLATED kenward.yaml still carries the key —
-  #
-  #   lore_command: ["lore"]
-  #
-  # — defaulted and validated there rather than omitted, but read by nothing in the
-  # running node. Every pod runs lore's sync daemon in its own process, on the store
-  # it already opened, so no mode executes a lore binary. The value is accepted whole
-  # and ignored whole, and a configuration written when kenward spawned `lore mcp`
-  # still loads unchanged.
+  # The published image does carry the lore CLI. That is for the one step lore exposes
+  # no Go API for — the `space invite` / `join` handshake an operator runs by hand
+  # inside a pod — and a program a person types is not a setting.
   # search_limit is the per-space retrieval budget for one turn: how many entries lore
   # may return from each space in scope before assembly stops asking. Kenward's default
   # is 8; set explicitly here to the same value. Too high and prompts bloat with

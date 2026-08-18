@@ -118,9 +118,9 @@ It asks, in order:
    is not a remedy, so this is a refusal in the wizard instead. The question says how to
    find the number: add the bot to the group, send a message, and read it off
    `https://api.telegram.org/bot<TOKEN>/getUpdates`. The dashboard's wizard and its
-   settings page refuse the same combination. The scripted path carries the same check
-   and cannot currently reach it: `--non-interactive` has no flag for this question, so
-   it always produces `agents: shared` — see `--non-interactive` below.
+   settings page refuse the same combination, and so does `--non-interactive`, through
+   `--agents`: all three front-ends reach it through the same function, so there is one
+   refusal rather than three.
 
    Then three questions about how kenward writes — language, tone, character — each with
    an answer that changes nothing. Pressing Enter three times gives the assistant kenward
@@ -201,25 +201,37 @@ Details the first draft of this document left out, settled during implementation
   configuration in which nothing can ever be answered locally is worth noticing before it
   is written rather than after.
 
-`--non-interactive` takes its answers from flags, for scripted installs. It does **not**
-have a flag for every question. What it covers: `--mode`, `--household-name`,
-`--shared-space`, `--bot-token-env`, `--member`, `--member-space`, `--member-tiers`,
-`--group-tiers`, `--endpoint`, `--data-dir`, `--write-env-file`.
+`--non-interactive` takes its answers from flags, for scripted installs. Every question
+the wizard asks has one: `--mode`, `--household-name`, `--shared-space`,
+`--bot-token-env`, `--agents`, `--group-chat-id`, `--persona-language`, `--persona-tone`,
+`--persona-character`, `--member`, `--member-space`, `--member-tiers`, `--group-tiers`,
+`--endpoint`, `--data-dir`, `--write-env-file`.
 
-What it does not cover, and the consequence:
+It refuses what the questions refuse, in the same words and for the same reasons,
+because all three front-ends reach the same function in `internal/setup`:
 
-- **the identity question.** There is no `--agents`, so a scripted install always writes
-  `agents: shared`. One assistant each cannot be set up from a script today; use the
-  terminal wizard or the dashboard, or write the key into the file by hand afterwards.
-- **the group chat id.** No flag, and it is only required under `per_member`, which a
-  script cannot produce — so today this follows from the line above rather than being a
-  separate gap. Set `household.group_chat_id` in the file.
-- **any persona field.** No `--persona-language`, `-tone` or `-character`. A scripted
-  household gets the flat English register until somebody edits the file.
-- `history.reset_every`, `memory.search_limit`, `session.idle_timeout`,
-  `capture.max_proposals_per_turn` and `update.channel` are absent **by design** rather
-  than by omission: a scripted install that says nothing about them should get the
-  defaults, not a widened flag surface.
+- `--agents per_member` needs `--mode isolated`. An agent is a Telegram contact, simple
+  mode runs one bot for the whole household, and two agents behind one contact are one
+  agent.
+- `--agents per_member` needs `--group-chat-id`. Under one assistant each, kenward
+  itself lives in the group and nowhere else, so a household without one has no kenward
+  in it — and `kenward run --group` refuses to start such a pod.
+
+Both are refused before any lore space is created, so a rejected invocation leaves
+nothing behind.
+
+**There is no flag for any secret**, and that is deliberate rather than missing: no
+`--bot-token`, no member passphrase, no endpoint API key. A value in `argv` is a value in
+`ps`, in the shell history and in the CI log, and the configuration already names an
+environment variable for each secret — a script exports those, which is the channel every
+deployment path uses anyway. The dashboard's wizard has fields for them because a browser
+form has no other channel. `--write-env-file` therefore writes only what setup itself
+collected, which under `--non-interactive` is nothing.
+
+`history.reset_every`, `memory.search_limit`, `session.idle_timeout`,
+`capture.max_proposals_per_turn` and `update.channel` have no flags either, also by
+design: a scripted install that says nothing about them should get the defaults, not a
+widened flag surface. A script that wants a schedule edits the file it just generated.
 
 `--force` replaces an existing configuration. Without it, setup refuses when a file is
 already there and says why: a household's configuration is full of decisions somebody
@@ -318,13 +330,15 @@ an operator running `lore space create`, `lore space invite` and `lore join` *in
 running pod* — one that refused to start until its spaces existed could never be given
 them (`deploy/compose.isolated.yml`, steps 4b and 4c).
 
-**No lore binary is looked for, in any mode.** `run` used to check
-`memory.lore_command[0]` against `$PATH` and refuse without it, on the reasoning that
-spawning `lore mcp` was kenward's only route to memory. That route is gone, and so is the
-last one after it: the store, every read and write, and — since lore v0.5.0 — the sync
-daemon are all library calls in this process. A refusal over an absent program would
-refuse a node that works, and an isolated household of pods has been measured converging
-its shared space with no `lore` on `$PATH` anywhere inside them.
+**No lore binary is looked for, in any mode, and there is no longer a key naming one.**
+`run` used to check `memory.lore_command[0]` against `$PATH` and refuse without it, on
+the reasoning that spawning `lore mcp` was kenward's only route to memory. That route is
+gone, and so is the last one after it: the store, every read and write, and — since lore
+v0.5.0 — the sync daemon are all library calls in this process. A refusal over an absent
+program would refuse a node that works, and an isolated household of pods has been
+measured converging its shared space with no `lore` on `$PATH` anywhere inside them.
+`memory.lore_command` has been removed with the last reader; a file that still carries it
+is refused with a line saying to delete it.
 
 The published image does still carry the lore CLI, and that is not a contradiction. It is
 there for the one step with no Go API — the `lore space invite` / `lore join` membership

@@ -55,7 +55,6 @@ endpoints:
     api_key_env: OPENROUTER_API_KEY
     tags: [cloud]
 memory:
-  lore_command: [lore, mcp]
 `
 
 // claimedYAML is simpleYAML with nobody's telegram_id written down: the shape a
@@ -101,7 +100,6 @@ endpoints:
     api_key_env: OPENROUTER_API_KEY
     tags: [cloud]
 memory:
-  lore_command: [lore, mcp]
 `
 
 // Secrets the fake environment holds. Every test that renders anything asserts these

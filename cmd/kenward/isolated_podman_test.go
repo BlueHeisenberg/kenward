@@ -881,7 +881,6 @@ endpoints:
     api_key_env: KENWARD_E2E_PROVIDER_KEY
     tags: [cloud]
 memory:
-  lore_command: [lore, mcp]
 `
 
 // soloYAML is one member and no group: the smallest household that can be rolled, and
@@ -907,7 +906,6 @@ endpoints:
     tags: [local]
     timeout: 120s
 memory:
-  lore_command: [lore, mcp]
 `
 
 func soloFor(id, name string) string {
@@ -1022,7 +1020,6 @@ endpoints:
     api_key_env: KENWARD_E2E_PROVIDER_KEY
     tags: [cloud]
 memory:
-  lore_command: [lore, mcp]
 `
 
 // testCloudTierMemberRuns is the second defect found on a real host, and it is here

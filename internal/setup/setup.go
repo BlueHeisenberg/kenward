@@ -408,11 +408,10 @@ func (w *Wizard) build() *config.Config {
 		Members:   w.members,
 		Endpoints: w.endpoints,
 	}
-	// Only isolated mode runs lore as a program, one `lore serve --lan` per pod. See
-	// DefaultLoreCommand.
-	if cfg.Mode == config.ModeIsolated {
-		cfg.Memory.LoreCommand = DefaultLoreCommand
-	}
+	// No memory.lore_command in either mode. Nothing kenward runs looks a lore binary
+	// up — see config.MemoryConfig — and the generated file used to carry the key in
+	// isolated mode, which taught isolated households they had to install one.
+	//
 	// Everything with a default is written out explicitly rather than left to the
 	// loader. The generated file is the only documentation of these values most
 	// households will ever read, and a value you can see is a value you can change.
@@ -437,12 +436,20 @@ func (w *Wizard) finish() (*config.Config, error) {
 	cfg := w.build()
 
 	// The configuration is judged by the package that will have to load it, against
-	// the environment the operator is being told to create. If this ever fails it
-	// is a defect in the wizard rather than a mistake by the person answering: no
-	// answer to any question above is supposed to be able to produce a file kenward
-	// will not load, and the tests assert exactly that over every path through the
-	// flow.
+	// the environment the operator is being told to create. Reached from the terminal
+	// wizard, a failure here is a defect in the wizard rather than a mistake by the
+	// person answering: no answer to any question above is supposed to be able to
+	// produce a file kenward will not load, and the tests assert exactly that over
+	// every path through the flow.
+	//
+	// Reached from Answers it is the opposite claim, and making it would be a lie: a
+	// scripted install can say anything the schema forbids — a persona longer than the
+	// limit, a tier no endpoint answers for — and telling that operator they have found
+	// a bug in setup sends them to the wrong file.
 	if err := cfg.Validate(w.validationEnv()); err != nil {
+		if w.opts.Answers != nil {
+			return nil, fmt.Errorf("setup: the answers given produce a configuration kenward would refuse: %w", err)
+		}
 		return nil, fmt.Errorf("setup: the answers produced a configuration kenward would refuse, which is a bug in setup rather than in your answers: %w", err)
 	}
 

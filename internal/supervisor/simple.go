@@ -44,7 +44,7 @@ type SimpleOptions struct {
 	// Transport is the household's one bot. Nil builds a Telegram transport from
 	// the token named by telegram.bot_token_env.
 	Transport transport.Transport
-	// Memory is the shared lore client. Nil builds one from memory.lore_command.
+	// Memory is the shared lore client. Nil opens the store at this node's LORE_HOME.
 	// One lore instance for the whole household is this mode's arrangement: the
 	// spaces separate members, the address space does not.
 	Memory memory.Memory

@@ -112,11 +112,10 @@ func cmdRun(e *env, args []string) int {
 		return exitFailure
 	}
 
-	// Whether memory.lore_command is *shaped* like a command is internal/config's, and
-	// it deliberately stops there: whether the program exists is a property of this
-	// machine, not of the file, and a validation that failed on one host would make
-	// `doctor` useless for checking a configuration before shipping it. So the machine
-	// asks here, on the machine, at the one moment a process commits to serving.
+	// Whether this node's memory actually answers is a property of this machine rather
+	// than of the file, and a validation that failed on one host would make `doctor`
+	// useless for checking a configuration before shipping it. So the question is asked
+	// here, on the machine, at the one moment a process commits to serving.
 	if code := checkLore(e, cfg, sel); code != exitOK {
 		return code
 	}

@@ -171,22 +171,6 @@ const (
 	DefaultMaxCompletionTokens = 4096
 )
 
-// DefaultLoreCommand returns the argv that locates the lore executable.
-//
-// It used to be ["lore", "mcp"], because kenward reached its memory by spawning
-// `lore mcp` and talking MCP to it. kenward embeds lore as a Go library now and the
-// store is opened in-process, so the second element named a subcommand nothing runs.
-// What is left needs the program and not a command line: the one thing still started
-// as a process is `lore serve`, the sync daemon, which supplies its own arguments.
-//
-// Only element zero is ever read, so a configuration still saying ["lore", "mcp"]
-// works unchanged and is not worth rewriting on anyone's disk.
-//
-// It returns a fresh slice on every call, deliberately. A package-level slice would be
-// shared by every configuration that took the default, and one caller editing its own
-// argv would rewrite the default for the whole process.
-func DefaultLoreCommand() []string { return []string{"lore"} }
-
 // LookupEnvFunc reads an environment variable, with the same shape as os.LookupEnv.
 //
 // It is injectable so that validation can be tested exhaustively without a test
@@ -547,16 +531,18 @@ func (c *Config) ChainLimits(chain []string) (contextWindow, maxTokens int) {
 }
 
 // MemoryConfig configures the lore client.
+//
+// There is no lore_command here, and there is no mode in which there is one. The key
+// located a binary for kenward to execute, and kenward executes none: the store is
+// opened in this process through lore's Go API, and since a1cbd0a the cross-pod sync
+// daemon — the last subprocess, and the last reason the key survived removal from
+// simple mode — runs in this process too, on the store already open. See
+// cmd/kenward's startSyncDaemon and internal/memory/sync.go.
+//
+// The published image still carries the lore CLI, for the `space invite` / `join`
+// handshake an operator runs by hand inside a pod. That is a program a person types,
+// not one kenward looks up, and it needs no key in a file kenward validates.
 type MemoryConfig struct {
-	// LoreCommand locates the lore executable, for isolated mode only. Omitted
-	// there, it is DefaultLoreCommand; omitted in simple mode it stays empty,
-	// because a simple-mode node never executes lore at all.
-	//
-	// Only the first element is used, and only to start `lore serve --lan`, the
-	// cross-pod sync daemon: the store itself is opened in-process through lore's
-	// Go API. Trailing elements are accepted and ignored, so a configuration
-	// written when kenward spawned `lore mcp` still works.
-	LoreCommand []string `yaml:"lore_command"`
 	// SearchLimit is the per-space retrieval budget for one turn.
 	SearchLimit int `yaml:"search_limit"`
 	// AnnounceReads says whether each reply is prefixed with a line naming the
@@ -823,13 +809,6 @@ func Decode(r io.Reader) (*Config, error) {
 func (c *Config) ApplyDefaults() {
 	if c.DataDir == "" {
 		c.DataDir = DefaultDataDir()
-	}
-	// Only isolated mode ever executes lore — `lore serve --lan`, one per pod. A
-	// simple-mode node opens its store in process and runs nothing, so defaulting the
-	// value there wrote a program name into every generated kenward.yaml that nothing
-	// would ever run, and read as a dependency the household had to install.
-	if c.Mode == ModeIsolated && len(c.Memory.LoreCommand) == 0 {
-		c.Memory.LoreCommand = DefaultLoreCommand()
 	}
 	if c.Memory.SearchLimit == 0 {
 		c.Memory.SearchLimit = DefaultSearchLimit

@@ -111,11 +111,11 @@ Node toolchain must never be needed to fix a form on it.
 process through lore's Go API; there is no MCP SDK in the module, no server to run and no
 handshake to fail. Nothing is spawned at all: the sync daemon an isolated pod runs so its
 copy of the shared space reaches the other pods is `lore.(*Store).Serve`, in this process,
-on the store this process already opened — see §12. `memory.lore_command` is read by
-nothing in the running node any more; a file that still carries it loads unchanged. It is
-**absent from a simple-mode configuration**, and the wizard no longer writes one there: a
-simple-mode node executes no lore, and a program name in the file was read by households
-as a dependency they had to install.
+on the store this process already opened — see §12. **`memory.lore_command` no longer
+exists**, in either mode: the key located a program to execute, kenward executes none,
+and a program name in a configuration file was read by households as a dependency they
+had to install. A file that still carries it is refused by the strict decoder with a
+line saying to delete it (`removedFields` in `internal/config/yamlhint.go`).
 
 `lore` also brings a transitive SQLite (`modernc.org/sqlite`, pure Go) and the rest of
 the indirect block in `go.mod`. Pure Go is the load-bearing part: it is what keeps the
@@ -625,16 +625,11 @@ endpoints:
     max_completion_tokens: 8192   # defaults to 4096; must be < context_window
 
 memory:
-  # No lore_command in simple mode, and that is not an omission: kenward opens
-  # its own store in process and creates it on first run, so nothing here
-  # executes lore and nothing has to be installed. An ISOLATED configuration
-  # still carries one —
-  #
-  #   lore_command: ["lore"]
-  #
-  # defaulted by ApplyDefaults and validated, but read by nothing in the running
-  # node: the store, every read and write and the sync daemon are all library
-  # calls now. A file still saying ["lore", "mcp"] loads unchanged.
+  # No lore_command, in either mode, and no such key to write: kenward opens its
+  # own store in process and creates it on first run, and every pod runs the sync
+  # daemon in its own process on that store. Nothing executes lore, so nothing has
+  # to be installed. A file that still has the key is refused with a line saying
+  # to delete it.
   search_limit: 8
   announce_reads: true        # prefix each reply with what was searched; default true
 
@@ -1862,7 +1857,8 @@ is a property of the machine, not of the file — a validation that failed on on
 make `doctor` useless for checking a configuration before shipping it (§4).
 
 **The question is "does memory answer", not "is lore installed", and the difference is
-where this was wrong first.** `exec.LookPath` on `memory.lore_command[0]` was the whole
+where this was wrong first.** `exec.LookPath` on `memory.lore_command[0]` (a key that no
+longer exists) was the whole
 of the check, and it stopped one step short of the failure it exists to prevent: a lore
 home with no account in it cannot be opened —
 
@@ -2981,7 +2977,8 @@ design and several of them contradict what the architecture originally supposed.
   get-or-create is how one member's memory becomes another's.
 - **There is no remaining subprocess.** `lore serve` was the last one; lore v0.5.0 runs
   the same daemon in the embedder's process, on the embedder's store, and that is what
-  kenward calls. `memory.lore_command` is now read by nothing in the running node.
+  kenward calls. `memory.lore_command` was read by nothing after that, and has since
+  been removed from the schema.
 - **Private memory must be a `shared`-kind space with two members.** lore's `personal`
   space never crosses accounts, so a node could not read it. This is what the
   architecture already specified, now confirmed as the only workable option rather than

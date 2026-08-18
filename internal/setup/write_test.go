@@ -254,9 +254,10 @@ func TestTheFileReadsLikeSomebodyWroteIt(t *testing.T) {
 		"group_chat_id: 0", // no group is configured yet; saying "0" invites editing it to something wrong
 		"telegram_id: 0",   // nobody has enrolled yet
 		`api_key_env: ""`,  // the local machine needs no key
-		// A simple-mode node never executes lore. A program name in the file is
-		// read as a program the household has to go and install, and this one is
-		// the reason people believed kenward needed lore on their PATH.
+		// No node executes lore, in either mode, and there is no longer a key of
+		// this name to write. A program name in the file is read as a program the
+		// household has to go and install, and this one is the reason people
+		// believed kenward needed lore on their PATH.
 		"lore_command",
 	} {
 		if strings.Contains(body, unwanted) {
@@ -355,7 +356,7 @@ func TestMarshalDocumentIsValidYAML(t *testing.T) {
 		Endpoints: []config.EndpointConfig{
 			{Name: "monster", BaseURL: "http://monster.tail:8000/v1", Model: "q", Tags: []string{"local"}},
 		},
-		Memory: config.MemoryConfig{LoreCommand: DefaultLoreCommand, SearchLimit: 8},
+		Memory: config.MemoryConfig{SearchLimit: 8},
 	}, false)
 
 	data, err := marshalDocument(doc)

@@ -1,13 +1,8 @@
 package main
 
 import (
-	"slices"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
-
-	"github.com/BlueHeisenberg/kenward/internal/config"
 )
 
 // TestRunListsEveryValidationProblemAtOnce.
@@ -101,58 +96,32 @@ func TestRunListsEveryMissingEnvironmentVariableByName(t *testing.T) {
 	}
 }
 
-// TestRunNamesAnUnrunnableLoreCommand.
+// TestRunTellsAnOperatorWhatBecameOfLoreCommand.
 //
-// internal/config now defaults an omitted memory.lore_command to
-// config.DefaultLoreCommand, so leaving the block out is no longer a failure at all.
-// What still is: a command that is written down but could not be executed — here a
-// blank program name, which would spawn nothing. That has to reach the operator as a
-// configuration fault naming the file and the key, not as whatever the memory client
-// says about exec'ing "" once the household is already starting.
+// memory.lore_command is gone: nothing kenward runs looks a lore binary up, in any
+// mode. It used to be written into every generated isolated file, so a household that
+// ran setup before this change has one on disk, and the strict decoder's own words for
+// that are "field lore_command not found in type config.MemoryConfig" — accurate, and
+// no help at all to somebody holding a file that used to work.
 //
-// Whether a lore binary exists on this machine is deliberately not checked here or in
-// internal/config; it is a property of the host, and `kenward doctor` is where it is
-// caught (see TestDoctorLoreUnreachableFails).
-func TestRunNamesAnUnrunnableLoreCommand(t *testing.T) {
+// This is the whole visible consequence of the removal, so it is where it is tested:
+// the file, the key, and the one-line instruction, on an operator's terminal.
+func TestRunTellsAnOperatorWhatBecameOfLoreCommand(t *testing.T) {
 	t.Parallel()
-	blank := strings.Replace(simpleYAML, "lore_command: [lore, mcp]", `lore_command: ["", mcp]`, 1)
-	if blank == simpleYAML {
-		t.Fatal("the fixture no longer has a lore_command to blank out; this test is not testing anything")
+	withKey := strings.Replace(simpleYAML, "memory:\n", "memory:\n  lore_command: [lore]\n", 1)
+	if withKey == simpleYAML {
+		t.Fatal("the fixture has no memory block to add the key to; this test is not testing anything")
 	}
-	h := newHarness(t, blank, fullEnvironment())
+	h := newHarness(t, withKey, fullEnvironment())
 
 	if code := h.run("run"); code != exitUsage {
 		t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h.both())
 	}
 	out := h.stderr()
-	// The file, the key, and why it is wrong.
-	for _, want := range []string{h.config, "memory.lore_command", "the program to run and it is empty"} {
+	for _, want := range []string{h.config, "lore_command", "delete the line"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the failure does not name %q:\n%s", want, out)
 		}
-	}
-
-	// And what to write instead, still typable after this command has rendered it.
-	// internal/config owns how the suggestion is spelled and has its own test that it
-	// parses; what is this package's to keep true is that the report reaches an
-	// operator's terminal with the suggestion intact — indenting it into a problem
-	// list, wrapping it or quoting it would break the copy-paste this line exists for.
-	// So parse whatever it printed rather than matching a copy of a format that lives
-	// in another package.
-	const marker = "write it as "
-	i := strings.Index(out, marker)
-	if i < 0 {
-		t.Fatalf("the failure does not suggest what to write instead:\n%s", out)
-	}
-	suggestion, _, _ := strings.Cut(out[i+len(marker):], "\n")
-	suggestion = strings.TrimSpace(suggestion)
-
-	var got config.MemoryConfig
-	if err := yaml.Unmarshal([]byte("lore_command: "+suggestion), &got); err != nil {
-		t.Fatalf("the suggested %s is not YAML an operator could paste back: %v", suggestion, err)
-	}
-	if want := config.DefaultLoreCommand(); !slices.Equal(got.LoreCommand, want) {
-		t.Errorf("the suggested %s parses as %v, want %v", suggestion, got.LoreCommand, want)
 	}
 }
 

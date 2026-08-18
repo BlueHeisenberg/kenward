@@ -31,8 +31,8 @@ type SingleOptions struct {
 	// member's own bot_token_env — never the household's — or, for the group,
 	// from telegram.bot_token_env.
 	Transport transport.Transport
-	// Memory is this unit's lore client. Nil builds one from memory.lore_command
-	// against the LORE_HOME this process was given, which is the pod's own.
+	// Memory is this unit's lore client. Nil opens the store at the LORE_HOME this
+	// process was given, which is the pod's own.
 	Memory memory.Memory
 	// Router walks tier chains. Nil builds a routing.Pool over the configured
 	// endpoints.

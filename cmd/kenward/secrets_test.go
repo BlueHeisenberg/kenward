@@ -31,7 +31,6 @@ endpoints:
     model: qwen3.6-27b-awq
     tags: [local]
 memory:
-  lore_command: [lore, mcp]
 `
 
 // TestDoctorReadsATokenFromAFile.

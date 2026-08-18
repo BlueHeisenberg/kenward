@@ -286,14 +286,6 @@ var allowedZeroFields = map[string]string{
 	// its fingerprint shown once. The keys are documented in a comment in the example.
 	"Dashboard.TLSCertFile": "generated when LAN exposure is chosen; this example is loopback and needs none",
 	"Dashboard.TLSKeyFile":  "generated when LAN exposure is chosen; this example is loopback and needs none",
-
-	// The example is simple mode, and simple mode executes no lore: the store is
-	// opened in this process. The value locates the binary an isolated pod runs as
-	// `lore serve --lan`, so stating it here would put a program name in front of
-	// every household that will never run one — which is what taught people kenward
-	// needed lore installed. The isolated case is documented in a comment in the
-	// example, and deploy/compose.isolated.yml sets it for real.
-	"Memory.LoreCommand": "simple mode runs no lore; see the comment in the memory block",
 }
 
 // TestExampleExercisesEveryField reflects over the loaded configuration and fails if any

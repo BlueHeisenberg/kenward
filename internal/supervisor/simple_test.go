@@ -47,7 +47,7 @@ func simpleTestConfig() *config.Config {
 				PrivateSpace: "ana-private", Tiers: []string{"local"},
 			},
 		},
-		Memory: config.MemoryConfig{LoreCommand: []string{"lore", "mcp"}, SearchLimit: 4},
+		Memory: config.MemoryConfig{SearchLimit: 4},
 	}
 }
 

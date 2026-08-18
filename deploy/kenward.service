@@ -96,7 +96,7 @@ DynamicUser=yes
 
 # Persistent, writable state (session key material while unlocked stays in
 # memory only and is never written here; this is for enrolment claim-code
-# storage and, if memory.lore_command points LORE_HOME under it, lore's own
+# storage and, if LORE_HOME is set to a path under it, lore's own
 # on-disk store). Resolves to /var/lib/kenward. DynamicUser's allocated uid
 # is not guaranteed to be the same from one start to the next, but systemd
 # re-chowns StateDirectory's contents to whichever uid this start got before
