@@ -8,9 +8,20 @@ unaffected by everything on this page, and nothing here is required to use kenwa
 It is a **separate binary** from `kenward`, and that is the load-bearing decision. The
 daemon must keep building with `CGO_ENABLED=0`, because the distroless image has no
 libc to link against; a menu bar needs cgo on macOS. Two artifacts out of one module
-keeps both true. `cmd/kenward-desktop` imports one constant from `internal/setup` and
-nothing else of kenward's: it starts `kenward run` as a child process and asks
-`kenward doctor` for the facts.
+keeps both true. `cmd/kenward-desktop` imports almost nothing of kenward's — one
+constant from `internal/setup`, and `internal/config` for the shape of the `dashboard`
+block — and otherwise starts `kenward run` as a child process and asks `kenward doctor`
+for the facts.
+
+It reads the daemon's own `config.DashboardConfig` rather than describing that block a
+second time. It once described it a second time, spelling the keys `addr` and `port`,
+and since the real keys are `enabled` and `bind` the wrapper found no dashboard in any
+valid configuration and greyed the menu item out permanently — while a household that
+wrote `dashboard.addr` to satisfy the wrapper got a `kenward run` that refused the whole
+file, the loader being strict about unknown keys. Borrowing the type costs nothing here:
+`internal/config` is already in this binary's dependency graph by way of
+`internal/setup`. What is not borrowed is validation — judging a household is `kenward
+run`'s job and `kenward doctor`'s.
 
 ## What it does
 
@@ -32,6 +43,14 @@ When the configuration names no dashboard the item is disabled and says so, rath
 than opening a URL nothing is listening on. The address is read from `kenward.yaml`
 every time the status refreshes, so enabling the dashboard does not need the wrapper
 restarted.
+
+"Names no dashboard" means `dashboard.enabled` is unset or false, which is what the
+daemon acts on too: with it unset `kenward run` opens no socket at all, so a `bind`
+stored against the day somebody turns it on is not somewhere to send a browser. When it
+is on, the address is `dashboard.bind` — or `127.0.0.1:8770` when that is unset, which
+is the commonest way to enable one — and the scheme is `https` when the block names a
+TLS pair, `http` otherwise. A wildcard bind such as `0.0.0.0:8770` is offered as
+`127.0.0.1:8770`: it is listening here too, and no browser can open `http://0.0.0.0`.
 
 ## Supervision
 
