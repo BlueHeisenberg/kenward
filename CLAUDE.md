@@ -36,9 +36,18 @@ a refactor.
 - **Routing never widens a tier chain.** No default, no fallback, no "if nothing matched,
   try everything". The chain is the privacy policy, and the test proving a cloud
   endpoint receives zero requests under a local-only chain must keep passing.
-- **Nothing is written to memory without an explicit member confirmation**, and there is
-  no configuration option to disable it.
-- **A group conversation never offers a personal capture destination.**
+- **Nothing is written to memory without the member being told**, in their own words,
+  every time, and there is no configuration option to disable that. The older form of
+  this rule — *no write without an explicit confirmation* — is **retired**, not softened:
+  under D-038's default (`capture.private_writes: save`) a note to a member's own space is
+  written first and announced afterwards with an Undo button. What has no setting is the
+  telling, and the shared space's confirmation: anything bound for the household's memory
+  is always proposed first, because publishing to everybody cannot be taken back.
+- **A capture may offer a private destination exactly when the scope already has one** —
+  `domain.Scope.AllowsPrivateCapture`, a property of the kind. Stated positively on
+  purpose: "not the group" was true while there were two kinds and would have silently
+  admitted D-054's third, which carries a member and must still never reach a private
+  space.
 - **An entry id never comes from member-supplied text.** lore's ids are global to a
   store, so an id names an entry in any space. Ids must originate only from a search
   performed within the current Scope, or from a promotion flow that already resolved one.
@@ -95,8 +104,11 @@ gate looks green and never executed.
 - Tests come with the code, table-driven, no network in unit tests. Integration tests
   needing real Podman, a real lore or a real model are tagged `//go:build integration`
   and excluded from the default run. An integration test that touches lore creates its
-  own `LORE_HOME` under `t.TempDir` — lore has no delete, so one pointed at a persistent
-  store poisons what it measures.
+  own `LORE_HOME` under `t.TempDir`. lore does have a delete now (D-040, and Undo calls
+  it), but it is a propagating tombstone rather than tidy-up machinery: a test pointed at
+  a persistent store still accumulates its own writes until they crowd out the entry the
+  run just made, and one that cleaned up after itself would be a crash away from leaving
+  the store dirtier than it found it.
 - `gofmt` and `go vet` clean before committing.
 - Refusal strings and rendered prompts are golden-tested. Changing one is a deliberate
   fixture edit.

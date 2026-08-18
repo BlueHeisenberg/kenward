@@ -1384,6 +1384,7 @@ conversation only. It takes `{title}` and no id — see *Promotion* below.
 | Direct chat, target `shared` | Ask to confirm: `[Save to household] [Don't save]` |
 | Direct chat, target `unsure` | Ask: `[Personal] [Household] [Don't save]` |
 | Group chat, any target | Ask: `[Household] [Don't save]` — **"Personal" is never offered**, so nothing in the group is ever written unasked |
+| Private chat with kenward itself, any target | The same: ask `[Household] [Don't save]`. The scope carries a member and still reads and writes shared only, so `Scope.AllowsPrivateCapture` is false and "Personal" is not offered here either — the destination is a property of the kind, never of whether a member happens to be set |
 | Promotion of an existing private entry to shared | Separate flow, triggered by the `publish` tool: show the full text that will be published, then `[Publish to household] [Cancel]` |
 
 ### Writing then telling
@@ -2934,11 +2935,17 @@ unproved. This section is only the part that binds: the tests a change may not r
   it caught what it caught.
 
 Tests needing equipment — real Podman, a real lore, a real model — are tagged
-`//go:build integration` and excluded from the default `go test ./...`. There are four:
+`//go:build integration` and excluded from the default `go test ./...`. There are seven:
 `internal/e2e/live_test.go` (a real lore store **and** a real endpoint, faking only
-Telegram), `internal/memory/integration_test.go`, `internal/setup/spaces_lore_test.go`,
-and `internal/supervisor/isolated_integration_test.go` (also `&& linux`). Each skips when
-its equipment is absent, so a green integration run on a bare machine proves nothing.
+Telegram), `internal/assistant/judgement_eval_test.go` (a real model), and five that also
+carry `&& linux` because they need Podman — `internal/supervisor/isolated_integration_test.go`,
+`cmd/kenward/isolated_podman_test.go`, `cmd/kenward/livetelegram_podman_test.go`,
+`cmd/kenward/podconfigstale_podman_test.go` and `cmd/kenward/thirdscope_podman_test.go`.
+Each skips when its equipment is absent, so a green integration run on a bare machine
+proves nothing.
+
+`internal/setup/spaces_lore_test.go` is **not** among them and needs no tag: it creates
+its own lore home in process, the same way `internal/memory`'s tests do.
 
 Any integration test that touches lore must create its own `LORE_HOME` under `t.TempDir`
 and its own spaces inside it. A test pointed at a persistent store accumulates its own

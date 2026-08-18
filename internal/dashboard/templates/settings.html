@@ -44,8 +44,9 @@ as text rather than as a list: {{$d.LoreErr}}</p></div>
 
 <label for="group_chat_id">Telegram group chat id
   <span class="hint">Negative, and blank until a group is mapped. Blank is only allowed
-  under one shared assistant: with one each, kenward lives in the group chat and nowhere
-  else, so a household without one has no kenward in it. Add the bot to the group, send a
+  under one shared assistant: with one each, both of kenward's own conversations are built
+  off this id &mdash; the group chat, and each member's private chat with kenward &mdash;
+  so a household without one has no kenward in it. Add the bot to the group, send a
   message there, open <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code>
   and copy the negative number after <code>"chat":{"id":</code>.</span>
 </label>
@@ -157,6 +158,26 @@ there also creates their lore space and mints their code.</p>
 <input type="number" id="search_limit" name="search_limit" value="{{$c.Memory.SearchLimit}}" min="0">
 <label for="max_proposals">Capture proposals per turn</label>
 <input type="number" id="max_proposals" name="max_proposals" value="{{$c.Capture.MaxProposalsPerTurn}}" min="0">
+
+<div class="choice">
+  <input type="checkbox" id="announce_reads" name="announce_reads" value="1" {{if $c.Memory.AnnouncesReads}}checked{{end}}>
+  <label for="announce_reads">Say what was searched, before each reply
+    <span class="hint">The line naming which memories were read and how many entries
+    reached the answer. A read changes nothing, so a household that finds it noisy loses
+    nothing but the line. The announcement kenward makes when it <em>writes</em> something
+    is not a setting and is not on this page.</span>
+  </label>
+</div>
+
+<label for="private_writes">A note to somebody's own private memory
+  <span class="hint">Either way the member is told, in their own words, every time —
+  that part has no setting. Anything bound for the household's shared memory is always
+  asked about first, under both.</span>
+</label>
+<select id="private_writes" name="private_writes">
+  <option value="save" {{if ne $c.Capture.PrivateWrites "ask"}}selected{{end}}>Write it, then show them, with an Undo button</option>
+  <option value="ask" {{if eq $c.Capture.PrivateWrites "ask"}}selected{{end}}>Ask first, and write nothing until they tap</option>
+</select>
 
 <h2>Conversations</h2>
 <label for="history_reset">Drop each conversation's recent messages every

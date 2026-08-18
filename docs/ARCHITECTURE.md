@@ -100,12 +100,18 @@ everything.
 
 | Conversation | Reads | Writes |
 | --- | --- | --- |
-| Direct message from a member | their private space, then shared | their private space |
+| Direct message with a member's own assistant | their private space, then shared | their private space |
 | Household group chat | shared space only | shared space |
+| Direct message with kenward itself | shared space only | shared space |
 
-A private conversation reads shared memory because that is useful — you should be able to
-ask when the bins go out. A group conversation can never read a private space, because
-that is the entire point. Copying something out of a private space into the shared one is
+The third row is D-054's, and it exists only under `household.agents: per_member`, where
+there is something for kenward to be separate from. It carries a member — kenward has to
+know who is asking in order to authorise them — and knowing that is a different thing from
+being allowed near their private space.
+
+A member's own conversation reads shared memory because that is useful — you should be
+able to ask when the bins go out. Nothing but a member's own assistant ever reads their
+private space, because that is the entire point. Copying something out of a private space into the shared one is
 an explicit, reviewed act using lore's own copy, so that its provenance survives the move
 and the member sees the full text before it is published.
 
@@ -318,7 +324,7 @@ What is left is reducing exposure honestly:
 
 | Exposure | Answer | Residual |
 | --- | --- | --- |
-| At rest | Per-member key, argon2-derived, unwrapped into memory only while that member has an active session, never written to disk | Nothing meaningful — backups and stolen disks yield nothing |
+| At rest | Per-member key, argon2-derived, unwrapped into memory only once that member's process has been unlocked, never written to disk | Nothing meaningful — backups and stolen disks yield nothing |
 | In flight | Per-member pod and per-member bot token, in Isolated mode | Host root |
 | Inference | Local endpoints the household controls | Whoever owns the GPU box; watch provider prompt logging |
 
@@ -330,10 +336,19 @@ closes that at the application layer, and costs about five minutes of setup per 
 Simple mode there is no isolation to protect, so one household bot is both the right answer
 and the honest one.
 
-**The claim is not "the operator cannot read your memory."** It is: *the operator cannot
-read it from disk, from a backup, or while you are not in session, and doing so requires
-deliberately attacking their own family.* That is strong, checkable and true. The stronger
-version is neither.
+**The claim is not "the operator cannot read your memory."** It is `internal/privacy`'s,
+word for word, because that package is where the promise is made to the member and a
+paraphrase here is how the two drift a word at a time: *nobody else in the household can
+read your private memory, and neither can the person who runs this machine — not from the
+disk, not from a backup, and not before your process has been unlocked.* Doing so means
+deliberately attacking their own family. That is strong, checkable and true.
+
+The stronger version is neither, and this document made the stronger version until D-019
+retired it. Idle-locking is only meaningful if re-unlocking needs the passphrase again, the
+only channel a member has is Telegram, and typing a passphrase into a chat hands it to
+Telegram's servers, to the member's own history, and in Simple mode to whoever holds the
+bot token. So the last clause is about being unlocked, not about being present, and the
+withdrawn wording — *away* rather than *unlocked* — must not come back.
 
 Three limits stated plainly, because they are the first things a privacy-minded reader will
 check:
@@ -348,9 +363,15 @@ check:
   rest and in flight. That is the mode's known limitation, not a bug, and `kenward doctor`
   says so out loud.
 
-An unresolved product question sits underneath all of this: unlock-on-message is usable and
-weaker, unlock-on-passphrase is strong but means nothing can happen for a member while they
-are away. The idle timeout is a guess until there is real usage.
+D-019 settled the question that sat underneath all of this. Unlock-on-message was the usable
+and weaker option and it is refused: typing a passphrase into a chat hands it to Telegram, to
+the member's own message history, and in Simple mode to whoever holds the bot token. A
+passphrase reaches a process at its start — environment variable, interactive prompt, or a
+systemd credential — and the consequence is stated rather than engineered around: once a
+member's assistant is unlocked, their key stays in that process's memory until it stops or
+they lock it. What is left open is only the knob. `session.idle_timeout` exists, is off by
+default, and a household that turns it on buys an assistant that stops answering until
+somebody walks to the machine; the right number is a guess until there is real usage.
 
 ## Capture
 
@@ -397,9 +418,12 @@ shown the exact words, and nothing leaves their private space without their appr
 
 Two invariants, not preferences:
 
-1. **A group conversation may never offer "personal."** Otherwise the household chat
-   becomes a write path into a private space, which is the one thing the memory model
-   exists to prevent.
+1. **A conversation may offer "personal" exactly when it already has one** —
+   `domain.Scope.AllowsPrivateCapture`, a property of the kind. Otherwise a shared
+   conversation becomes a write path into a private space, which is the one thing the
+   memory model exists to prevent. Stated positively rather than as "never the group":
+   the negative form was true while there were two kinds and would have silently admitted
+   D-054's third, which carries a member and reads shared memory only.
 2. **Private → shared is a separate, louder act**, showing the full text before publishing,
    because publication is irreversible from the household's point of view: other people
    have read it by the time anyone regrets it, and deleting the copy afterwards does not

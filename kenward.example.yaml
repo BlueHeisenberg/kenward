@@ -443,8 +443,10 @@ memory:
   announce_reads: true
 
 # history is the other thing kenward holds, and it is the opposite of memory above.
-# lore is what the household decided to keep: permanent, written only when somebody
-# agrees to it. This is the last handful of turns of each conversation, kept in RAM so
+# lore is what the household decided to keep: permanent, and never written without the
+# member being told — asked first for the household's shared memory, and by default
+# written and then announced with an Undo button for their own (see capture.private_writes
+# below). This is the last handful of turns of each conversation, kept in RAM so
 # the assistant can follow a thread, never written to lore, and already gone whenever
 # kenward restarts.
 history:

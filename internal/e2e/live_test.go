@@ -144,13 +144,15 @@ func liveEnv(t *testing.T) live {
 // can see another's.
 //
 // This replaces pointing the suite at spaces kept for the purpose in a persistent
-// store, which does not work, because lore has no delete. Not in the CLI, not over
-// MCP, and not for spaces at all: `internal/store.DeleteEntry` writes a proper
-// propagating tombstone but nothing exposes it, and no code path anywhere removes
-// a space. So every run added entries no later run could remove, and after eight
-// runs the store held eight near-identical greenhouse entries that retrieval could
-// not tell apart — the suite had made itself fail. A test whose store degrades
-// every time it runs is measuring its own history.
+// store, which does not work. lore has a delete now — D-040 exposed the propagating
+// tombstone `internal/store.DeleteEntry` always wrote, and Undo calls it — but it is
+// not tidy-up machinery for a suite: it deletes one entry, there is still no way to
+// remove a space, and a run that cleaned up after itself would be one crash away from
+// leaving the store dirtier than it found it. Before it existed, every run added
+// entries no later run could remove, and after eight runs the store held eight
+// near-identical greenhouse entries that retrieval could not tell apart — the suite
+// had made itself fail. A test whose store degrades every time it runs is measuring
+// its own history, and owning the store is what stops that rather than deleting.
 //
 // Owning the store costs this file nothing it was built to have. The SQLite
 // database and the full-text search are still the real ones, which is the whole
