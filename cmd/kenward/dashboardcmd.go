@@ -206,18 +206,20 @@ func dashboardDeps(e *env, path, dataDir string, logger *slog.Logger) dashboard.
 	}
 }
 
-// openLoreClient builds a memory client from whatever the configuration says, falling
-// back to kenward's own default argv when there is no configuration yet — which is the
-// first run, where the spaces have to be created before a configuration can name them.
+// openLoreClient opens this machine's lore store for the dashboard, making it first if
+// this machine has never had one.
+//
+// The init is what lets the first-run wizard be the whole of the install. It runs
+// before any configuration exists — that is the point of the wizard, it is what writes
+// one — so there is nothing here to read a lore home out of, and nothing to run either:
+// InitHome leaves an existing store untouched and creates one only where there was
+// none. It used to read memory.lore_command out of the file to find a binary to spawn;
+// nothing is spawned now, and in simple mode there is no such value to read.
 func openLoreClient(path, dataDir string) (dashboard.SpaceClient, error) {
-	argv := config.DefaultLoreCommand()
-	if f, err := os.Open(path); err == nil {
-		defer f.Close()
-		if cfg, err := config.Decode(f); err == nil && len(cfg.Memory.LoreCommand) > 0 {
-			argv = cfg.Memory.LoreCommand
-		}
+	if _, err := memory.InitHome(context.Background(), memory.DefaultLoreHome(), loreDeviceName); err != nil {
+		return nil, err
 	}
-	return memory.NewClient(memory.Config{Command: argv[0]})
+	return memory.NewClient(memory.Config{})
 }
 
 // renderDashboardBanner is what the process prints on the way up.

@@ -112,7 +112,10 @@ process through lore's Go API; there is no MCP SDK in the module, no server to r
 handshake to fail. The one thing still spawned is `lore serve`, the sync daemon an
 isolated pod runs so its copy of the shared space reaches the other pods — see §12.
 `memory.lore_command` names that binary and nothing else, and only its first element is
-read, so a file written when kenward spawned `lore mcp` still loads.
+read, so a file written when kenward spawned `lore mcp` still loads. It is **absent from
+a simple-mode configuration**, and the wizard no longer writes one there: a simple-mode
+node executes no lore, and a program name in the file was read by households as a
+dependency they had to install.
 
 `lore` also brings a transitive SQLite (`modernc.org/sqlite`, pure Go) and the rest of
 the indirect block in `go.mod`. Pure Go is the load-bearing part: it is what keeps the
@@ -571,7 +574,8 @@ household:
     language: "Spanish"       # free text, not a code; empty means English
     tone: "warm but brief"    # empty means the flat register in PROMPT.md
     character: "Knows the house well."   # up to 1000 runes; empty means none
-  # A lore space id from `lore spaces`, never a display name. See below.
+  # A lore space id, never a display name — written here by whichever wizard
+  # created the space. See below.
   shared_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
   group_chat_id: -1001234567890   # required under agents: per_member
   tiers: [local, local-slow, cloud]
@@ -621,10 +625,16 @@ endpoints:
     max_completion_tokens: 8192   # defaults to 4096; must be < context_window
 
 memory:
-  # Only element zero is read: the `lore serve` sync daemon isolated mode spawns.
-  # kenward opens the store itself, in process, so a file still saying
+  # No lore_command in simple mode, and that is not an omission: kenward opens
+  # its own store in process and creates it on first run, so nothing here
+  # executes lore and nothing has to be installed. An ISOLATED configuration
+  # does carry one —
+  #
+  #   lore_command: ["lore"]
+  #
+  # because each pod runs `lore serve --lan` to carry the household's shared
+  # space to the others. Only element zero is read, so a file still saying
   # ["lore", "mcp"] loads unchanged and the trailing element is ignored.
-  lore_command: ["lore"]
   search_limit: 8
   announce_reads: true        # prefix each reply with what was searched; default true
 
@@ -735,8 +745,9 @@ kenward never runs that command: it reaches lore as a Go package, and `lore.Stor
 resolves `SpaceID` by id only and returns `space not found`. So a display name configured
 here fails **both** directions, refused at the first call rather than at the first
 retrieval, and nothing is ever stored under it. `kenward doctor` treats a space it cannot
-resolve as a configuration fault and exits 2, telling the operator to run `lore spaces`,
-take the id column, and that nothing has been written under the value it is reporting.
+resolve as a configuration fault and exits 2, saying nothing has been written under the
+value it is reporting. Neither wizard can produce one — both write the id `CreateSpace`
+returned — so reaching this state means a hand edit.
 
 Validation rules that are errors, not warnings:
 
@@ -1847,23 +1858,32 @@ lore works is a property of the machine, not of the file — a validation that f
 one host would make `doctor` useless for checking a configuration before shipping it
 (§4).
 
-**The question is "does lore answer", not "is lore installed", and the difference is
+**The question is "does memory answer", not "is lore installed", and the difference is
 where this was wrong first.** `exec.LookPath` on `memory.lore_command[0]` was the whole
-of the check, and it stops one step short of the failure it exists to prevent: a lore
+of the check, and it stopped one step short of the failure it exists to prevent: a lore
 home with no account in it cannot be opened —
 
 ```
-memory: opening the lore store at /home/nonroot/.lore: memory: lore store is unavailable: lore: home is not initialised: no account.json in /home/nonroot/.lore (run `lore init`)
+memory: opening the lore store at /home/nonroot/.lore: memory: lore store is unavailable: lore: home is not initialised
 ```
 
-— which is the state every fresh container volume is in. Measured against a real
-container, the binary was on `$PATH`, the check passed, and the node started into exactly
-the silence the check exists to prevent. So `run` now does both: the PATH lookup, which
-still matters because `lore serve` is a real binary this deployment has to have, and then
-one bounded open-and-search through the same seam `doctor` probes with, so the two cannot
-drift. Its refusal names `lore init`.
+— which is the state every fresh container volume, and every fresh machine, is in.
+Measured against a real container, the binary was on `$PATH`, the check passed, and the
+node started into exactly the silence the check exists to prevent.
 
-Two lines are drawn deliberately. **Only lore failing to answer is fatal** — a space lore
+So the PATH lookup has gone from the path that reads and writes. `run` creates the home
+if there is none (`memory.InitHome`, which leaves an existing store untouched) and then
+performs one bounded open-and-search through the same seam `doctor` probes with, so the
+two cannot drift. **A simple-mode node needs no lore binary on the machine at all**, and
+the old refusal is the reason the documentation used to say otherwise.
+
+What is left of the lookup is `checkSyncBinary`, and it applies to isolated mode only:
+each pod runs `lore serve --lan`, which is the only thing that carries an entry from one
+pod's lore home to another's, so a pod without the binary is refused with a message about
+*shared* memory rather than about memory. That function, its call, and
+`memory.Config.Command` all delete together when the daemon becomes a library call.
+
+Two lines are drawn deliberately. **Only memory failing to answer is fatal** — a space lore
 does not hold is one space's problem and `doctor`'s to report, and refusing a household
 its assistant over a mistyped space id would be a larger outage than the silent one being
 prevented. And the handshake is a **hard** refusal, bounded at thirty seconds, rather than
@@ -1925,9 +1945,9 @@ Four properties, each of which is a way this could have gone wrong:
   a variable, so there is nothing there for a later edit to log.
 - **It does not create the spaces `kenward.yaml` names, and cannot.** `Init` makes an
   account, a device and one personal space with ids it chooses, and `CreateSpace` mints a
-  fresh id too; `household.shared_space` and `members[].private_space` are ids an
-  operator wrote in the file, and nothing in lore can create a space *at a given id*. A
-  self-initialised pod therefore
+  fresh id too; `household.shared_space` and `members[].private_space` are ids a wizard
+  wrote in the file when it made those spaces on the machine it ran on, and nothing in
+  lore can create a space *at a given id*. A self-initialised pod therefore
   comes up with a lore that answers and configured spaces that are not in it, which
   `doctor` reports per space and `run` deliberately does not treat as fatal. That is the
   same gap §12 records under separate `LORE_HOME`s not converging, now reached by both

@@ -33,12 +33,12 @@ func cmdSetup(e *env, args []string) int {
 	// configured here writes memory happily and returns nothing on the first read.
 	// The backquoted word is the placeholder the flag package prints, so it goes on
 	// the value's shape and nowhere else.
-	sharedSpace := fs.String("shared-space", "", "`SPACE_ID` of the shared lore space the group chat reads and writes; `lore spaces` prints the ids")
+	sharedSpace := fs.String("shared-space", "", "`SPACE_ID` of an existing lore space for the group chat; omit it and setup makes one")
 	botTokenEnv := fs.String("bot-token-env", setup.DefaultBotTokenEnv, "the variable the household bot's token is read from")
 	var members stringList
 	fs.Var(&members, "member", "a member's name; repeat for each person (ids are derived)")
 	var memberSpaces stringList
-	fs.Var(&memberSpaces, "member-space", "`ID=SPACE_ID` for the shared lore space holding that member's private memory; repeat for each member, and run `lore spaces` for the ids")
+	fs.Var(&memberSpaces, "member-space", "`ID=SPACE_ID` of an existing lore space for that member's private memory; omit it and setup makes one")
 	var endpoints stringList
 	fs.Var(&endpoints, "endpoint", "name=NAME,url=BASE_URL,model=MODEL[,key-env=VAR][,tiers=a|b]; repeat")
 	var memberTiers stringList
@@ -140,7 +140,7 @@ func buildAnswers(mode, household, shared, botTokenEnv string,
 	for _, spec := range memberSpaces {
 		id, space, ok := strings.Cut(spec, "=")
 		if !ok || id == "" || strings.TrimSpace(space) == "" {
-			return nil, fmt.Errorf("--member-space wants ID=SPACE_ID, got %q; `lore spaces` prints the ids", spec)
+			return nil, fmt.Errorf("--member-space wants ID=SPACE_ID, got %q; omit it entirely and setup makes the space itself", spec)
 		}
 		if a.MemberSpaces == nil {
 			a.MemberSpaces = map[string]string{}

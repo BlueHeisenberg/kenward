@@ -32,12 +32,22 @@ It asks, in order:
    Choosing Isolated on Windows or macOS explains why it is Linux-only, offers Simple,
    and does not pretend otherwise.
 
-2. **Household name, and which lore space is the shared one.** The wizard lists the
-   spaces lore actually holds and writes the **id** of the one chosen. It does not ask
-   what to call the shared memory: an earlier draft did, slugified the answer, and so
-   produced a configuration that wrote memories happily and returned nothing on the first
-   read. Spaces are not created here or anywhere else in kenward — they exist already, or
-   the wizard has nothing to list.
+2. **Household name.** One question, and the household's shared memory follows from it:
+   the wizard creates a shared lore space called "<household> — household" and writes its
+   **id** into the file. It does not ask which space to use and it does not ask what to
+   call one.
+
+   Both of those were questions once and both were wrong. Asking what to call it
+   slugified the answer into the id field, producing a configuration that wrote memories
+   happily and returned nothing on the first read. Asking *which* fixed that and cost
+   more: spaces had to exist before the wizard ran, so installing kenward meant fetching
+   lore, running `lore init`, running `lore space create` once per person, running `lore
+   spaces`, and copying an id column into a wizard whose only remaining job was to write
+   down what those five commands produced. lore exports `CreateSpace`, so the wizard
+   makes them, as the dashboard's first-run wizard already did.
+
+   Run setup again over a household that exists and the spaces of those names are reused,
+   not duplicated: `--force` corrects a typo without splitting anybody's memory in half.
 3. **The Telegram bot.** Simple mode: one token, with a short walkthrough of BotFather.
    Isolated mode: the household group bot now, and a note that each member creates their
    own during enrolment.
@@ -62,9 +72,12 @@ It asks, in order:
    removed and added again. Doing it during setup, before the bot is in anything, costs
    one message to BotFather. `kenward doctor` reports the same thing, as a warning, for
    the household that maps its group months later.
-4. **Members.** Names only. Telegram ids are not asked for — they arrive through
-   `kenward invite`, because asking someone to find their numeric Telegram id is a
-   terrible first experience.
+4. **Members.** Names only. Each person's private memory is created from their name —
+   a shared-kind space called "<household> — <name>", because a member's private space
+   has two members in it, the person and the node, and lore's `personal` kind never
+   crosses accounts. Telegram ids are not asked for either: they arrive through `kenward
+   invite`, because asking someone to find their numeric Telegram id is a terrible first
+   experience.
 5. **The identity question, and kenward's persona.** A second question, and it is not the
    trust question's other half — conflating them is the mistake this pair exists to
    prevent. That one is about security and is answered by topology; this one is about
@@ -283,17 +296,25 @@ Runs the node. This is what the container entrypoint and the systemd unit call.
 per-OS state location. It is what the container image sets, since a container's home
 directory is not where anyone expects state to live.
 
-**It refuses to start unless lore actually answers.** Before anything is built, `run`
-looks for `memory.lore_command[0]` on `$PATH` — the binary is still needed, for the
-`lore serve` sync daemon — and then opens the store and searches it once, the same check
-`doctor` performs. Both halves are needed: a missing binary and an uninitialised
-`LORE_HOME` produce different failures and only the second stops memory working. A home
-with no account in it cannot be opened, which is the state every fresh container volume
-is in, so the refusal names `lore init` as the remedy — though a pod started by the
-supervisor initialises its own home before reaching this point. A space
-lore does not hold is *not* a refusal — that is one space's problem and `doctor` reports
-it. The isolated **host supervisor** is exempt: it starts pods and holds no memory client
-of its own, and each pod asks this question of its own image on its own way up.
+**It refuses to start unless memory actually answers.** Before anything is built, `run`
+creates this node's lore home if the machine has never had one, then opens the store and
+searches it once — the same check `doctor` performs, through the same seam, so the two
+cannot drift. A space the store does not hold is *not* a refusal: that is one space's
+problem and `doctor` reports it. The isolated **host supervisor** is exempt, because it
+starts pods and holds no memory client of its own; each pod asks the question of itself
+on its own way up.
+
+**No lore binary is looked for, in simple mode or anywhere else that reads or writes.**
+`run` used to check `memory.lore_command[0]` against `$PATH` and refuse without it, on
+the reasoning that spawning `lore mcp` was kenward's only route to memory. That route is
+gone — the store is opened in this process — and a simple-mode household needs no lore
+installed at all.
+
+*Isolated mode keeps one check, and it is the last of them.* Every pod runs
+`lore serve --lan`, which is the only thing carrying an entry from one pod's lore home to
+another's, so a pod whose `memory.lore_command[0]` is not on `$PATH` is refused with an
+explanation naming shared memory rather than memory. When that daemon becomes a library
+call, this paragraph goes and nothing else changes.
 
 `--member` and `--group` exist for **isolated mode only**, where each pod runs exactly
 one unit: a member's pod is started with `--member david`, the household's with
@@ -594,11 +615,11 @@ out about by messaging the bot:
       never a member's private memory
 ```
 
-**Note the space lines.** Those are lore space ids, from the id column of `lore spaces`,
-because that is what `shared_space` and `private_space` must hold. A display name there
-writes successfully and fails on the first read, so `doctor` reports one as a
-configuration fault and exits 2 rather than passing it. The reasoning is in
-[IMPLEMENTATION.md](IMPLEMENTATION.md) section 4.
+**Note the space lines.** Those are lore space ids, because that is what `shared_space`
+and `private_space` must hold — the wizard that made the spaces wrote them there, and
+nobody types one. A display name in that field writes successfully and fails on the first
+read, so `doctor` reports one as a configuration fault and exits 2 rather than passing
+it. The reasoning is in [IMPLEMENTATION.md](IMPLEMENTATION.md) section 4.
 
 An endpoint that does not answer is reported as a fact, not a failure, and the report
 says so where it happens:

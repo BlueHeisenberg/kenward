@@ -26,8 +26,10 @@ func oneEachScript(t *testing.T, groupAnswers ...string) []string {
 	t.Helper()
 	answers := append([]string{"2"}, simpleAnswers()[1:]...)
 	for i, a := range answers {
-		// The identity step is marked in simpleAnswers by four empty answers in a row.
-		if a == "" && i+3 < len(answers) && answers[i+1] == "" && answers[i+2] == "" && answers[i+3] == "" {
+		// The identity step is marked in simpleAnswers by four empty answers in a
+		// row — and only four: the answer closing the list of members is empty too
+		// and sits immediately before them. See identityAnswersIn.
+		if a == "" && i+4 < len(answers) && answers[i+1] == "" && answers[i+2] == "" && answers[i+3] == "" && answers[i+4] != "" {
 			out := append([]string(nil), answers[:i]...)
 			out = append(out, "2")
 			out = append(out, groupAnswers...)

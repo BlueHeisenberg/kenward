@@ -65,12 +65,39 @@ func (w *Wizard) askHousehold(ctx context.Context) error {
 	w.blank()
 	w.io.Print(sharedSpaceNote)
 
-	id, err := w.askSpace(ctx, questionSharedSpace, "its shared memory")
+	id, err := w.makeSpace(ctx, sharedSpaceLabel(w.household.Name), "the household's shared memory")
 	if err != nil {
 		return err
 	}
 	w.household.SharedSpace = id
 	return nil
+}
+
+// sharedSpaceLabel and privateSpaceLabel are the display names the spaces are made
+// with. They are prefixed with the household's name so that a lore store shared with
+// a person's own use does not end up with a bare "household" in it, and they are the
+// same two labels the dashboard's first-run wizard uses, so a household set up either
+// way reads the same in `lore spaces`.
+func sharedSpaceLabel(household string) string { return household + " — household" }
+
+// privateSpaceLabelFor is one member's, and it is unique within the household.
+//
+// Two people can be called David. Their member ids are already made unique, but the
+// space is named after the person rather than the slug, so the label needs the same
+// treatment: without it the second David's space is created with a name lore already
+// holds, the ErrSpaceExists path finds the first David's space, and the two share a
+// private memory — which is validation's last-line refusal and would be a wizard
+// writing exactly the configuration it exists to prevent.
+func (w *Wizard) privateSpaceLabelFor(m config.MemberConfig) string {
+	label := w.household.Name + " — " + m.Name
+	if w.spaceLabels[label] {
+		label = w.household.Name + " — " + m.Name + " (" + m.ID + ")"
+	}
+	if w.spaceLabels == nil {
+		w.spaceLabels = map[string]bool{}
+	}
+	w.spaceLabels[label] = true
+	return label
 }
 
 // askTelegram takes the household's bot token, explains that it is not stored, and
@@ -244,12 +271,13 @@ func (w *Wizard) askMembers(ctx context.Context) error {
 		w.addMember(name, taken)
 	}
 
-	// Which space is whose is asked after every name is in, so the list of people
-	// is settled before anybody is asked to match one of them to a space.
+	// The spaces are made after every name is in, so that a household abandoned
+	// half way through the list leaves no spaces behind for the people who were
+	// never entered.
 	for i := range w.members {
 		m := &w.members[i]
-		id, err := w.askSpace(ctx,
-			fmt.Sprintf("Which space is %s's private memory?", m.Name),
+		id, err := w.makeSpace(ctx,
+			w.privateSpaceLabelFor(*m),
 			m.Name+"'s private memory")
 		if err != nil {
 			return err
@@ -267,8 +295,8 @@ func (w *Wizard) askMembers(ctx context.Context) error {
 }
 
 // addMember derives a member's id and — in isolated mode — their own bot token
-// variable, from their name. The private space is not derived: it is a lore space
-// that has to already exist, and it is asked for separately.
+// variable, from their name. The private space is not derived: it is a lore space,
+// made once every name is in, and its id is whatever lore mints.
 func (w *Wizard) addMember(name string, taken map[string]bool) {
 	id := uniqueSlug(name, taken, fmt.Sprintf("member-%d", len(w.members)+1))
 	m := config.MemberConfig{ID: id, Name: name}
@@ -766,15 +794,19 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 		return fmt.Errorf("setup: one assistant each needs household.group_chat_id, the Telegram id of the household's own group; under `agents: per_member` every private chat belongs to somebody's own assistant and the group is the only place kenward speaks, so a household without one cannot be reached at all")
 	}
 
-	// No default is possible for a space: it is the id of something that has to
-	// already exist in lore, and inventing one produces the configuration this
-	// step exists to stop — one that starts, saves, and finds nothing on the
-	// first retrieval.
+	// A space id is optional here, and the ordinary case is not to give one. An
+	// install script that names nothing gets the spaces made for it, which is what
+	// lets `kenward setup --non-interactive` be the whole of an install; the
+	// dashboard's first-run wizard makes its own and drives this package with the
+	// ids, so both are supported and a supplied id is still checked.
 	w.household.SharedSpace = strings.TrimSpace(a.SharedSpace)
 	if w.household.SharedSpace == "" {
-		return fmt.Errorf("setup: the household's shared space is required, as the id of a shared lore space; `lore spaces` lists them")
-	}
-	if err := w.checkSpaceID(ctx, w.household.SharedSpace, "a household's shared memory"); err != nil {
+		id, err := w.makeSpace(ctx, sharedSpaceLabel(w.household.Name), "the household's shared memory")
+		if err != nil {
+			return err
+		}
+		w.household.SharedSpace = id
+	} else if err := w.checkSpaceID(ctx, w.household.SharedSpace, "a household's shared memory"); err != nil {
 		return err
 	}
 
@@ -802,9 +834,12 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 		m := &w.members[i]
 		space := strings.TrimSpace(a.MemberSpaces[m.ID])
 		if space == "" {
-			return fmt.Errorf("setup: no space for member %q; give the id of the shared lore space holding their private memory, which is the one with them and this machine in it", m.ID)
-		}
-		if err := w.checkSpaceID(ctx, space, "a member's private memory"); err != nil {
+			made, err := w.makeSpace(ctx, w.privateSpaceLabelFor(*m), m.Name+"'s private memory")
+			if err != nil {
+				return err
+			}
+			space = made
+		} else if err := w.checkSpaceID(ctx, space, "a member's private memory"); err != nil {
 			return err
 		}
 		m.PrivateSpace = space

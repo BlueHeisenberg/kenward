@@ -253,8 +253,11 @@ time:
 
 A temp root with no `kenward.yaml`, no data directory, no admin account and no lore store.
 A release snapshot built and installed by `install.sh` itself over `file://`, so the
-binary under test arrived the way a stranger's does. `lore init` into this run's own
-store. The first-run dashboard, and the setup token it prints. The wizard screens in a
+binary under test arrived the way a stranger's does — and nothing else installed, because
+nothing else is needed: kenward creates this run's own store itself. (The script used to
+run `lore init` here. When it is next touched, that step should go, and the run should be
+given no `lore` on `$PATH` at all, so the standalone claim is measured rather than
+assumed.) The first-run dashboard, and the setup token it prints. The wizard screens in a
 real browser — seven in simple mode, eight in isolated, which has one more for each
 member's own bot token and passphrase — including `/v1/models` against a real vLLM. A member added from the
 Members page. Then `kenward run` against the configuration that came out, with a real bot
@@ -280,8 +283,14 @@ so, and nothing else in this repository would have caught it.
 
 The last step breaks the household on purpose. `LORE_HOME` is moved aside and `kenward
 run` is started again against the same configuration; it must exit non-zero within
-forty-five seconds, name what did not answer, and say `lore init`. A run that hangs fails
-this as surely as one that serves.
+forty-five seconds and name what did not answer. A run that hangs fails this as surely as
+one that serves.
+
+**That step needs rewriting, and this is the note saying so.** Moving `LORE_HOME` aside no
+longer produces a refusal: `run` creates a store where it finds none, so it now starts
+cleanly into an empty one — correct behaviour, and no longer a test of anything. What
+should be broken instead is a home kenward cannot *use*: point `LORE_HOME` at a path it
+cannot write, or at a store written by a newer lore, and assert the same shape of refusal.
 
 ### Isolated mode against real Podman
 
@@ -314,8 +323,9 @@ died earlier died of something the test is looking for.
 A pod's `/work` volume starts empty, a lore home with no account in it cannot be opened,
 and `kenward run` refuses to serve a unit whose memory layer does not answer — so a fresh
 volume used to crash-loop until an operator ran `lore init` against it. `kenward run` now
-does that for itself with `lore.Init` before it serves, and this suite exercises that
-path rather than performing the step on its behalf.
+does that for itself with `memory.InitHome` before it serves, and this suite exercises
+that path rather than performing the step on its behalf. A fresh *simple-mode* machine is
+the same case with a friendlier surface, and gets the same treatment.
 
 ## What this has and has not proved
 

@@ -162,15 +162,23 @@ endpoints:
 	}
 
 	// Checked separately: a slice is not comparable with !=, and the table above holds
-	// its values as any.
-	if got, want := cfg.Memory.LoreCommand, config.DefaultLoreCommand(); !reflect.DeepEqual(got, want) {
-		t.Errorf("memory.lore_command = %v, want %v", got, want)
+	// its values as any. Simple mode gets no lore command, because it runs no lore:
+	// the store is opened in process, and a defaulted program name here is what put
+	// `lore_command: [lore]` into every generated file and taught households they had
+	// an external dependency.
+	if got := cfg.Memory.LoreCommand; len(got) != 0 {
+		t.Errorf("memory.lore_command = %v, want nothing: a simple-mode node never executes lore", got)
 	}
 }
 
-// TestLoreCommandDefault: omitting the memory block used to validate cleanly and then
-// fail at startup, when the memory client tried to spawn nothing. An omitted key now
-// behaves like the documented one.
+// TestLoreCommandDefault: the value is defaulted where something runs it, and left
+// empty where nothing does.
+//
+// Isolated mode runs `lore serve --lan` in every pod, so an omitted key there becomes
+// the documented default. Simple mode opens its store in process and executes no
+// program at all, so an omitted key stays omitted — the default used to apply in both,
+// which put `lore_command: [lore]` into every generated simple-mode file and taught
+// households they had a binary to install.
 func TestLoreCommandDefault(t *testing.T) {
 	tests := []struct {
 		name string
@@ -178,22 +186,37 @@ func TestLoreCommandDefault(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "no memory block at all",
+			name: "no memory block at all, simple mode",
+			yaml: "mode: simple\n",
+			want: nil,
+		},
+		{
+			name: "no mode stated is not isolated, so nothing is invented",
 			yaml: "",
+			want: nil,
+		},
+		{
+			name: "a memory block that says nothing about the command, simple mode",
+			yaml: "mode: simple\nmemory: {search_limit: 4}\n",
+			want: nil,
+		},
+		{
+			name: "no memory block at all, isolated mode",
+			yaml: "mode: isolated\n",
 			want: config.DefaultLoreCommand(),
 		},
 		{
-			name: "a memory block that says nothing about the command",
-			yaml: "memory: {search_limit: 4}\n",
+			name: "a memory block that says nothing about the command, isolated mode",
+			yaml: "mode: isolated\nmemory: {search_limit: 4}\n",
 			want: config.DefaultLoreCommand(),
 		},
 		{
-			name: "an explicitly empty command falls back to the default rather than to nothing",
-			yaml: "memory: {lore_command: []}\n",
+			name: "an explicitly empty command falls back to the default rather than to nothing, isolated",
+			yaml: "mode: isolated\nmemory: {lore_command: []}\n",
 			want: config.DefaultLoreCommand(),
 		},
 		{
-			name: "a stated command is used exactly as written",
+			name: "a stated command is used exactly as written, whatever the mode",
 			yaml: `memory: {lore_command: ["/opt/lore/bin/lore", "mcp", "--verbose"]}` + "\n",
 			want: []string{"/opt/lore/bin/lore", "mcp", "--verbose"},
 		},
@@ -221,11 +244,11 @@ func TestDefaultLoreCommandIsNotShared(t *testing.T) {
 		t.Errorf("DefaultLoreCommand() = %v after an earlier caller edited its copy", second)
 	}
 
-	a, err := config.Decode(strings.NewReader(""))
+	a, err := config.Decode(strings.NewReader("mode: isolated\n"))
 	if err != nil {
 		t.Fatalf("Decode() error: %v", err)
 	}
-	b, err := config.Decode(strings.NewReader(""))
+	b, err := config.Decode(strings.NewReader("mode: isolated\n"))
 	if err != nil {
 		t.Fatalf("Decode() error: %v", err)
 	}
@@ -236,27 +259,31 @@ func TestDefaultLoreCommandIsNotShared(t *testing.T) {
 }
 
 // TestLoreCommandValidation covers the configurations that never went through
-// ApplyDefaults — the wizard and other packages build these in Go — where an empty or
-// malformed command would otherwise become a spawn of nothing at startup, reported far
-// from the file that caused it.
+// ApplyDefaults — the wizard and other packages build these in Go — where a malformed
+// command would otherwise become a spawn of nothing at startup, reported far from the
+// file that caused it.
 func TestLoreCommandValidation(t *testing.T) {
 	tests := []struct {
 		name    string
+		mode    config.Mode
 		command []string
 		want    string
 	}{
 		{
-			name:    "no command at all",
+			name:    "no command at all, isolated: the sync daemon has nothing to run",
+			mode:    config.ModeIsolated,
 			command: nil,
-			want:    "memory.lore_command: required",
+			want:    "memory.lore_command: required in isolated mode",
 		},
 		{
 			name:    "an empty program",
+			mode:    config.ModeSimple,
 			command: []string{"", "mcp"},
 			want:    "memory.lore_command: the first element is the program to run and it is empty",
 		},
 		{
 			name:    "a blank program",
+			mode:    config.ModeSimple,
 			command: []string{"   ", "mcp"},
 			want:    "memory.lore_command: the first element is the program to run and it is empty",
 		},
@@ -264,7 +291,7 @@ func TestLoreCommandValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
-				Mode:      config.ModeSimple,
+				Mode:      tt.mode,
 				Household: config.HouseholdConfig{SharedSpace: "household", Tiers: []string{"local"}},
 				Telegram:  config.TelegramConfig{BotTokenEnv: "T"},
 				Endpoints: []config.EndpointConfig{{Name: "m", BaseURL: "http://m:1/v1", Model: "q", Tags: []string{"local"}}},
@@ -280,6 +307,42 @@ func TestLoreCommandValidation(t *testing.T) {
 				t.Errorf("no problem contains %q; got: %v", tt.want, ve.Problems)
 			}
 		})
+	}
+
+	// The claim this whole branch exists to make true: a simple-mode household is
+	// valid with no memory.lore_command at all. It executes no lore, so requiring
+	// one was a configuration file asserting a dependency that did not exist.
+	standalone := &config.Config{
+		Mode:      config.ModeSimple,
+		Household: config.HouseholdConfig{SharedSpace: "household", Tiers: []string{"local"}},
+		Telegram:  config.TelegramConfig{BotTokenEnv: "T"},
+		Endpoints: []config.EndpointConfig{{Name: "m", BaseURL: "http://m:1/v1", Model: "q", Tags: []string{"local"}}},
+		Update:    config.UpdateConfig{Channel: config.UpdateStable},
+	}
+	if err := standalone.Validate(env(map[string]string{"T": "t"})); err != nil {
+		t.Fatalf("a simple-mode configuration with no memory.lore_command was refused: %v", err)
+	}
+
+	// And the message that used to be given for it is gone. Both halves of it were
+	// false: MCP was removed, and kenward reads and writes through lore's Go API
+	// with no lore binary on the machine at all.
+	isolated := &config.Config{
+		Mode:      config.ModeIsolated,
+		Household: config.HouseholdConfig{SharedSpace: "household", Tiers: []string{"local"}},
+		Telegram:  config.TelegramConfig{BotTokenEnv: "T"},
+		Endpoints: []config.EndpointConfig{{Name: "m", BaseURL: "http://m:1/v1", Model: "q", Tags: []string{"local"}}},
+	}
+	var ve *config.ValidationError
+	if !errors.As(isolated.Validate(env(map[string]string{"T": "t"})), &ve) {
+		t.Fatal("an isolated configuration with no lore command was accepted; the sync daemon has nothing to run")
+	}
+	for _, stale := range []string{"MCP", "mcp server", "no memory to read or write"} {
+		if containsSub(ve.Problems, stale) {
+			t.Errorf("the validation message still says %q, which stopped being true when kenward embedded lore: %v", stale, ve.Problems)
+		}
+	}
+	if !containsSub(ve.Problems, "lore serve --lan") {
+		t.Errorf("the message does not name what the value is actually for: %v", ve.Problems)
 	}
 
 	// And a stated command is not a problem.

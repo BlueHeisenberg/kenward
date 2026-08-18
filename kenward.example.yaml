@@ -409,17 +409,20 @@ endpoints:
 
 # memory configures the lore client every unit uses for retrieval and capture.
 memory:
-  # lore_command locates the lore executable. kenward opens the store itself, in
-  # process, through lore's Go API — this names the binary for one other thing: the
-  # sync daemon (`lore serve`) an isolated pod runs so its copy of the household's
-  # shared space reaches the other pods. Only the first element is read. Trailing
-  # elements are accepted and ignored, so a configuration written when kenward
-  # spawned `lore mcp` still loads unchanged.
+  # There is no lore_command here, and that is not an omission. kenward opens its own
+  # store in process through lore's Go API, creating it on first run if this machine
+  # has never had one, so a simple-mode household executes no lore and needs none
+  # installed.
   #
-  # Naming it is worth the line on a machine where `lore` is not on PATH: in simple
-  # mode nothing needs it and it is inert, but in isolated mode a missing binary is
-  # a household whose shared memory silently stops converging.
-  lore_command: ["lore"]
+  # An ISOLATED household is the one exception, and it is the only one left: each pod
+  # has its own lore home, and the pods exchange the household's shared space by each
+  # running `lore serve --lan`. That is a program, so an isolated kenward.yaml needs
+  #
+  #   lore_command: ["lore"]
+  #
+  # and a lore binary in the image (deploy/compose.isolated.yml bind-mounts one). Only
+  # the first element is read; trailing elements are accepted and ignored, so a
+  # configuration written when kenward spawned `lore mcp` still loads unchanged.
   # search_limit is the per-space retrieval budget for one turn: how many entries lore
   # may return from each space in scope before assembly stops asking. Kenward's default
   # is 8; set explicitly here to the same value. Too high and prompts bloat with

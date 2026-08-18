@@ -5,8 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/BlueHeisenberg/lore"
-
 	"github.com/BlueHeisenberg/kenward/internal/config"
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/memory"
@@ -55,51 +53,7 @@ func (p probes) loreInitProbe() func(context.Context, string, string) (bool, err
 	if p.loreInit != nil {
 		return p.loreInit
 	}
-	return runLoreInit
-}
-
-// runLoreInit creates the account, device and personal space in an empty lore home.
-//
-// It is a library call. It was a subprocess until lore exported Init, because account
-// and device generation lived behind internal/keys and the binary was the whole of the
-// surface for this job.
-//
-// # Idempotence is lore's to decide, not this function's
-//
-// Init refuses a home that already holds an account.json, a device.json or a lore.db,
-// and returns lore.ErrAlreadyInitialised having written nothing. That is the check
-// kenward used to make for itself by reading the directory, and lore's is the better
-// one: the rule kenward wanted was "never let a new account adopt an existing store",
-// and lore names the three files that would mean rather than inferring it from a
-// directory being non-empty. The caller treats that error as success.
-//
-// # The recovery code
-//
-// Init returns one, once, and lore stores it nowhere. This drops it, deliberately, on
-// two counts. It is a KDF factor for relay signup and backup — neither of which any
-// kenward deployment configures — so nothing here needs it; and the alternative is
-// putting a member's account recovery factor into `podman logs`, which is the
-// operator's to read, in the one mode whose purpose is that the operator holds nothing
-// of a member's. A member who later wants one mints it from inside their own pod with
-// `lore recovery new`, which needs no previous code.
-//
-// The account and device ids it also returns are dropped for the same reason: they are
-// not the host's business either. created reports only that a home was made, which is
-// the one bit of this an operator watching a fresh household come up needs.
-func runLoreInit(ctx context.Context, home, device string) (created bool, err error) {
-	if err := ctx.Err(); err != nil {
-		return false, err
-	}
-	// The Identity is discarded at the call rather than bound to a variable, so there
-	// is nothing here for a later edit to log by reaching for the struct.
-	switch _, err := lore.Init(home, device); {
-	case err == nil:
-		return true, nil
-	case errors.Is(err, lore.ErrAlreadyInitialised):
-		return false, nil
-	default:
-		return false, err
-	}
+	return memory.InitHome
 }
 
 func (p probes) telegramProbe() func(context.Context, string) telegramResult {
@@ -141,11 +95,9 @@ type spaceResult struct {
 // anything about what is in it — the contents of anyone's memory are not this
 // command's to show.
 func probeLore(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
-	cmd := cfg.Memory.LoreCommand
-	if len(cmd) == 0 {
-		return loreResult{Err: errors.New("memory.lore_command is empty")}
-	}
-	client, err := memory.NewClient(memory.Config{Command: cmd[0]})
+	// No Command. Nothing this probe does is a subprocess: the store is opened in
+	// process, and memory.Config.Command exists only for `lore serve`.
+	client, err := memory.NewClient(memory.Config{})
 	if err != nil {
 		return loreResult{Err: err}
 	}

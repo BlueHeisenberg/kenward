@@ -135,10 +135,12 @@ type Options struct {
 	// Telegram asks Telegram which bot a token belongs to, and whether it can hear a
 	// group chat. Nil means DefaultTelegramProbe.
 	Telegram TelegramProbe
-	// Spaces lists the lore spaces this household can be configured with. Nil
-	// means asking the real lore, with the same argv the wizard writes into the
-	// configuration.
+	// Spaces lists the lore spaces this machine's lore home holds. Nil means
+	// asking the real lore. It is only consulted to check ids a scripted install
+	// supplied, and to find a space again when setup is re-run.
 	Spaces SpaceLister
+	// CreateSpace makes one shared lore space. Nil means asking the real lore.
+	CreateSpace SpaceMaker
 	// LookupEnv reads the environment the configuration is validated against. Nil
 	// means the process environment.
 	LookupEnv config.LookupEnvFunc
@@ -170,9 +172,13 @@ type Answers struct {
 	// HouseholdName is the group's display name.
 	HouseholdName string
 	// SharedSpace is the id of the shared lore space the group chat reads and
-	// writes. Required, and an id rather than a display name: lore does not make
+	// writes. Empty means make one — which is the ordinary case, and what lets a
+	// scripted install be one command with no lore in it. It used to be required,
+	// which meant an installer had to create the space out of band first.
+	//
+	// Supplied, it must be an id rather than a display name: lore does not make
 	// names unique, so a name here fails on the first retrieval rather than at
-	// startup. `lore spaces` prints the ids.
+	// startup. The dashboard's wizard supplies ids, of spaces it made itself.
 	SharedSpace string
 	// BotToken is the household bot's token. It is written to the .env file when
 	// WriteEnvFile is set and is never written to the configuration. Empty means
@@ -270,15 +276,17 @@ type Wizard struct {
 	probe    Probe
 	botProbe TelegramProbe
 	lister   SpaceLister
+	maker    SpaceMaker
 
 	// The lore listing, fetched once. Spaces are chosen by id, so every question
 	// about one is answered from the same snapshot.
-	spaceList      []memory.Space
-	spaceErr       error
-	spacesLoaded   bool
-	loreWarned     bool
-	personalWarned bool
-	takenSpaces    map[string]bool
+	spaceList    []memory.Space
+	spaceErr     error
+	spacesLoaded bool
+	takenSpaces  map[string]bool
+	// spaceLabels are the display names already used for a space in this run, so
+	// that two people with one name do not get one space.
+	spaceLabels map[string]bool
 
 	mode      config.Mode
 	household config.HouseholdConfig
@@ -318,9 +326,14 @@ func New(io IO, opts Options) *Wizard {
 	}
 	w.lister = opts.Spaces
 	if w.lister == nil {
-		w.lister = loreSpaces
+		w.lister = defaultSpaceLister
+	}
+	w.maker = opts.CreateSpace
+	if w.maker == nil {
+		w.maker = defaultSpaceMaker
 	}
 	w.takenSpaces = map[string]bool{}
+	w.spaceLabels = map[string]bool{}
 	w.configPath = opts.ConfigPath
 	if w.configPath == "" {
 		w.configPath = DefaultConfigFileName
@@ -394,7 +407,11 @@ func (w *Wizard) build() *config.Config {
 		Telegram:  w.telegram,
 		Members:   w.members,
 		Endpoints: w.endpoints,
-		Memory:    config.MemoryConfig{LoreCommand: DefaultLoreCommand},
+	}
+	// Only isolated mode runs lore as a program, one `lore serve --lan` per pod. See
+	// DefaultLoreCommand.
+	if cfg.Mode == config.ModeIsolated {
+		cfg.Memory.LoreCommand = DefaultLoreCommand
 	}
 	// Everything with a default is written out explicitly rather than left to the
 	// loader. The generated file is the only documentation of these values most

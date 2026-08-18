@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/BlueHeisenberg/kenward/internal/config"
+	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 )
 
@@ -217,24 +218,26 @@ func TestRunSelectsSupervisorByMode(t *testing.T) {
 	}
 }
 
-// TestRunRefusesToServeWithoutLore.
+// TestRunRefusesToServeWithoutLore covers the one thing left that needs the binary,
+// and — just as importantly — the modes that do not.
 //
-// Nothing else in the process fails when the program memory.lore_command names is not
-// installed. memory.NewClient checks only that the command is non-empty and spawns
-// nothing until the first call; a turn that cannot read a space degrades that space
-// rather than failing. So a node with no lore starts cleanly, reports itself ready,
-// authorises its bot, and then remembers nothing anyone tells it — the failure mode
-// the Dockerfile warns about in its first paragraph, arriving in silence.
+// A pod in a household of pods runs `lore serve --lan`, and that daemon is the only
+// thing that carries an entry from one pod's lore home to another's. Without it each
+// pod remembers only what was said to it, in silence, and that is a container's
+// default outcome rather than an exotic one: the image deliberately carries no lore,
+// and a pod started by `kenward run` cannot be bind-mounted one, because keel's
+// sandbox.Spec has no bind-mount.
 //
-// It is a container's default outcome, not an exotic one: the image deliberately
-// carries no lore, and a pod started by `kenward run` in isolated mode cannot be
-// bind-mounted one, because keel's sandbox.Spec has no bind-mount. Until this refusal
-// existed the supervisor path's own default image produced a household of pods with
-// no memory at all.
-// The isolated HOST supervisor is exempt, and its case is in the table below: it
-// starts pods and holds no memory client of its own, so refusing it would refuse
-// every correct isolated household whose lore lives in the pods that use it. That
-// was not theoretical — it is what the first real-podman run of this check did.
+// Simple mode is the case this table exists to pin down. It used to be refused here
+// too, on the reasoning that spawning `lore mcp` was kenward's only route to memory;
+// that route is gone, the store is opened in this process, and a simple-mode household
+// on a machine with no lore anywhere on it must start and work. The old refusal is why
+// the documentation told people to install lore.
+//
+// The isolated HOST supervisor is exempt as well: it starts pods and holds no memory
+// client of its own, so refusing it would refuse every correct isolated household
+// whose lore lives in the pods that use it. That was not theoretical — it is what the
+// first real-podman run of this check did.
 func TestRunRefusesToServeWithoutLore(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -243,7 +246,7 @@ func TestRunRefusesToServeWithoutLore(t *testing.T) {
 		args    []string
 		refused bool
 	}{
-		{"simple: every unit runs here", simpleYAML, []string{"run"}, true},
+		{"simple: no lore anywhere, and none needed", simpleYAML, []string{"run"}, false},
 		{"isolated: a member's pod", isolatedYAML, []string{"run", "--member", "david"}, true},
 		{"isolated: the group's pod", isolatedYAML, []string{"run", "--group"}, true},
 		{"isolated: the host supervisor, which never touches lore", isolatedYAML, []string{"run"}, false},
@@ -551,16 +554,25 @@ type loreInitCall struct {
 // TestRunInitialisesAnEmptyPodLoreHome covers the defect that made isolated mode via
 // `kenward run` unreachable for any household that had never been brought up before.
 //
-// A pod's work volume is created empty and LORE_HOME points inside it, so `lore mcp`
-// exits before the MCP handshake, checkLore correctly refuses, and it refuses again on
-// every restart forever because nothing anywhere runs `lore init` against that volume.
-// The compose path has a documented operator step and a bind-mount to reach the store
-// with; a supervisor-started pod has neither. Found on real podman.
+// A pod's work volume is created empty and LORE_HOME points inside it, so lore refuses
+// to open it, checkLore correctly refuses to serve, and it refuses again on every
+// restart forever because nothing anywhere runs `lore init` against that volume. The
+// compose path has a documented operator step and a bind-mount to reach the store with;
+// a supervisor-started pod has neither. Found on real podman.
 //
-// Every row here is a decision about *whose* store this is. The pod initialises its own
-// and only its own: not a home that already holds one, not the host supervisor's (it has
-// none), not simple mode's, and never a LORE_HOME the environment did not name — that
-// last one being ~/.lore, a person's own store on their own machine.
+// Every row here is a decision about *whose* store this is. A unit initialises its own
+// and only its own: not a home that already holds one, and not the host supervisor's,
+// which has none.
+//
+// Simple mode is now one of the units that does. It used to be excluded on the rule
+// that ~/.lore is a person's own store and creating an account in it was not kenward's
+// to do — which left a fresh machine with no way to reach memory except installing lore
+// and running `lore init` by hand, the external dependency kenward is not supposed to
+// have. lore.Init writes nothing into a home that already holds a store, so the rule
+// the exclusion was protecting is enforced by lore rather than by staying away. What
+// stays excluded is an *isolated* unit with no LORE_HOME: every pod has one set, so
+// that is somebody running a pod's command on a host, and the host's ~/.lore is not
+// that member's memory.
 func TestRunInitialisesAnEmptyPodLoreHome(t *testing.T) {
 	t.Parallel()
 
@@ -589,7 +601,8 @@ func TestRunInitialisesAnEmptyPodLoreHome(t *testing.T) {
 		{"the group's pod", isolatedYAML, []string{"run", "--group"}, absent, "group", true},
 		{"a member's pod whose store already exists", isolatedYAML, []string{"run", "--member", "david"}, occupied, "david", false},
 		{"the host supervisor, which holds no memory", isolatedYAML, []string{"run"}, absent, "", false},
-		{"simple mode, where LORE_HOME is the operator's own", simpleYAML, []string{"run"}, absent, "", false},
+		{"simple mode, on a machine that has never had lore", simpleYAML, []string{"run"}, absent, loreDeviceName, true},
+		{"simple mode, where a store is already there", simpleYAML, []string{"run"}, occupied, loreDeviceName, false},
 		{"a pod with no LORE_HOME named", isolatedYAML, []string{"run", "--member", "david"}, unset, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -615,7 +628,7 @@ func TestRunInitialisesAnEmptyPodLoreHome(t *testing.T) {
 			// a second copy of the rule rather than the rule.
 			var calls []loreInitCall
 			h.e.probes.loreInit = func(ctx context.Context, home, device string) (bool, error) {
-				created, err := runLoreInit(ctx, home, device)
+				created, err := memory.InitHome(ctx, home, device)
 				calls = append(calls, loreInitCall{home, device, created})
 				return created, err
 			}
@@ -657,7 +670,7 @@ func TestRunInitialisesAnEmptyPodLoreHome(t *testing.T) {
 // TestRunInitialisesTheStoreOnceAndNeverAgain is the idempotence the fix above is only
 // safe under: whatever the first start left behind, the next start must leave alone.
 //
-// The seam is pointed at the real runLoreInit rather than at the harness's stub, so
+// The seam is pointed at the real memory.InitHome rather than at the harness's stub, so
 // three starts run the real lore.Init against a real home and what is asserted is the
 // rule itself, not kenward's memory of it — which matters more since the rule moved
 // into lore. "It initialised twice" and "it clobbered an existing store" are the same
@@ -670,7 +683,7 @@ func TestRunInitialisesTheStoreOnceAndNeverAgain(t *testing.T) {
 	vars["LORE_HOME"] = dir
 
 	h := newHarness(t, isolatedYAML, vars)
-	h.e.probes.loreInit = runLoreInit
+	h.e.probes.loreInit = memory.InitHome
 	h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
 		return stubSupervisor{}, nil
 	}

@@ -175,8 +175,8 @@ own set of space ids, so the id `household.shared_space` names resolved inside w
 store created it and nowhere else. Every other pod's `doctor` printed `space "…" is not a
 space this lore store holds` while nothing acted on it, and a conversation in that scope
 read nothing — silently, because a turn that cannot read a space degrades that space rather
-than failing. The cause was that **`lore mcp` never synced and nothing ran `lore serve`**;
-opening a store, then or now, does not sync it.
+than failing. The cause was that **nothing ran `lore serve`**; opening a store, then or
+now, does not sync it.
 
 **Membership is still an operator step, and deliberately.** Carrying an entry between homes
 needs the daemon *and* a shared space: `lore space invite` on the owning store and `lore

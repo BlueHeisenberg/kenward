@@ -37,13 +37,17 @@ const (
 	envFileMode    = 0o600
 )
 
-// DefaultLoreCommand locates the lore executable. It is written into every generated
-// configuration rather than asked about, because there is no useful answer an
-// operator could give that they would not have to look up first.
+// DefaultLoreCommand locates the lore executable. It is written into a generated
+// *isolated* configuration rather than asked about, because there is no useful answer
+// an operator could give that they would not have to look up first.
 //
-// The value itself lives in internal/config, which also applies it as the default for a
-// configuration that omits the key; the wizard writes the same argv out explicitly so
-// the generated file says what it is doing.
+// A simple-mode file does not get the key at all. Nothing there executes lore — the
+// store is opened in process — and a program name in a configuration file is read as a
+// program the household has to install.
+//
+// The value itself lives in internal/config, which also applies it as the default for
+// an isolated configuration that omits the key; the wizard writes the same argv out
+// explicitly so the generated file says what it is doing.
 var DefaultLoreCommand = config.DefaultLoreCommand()
 
 // configHeader is the first thing anybody opening kenward.yaml reads.
@@ -184,7 +188,9 @@ type endpointDoc struct {
 }
 
 type memoryDoc struct {
-	LoreCommand   []string `yaml:"lore_command,flow"`
+	// Empty in simple mode, and omitted from the file entirely: see
+	// DefaultLoreCommand.
+	LoreCommand   []string `yaml:"lore_command,flow,omitempty"`
 	SearchLimit   int      `yaml:"search_limit"`
 	AnnounceReads *bool    `yaml:"announce_reads,omitempty"`
 }

@@ -17,9 +17,11 @@ Memory
   ✓ space "dac31e70-72e4-4b10-9cef-a6276c4a87b8" reachable
   ✓ space "7d5047bb-d939-4539-b3db-8b6221a2e245" reachable
   ✓ space "5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19" reachable
-  ! this lore store does not sync on its own
-      run `lore serve` on the same LORE_HOME if this store should reach another
-      machine
+  ✓ this household's memory is held here and needs no sync
+      one lore store holds every space, so there is nothing to converge with and
+      no daemon is run
+      if this store should also reach another machine, that is lore's `lore
+      serve` on the same LORE_HOME
   ✓ conversations keep their recent turns until the node restarts
     (history.reset_every is off)
 

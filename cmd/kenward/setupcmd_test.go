@@ -33,9 +33,11 @@ func TestBuildAnswersCarriesSpaceIDs(t *testing.T) {
 	}
 }
 
-// TestBuildAnswersRejectsAMalformedMemberSpace: the error names the shape and where
-// to find an id, because the operator reaching for --non-interactive is scripting an
-// install and would otherwise put a display name there.
+// TestBuildAnswersRejectsAMalformedMemberSpace: the error names the shape and the way
+// out, because the operator reaching for --non-interactive is scripting an install and
+// would otherwise put a display name there. The way out is usually to drop the flag —
+// setup makes the spaces itself — so the message says that rather than sending them to
+// `lore spaces` for an id column they no longer need.
 func TestBuildAnswersRejectsAMalformedMemberSpace(t *testing.T) {
 	t.Parallel()
 	for _, spec := range []string{"david", "=abc", "david="} {
@@ -45,8 +47,8 @@ func TestBuildAnswersRejectsAMalformedMemberSpace(t *testing.T) {
 		if err == nil {
 			t.Fatalf("--member-space %q was accepted", spec)
 		}
-		if !strings.Contains(err.Error(), "ID=SPACE_ID") || !strings.Contains(err.Error(), "lore spaces") {
-			t.Errorf("--member-space %q: error does not say the shape and where ids come from: %v", spec, err)
+		if !strings.Contains(err.Error(), "ID=SPACE_ID") || !strings.Contains(err.Error(), "omit it") {
+			t.Errorf("--member-space %q: error does not say the shape and the way out: %v", spec, err)
 		}
 	}
 }
