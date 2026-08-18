@@ -189,15 +189,32 @@ conversation rather than changing what they chose.`
 // directDisclosureText is the direct-conversation scope disclosure, verbatim. It is
 // rendered from the resolved scope, never from configuration: a member must be able
 // to ask "can you see that?" and get a true answer.
+//
+// It used to say the private memory was one "only they and you can read", and that
+// nothing learned here was "visible to anyone else in the household". Both are
+// isolated mode's claim, made in every household: under simple mode every member's key
+// is in one address space and one bot token carries every conversation, so the person
+// operating the machine can read every member's private memory — internal/privacy says
+// so in as many words, and the operator is in the household. See readerUnknownText for
+// why the fix is one wording for both modes rather than a mode plumbed in here.
+//
+// What is left is the guarantee that holds either way, in internal/privacy's own
+// words: the household group can never read it. TestDirectDisclosureQuotesPrivacy
+// asserts the quotation, so softening privacy fails there and embellishing this fails
+// in TestDisclosuresClaimOnlyWhatSimpleModeSupports.
+//
+// The last sentence is unchanged in job and changed in kind: it used to be about who
+// can see, and it is now about where a write lands, which is the thing this disclosure
+// exists to state and the thing that is true in both modes.
 const directDisclosureText = `This is a private conversation with {{.MemberName}}.
 
 You can read two memories here:
-  - {{.MemberName}}'s private memory, which only they and you can read.
+  - {{.MemberName}}'s private memory, which the household group can never read.
   - the household's shared memory, which everyone in {{.HouseholdName}} can read.
 
 Anything you remember from this conversation goes to {{.MemberName}}'s private memory
-unless they choose otherwise. Nothing you learn here is visible to anyone else in the
-household unless {{.MemberName}} explicitly publishes it.`
+unless they choose otherwise. Nothing you learn here reaches the household's shared
+memory unless {{.MemberName}} explicitly publishes it.`
 
 // groupDisclosureText is the group-conversation scope disclosure, verbatim. Its last
 // sentence exists because the failure mode is not the model leaking private memory —
@@ -221,7 +238,16 @@ know, tell them to ask you directly instead.`
 // memory without an announcement in the group — and the memory is not: everything
 // remembered here is the household's, readable by everyone, and the member did not
 // come here to be told that afterwards.
-const householdDisclosureText = `This is a private conversation between you and {{.MemberName}}. Nobody else can see it.
+//
+// The first sentence used to end "Nobody else can see it", which is the same claim
+// directDisclosureText made and is false in the same way — and here it is false in
+// both modes rather than one. This conversation runs in the household's own pod, on
+// the household's own bot, which whoever operates the machine holds in every
+// deployment; nothing in isolated mode seals it, because there is no member's key in
+// it to seal. What the sentence was for is that the member came here so as not to post
+// in the group, and that is what it now says.
+const householdDisclosureText = `This is a private conversation between you and {{.MemberName}}: the household group
+never sees it.
 
 Here you are the {{.HouseholdName}} household's assistant, not {{.MemberName}}'s own.
 You can read the household's shared memory and nothing else. You cannot see
@@ -229,6 +255,36 @@ You can read the household's shared memory and nothing else. You cannot see
 for that — and you must not speculate about what might be in it. Anything remembered
 here goes to the household's shared memory, where everyone in {{.HouseholdName}} can
 read it.`
+
+// readerUnknownText follows the two disclosures addressed to one person, verbatim. The
+// group gets none of it: everyone in the household can read that conversation, the
+// disclosure says so, and there is nothing there to be reassured about.
+//
+// It is the second half of removing a false claim, and the reason the removal is not
+// simply a deletion. "Nobody else can see it" was an answer to a question members ask,
+// and a model left with no answer to a question it is asked invents one — the exact
+// argument groupDisclosureText's last sentence was written from, where the failure was
+// never the model leaking a private memory but the model guessing and being believed.
+//
+// It says the true thing in the only form available without a mode: that the answer
+// depends on the deployment and this prompt does not carry it. That is not a hedge
+// standing in for a fact. In simple mode the operator can read every member's private
+// memory, in isolated mode they cannot, and internal/assistant is not told which — a
+// unit is built from Options that carry a household name, a persona and a budget, and
+// the topology reaches it nowhere.
+//
+// Plumbing one in is possible and was rejected. privacy.Mode would have to be threaded
+// through supervisor.Options into every unit and set wherever a supervisor is built,
+// the prompt goldens would each grow a second mode, and what it would buy is a
+// paragraph the model may repeat in the mode where it happens to be true. The member already gets that
+// paragraph where it belongs — at enrolment in their own language, and from `kenward
+// doctor` — from internal/privacy, which is the one place the claim is allowed to be
+// made and the only place it is golden-tested. Understating it to a model costs the
+// model nothing; overstating it to a member is the rule CLAUDE.md marks
+// non-negotiable.
+const readerUnknownText = `If you are asked who else can read this conversation, say you do not know. It depends
+on how this household is deployed, and you have not been told which — a reassurance you
+invented is the one answer here that would be believed and could be wrong.`
 
 // confidenceText explains how to weigh lore's vocabulary, verbatim. Confidence and
 // markers are passed through unchanged; kenward does not reinterpret them.
@@ -681,9 +737,12 @@ func renderSystem(inp promptInput) string {
 	case group:
 		sections = append(sections, fill.Replace(groupDisclosureText))
 	case private:
-		sections = append(sections, fill.Replace(directDisclosureText))
+		// The two one-to-one scopes get the note about who else can read them; the
+		// group does not, because its disclosure already answers that question
+		// truthfully in its first line.
+		sections = append(sections, fill.Replace(directDisclosureText)+"\n\n"+readerUnknownText)
 	default:
-		sections = append(sections, fill.Replace(householdDisclosureText))
+		sections = append(sections, fill.Replace(householdDisclosureText)+"\n\n"+readerUnknownText)
 	}
 
 	if inp.hasPrivate {

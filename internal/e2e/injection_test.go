@@ -710,9 +710,17 @@ func TestHouseholdChatHoldsItsMemoryBoundaryAgainstEveryAdversarialMessage(t *te
 				// every line break in it. What is asserted is what it says.
 				flat := strings.Join(strings.Fields(system), " ")
 				// It says the chat is private, because it is — a member came here
-				// precisely so as not to post in the group.
-				if !strings.Contains(flat, "Nobody else can see it") {
+				// precisely so as not to post in the group. That, and not "nobody
+				// else can see it", is what is true: this conversation runs on the
+				// household's own bot in the household's own pod, which whoever
+				// operates the machine holds in either mode.
+				if !strings.Contains(flat, "the household group never sees it") {
 					t.Error("household prompt does not say the conversation is private")
+				}
+				// And it refuses the reassurance it used to offer, rather than
+				// leaving the model to invent one when a member asks.
+				if !strings.Contains(flat, "say you do not know") {
+					t.Error("household prompt no longer tells the model to admit it does not know who else can read the conversation")
 				}
 				// And that the memory is not, because it is not.
 				if !strings.Contains(flat, "everyone in Ashfield can read it") {

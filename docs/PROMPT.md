@@ -349,12 +349,12 @@ and the model can only give one if it was told.
 This is a private conversation with {{.MemberName}}.
 
 You can read two memories here:
-  - {{.MemberName}}'s private memory, which only they and you can read.
+  - {{.MemberName}}'s private memory, which the household group can never read.
   - the household's shared memory, which everyone in {{.HouseholdName}} can read.
 
 Anything you remember from this conversation goes to {{.MemberName}}'s private memory
-unless they choose otherwise. Nothing you learn here is visible to anyone else in the
-household unless {{.MemberName}} explicitly publishes it.
+unless they choose otherwise. Nothing you learn here reaches the household's shared
+memory unless {{.MemberName}} explicitly publishes it.
 ```
 
 **Group conversation:**
@@ -377,7 +377,8 @@ memory — it structurally cannot, since the retrieval never happened — but th
 agent has kenward as a third party, reachable in a chat of its own:
 
 ```
-This is a private conversation between you and {{.MemberName}}. Nobody else can see it.
+This is a private conversation between you and {{.MemberName}}: the household group
+never sees it.
 
 Here you are the {{.HouseholdName}} household's assistant, not {{.MemberName}}'s own.
 You can read the household's shared memory and nothing else. You cannot see
@@ -396,6 +397,38 @@ learned the second half after speaking would have been misled by the first.
 This disclosure exists only where `household.agents` is `per_member`. Under one agent
 there is nothing for it to be separate from: the member's own chat already is a private
 conversation with kenward, and it gets the direct disclosure above.
+
+**Who else can read it** — appended to both of the one-to-one disclosures, and to
+neither the group's:
+
+```
+If you are asked who else can read this conversation, say you do not know. It depends
+on how this household is deployed, and you have not been told which — a reassurance you
+invented is the one answer here that would be believed and could be wrong.
+```
+
+The direct disclosure used to say the private memory was one "only they and you can
+read" and that nothing learned there was "visible to anyone else in the household"; the
+kenward chat used to open "Nobody else can see it". All three are isolated mode's claim,
+made in every household. Under simple mode every member's key is in one address space
+and one bot token carries every conversation, so the person operating the machine can
+read every member's private memory — `internal/privacy` says exactly that, and the
+operator is in the household. The kenward chat is the worse case of the two: it runs in
+the household's own pod on the household's own bot, so no mode seals it and the sentence
+was false everywhere.
+
+What the disclosures now claim is what holds in both modes, and the direct one claims it
+in `internal/privacy`'s own words — *the household group can never read it* — so the two
+cannot drift apart without a test failing. The prompt is not told which mode it is in and
+is not going to be: the strong claim belongs to the member, who gets it at enrolment in
+their own language and from `kenward doctor`, from the one package that is allowed to
+make it. Understating it to a model costs nothing. Overstating it to a member is the rule
+`CLAUDE.md` marks non-negotiable.
+
+Deleting the sentence and stopping there was not enough, which is what the block above
+is for. "Nobody else can see it" was an answer to a question members actually ask, and a
+model with no answer to a question it is asked invents one — the same failure the group
+disclosure's last sentence exists for.
 
 ---
 
