@@ -42,9 +42,12 @@
 #      shared space and holds no member's key.
 #   2. Create a `.env` file next to this compose file (NOT committed — see
 #      deploy/README.md) defining every bot token and provider key below.
-#   3. Supply a `lore` binary per service (see ../Dockerfile's note) — each
-#      service gets its OWN copy/mount, never a shared one, since sharing the
-#      binary is fine but sharing the *instance* (same LORE_HOME) is not.
+#   3. Nothing to supply. The image carries the lore CLI at /usr/local/bin/lore,
+#      so every service already has the one it needs for step 5's invite and
+#      join, and there is no per-service bind mount to get wrong. Note what is
+#      and is not shared: sharing the BINARY was always fine, sharing the
+#      INSTANCE — the same LORE_HOME — never is, and each service below still
+#      gets its own named volume for exactly that reason.
 #   4. Nothing to do: each service initialises its own lore store on first
 #      start, and you should NOT run `lore init` against these volumes by hand.
 #
@@ -183,8 +186,8 @@
 # container would exit on a permission error it could not explain. The two
 # options tell the runtime to relabel the source so the container may read it:
 #
-#   z  relabel SHARED. Any container may read it. Used for the two files every
-#      service below mounts — ./kenward.yaml and ./bin/lore.
+#   z  relabel SHARED. Any container may read it. Used for the one file every
+#      service below mounts, ./kenward.yaml.
 #   Z  relabel PRIVATE to the one container. Used for the per-member files —
 #      ./invites/<id>.json and ./revocations/<id>.json — which have exactly one
 #      reader by design.
@@ -288,7 +291,6 @@ services:
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
       - kenward-david-data:/var/lib/kenward
-      - ./bin/lore:/usr/local/bin/lore:ro,z
       # DAVID'S outstanding claim codes and nobody else's, written by
       # `kenward invite --name David` (see step 4 in the header). Hashed —
       # a record is a PBKDF2 digest of an 80-bit code, not the code — so this
@@ -388,7 +390,6 @@ services:
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
       - kenward-jordan-data:/var/lib/kenward
-      - ./bin/lore:/usr/local/bin/lore:ro,z
       # As with david, above: jordan's own file, never the shared invites.json.
       - ./invites/jordan.json:/etc/kenward/invites.json:ro,Z
     command:
@@ -440,7 +441,6 @@ services:
     volumes:
       - ./kenward.yaml:/etc/kenward/kenward.yaml:ro,z
       - kenward-household-data:/var/lib/kenward
-      - ./bin/lore:/usr/local/bin/lore:ro,z
     command:
       - "run"
       - "--config=/etc/kenward/kenward.yaml"
