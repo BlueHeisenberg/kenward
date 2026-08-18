@@ -77,8 +77,10 @@
 #      this and every member's `doctor` says `space "…" is not a space this lore
 #      store holds`, the household group conversation has memory in one container
 #      only, and nothing else reports it. Each member's PRIVATE space is
-#      unaffected either way: it lives in that member's own store, which is the
-#      property this mode exists for.
+#      unaffected by anything in THIS step — it crosses no store, so no invite
+#      and no join touch it — but it does not appear on its own either, and this
+#      file used to imply that it did. It has its own step, 4c, and skipping that
+#      one costs the member the memory this mode exists to give them.
 #
 #      Two things make it work, and kenward now supplies one of them. Inside
 #      every service, `kenward run` runs lore's sync daemon in its own process
@@ -128,6 +130,51 @@
 #      in every service therefore adds exactly one reachable space: the
 #      household's. `kenward doctor` inside a service reports whether that space
 #      is here and whether the daemon is moving anything.
+#   4c. EACH MEMBER'S PRIVATE SPACE, which is the space this whole mode exists
+#      for and the one thing above does NOT cover.
+#
+#      A member's private space is not shared with anything, so there is nothing
+#      to invite and nothing to join — and that is exactly why it needs its own
+#      step rather than falling out of 4b. It has to be created in that member's
+#      OWN service and in no other place. A private space created on the host, or
+#      in the household service, lives in a store the operator can open, which is
+#      the one thing isolated mode promises there is not. A wizard run on the host
+#      does create one and does write its id into kenward.yaml — that id is a
+#      space in the HOST's store, and this member's pod will never hold it. Point
+#      the file at the pod's own instead:
+#
+#        docker compose exec --user 65532:65532 kenward-david \
+#          /usr/local/bin/lore space create david
+#        docker compose exec --user 65532:65532 kenward-david \
+#          /usr/local/bin/lore spaces      # copy the id into david's private_space
+#        docker compose up -d kenward-david
+#
+#      Once per member, and the id goes in that member's `private_space:` in
+#      kenward.yaml, replacing whatever the wizard put there. Nothing invites
+#      anybody into it afterwards and nothing ever should: the key is generated
+#      inside that container and never leaves it, which is why a sibling pod
+#      cannot name, request or receive the space even with the sync daemon
+#      running (see 4b's last paragraph).
+#
+#      Until this is done, `kenward doctor` in that pod reports `space "…" is not
+#      a space this lore store holds` for the private space and the member's
+#      conversation retrieves nothing and stores nothing. The pod still STARTS,
+#      deliberately — every command above is `docker compose exec` against a
+#      running container, so a pod that refused to start until its spaces existed
+#      could never be given them.
+#
+#      THE PASTING IS LORE'S MISSING HALF, NOT A DESIGN CHOICE, and it is worth
+#      knowing which way this is expected to go. `CreateSpace` mints an id rather
+#      than accepting one, so nothing can create a space AT an id somebody already
+#      wrote down. The day lore can — one function, `CreateSpaceWithID(id, name)`,
+#      idempotent — this step and the `lore space create` in 4b both disappear:
+#      the wizard mints the ids, writes them into kenward.yaml as it already does,
+#      and every pod creates its own private space at the id it was configured
+#      with on first boot, with no operator step and no id to copy back. 4b's
+#      invite/join stays, because membership of a SHARED space is a person's
+#      decision and lore declines to expose it for that reason. A private space
+#      has no membership decision in it at all.
+#
 #   5. Mint each member's claim code BEFORE bringing their service up:
 #      `kenward invite --name Jordan --data-dir .`, run from this directory.
 #

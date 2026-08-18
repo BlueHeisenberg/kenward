@@ -744,9 +744,11 @@ lookup — so a name that reached a write through the command line looks like it
 kenward never runs that command: it reaches lore as a Go package, and `lore.Store.PutEntry`
 resolves `SpaceID` by id only and returns `space not found`. So a display name configured
 here fails **both** directions, refused at the first call rather than at the first
-retrieval, and nothing is ever stored under it. `kenward doctor` treats a space it cannot
-resolve as a configuration fault and exits 2, saying nothing has been written under the
-value it is reporting. Neither wizard can produce one — both write the id `CreateSpace`
+retrieval, and nothing is ever stored under it. `kenward doctor` reports a space it cannot resolve as
+a configuration fault, saying nothing has been written under the value it is reporting.
+Whether that also fails the exit code is `judgeMemory`'s and depends on how many: one bad
+id among several is a warning the node serves through, and a store holding *none* of the
+configured spaces is a refusal, because that is not this household's store at all. Neither wizard can produce one — both write the id `CreateSpace`
 returned — so reaching this state means a hand edit.
 
 Validation rules that are errors, not warnings:
@@ -1891,10 +1893,16 @@ with `memory.Config.Command` and the subprocess itself when lore v0.5.0 exported
 `lore space invite` / `lore join` handshake an operator runs inside a pod — see §8 — and
 kenward execs none of it.
 
-Two lines are drawn deliberately. **Only memory failing to answer is fatal** — a space lore
-does not hold is one space's problem and `doctor`'s to report, and refusing a household
-its assistant over a mistyped space id would be a larger outage than the silent one being
-prevented. And the handshake is a **hard** refusal, bounded at thirty seconds, rather than
+Two lines are drawn deliberately. **Memory failing to answer is fatal, and so is a store
+holding none of this unit's spaces** — the second half was added once `run` began creating
+its own home, because a store kenward minted a moment ago answers perfectly and holds
+nothing, so "does the store answer" could no longer see the commonest way a household
+loses its memory. A store holding *some* of them is one member's mistyped id: logged and
+served through, since refusing a household its assistant over one typo would be a larger
+outage than the silent one being prevented. An **isolated pod** is allowed to hold none of
+its spaces, because every command that puts one there is an `exec` against a running pod
+(§8). `doctor` reaches the same verdict through the same function, so an unhealthy
+container is one the node would refuse to start. And the handshake is a **hard** refusal, bounded at thirty seconds, rather than
 a warning with a retry: it is a local SQLite store opened in this process, there is no
 network in this path, and its one transient failure — store contention — is already
 retried inside lore. Whatever has not answered by then is not momentary. A node that hangs at startup is worse than one that refuses: a container
@@ -1957,7 +1965,11 @@ Four properties, each of which is a way this could have gone wrong:
   wrote in the file when it made those spaces on the machine it ran on, and nothing in
   lore can create a space *at a given id*. A self-initialised pod therefore
   comes up with a lore that answers and configured spaces that are not in it, which
-  `doctor` reports per space and `run` deliberately does not treat as fatal. That is the
+  `doctor` reports per space and `run` tolerates **in a pod only** — the provisioning
+  commands are `exec`s against a running one, so refusing would make the mode
+  unprovisionable rather than stricter. A simple-mode node in the same state is refused:
+  nothing there is provisioned by hand, so a store holding none of the wizard's spaces is
+  the wrong store. That is the
   same gap §12 records under separate `LORE_HOME`s not converging, now reached by both
   deployment paths rather than one. What changed is that a fresh household **starts**, and
   can then be finished, instead of crash-looping with nothing an operator can do about it.
@@ -2027,6 +2039,37 @@ path; through the supervisor it is the same two commands against the pods keel n
 podman exec sbx-kenward-group        /usr/local/bin/lore space invite <space-id> --lan --yes
 podman exec sbx-kenward-member-david /usr/local/bin/lore join <code> --yes
 ```
+
+**A member's private space needs its own step, and it is not this one.** Nothing invites
+anybody into a private space and nothing ever should, so the handshake above does not
+reach it — and until this said so, the space the whole mode exists for had no documented
+way to exist in the pod that serves it at all. It must be created *inside that member's
+own pod*, because a private space created on the host or in another pod lives in a store
+someone else can open, which is precisely what this mode promises there is not. A wizard
+run on the host does create one and does write its id into `kenward.yaml`; that id names
+a space in the *host's* store, and the pod will never hold it. Replace it:
+
+```
+podman exec sbx-kenward-member-david /usr/local/bin/lore space create david
+podman exec sbx-kenward-member-david /usr/local/bin/lore spaces   # into members[].private_space
+```
+
+Once per member, then restart that pod. `deploy/compose.isolated.yml` step 4c is the same
+step for the compose path, at length. `kenward doctor` inside the pod prints this remedy
+under the missing space, and `run` deliberately starts a pod that holds none of its spaces
+— every command here is an `exec` against a *running* pod, so a pod that refused to start
+until it had them could never be given them.
+
+**Both of these copy an id back into a file, and that is lore's missing half rather than a
+design choice.** `CreateSpace` mints an id instead of accepting one. One function on
+lore's side — an idempotent `CreateSpaceWithID(id, name)` — removes the private-space step
+entirely: the wizard mints the ids and writes them, as it already does, and each pod
+creates its own private space *at the configured id* on first boot, with nothing to copy
+and no host store ever holding a member's private space. The `lore space create` in the
+shared-space recipe goes the same way; the invite and the join stay, because membership of
+a shared space is a person's decision and lore withholds it for that reason. A private
+space has no membership decision in it at all, which is exactly why it is the half that
+can be automated.
 
 **What a pod can and cannot reach, and why it is not kenward's promise to keep.** lore
 opens every sync exchange with a blinded space-id intersection —

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/memory"
 	"github.com/BlueHeisenberg/kenward/internal/privacy"
 	"github.com/BlueHeisenberg/kenward/internal/remind"
+	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 )
 
 var updateGolden = flag.Bool("update-golden", false, "rewrite the golden files in testdata")
@@ -256,33 +258,63 @@ func TestDoctorReportsBrokenSharedMemory(t *testing.T) {
 	}
 }
 
-// TestDoctorSharedSpaceMissingInAPodNamesTheRealCause.
+// TestDoctorPodSpaceMissingNamesTheRealCause, for each of the two kinds of space a pod
+// holds.
 //
 // The observed symptom of the original defect was `✗ space "…" is not a space this
 // lore store holds`, which sent the operator to check the id column of a value that
-// was perfectly correct. In a pod the cause is that this store was never invited into
-// the household's space, and the report has to say so.
-func TestDoctorSharedSpaceMissingInAPodNamesTheRealCause(t *testing.T) {
+// was perfectly correct. In a pod the cause is that this store never received the space,
+// and the report has to say how it can.
+//
+// The two remedies are different and only one of them existed. The shared space is one
+// space held by several stores, so it is invited and joined. A member's PRIVATE space
+// crosses nothing and must be created in that member's own pod — a private space minted
+// on the host lives in the host's store, which is the one place isolated mode promises
+// it is not. Until this test, the invite/join hint was appended only to the shared
+// space's line, so the space the whole mode exists for was reported missing with no
+// remedy at all.
+func TestDoctorPodSpaceMissingNamesTheRealCause(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, isolatedYAML, fullEnvironment())
-	base := healthyProbes()
-	inner := base.lore
-	base.lore = func(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
-		res := inner(ctx, cfg, scope)
-		for i, s := range res.Spaces {
-			if string(s.Space) == cfg.Household.SharedSpace {
-				res.Spaces[i].Err = unknownSpaceErr(s.Space)
+	for _, tc := range []struct {
+		name  string
+		space string
+		want  []string
+	}{
+		{"the household's shared space", "dac31e70-72e4-4b10-9cef-a6276c4a87b8",
+			[]string{"lore space invite", "lore join"}},
+		{"david's private space", "7d5047bb-d939-4539-b3db-8b6221a2e245",
+			[]string{"lore space create david", "in THIS pod", "private_space"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t, isolatedYAML, fullEnvironment())
+			base := healthyProbes()
+			inner := base.lore
+			base.lore = func(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
+				res := inner(ctx, cfg, scope)
+				for i, s := range res.Spaces {
+					if string(s.Space) == tc.space {
+						res.Spaces[i].Err = unknownSpaceErr(s.Space)
+					}
+				}
+				return res
 			}
-		}
-		return res
-	}
-	h.e.probes = base
+			h.e.probes = base
 
-	if code := h.run("doctor", "--member", "david"); code != exitUsage {
-		t.Fatalf("exit = %d, want %d", code, exitUsage)
-	}
-	if !strings.Contains(h.stdout(), "lore join") {
-		t.Errorf("output does not name the invite/join remedy:\n%s", h.stdout())
+			// Exit 0, and that is load-bearing rather than lenient. This command is
+			// the image's HEALTHCHECK, and the only way to put a space into a pod is
+			// `docker compose exec` against a RUNNING one — a pod marked unhealthy
+			// and restarted for the state it is provisioned out of can never leave it.
+			if code := h.run("doctor", "--member", "david"); code != exitOK {
+				t.Fatalf("exit = %d, want 0: a pod mid-provisioning must stay reachable\n%s", code, h.both())
+			}
+			flat := strings.Join(strings.Fields(h.stdout()), " ")
+			for _, want := range tc.want {
+				if !strings.Contains(flat, want) {
+					t.Errorf("output does not name the remedy %q:\n%s", want, h.stdout())
+				}
+			}
+		})
 	}
 }
 
@@ -477,8 +509,15 @@ func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 		}
 		return res
 	}
-	if code := h.run("doctor"); code != exitUsage {
-		t.Fatalf("exit = %d, want %d: a space lore does not hold is a fault only an edit fixes\n%s", code, exitUsage, h.both())
+	// Exit 0, and the change from 2 is the second half of a bug rather than a
+	// relaxation. `run` serves a household with one mistyped space id, and this
+	// command is the image's HEALTHCHECK: exiting non-zero on a condition the node
+	// starts through marks the container unhealthy forever over something no restart
+	// can fix. The two now share judgeMemory, so unhealthy means "this node would
+	// refuse to start on this" and nothing else. The finding is still on the report,
+	// in full, which is what the assertions below are for.
+	if code := h.run("doctor"); code != exitOK {
+		t.Fatalf("exit = %d, want %d: one mistyped id is a finding, not a restart\n%s", code, exitOK, h.both())
 	}
 	out := h.stdout()
 	// Compared with the line breaks collapsed: doctor wraps its detail lines, and a
@@ -510,6 +549,120 @@ func TestDoctorUnknownSpaceIsAConfigurationFault(t *testing.T) {
 				"name, so the write fails too:\n%s", gone, out)
 		}
 	}
+}
+
+// TestStartupAndHealthAgreeAboutMissingSpaces is the reconciliation itself, asserted as
+// one property rather than as two behaviours that happen to line up today.
+//
+// `kenward doctor` is the image's HEALTHCHECK. An exit code from it is not a severity
+// rating, it is an instruction to a container runtime to restart the node — so it is
+// only meaningful if unhealthy means "this node would refuse to start on this". It did
+// not: `doctor` exited 2 on any missing space while `run` served through the same
+// condition, which is a node that works and a container marked unhealthy forever
+// (deploy/compose.simple.yml's documented flow produced exactly that). Whichever way a
+// future edit moves either side, this fails unless it moves both.
+func TestStartupAndHealthAgreeAboutMissingSpaces(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		yaml    string
+		unit    []string
+		missing func(cfg *config.Config, scope config.UnitScope) map[string]bool
+		// wantServes is whether a node in this state should be running at all. The
+		// health check's answer must be the same one.
+		wantServes bool
+	}{
+		{
+			name: "simple mode, every space missing: this is not the household's store",
+			yaml: simpleYAML,
+			missing: func(cfg *config.Config, scope config.UnitScope) map[string]bool {
+				return allSpaces(cfg, scope)
+			},
+			wantServes: false,
+		},
+		{
+			name: "simple mode, one space missing: one member's typo",
+			yaml: simpleYAML,
+			missing: func(*config.Config, config.UnitScope) map[string]bool {
+				return map[string]bool{"5f2a9c14-8e0b-4a77-9d31-c6b40e7f2a19": true}
+			},
+			wantServes: true,
+		},
+		{
+			name: "an isolated pod with nothing provisioned yet",
+			yaml: isolatedYAML,
+			unit: []string{"--member", "david"},
+			missing: func(cfg *config.Config, scope config.UnitScope) map[string]bool {
+				return allSpaces(cfg, scope)
+			},
+			wantServes: true,
+		},
+		{
+			name: "an isolated pod that has its private space but not the household's",
+			yaml: isolatedYAML,
+			unit: []string{"--member", "david"},
+			missing: func(cfg *config.Config, _ config.UnitScope) map[string]bool {
+				return map[string]bool{cfg.Household.SharedSpace: true}
+			},
+			wantServes: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			probe := func(_ context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
+				gone := tc.missing(cfg, scope)
+				var res loreResult
+				for _, s := range configuredSpaces(cfg, scope) {
+					r := spaceResult{Space: s}
+					if gone[string(s)] {
+						r.Err = unknownSpaceErr(s)
+					}
+					res.Spaces = append(res.Spaces, r)
+				}
+				return res
+			}
+
+			vars := fullEnvironment()
+			vars["LORE_HOME"] = filepath.Join(t.TempDir(), "lore")
+
+			hRun := newHarness(t, tc.yaml, vars)
+			hRun.e.probes = healthyProbes()
+			hRun.e.probes.lore = probe
+			served := false
+			hRun.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+				served = true
+				return stubSupervisor{}, nil
+			}
+			runCode := hRun.run(append([]string{"run"}, tc.unit...)...)
+
+			hDoc := newHarness(t, tc.yaml, vars)
+			hDoc.e.probes = healthyProbes()
+			hDoc.e.probes.lore = probe
+			docCode := hDoc.run(append([]string{"doctor"}, tc.unit...)...)
+
+			if served != tc.wantServes {
+				t.Errorf("run served = %v, want %v\n%s", served, tc.wantServes, hRun.both())
+			}
+			if healthy := docCode == exitOK; healthy != tc.wantServes {
+				t.Errorf("doctor exit = %d (healthy = %v), want healthy = %v\n%s",
+					docCode, healthy, tc.wantServes, hDoc.both())
+			}
+			if (runCode == exitOK) != (docCode == exitOK) {
+				t.Errorf("run exited %d and doctor exited %d for one store; a health check "+
+					"that disagrees with startup is a restart loop or a silent amnesia",
+					runCode, docCode)
+			}
+		})
+	}
+}
+
+// allSpaces is every space the unit is configured for, as a lookup for the probe above.
+func allSpaces(cfg *config.Config, scope config.UnitScope) map[string]bool {
+	out := map[string]bool{}
+	for _, s := range configuredSpaces(cfg, scope) {
+		out[string(s)] = true
+	}
+	return out
 }
 
 // TestDoctorReportsTheConversationResetSchedule.

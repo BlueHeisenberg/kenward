@@ -293,10 +293,18 @@ household's keys.
 docker compose -f deploy/compose.simple.yml up -d
 ```
 
-Edit the compose file first: it expects a config file and a data directory bind-mounted,
-and the bot token supplied through a `.env` file beside it. There is nothing to supply
-for lore: kenward opens its store in process and creates it on the data volume the first
-time the container starts.
+Read the compose file's header first — the three steps are all in it. It expects
+`kenward.yaml` and a data directory bind-mounted beside it, and the bot token supplied
+through a `.env` file. There is nothing to supply for lore: kenward opens its store in
+process and creates it on the data directory the first time the container starts.
+
+The one thing to get right is *which* directory. Run the setup wizard with its
+`--data-dir` and `LORE_HOME` pointed at the directory the compose file mounts, because
+the wizard is what creates this household's lore spaces and writes their ids into
+`kenward.yaml`, and nothing anywhere can create a space at an id chosen somewhere else.
+A wizard that made them in one store and a container that opens another gives you a
+node whose every configured space is missing — it will tell you so and refuse to start
+rather than serve with no memory, but the fix is at setup time.
 
 ---
 
