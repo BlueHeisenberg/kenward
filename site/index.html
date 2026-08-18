@@ -567,7 +567,7 @@ footer.site ul { list-style: none; padding: 0; margin: 0 0 1.75rem; display: gri
             <tr><th scope="row">Keys</th><td>one address space</td><td>per-pod, argon2-wrapped</td></tr>
             <tr><th scope="row">Telegram</th><td>one household bot</td><td>one bot per member</td></tr>
             <tr><th scope="row">Runs on</th><td>Windows, macOS, Linux, container</td><td>Linux with Podman or Docker</td></tr>
-            <tr><th scope="row">The operator can read your private memory</th><td><strong>yes</strong></td><td>no &mdash; not from disk, not from a backup, not outside your session</td></tr>
+            <tr><th scope="row">The operator can read your private memory</th><td><strong>yes</strong></td><td>no &mdash; not from the disk, not from a backup, and not before your process has been unlocked</td></tr>
           </tbody>
         </table>
       </div>
@@ -743,10 +743,14 @@ kenward setup</code></pre>
       <p>
         A model must see plaintext to answer. A server-side assistant therefore cannot be end-to-end
         encrypted with respect to its own server, and no arrangement of keys changes that. So the claim
-        is not &ldquo;the operator cannot read your memory&rdquo;. It is: <em>the operator cannot read
-        it from disk, from a backup, or while you are not in session, and doing so requires
-        deliberately attacking their own family.</em> That is strong, checkable and true. The stronger
-        version is neither.
+        is not &ldquo;the operator cannot read your memory&rdquo;. It is the one kenward itself makes,
+        word for word: <em>nobody else in the household can read your private memory, and neither can
+        the person who runs this machine &mdash; not from the disk, not from a backup, and not before
+        your process has been unlocked.</em> Doing so means deliberately attacking their own family.
+        That is strong, checkable and true. The stronger version is neither, and the stronger version
+        is the one this page used to make: once your assistant is unlocked and running, your key stays
+        in that process&rsquo;s memory until it stops or you lock it, so the last clause is about being
+        unlocked and not about being present.
       </p>
       <ul class="plain">
         <li>

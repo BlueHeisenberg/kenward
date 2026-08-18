@@ -29,9 +29,15 @@ const (
 	DefaultRestartBackoff = time.Second
 	// DefaultMaxRestartBackoff caps the doubling restart delay.
 	DefaultMaxRestartBackoff = 5 * time.Minute
-	// simpleSessionsFile is where the default session manager persists wrapped
-	// keys, under the configuration's data directory.
-	simpleSessionsFile = "sessions.json"
+	// SessionsFileName is where the default session manager persists wrapped keys,
+	// under the configuration's data directory.
+	//
+	// Exported because `kenward run` has to build the session manager itself in
+	// order to unlock it at startup, and a manager over a different file from the
+	// one this package would have used is a manager the units never see. That was
+	// two unexported copies of the same string in two packages with nothing
+	// asserting they matched.
+	SessionsFileName = "sessions.json"
 	// defaultCancelGrace is how long a drain whose patience has already run out
 	// waits for the goroutines it just cancelled to notice, before it stops
 	// waiting on them at all.

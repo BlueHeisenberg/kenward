@@ -28,7 +28,9 @@ import (
 // rememberToolName is the one tool this package offers the model.
 const rememberToolName = "remember"
 
-// rememberSchema is the input schema from docs/PROMPT.md, verbatim.
+// rememberSchema is the input schema from docs/PROMPT.md, verbatim. Its confidence enum
+// is lore's closed vocabulary written out by hand, because the literal has to stay
+// verbatim; TestRememberSchemaConfidenceMatchesLore is what keeps the two equal.
 //
 // It used to carry a "markers" array and does not any more. Markers were the one
 // field the model could write that the member was never shown — the capture question

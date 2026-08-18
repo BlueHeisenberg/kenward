@@ -257,8 +257,9 @@
 
     <label for="group_chat_id">The household group's Telegram chat id
       <span class="hint">Needed for <strong>one each</strong>, and only for it: kenward
-      itself then lives in the group chat and nowhere else, because every private chat
-      belongs to somebody's own assistant. Without this there is no kenward anywhere.
+      then has two conversations of its own &mdash; the group, and a private chat with each
+      member on the household bot &mdash; and both are built off this id. Without it there
+      is no kenward anywhere.
       Add the bot to the group, send a message there, open
       <code>https://api.telegram.org/bot&lt;TOKEN&gt;/getUpdates</code> and copy the
       negative number after <code>"chat":{"id":</code>.</span>

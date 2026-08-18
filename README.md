@@ -91,7 +91,7 @@ it.
 | Keys | one address space | per-pod, argon2-wrapped |
 | Telegram | one household bot | one bot per member |
 | Runs on | Windows, macOS, Linux, container | Linux with Podman or Docker |
-| The operator can read your private memory | **yes** | no — not from disk, not from a backup, not outside your session |
+| The operator can read your private memory | **yes** | no — not from the disk, not from a backup, and not before your process has been unlocked |
 
 The assistant, the memory policy and the routing are identical in both. Only the
 supervisor differs.

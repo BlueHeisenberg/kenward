@@ -418,6 +418,55 @@ func TestSettingsKeepsFieldsTheFormNeverAsksAbout(t *testing.T) {
 	}
 }
 
+// TestSettingsEditsTheTwoMemoryPolicies.
+//
+// memory.announce_reads and capture.private_writes shipped with the memory-policy work
+// and this page did not grow controls for them; the comment on applySettingsForm said
+// they were still coming for long enough that it stopped being true. They are the two
+// settings a household is most likely to change after living with the assistant for a
+// week, and a setting an operator can edit in kenward.yaml while an admin cannot see it
+// is a setting that only half exists.
+//
+// announce_reads is asserted through the checkbox's real failure mode rather than its
+// happy path: an unticked box posts nothing at all, so the form has to write `false`
+// explicitly. A pointer left nil would read back as the default, which is on — the
+// operator would untick it, get a success banner, and find the line still there.
+func TestSettingsEditsTheTwoMemoryPolicies(t *testing.T) {
+	h := newHarness(t)
+	h.createAdmin()
+	h.writeConfig()
+	h.signIn()
+
+	page := body(t, h.get("/settings"))
+	for _, control := range []string{`name="announce_reads"`, `name="private_writes"`} {
+		if !strings.Contains(page, control) {
+			t.Errorf("the settings page has no %s control", control)
+		}
+	}
+
+	resp := h.postCSRF("/settings", url.Values{
+		"household_name":  {"Home"},
+		"shared_space":    {"00000000-0000-4000-8000-000000000099"},
+		"household_tiers": {"local"},
+		"private_writes":  {"ask"},
+		// announce_reads deliberately absent: that is what an unticked box sends.
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d\n%s", resp.StatusCode, body(t, resp))
+	}
+
+	out := h.loadConfig()
+	if out.Memory.AnnounceReads == nil {
+		t.Error("memory.announce_reads was left unset; an unticked box has to be written as false, or it reads back as the default and the retrieval line survives being turned off")
+	} else if *out.Memory.AnnounceReads {
+		t.Error("memory.announce_reads = true after the box was unticked")
+	}
+	if out.Capture.PrivateWrites != config.PrivateWriteAsk {
+		t.Errorf("capture.private_writes = %q, want %q", out.Capture.PrivateWrites, config.PrivateWriteAsk)
+	}
+}
+
 // TestChoosingLANExposureGeneratesACertificateAndShowsItsFingerprint.
 //
 // LAN requires TLS and validation refuses it without, so this asserts both halves: the

@@ -123,9 +123,12 @@ func (s *Server) settingsError(w http.ResponseWriter, r *http.Request, sess *ses
 // Members and endpoints are addressed by index, in the order the page rendered them,
 // because that is the order the file holds them in and the page is a view of the file.
 //
-// Every field the first-run wizard can set appears here. Two more are coming with the
-// memory-policy work — memory.announce_reads and capture.private_writes — and each is one
-// line in this function and one control in settings.html; see docs/IMPLEMENTATION.md.
+// Every field the first-run wizard can set appears here, and so do the two the
+// memory-policy work added and the wizard does not ask about — memory.announce_reads and
+// capture.private_writes. They are both things a household changes its mind about after
+// living with the assistant for a week, which is exactly what this page is for, and
+// D-039's parity rule cuts the other way too: a setting a headless operator can edit in
+// kenward.yaml and an admin cannot see is a setting that only half exists.
 func applySettingsForm(cfg *config.Config, r *http.Request) error {
 	cfg.Household.Name = strings.TrimSpace(r.PostFormValue("household_name"))
 	cfg.Household.SharedSpace = strings.TrimSpace(r.PostFormValue("shared_space"))
@@ -145,9 +148,10 @@ func applySettingsForm(cfg *config.Config, r *http.Request) error {
 	// Read after the identity answer, because whether a blank one is allowed depends on
 	// it. The same refusal both wizards make, from the same rule, on the one page where
 	// the remedy is a field the reader is already looking at: under one assistant each
-	// kenward speaks only in the group chat, so a household with no group chat id has
-	// no kenward in it. Blank is still how a group is unmapped under one shared
-	// assistant, which answers every private chat either way.
+	// both of kenward's own conversations — the group, and each member's private chat
+	// with kenward — are built off this id, so a household without one has no kenward in
+	// it. Blank is still how a group is unmapped under one shared assistant, which
+	// answers every private chat either way.
 	groupChat, err := checkGroupChat(cfg.Household.Agents, r.PostFormValue("group_chat_id"))
 	if err != nil {
 		return err
@@ -224,6 +228,20 @@ func applySettingsForm(cfg *config.Config, r *http.Request) error {
 		cfg.Session.IdleTimeout = config.Duration(d)
 	}
 	cfg.Capture.MaxProposalsPerTurn = atoi(r.PostFormValue("max_proposals"), cfg.Capture.MaxProposalsPerTurn)
+	// Written explicitly rather than left unset, because a checkbox cannot express
+	// "not stated": an unticked box posts nothing, which is indistinguishable from a
+	// field this form never had. The pointer is what tells those apart in the file,
+	// and once an admin has looked at this control the household has an opinion.
+	announceReads := r.PostFormValue("announce_reads") != ""
+	cfg.Memory.AnnounceReads = &announceReads
+	// The only capture policy a household may set. There is deliberately no control
+	// for the shared space's confirmation or for the write announcement, because
+	// neither has a configuration key to bind one to — see config.CaptureConfig. An
+	// unrecognised value cannot arrive from the select and is refused by validation
+	// anyway, which is where a hand-edited POST meets the same rule the file does.
+	if v := strings.TrimSpace(r.PostFormValue("private_writes")); v != "" {
+		cfg.Capture.PrivateWrites = config.PrivateWrites(v)
+	}
 
 	if v := strings.TrimSpace(r.PostFormValue("update_channel")); v != "" {
 		cfg.Update.Channel = config.UpdateChannel(v)

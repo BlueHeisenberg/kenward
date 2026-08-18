@@ -322,7 +322,7 @@ func (r *runner) buildDeps() error {
 			routing.NewHTTPCompleter(nil, r.rc.endpointKey, r.logger))
 	}
 	if r.rc.sessions == nil {
-		store := session.NewFileStore(filepath.Join(r.cfg.DataDir, simpleSessionsFile))
+		store := session.NewFileStore(filepath.Join(r.cfg.DataDir, SessionsFileName))
 		m, err := session.NewManager(r.rc.sessionMode, store,
 			session.WithIdleTimeout(r.cfg.Session.IdleTimeout.Duration()))
 		if err != nil {

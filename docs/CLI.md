@@ -108,10 +108,10 @@ It asks, in order:
 
    **`[2]` then asks for the household group's Telegram chat id, and will not take a
    blank one.** It is the only numeric Telegram id the wizard ever asks for, and it is
-   asked because under one assistant each there is no other route to it: every private
-   chat belongs to somebody's own assistant, so kenward itself lives in the group chat
-   and nowhere else, and the supervisor creates the group's pod only when
-   `household.group_chat_id` is set. A `per_member` configuration without one is a
+   asked because under one assistant each there is no other route to it: kenward has two
+   conversations of its own — the household group, and each member's private chat with
+   kenward on the household bot — and the supervisor builds **both** off the same id,
+   only when `household.group_chat_id` is set. A `per_member` configuration without one is a
    household that cannot be reached at all — not in the group, and not in a private chat
    — which is the same failure `[2]` + simple is refused to prevent, arriving through the
    other door. `doctor` warns about it afterwards, and a warning nobody was told to run

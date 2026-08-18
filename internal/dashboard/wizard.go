@@ -650,11 +650,14 @@ func botPrivacyRefusal(username string) string {
 // checkGroupChat reads the household group's Telegram id, and refuses to leave it out
 // under one assistant each.
 //
-// Under `agents: per_member` every private chat belongs to somebody's own assistant and
-// kenward speaks only in the group, so a household with no group chat id has no kenward
-// in it at all — the supervisor creates the group's pod only when household.group_chat_id
-// is set. `kenward doctor` warns about it after the fact, which is where this used to be
-// caught and is not good enough: nothing in either wizard told anybody to run doctor.
+// Under `agents: per_member` kenward has two conversations of its own — the household
+// group, and each member's private chat with kenward on the household bot (D-054's third
+// scope) — and the supervisor builds both off this one id: `runner.buildGroupUnit` and
+// `runner.buildHouseholdUnit` are both behind `rc.group`, which is
+// `household.group_chat_id != 0`. So a household with no group chat id has no kenward in
+// it at all, in the group or in a private chat. `kenward doctor` warns about it after the
+// fact, which is where this used to be caught and is not good enough: nothing in either
+// wizard told anybody to run doctor.
 //
 // Any non-zero whole number is accepted. The shape is a question rather than a rule, for
 // the same reason the bot token's is: Telegram's numbering is theirs to change.
@@ -672,9 +675,9 @@ func checkGroupChat(agents config.Agents, raw string) (int64, error) {
 		}
 		return 0, fmt.Errorf("%q is not a Telegram chat id: it is a whole number, and a group's is negative — like -1001234567890", raw)
 	case strings.TrimSpace(raw) == "":
-		return 0, errors.New("One assistant each needs the household's own group. kenward itself lives in " +
-			"that group chat and nowhere else — every private chat belongs to somebody's own assistant — " +
-			"so without its id this household has no kenward in it at all, in the group or anywhere. " +
+		return 0, errors.New("One assistant each needs the household's own group. Both of kenward's own " +
+			"conversations are built off this id — the group chat, and each member's private chat with " +
+			"kenward — so without it this household has no kenward in it at all, in the group or anywhere. " +
 			"Add the bot to the group, send a message there, and read the id off " +
 			"https://api.telegram.org/bot<TOKEN>/getUpdates: it is the negative number after \"chat\":{\"id\":")
 	default:

@@ -50,10 +50,11 @@ refusing.
 
 **And, if you answer "one assistant each": the household's Telegram group, already made,
 with the bot already in it, and a message already sent in it.** Under `agents:
-per_member`, kenward itself lives in the group chat and nowhere else — every private chat
-belongs to somebody's own assistant — so `household.group_chat_id` is required, and setup
-asks for it with no default and no skip. It loops until you give it a number, because a
-per-member household without one has no kenward in it at all, in the group or anywhere.
+per_member`, kenward has two conversations of its own — the household group, and each
+member's private chat with kenward on the household bot — and the supervisor builds both
+off that one id, so `household.group_chat_id` is required, and setup asks for it with no
+default and no skip. It loops until you give it a number, because a per-member household
+without one has no kenward in it at all, in the group or anywhere.
 
 There is no second route to that number: nobody claims a group the way a member claims an
 invite. To find it, with the bot's token where `TOKEN` is:
@@ -311,9 +312,15 @@ rather than serve with no memory, but the fix is at setup time.
 ## Isolated mode
 
 One pod per member plus one for the household group, each with its own bot token, its
-own key and its own lore instance. Nobody — including whoever runs the machine — can
-read another member's private memory from disk, from a backup, or while that member is
-away.
+own key and its own lore instance. What each member is told, in `internal/privacy`'s own
+words and printed in full by `kenward doctor`, is this: *nobody else in the household can
+read your private memory, and neither can the person who runs this machine — not from the
+disk, not from a backup, and not before your process has been unlocked.*
+
+That last clause is about being unlocked, not about being present. D-019 retired the older,
+stronger wording: a key re-locked after a quiet spell could only be unwrapped again by a
+passphrase sent over Telegram, and kenward will not teach that habit, so once a member's
+assistant is unlocked its key stays in that process's memory until it stops or they lock it.
 
 **This is Linux only**, and it needs Podman or Docker. The isolation *is* the container
 runtime, so there is no meaningful equivalent on Windows or macOS. Setup will say so if

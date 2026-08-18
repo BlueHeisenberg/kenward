@@ -13,17 +13,18 @@ import (
 	"github.com/BlueHeisenberg/kenward/internal/domain"
 	"github.com/BlueHeisenberg/kenward/internal/session"
 	"github.com/BlueHeisenberg/kenward/internal/setup"
+	"github.com/BlueHeisenberg/kenward/internal/supervisor"
 )
 
 // sessionsFileName is where wrapped member keys are persisted, under the data
 // directory.
 //
-// TODO(cmd/kenward): this string is also written down, unexported, inside
-// internal/supervisor. `run` has to build the session manager itself in order to
-// unlock it at startup, and a manager over a different file from the one the
-// supervisor would have used is a manager the units never see. Exporting the name
-// from internal/supervisor would remove the chance of the two drifting apart.
-const sessionsFileName = "sessions.json"
+// It is internal/supervisor's constant rather than a second copy of the literal.
+// `run` has to build the session manager itself in order to unlock it at startup,
+// and a manager over a different file from the one the supervisor would have used
+// is a manager the units never see — so the two cannot be allowed to drift, and the
+// only way to be sure of that is for there to be one of them.
+const sessionsFileName = supervisor.SessionsFileName
 
 // Where a node's passphrase comes from, in precedence order.
 const (
