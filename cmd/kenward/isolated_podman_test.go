@@ -680,6 +680,24 @@ func (hh *household) logs(pod string) string {
 	return out
 }
 
+// logsOfThisRun returns what the pod wrote since its container last started, which for
+// a container that has been restarted several times is the only part that answers a
+// question about now.
+//
+// The boundary is podman's own State.StartedAt rather than anything in the text: a
+// timestamp podman recorded when it started the process, compared against timestamps
+// podman recorded for each line it captured. Nothing in the pod's output has to be
+// well-formed for it to be right, which matters because the interesting failures are
+// the ones where the output is not what anybody expected.
+func (hh *household) logsOfThisRun(pod string) string {
+	v, err := hh.tryInspect(pod)
+	if err != nil || v.State.StartedAt == "" {
+		return ""
+	}
+	out, _ := hh.rig.try(hh.t, "logs", "--since", v.State.StartedAt, hh.container(pod))
+	return out
+}
+
 // mountpoint is where a pod's work volume lives on the host, so the test can read what
 // the pod wrote to it and seed what a previous claim would have left there. Nothing in
 // kenward may do this — a host that can write into a running member's volume is one
@@ -1447,15 +1465,24 @@ func testRevocationAndStalePods(t *testing.T, r *rig) {
 // reachedTelegram reports whether a pod ran all the way to the one call this
 // environment cannot satisfy. See the file comment: it is the proof that everything
 // before it worked.
-// It reads the pod's last line rather than searching the whole log, because a container
-// accumulates every run it has had and the question is about the most recent one: a pod
-// that reached Telegram yesterday and cannot read its configuration today has failed,
-// and a log that merely contains "getMe" somewhere cannot tell the two apart.
+//
+// It asks of the pod's most recent run rather than of its whole log, because a container
+// accumulates every run it has had and the question is about the current one: a pod that
+// reached Telegram yesterday and cannot read its configuration today has failed, and a
+// log that merely contains "getMe" somewhere cannot tell the two apart.
+//
+// It used to draw that boundary by requiring "getMe" to be the pod's *last* line, which
+// was the same statement while the node was one thread of control up to the point it
+// died. It no longer is: an isolated pod runs lore's sync daemon in its own process
+// (cmd/kenward's startSyncDaemon), and that daemon reports itself listening from its own
+// goroutine, some tens of milliseconds after the Telegram refusal that ends the run —
+// sometimes before it, sometimes after, decided by which of a TLS handshake and a
+// listener bind finishes first. Both orders are a pod that reached Telegram. Asking for
+// the last line asked the pod to be single-threaded, which is a property it does not
+// have and does not need, and the answer was a coin toss per restart: one pod flickered,
+// four pods together never came up at all.
 func reachedTelegram(hh *household, pod string) bool {
-	if !hh.containerExists(pod) {
-		return false
-	}
-	return strings.Contains(lastLine(hh.logs(pod)), "getMe")
+	return strings.Contains(hh.logsOfThisRun(pod), "getMe")
 }
 
 // lastLine is the final non-empty line of a pod's log: how its most recent run ended.
