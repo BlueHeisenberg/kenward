@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BlueHeisenberg/kenward/internal/config"
 )
 
 // The helper-process trick: the test binary re-executes itself as the thing the
@@ -126,6 +128,14 @@ func waitFor(t *testing.T, d *daemon, want daemonState) {
 	t.Fatalf("state = %v (%s), want %v", st, detail, want)
 }
 
+// The cases below are written in the schema internal/config actually defines, and
+// TestDashboardURLReadsTheSchemaTheDaemonAccepts is what keeps them honest.
+//
+// They used to be written in a schema that has never existed — `addr` and `port` —
+// and passing was the whole problem: the test agreed with the struct, the struct
+// agreed with nothing, and "Open dashboard" was greyed out for every household that
+// ever ran kenward. Corrected rather than deleted; this is the test that was supposed
+// to catch it.
 func TestDashboardURL(t *testing.T) {
 	cases := []struct {
 		name string
@@ -133,16 +143,30 @@ func TestDashboardURL(t *testing.T) {
 		want string
 	}{
 		{"no dashboard block", "mode: simple\n", ""},
-		{"explicitly off", "dashboard:\n  enabled: false\n  addr: 127.0.0.1:8823\n", ""},
-		{"addr", "dashboard:\n  addr: 127.0.0.1:8823\n", "http://127.0.0.1:8823"},
-		{"enabled with addr", "dashboard:\n  enabled: true\n  addr: 127.0.0.1:8823\n", "http://127.0.0.1:8823"},
-		{"port alone", "dashboard:\n  port: 8823\n", "http://127.0.0.1:8823"},
+		{"explicitly off", "dashboard:\n  enabled: false\n  bind: 127.0.0.1:8823\n", ""},
+		// The zero value is off. A bind stored against the day somebody turns the
+		// dashboard on is not a dashboard, and `kenward run` opens no socket for it.
+		{"bind without enabled is still off", "dashboard:\n  bind: 127.0.0.1:8823\n", ""},
+		{"enabled with bind", "dashboard:\n  enabled: true\n  bind: 127.0.0.1:8823\n", "http://127.0.0.1:8823"},
+		// The commonest way to turn it on: no bind at all, so the listener takes
+		// config.DefaultDashboardBind. This returned "" before, which meant the
+		// default configuration was the one most certain to grey the item out.
+		{"enabled alone takes the default bind", "dashboard:\n  enabled: true\n", "http://" + config.DefaultDashboardBind},
 		// A browser cannot open http://0.0.0.0. Listening everywhere still means
 		// reachable here.
-		{"wildcard address", "dashboard:\n  addr: 0.0.0.0:8823\n", "http://127.0.0.1:8823"},
-		{"bare colon port", "dashboard:\n  addr: \":8823\"\n", "http://127.0.0.1:8823"},
-		{"named host is left alone", "dashboard:\n  addr: kenward.local:8823\n", "http://kenward.local:8823"},
-		{"enabled but nowhere to go", "dashboard:\n  enabled: true\n", ""},
+		{"wildcard address", "dashboard:\n  enabled: true\n  bind: 0.0.0.0:8823\n", "http://127.0.0.1:8823"},
+		{"wildcard v6", "dashboard:\n  enabled: true\n  bind: \"[::]:8823\"\n", "http://127.0.0.1:8823"},
+		{"bare colon port", "dashboard:\n  enabled: true\n  bind: \":8823\"\n", "http://127.0.0.1:8823"},
+		{"named host is left alone", "dashboard:\n  enabled: true\n  bind: kenward.local:8823\n", "http://kenward.local:8823"},
+		// TLS is configured by naming the pair, and the browser has to be sent to
+		// https or it gets a protocol error rather than a page.
+		{
+			"tls serves https",
+			"dashboard:\n  enabled: true\n  bind: 127.0.0.1:8823\n  tls_cert_file: /etc/kenward/c.pem\n  tls_key_file: /etc/kenward/k.pem\n",
+			"https://127.0.0.1:8823",
+		},
+		// Not host:port, so not something `kenward run` will start on either.
+		{"unparseable bind", "dashboard:\n  enabled: true\n  bind: \"8823\"\n", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -160,6 +184,52 @@ func TestDashboardURL(t *testing.T) {
 	// must be a greyed-out menu item rather than a crash.
 	if got := dashboardURL(filepath.Join(t.TempDir(), "absent.yaml")); got != "" {
 		t.Errorf("dashboardURL of a missing file = %q, want empty", got)
+	}
+}
+
+// The tray must read the dashboard out of a file the daemon will actually start on.
+//
+// This is the assertion whose absence let the tray invent `dashboard.addr` and
+// `dashboard.port`. Nothing tied the tray's struct to the schema, so the two could
+// disagree forever and every test still pass: the unit cases above wrote the tray's
+// own spelling and read it straight back. The two facts that matter are checked here
+// against one artifact — config.Decode accepting the bytes, and dashboardURL finding
+// a URL in the same bytes.
+//
+// The artifact is kenward.example.yaml, the file shipped for a household to copy,
+// which is as close to "a real kenward.yaml" as this repository has. Using it also
+// means the example cannot quietly stop being valid.
+//
+// config.Decode is the same call `kenward run` makes and it sets KnownFields(true), so
+// a key the schema does not define is a refusal to load, not a shrug. That is why the
+// old spelling was worse than useless: a household writing `dashboard.addr` to make
+// the tray work got a daemon that would not read its configuration at all.
+func TestDashboardURLReadsTheSchemaTheDaemonAccepts(t *testing.T) {
+	const example = "../../kenward.example.yaml"
+
+	f, err := os.Open(example)
+	if err != nil {
+		t.Fatalf("opening the shipped example: %v", err)
+	}
+	defer f.Close()
+
+	cfg, err := config.Decode(f)
+	if err != nil {
+		t.Fatalf("the daemon rejects %s: %v", example, err)
+	}
+	if !cfg.Dashboard.Enabled {
+		t.Skip("the shipped example no longer enables the dashboard; nothing to open")
+	}
+
+	want := "http://" + cfg.Dashboard.BindAddr()
+	if cfg.Dashboard.TLS() {
+		want = "https://" + cfg.Dashboard.BindAddr()
+	}
+	if got := dashboardURL(example); got != want {
+		t.Fatalf("dashboardURL(%s) = %q, want %q\n"+
+			"the tray reads a different schema from the one the daemon accepts, "+
+			"so \"Open dashboard\" is greyed out for a configuration that serves one",
+			example, got, want)
 	}
 }
 

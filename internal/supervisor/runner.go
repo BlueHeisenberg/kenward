@@ -588,19 +588,16 @@ func (r *runner) start(ctx context.Context) error {
 
 	for _, pu := range units {
 		if err := r.launch(ctx, pu); err != nil {
-			r.shutdown(r.drainContext())
-			return err
+			return r.abortStart(err)
 		}
 	}
 	if r.rc.claimer != nil {
 		if err := r.launchEnrol(ctx); err != nil {
-			r.shutdown(r.drainContext())
-			return err
+			return r.abortStart(err)
 		}
 	}
 	if err := r.launchBackstop(ctx); err != nil {
-		r.shutdown(r.drainContext())
-		return err
+		return r.abortStart(err)
 	}
 	r.mu.Lock()
 	r.launched = true
@@ -612,8 +609,7 @@ func (r *runner) start(ctx context.Context) error {
 	}
 
 	if err := r.mux.Start(ctx); err != nil {
-		r.shutdown(r.drainContext())
-		return fmt.Errorf("supervisor: starting mux: %w", err)
+		return r.abortStart(fmt.Errorf("supervisor: starting mux: %w", err))
 	}
 
 	r.logStartup()
@@ -637,6 +633,40 @@ func (r *runner) start(ctx context.Context) error {
 	case <-r.stoppedCh:
 		return nil
 	}
+}
+
+// abortStart winds a startup back that could not finish, and decides what start
+// reports for it.
+//
+// A Stop that lands mid-startup is not a startup failure. Once stopping is set
+// everything start has left to do refuses: launch, launchEnrol and launchBackstop
+// each return "supervisor: stopping", and once the drain has closed the mux,
+// mux.Start and any view's Updates return ErrClosed. Four errors, one meaning — and
+// the same Stop a moment later leaves start parked in its select, returning nil from
+// stoppedCh. Which side of that window the caller lands on must not change what a
+// Stop looks like, so a stop already in progress is reported as the clean stop it is.
+//
+// The flag is read before the shutdown below sets it, which is what keeps the reading
+// honest: afterwards every abort would look like a stop. The read needs no
+// synchronisation with the Stop beyond the lock because stopping is never unset —
+// whoever refused the launch saw it under this same lock, so this read sees it too.
+//
+// This is the half of the Stop-races-Start bug that survived the fix for the hang;
+// see TestStartReportsACleanStopWhenStopLandsMidLaunch, and workerDone for the other
+// half. Between them: a Stop landing mid-launch used to hang the drain, and then used
+// to fail the Start.
+func (r *runner) abortStart(err error) error {
+	r.mu.Lock()
+	stopping := r.stopping
+	r.mu.Unlock()
+
+	// Blocks until the drain is done, so start returns after the stop it raced
+	// rather than alongside it — the same ordering stoppedCh gives the clean path.
+	r.shutdown(r.drainContext())
+	if stopping {
+		return nil
+	}
+	return err
 }
 
 // logStartup emits the one summary an operator should be able to read and know
