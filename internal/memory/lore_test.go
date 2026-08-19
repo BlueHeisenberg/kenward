@@ -870,3 +870,77 @@ func TestTimestampsAreParsed(t *testing.T) {
 		t.Errorf("UpdatedAt = %v, which is not around now", e.UpdatedAt)
 	}
 }
+
+// TestCreateSpaceWithIDMakesTheConfiguredSpace is what a pod does on first boot: the
+// id came out of kenward.yaml, and the space has to end up at exactly that id or the
+// pod holds a space its own configuration does not name.
+func TestCreateSpaceWithIDMakesTheConfiguredSpace(t *testing.T) {
+	const configured = "7d5047bb-d939-4539-b3db-8b6221a2e245"
+	c, _ := newStore(t)
+
+	sp, err := c.CreateSpaceWithID(t.Context(), configured, "David")
+	if err != nil {
+		t.Fatalf("CreateSpaceWithID: %v", err)
+	}
+	if sp.ID != configured || sp.Name != "David" || sp.Kind != "shared" {
+		t.Fatalf("space = %+v, want the configured id and a shared space", sp)
+	}
+	// It is a space the member's turn can actually use.
+	if _, err := c.Put(t.Context(), domain.SpaceID(configured), draft("Proof", "written into the configured space")); err != nil {
+		t.Errorf("the new space does not accept a write: %v", err)
+	}
+
+	// Every boot after the first calls it again, and must find rather than fail.
+	again, err := c.CreateSpaceWithID(t.Context(), configured, "David")
+	if err != nil {
+		t.Fatalf("the second boot must be a no-op, got %v", err)
+	}
+	if again.ID != sp.ID {
+		t.Errorf("second call returned %s, want the space that is there, %s", again.ID, sp.ID)
+	}
+	spaces, err := c.Spaces(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range spaces {
+		if s.ID == configured && s.Entries != 1 {
+			t.Errorf("the space has %d entries after the second boot; the first boot's write is gone", s.Entries)
+		}
+	}
+	if len(spaces) != 2 {
+		t.Errorf("%d spaces after two boots: %+v; want the personal one and the configured one", len(spaces), spaces)
+	}
+}
+
+// TestCreateSpaceWithIDRefusesWhatItCannotMake. A configured id that is not an id is a
+// configuration fault, and coercing it into one would put a member's memory somewhere
+// nothing else names.
+func TestCreateSpaceWithIDRefusesWhatItCannotMake(t *testing.T) {
+	c, _ := newStore(t, "Casa")
+	for _, tc := range []struct {
+		what, id, name string
+	}{
+		{"a display name where an id belongs", "casa", "David"},
+		{"an id that is not a UUID", "not-a-uuid", "David"},
+		{"no id at all", "", "David"},
+		{"an id lore would not spell that way", "7D5047BB-D939-4539-B3DB-8B6221A2E245", "David"},
+		{"no name", "7d5047bb-d939-4539-b3db-8b6221a2e245", "  "},
+		{"a name no listing could show", "7d5047bb-d939-4539-b3db-8b6221a2e245", "a\nb"},
+	} {
+		if _, err := c.CreateSpaceWithID(t.Context(), tc.id, tc.name); !errors.Is(err, ErrInvalidArgument) {
+			t.Errorf("%s: got %v, want ErrInvalidArgument", tc.what, err)
+		}
+	}
+	// A name that belongs to a different space is a household whose configuration has
+	// been pointed somewhere else, and is worth stopping on rather than duplicating.
+	if _, err := c.CreateSpaceWithID(t.Context(), "7d5047bb-d939-4539-b3db-8b6221a2e245", "Casa"); !errors.Is(err, ErrSpaceExists) {
+		t.Errorf("a name another space holds: got %v, want ErrSpaceExists", err)
+	}
+	spaces, err := c.Spaces(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spaces) != 2 {
+		t.Errorf("%d spaces after the refusals: %+v; want the personal one and Casa", len(spaces), spaces)
+	}
+}

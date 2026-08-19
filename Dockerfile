@@ -25,8 +25,8 @@
 #     lore space invite <space-id> --lan --yes     # in the pod that has it
 #     lore join <code> --yes                       # in each of the others
 #
-# and lore exports neither: v0.5.0's public API is Init, Open, CreateSpace,
-# Spaces, entries, search and Serve, and no Invite or Join. lore's position is
+# and lore exports neither: v0.6.0's public API is Init, Open, CreateSpace,
+# CreateSpaceWithID, Spaces, entries, search and Serve, and no Invite or Join. lore's position is
 # that membership is granted out of band by a person, not minted by an embedding
 # program, and kenward agrees with it — a household assistant granting itself
 # membership of a space is kenward taking a decision that is not its to take.

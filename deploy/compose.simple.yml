@@ -18,9 +18,12 @@
 #      Both values matter and the first one is the whole of this step. The
 #      wizard CREATES this household's lore spaces and writes their ids into
 #      kenward.yaml — `household.shared_space`, each member's `private_space` —
-#      and nothing anywhere can create a space at an id that was chosen
-#      elsewhere. So the store the wizard made them in has to be the store this
-#      container opens. Point it somewhere else and every id in the file names a
+#      and a simple-mode container will not create them for itself, deliberately:
+#      a node that answered a missing space by making one would serve on whatever
+#      store it was pointed at, with an empty memory, and say nothing. (An
+#      isolated pod does create its own, because a pod's volume is a store no
+#      wizard could ever have reached.) So the store the wizard made them in has
+#      to be the store this container opens. Point it somewhere else and every id in the file names a
 #      space this container will never hold: see WHY IT IS NOT A NAMED VOLUME
 #      below, which is the bug this instruction exists to prevent.
 #

@@ -463,7 +463,7 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 			// place — and until this said so, only the shared space got a remedy,
 			// which left the one space isolated mode exists for with none at all.
 			if isPod(scope) {
-				detail = append(detail, podSpaceRemedy(cfg, s.Space))
+				detail = append(detail, podSpaceRemedy(cfg, scope, s.Space))
 			}
 			checks = append(checks, check{
 				Status: missingStatus,
@@ -485,44 +485,54 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 	return append(checks, doctorSharedMemory(ctx, e, cfg, scope, sharedSpaceHeld(cfg, res))...)
 }
 
-// podSpaceRemedy is how an operator puts a missing space into a pod's own store, and it
-// is a different answer for each of the two kinds.
+// podSpaceRemedy is what a pod says about a space its own store does not hold, and
+// there are two answers because there are two ways a space gets there.
 //
-// The household's SHARED space is one space held by several stores, so it is created
-// once and joined: `lore space invite` in the pod that has it, `lore join` in this one.
+// A space this unit makes for itself (ownSpaces — a member's private space in that
+// member's pod, the household's shared space in the group's) is not something an
+// operator does anything about. `run` creates it at the configured id on the way up, so
+// a missing one means that did not happen: the id is not a UUID, the store is not
+// writable, or this process has never started. There is no command to hand over, and
+// offering one would send somebody to create a second space beside the one that is
+// coming.
 //
-// A member's PRIVATE space crosses nothing and never should. It has to be created in
-// this pod and in no other place — a private space minted by a wizard on the host lives
-// in the host's store, which is precisely the store isolated mode promises a member's
-// memory is not in. Until this existed the invite/join hint was appended only to the
-// shared space's line, so the one space the mode exists for was reported missing with no
-// remedy offered at all.
+// The household's shared space in a MEMBER's pod is the other answer, and it is a
+// person's: one space held by several stores, created once by the group's pod and
+// reached from here through the invite handshake. lore exposes no API for that on
+// purpose, so it stays two commands typed by somebody who decided to share.
 //
-// That an id has to be pasted back into kenward.yaml is lore's missing half, not a
-// design choice: CreateSpace mints an id rather than accepting one, so nothing can
-// create a space AT the id a wizard already wrote down. The day lore can, both of these
-// become the pod's own first-boot work and this function goes with them. See
-// deploy/compose.isolated.yml step 4c.
-func podSpaceRemedy(cfg *config.Config, space domain.SpaceID) string {
+// Both used to end with an id pasted back into kenward.yaml, and that was lore's
+// missing half rather than a design choice. lore.CreateSpaceWithID closed it.
+func podSpaceRemedy(cfg *config.Config, scope config.UnitScope, space domain.SpaceID) string {
+	for _, own := range ownSpaces(cfg, scope) {
+		if own.ID != space {
+			continue
+		}
+		return "this unit creates this space itself, at the id kenward.yaml names, when " +
+			"`kenward run` starts — so nothing here is an operator's to create. If it is " +
+			"still missing after a restart, this pod's lore store could not be written to " +
+			"or the configured id is not a UUID; the startup error says which"
+	}
 	if string(space) == cfg.Household.SharedSpace {
 		return "this pod holds its own lore store, so the household's shared space is " +
 			"here only once this store has been invited into it: `lore space invite " +
-			"<space> --lan --yes` in the pod that created it, then `lore join <code> " +
-			"--yes` in this one (deploy/compose.isolated.yml step 4b)"
+			"<space> --lan --yes` in the group's pod, which created it, then `lore join " +
+			"<code> --yes` in this one (deploy/compose.isolated.yml step 4b). That one " +
+			"stays a person's decision: sharing memory between two people is not " +
+			"something an assistant grants itself"
 	}
-	whose, name := "this member's", "private"
+	whose := "this member's"
 	for _, m := range cfg.Members {
 		if m.PrivateSpace == string(space) {
-			whose, name = m.Name+"'s", m.ID
+			whose = m.Name + "'s"
 			break
 		}
 	}
-	return fmt.Sprintf("%s private memory is shared with nothing, so it belongs in this "+
-		"pod's own store and in no other: `lore space create %s` in THIS pod, then put "+
-		"the id it prints into that member's private_space in kenward.yaml and restart "+
-		"the pod. Do not create it on the host or in another pod — a member's private "+
-		"space in somebody else's store is the one thing isolated mode promises there is "+
-		"not (deploy/compose.isolated.yml step 4c)", whose, name)
+	return fmt.Sprintf("%s private memory belongs in that member's own pod and in no "+
+		"other, and that pod creates it there itself — this unit is not that pod, so "+
+		"there is nothing to do here. Do not create it on the host or in another pod: a "+
+		"member's private space in somebody else's store is the one thing isolated mode "+
+		"promises there is not", whose)
 }
 
 // sharedSpaceHeld reports whether this store actually holds the household's shared

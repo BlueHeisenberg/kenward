@@ -78,9 +78,8 @@
 #      store holds`, the household group conversation has memory in one container
 #      only, and nothing else reports it. Each member's PRIVATE space is
 #      unaffected by anything in THIS step — it crosses no store, so no invite
-#      and no join touch it — but it does not appear on its own either, and this
-#      file used to imply that it did. It has its own step, 4c, and skipping that
-#      one costs the member the memory this mode exists to give them.
+#      and no join touch it — and it needs nothing from you at all: the member's
+#      own service creates it, at the id kenward.yaml names. See 4c.
 #
 #      Two things make it work, and kenward now supplies one of them. Inside
 #      every service, `kenward run` runs lore's sync daemon in its own process
@@ -95,20 +94,19 @@
 #      shows what it has found.
 #
 #      The other is membership, and unlike `lore init` above it stays yours.
-#      That is the line: creating an account is plumbing with no decision in it,
-#      so the container does it; creating a space and handing out membership are
-#      decisions. kenward never creates a lore space and never grants itself
-#      membership of one; lore's own embeddable API declines to expose either,
-#      because a space is made by a person who chose a name and a sharing
-#      posture. Create the space once, in the household service's store:
+#      That is the line, and it moved once: creating an account is plumbing with
+#      no decision in it, so the container does it — and so is creating a space
+#      at an id kenward.yaml already names, so the container does that too. The
+#      household service creates the shared space itself, at
+#      `household.shared_space`, the first time it starts. There is nothing to
+#      run and no id to copy back; the id the wizard wrote is the only id there
+#      ever is.
 #
-#        docker compose exec --user 65532:65532 kenward-household \
-#          /usr/local/bin/lore space create household
-#        docker compose exec --user 65532:65532 kenward-household \
-#          /usr/local/bin/lore spaces        # copy the id into kenward.yaml
-#
-#      then, ONCE PER MEMBER, run these two in two terminals. The first prints a
-#      code and waits; the second redeems it:
+#      Handing out MEMBERSHIP is a decision, and it stays yours. Sharing one
+#      space between two people's stores is a person choosing to share their
+#      memory, so lore's embeddable API declines to expose it and kenward would
+#      not call it if it did. ONCE PER MEMBER, run these two in two terminals.
+#      The first prints a code and waits; the second redeems it:
 #
 #        docker compose exec kenward-household \
 #          /usr/local/bin/lore space invite <space-id> --lan --yes
@@ -130,50 +128,36 @@
 #      in every service therefore adds exactly one reachable space: the
 #      household's. `kenward doctor` inside a service reports whether that space
 #      is here and whether the daemon is moving anything.
-#   4c. EACH MEMBER'S PRIVATE SPACE, which is the space this whole mode exists
-#      for and the one thing above does NOT cover.
+#   4c. EACH MEMBER'S PRIVATE SPACE. Nothing to do, and the step is kept only
+#      because it used to be four commands per member and the change is worth
+#      stating plainly.
 #
-#      A member's private space is not shared with anything, so there is nothing
-#      to invite and nothing to join — and that is exactly why it needs its own
-#      step rather than falling out of 4b. It has to be created in that member's
-#      OWN service and in no other place. A private space created on the host, or
-#      in the household service, lives in a store the operator can open, which is
-#      the one thing isolated mode promises there is not. A wizard run on the host
-#      does create one and does write its id into kenward.yaml — that id is a
-#      space in the HOST's store, and this member's pod will never hold it. Point
-#      the file at the pod's own instead:
+#      A member's private space is shared with nothing, so there is nothing to
+#      invite and nothing to join. It has to exist in that member's OWN service
+#      and in no other place — one created on the host or in the household
+#      service lives in a store the operator can open, which is the one thing
+#      isolated mode promises there is not. Each member's service creates it
+#      itself, at the `private_space:` id kenward.yaml already names, the first
+#      time it starts. Nothing invites anybody into it afterwards and nothing
+#      ever should: the key is generated inside that container and never leaves
+#      it, which is why a sibling cannot name, request or receive the space even
+#      with the sync daemon running (see 4b's last paragraph).
 #
-#        docker compose exec --user 65532:65532 kenward-david \
-#          /usr/local/bin/lore space create david
-#        docker compose exec --user 65532:65532 kenward-david \
-#          /usr/local/bin/lore spaces      # copy the id into david's private_space
-#        docker compose up -d kenward-david
+#      What this replaces, per member, before the household worked at all:
+#      `lore space create david` inside the container, `lore spaces` to read the
+#      new id, pasting that id over the one the wizard had already written into
+#      `private_space:`, and a restart. It existed because lore's `CreateSpace`
+#      minted an id rather than accepting one, so two ids existed for one space
+#      and a person had to reconcile them. `CreateSpaceWithID` accepts one and is
+#      idempotent, so the service calls it on every start and the wizard's id is
+#      the only id.
 #
-#      Once per member, and the id goes in that member's `private_space:` in
-#      kenward.yaml, replacing whatever the wizard put there. Nothing invites
-#      anybody into it afterwards and nothing ever should: the key is generated
-#      inside that container and never leaves it, which is why a sibling pod
-#      cannot name, request or receive the space even with the sync daemon
-#      running (see 4b's last paragraph).
-#
-#      Until this is done, `kenward doctor` in that pod reports `space "…" is not
-#      a space this lore store holds` for the private space and the member's
-#      conversation retrieves nothing and stores nothing. The pod still STARTS,
-#      deliberately — every command above is `docker compose exec` against a
-#      running container, so a pod that refused to start until its spaces existed
-#      could never be given them.
-#
-#      THE PASTING IS LORE'S MISSING HALF, NOT A DESIGN CHOICE, and it is worth
-#      knowing which way this is expected to go. `CreateSpace` mints an id rather
-#      than accepting one, so nothing can create a space AT an id somebody already
-#      wrote down. The day lore can — one function, `CreateSpaceWithID(id, name)`,
-#      idempotent — this step and the `lore space create` in 4b both disappear:
-#      the wizard mints the ids, writes them into kenward.yaml as it already does,
-#      and every pod creates its own private space at the id it was configured
-#      with on first boot, with no operator step and no id to copy back. 4b's
-#      invite/join stays, because membership of a SHARED space is a person's
-#      decision and lore declines to expose it for that reason. A private space
-#      has no membership decision in it at all.
+#      A service that holds NONE of its configured spaces is now a refusal to
+#      start rather than a state to be provisioned out of, which is the same
+#      change seen from the other side: there is nothing left for you to run
+#      inside one that it does not do for itself. A member's service missing only
+#      the HOUSEHOLD's space — because 4b has not been done yet — starts normally
+#      and says so, which is what keeps 4b possible.
 #
 #   5. Mint each member's claim code BEFORE bringing their service up:
 #      `kenward invite --name Jordan --data-dir .`, run from this directory.

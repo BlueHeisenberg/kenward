@@ -266,13 +266,12 @@ func TestDoctorReportsBrokenSharedMemory(t *testing.T) {
 // was perfectly correct. In a pod the cause is that this store never received the space,
 // and the report has to say how it can.
 //
-// The two remedies are different and only one of them existed. The shared space is one
-// space held by several stores, so it is invited and joined. A member's PRIVATE space
-// crosses nothing and must be created in that member's own pod — a private space minted
-// on the host lives in the host's store, which is the one place isolated mode promises
-// it is not. Until this test, the invite/join hint was appended only to the shared
-// space's line, so the space the whole mode exists for was reported missing with no
-// remedy at all.
+// The two remedies are different, and only one of them is an operator's. The shared
+// space is one space held by several stores, so it is invited and joined by a person
+// who decided to share. A member's PRIVATE space crosses nothing and is created by that
+// member's own pod at the configured id — so the remedy for it is that there is no
+// remedy: `run` makes it, and offering a command here would send somebody to create a
+// second space beside the one that is coming.
 func TestDoctorPodSpaceMissingNamesTheRealCause(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -283,7 +282,7 @@ func TestDoctorPodSpaceMissingNamesTheRealCause(t *testing.T) {
 		{"the household's shared space", "dac31e70-72e4-4b10-9cef-a6276c4a87b8",
 			[]string{"lore space invite", "lore join"}},
 		{"david's private space", "7d5047bb-d939-4539-b3db-8b6221a2e245",
-			[]string{"lore space create david", "in THIS pod", "private_space"}},
+			[]string{"this unit creates this space itself", "kenward run"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -301,12 +300,12 @@ func TestDoctorPodSpaceMissingNamesTheRealCause(t *testing.T) {
 			}
 			h.e.probes = base
 
-			// Exit 0, and that is load-bearing rather than lenient. This command is
-			// the image's HEALTHCHECK, and the only way to put a space into a pod is
-			// `docker compose exec` against a RUNNING one — a pod marked unhealthy
-			// and restarted for the state it is provisioned out of can never leave it.
+			// Exit 0, and that is load-bearing rather than lenient. One space of two
+			// is a degraded pod and not a broken one, and this command is the image's
+			// HEALTHCHECK: restarting a pod that is waiting for an invitation cannot
+			// bring the invitation any closer.
 			if code := h.run("doctor", "--member", "david"); code != exitOK {
-				t.Fatalf("exit = %d, want 0: a pod mid-provisioning must stay reachable\n%s", code, h.both())
+				t.Fatalf("exit = %d, want 0: a pod missing one space of two must stay reachable\n%s", code, h.both())
 			}
 			flat := strings.Join(strings.Fields(h.stdout()), " ")
 			for _, want := range tc.want {
@@ -589,15 +588,22 @@ func TestStartupAndHealthAgreeAboutMissingSpaces(t *testing.T) {
 			wantServes: true,
 		},
 		{
-			name: "an isolated pod with nothing provisioned yet",
+			// This one used to serve, and stopping it serving is the point of the
+			// pod creating its own spaces. A pod makes its private space at the
+			// configured id on the way up, so a pod that holds NONE of its spaces
+			// is not a pod that has yet to be provisioned — it is a pod whose
+			// creation did not happen, or a store that is not this member's.
+			name: "an isolated pod holding none of its spaces, which it can no longer be waiting for",
 			yaml: isolatedYAML,
 			unit: []string{"--member", "david"},
 			missing: func(cfg *config.Config, scope config.UnitScope) map[string]bool {
 				return allSpaces(cfg, scope)
 			},
-			wantServes: true,
+			wantServes: false,
 		},
 		{
+			// And this is the state the exception above existed for, still intact:
+			// the invite handshake happens inside a running pod, and this pod runs.
 			name: "an isolated pod that has its private space but not the household's",
 			yaml: isolatedYAML,
 			unit: []string{"--member", "david"},

@@ -324,11 +324,14 @@ fresh container volume looks like, and serving on it is worse than not starting 
 node authorises its bot, greets everybody and remembers nothing anyone says to it.
 
 A store holding **some** of them is not a refusal. That is one member's mistyped id, one
-conversation's problem; it is logged at startup and the household is served. The one unit
-allowed to hold none of its spaces is an **isolated pod**, because a pod is provisioned by
-an operator running `lore space create`, `lore space invite` and `lore join` *inside a
-running pod* — one that refused to start until its spaces existed could never be given
-them (`deploy/compose.isolated.yml`, steps 4b and 4c).
+conversation's problem; it is logged at startup and the household is served. An isolated
+pod used to be allowed to hold **none** of them, because a pod was provisioned by an
+operator running `lore space create`, `lore space invite` and `lore join` *inside a
+running pod* and one that refused to start could never be given them. A pod now creates
+the spaces it owns itself, at the configured ids, so holding none of them is a fault like
+anywhere else. What is still somebody's to run is the invitation into the household's
+shared space — and a pod waiting for that holds its own private space, which is the
+"some" case, which serves (`deploy/compose.isolated.yml`, step 4b).
 
 **No lore binary is looked for, in any mode, and there is no longer a key naming one.**
 `run` used to check `memory.lore_command[0]` against `$PATH` and refuse without it, on

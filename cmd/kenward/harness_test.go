@@ -306,6 +306,11 @@ func healthyProbes() probes {
 		// account or a space. Tests that care what `run` asked for install a recorder
 		// over this; the rest simply never reach a real binary.
 		loreInit: func(context.Context, string, string) (bool, error) { return false, nil },
+		// And no unit test may create a real space in one, for the same reason: a
+		// LORE_HOME pointing at a developer's own store would gain a space nothing
+		// removes. Tests that care what `run` created install a recorder over this;
+		// cmd/kenward's podman suites exercise the real one against a real store.
+		loreMake: func(context.Context, *config.Config, config.UnitScope) error { return nil },
 		// Every bot here has Telegram's privacy mode off — ReadsGroupMessages is
 		// true — which is a healthy household and is not the default a real
 		// BotFather hands out. Stated rather than left to the zero value on

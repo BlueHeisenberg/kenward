@@ -1956,20 +1956,17 @@ Four properties, each of which is a way this could have gone wrong:
   holds nothing of a member's. The new account and device ids go the same way, for the
   same reason: the returned `Identity` is discarded at the call site rather than bound to
   a variable, so there is nothing there for a later edit to log.
-- **It does not create the spaces `kenward.yaml` names, and cannot.** `Init` makes an
-  account, a device and one personal space with ids it chooses, and `CreateSpace` mints a
-  fresh id too; `household.shared_space` and `members[].private_space` are ids a wizard
-  wrote in the file when it made those spaces on the machine it ran on, and nothing in
-  lore can create a space *at a given id*. A self-initialised pod therefore
-  comes up with a lore that answers and configured spaces that are not in it, which
-  `doctor` reports per space and `run` tolerates **in a pod only** — the provisioning
-  commands are `exec`s against a running one, so refusing would make the mode
-  unprovisionable rather than stricter. A simple-mode node in the same state is refused:
-  nothing there is provisioned by hand, so a store holding none of the wizard's spaces is
-  the wrong store. That is the
-  same gap §12 records under separate `LORE_HOME`s not converging, now reached by both
-  deployment paths rather than one. What changed is that a fresh household **starts**, and
-  can then be finished, instead of crash-looping with nothing an operator can do about it.
+- **It does not create the spaces `kenward.yaml` names; the next step does.** `Init`
+  makes an account, a device and one personal space with ids it chooses.
+  `household.shared_space` and `members[].private_space` are ids a wizard wrote in the
+  file, on a machine whose store a pod will never hold, and `CreateSpace` would mint a
+  second id for each of them. lore's `CreateSpaceWithID` takes the id instead, so
+  `cmd/kenward`'s `makeLoreSpaces` runs immediately after this one and creates the
+  spaces **this unit owns** at the configured ids — a member's private space in that
+  member's pod, the household's shared space in the group's pod — idempotently, on
+  every boot. A member's pod does not create the shared space: that one is joined, and
+  a second space at that id with a key of its own could never be joined into the
+  household's.
 
 The compose path gets this too — its services are `kenward run --member …` with
 `LORE_HOME` set, so the same code runs — which retires the `lore init` step
@@ -2019,54 +2016,59 @@ and per-peer failures go to the logger instead, at `warn`. The backoff that used
 here existed to babysit a process that could exit for a hundred reasons, and there is no
 longer a process to babysit.
 
-Membership is provisioned out of band, and that is a decision rather than an omission.
-(`lore init` is not beside it: a pod initialises its own store, per the previous section.
-Creating an *account* is unavoidable plumbing with no decision in it; granting membership
-is a decision.) lore's API does expose space *creation* — `Store.CreateSpace`, which the
-setup wizard and the dashboard use when a person has just named a household or a member —
-but it exposes no way to grant membership, and it cannot create a space at an id somebody
-already chose. So a pod cannot join itself to the household's space, and an assistant that
-minted its own household
-memberships would be taking a decision that is not its to take. The recipe, once per
-household and once per member, is in `deploy/compose.isolated.yml` §4b for the compose
-path; through the supervisor it is the same two commands against the pods keel named
-`sbx-kenward-group` and `sbx-kenward-member-<id>`:
+Membership is provisioned out of band, and that is a decision rather than an omission —
+and it is now the *only* thing that is. (`lore init` is not beside it: a pod initialises
+its own store, per the previous section. Nor is space creation any more: a pod creates
+the spaces it owns at the ids `kenward.yaml` names, per the previous section. Creating an
+account, and creating a space at an id somebody already wrote down, are both plumbing
+with no decision in them. Granting membership is a decision.) lore's API exposes
+creation — `Store.CreateSpace` for a wizard that has just named a household or a member,
+`Store.CreateSpaceWithID` for a pod arriving at an id chosen before its store existed —
+and exposes no way to grant membership at all. So a pod cannot join itself to the
+household's space, and an assistant that minted its own household memberships would be
+taking a decision that is not its to take. The recipe, once per member, is in
+`deploy/compose.isolated.yml` §4b for the compose path; through the supervisor it is the
+same two commands against the pods keel named `sbx-kenward-group` and
+`sbx-kenward-member-<id>`:
 
 ```
 podman exec sbx-kenward-group        /usr/local/bin/lore space invite <space-id> --lan --yes
 podman exec sbx-kenward-member-david /usr/local/bin/lore join <code> --yes
 ```
 
-**A member's private space needs its own step, and it is not this one.** Nothing invites
-anybody into a private space and nothing ever should, so the handshake above does not
-reach it — and until this said so, the space the whole mode exists for had no documented
-way to exist in the pod that serves it at all. It must be created *inside that member's
-own pod*, because a private space created on the host or in another pod lives in a store
-someone else can open, which is precisely what this mode promises there is not. A wizard
-run on the host does create one and does write its id into `kenward.yaml`; that id names
-a space in the *host's* store, and the pod will never hold it. Replace it:
+**A member's private space needs no step at all, and that is the change.** Nothing
+invites anybody into a private space and nothing ever should, so the handshake above does
+not reach it. It must exist *inside that member's own pod*, because a private space
+created on the host or in another pod lives in a store someone else can open, which is
+precisely what this mode promises there is not — and that pod creates it there itself, at
+the configured id, on the way up.
+
+What that replaces was two commands and a paste, per member, before the household worked
+at all:
 
 ```
 podman exec sbx-kenward-member-david /usr/local/bin/lore space create david
 podman exec sbx-kenward-member-david /usr/local/bin/lore spaces   # into members[].private_space
 ```
 
-Once per member, then restart that pod. `deploy/compose.isolated.yml` step 4c is the same
-step for the compose path, at length. `kenward doctor` inside the pod prints this remedy
-under the missing space, and `run` deliberately starts a pod that holds none of its spaces
-— every command here is an `exec` against a *running* pod, so a pod that refused to start
-until it had them could never be given them.
+It existed because `CreateSpace` minted an id instead of accepting one, so the wizard's
+id and the pod's id were two ids for one space and a person had to reconcile them.
+`CreateSpaceWithID` accepts one and is idempotent — and the same function removed the
+`lore space create` from the shared-space recipe above, where the group's pod now creates
+the household space at the configured id. The invite and the join stay, because
+membership of a shared space is a person's decision and lore withholds it for that
+reason. A private space has no membership decision in it at all, which is exactly why it
+was the half that could be automated.
 
-**Both of these copy an id back into a file, and that is lore's missing half rather than a
-design choice.** `CreateSpace` mints an id instead of accepting one. One function on
-lore's side — an idempotent `CreateSpaceWithID(id, name)` — removes the private-space step
-entirely: the wizard mints the ids and writes them, as it already does, and each pod
-creates its own private space *at the configured id* on first boot, with nothing to copy
-and no host store ever holding a member's private space. The `lore space create` in the
-shared-space recipe goes the same way; the invite and the join stay, because membership of
-a shared space is a person's decision and lore withholds it for that reason. A private
-space has no membership decision in it at all, which is exactly why it is the half that
-can be automated.
+**And a pod that holds none of its spaces is now a refusal.** It used to start anyway,
+because every step that provisioned one was an `exec` against a *running* pod and a pod
+that refused could never be given them. Creation is no longer one of those steps, and
+every member has a private space (`internal/config` requires one), so a pod that holds
+nothing is a pod whose own creation did not happen — which is `judgeMemory`'s fatal case
+now, in a pod as everywhere else. The state the exception protected is untouched: a pod
+waiting for its invitation holds its private space and is missing only the household's,
+which is the "some of them" case, which serves and says so.
+
 
 **What a pod can and cannot reach, and why it is not kenward's promise to keep.** lore
 opens every sync exchange with a blinded space-id intersection —
@@ -2994,13 +2996,14 @@ design and several of them contradict what the architecture originally supposed.
   run on one host, each holding a subset of spaces. This is what makes one lore per
   member pod viable in isolated mode.
 - **Separate `LORE_HOME`s do not converge on a shared space by themselves.** One
-  `LORE_HOME` is one lore *account*, and `lore init` gives each account its own space ids,
-  so the id `household.shared_space` names exists in at most one store — and in a
-  household whose pods initialised themselves (§8), in none of them, because no lore can
-  be told to create a space at an id somebody already wrote in a file. Where the id is not
-  held, `doctor` reports `space "…" is not a space this lore store holds` and that
-  conversation reads nothing, silently, because a turn that cannot read a space degrades
-  that space rather than failing.
+  `LORE_HOME` is one lore *account*, so a space created in one store is not in the others
+  until they are invited into it. A pod does create the spaces it owns at the ids
+  `kenward.yaml` names (`lore.CreateSpaceWithID`, §8), which is a different thing and
+  settles a member's private space entirely: a space in one store, shared with nobody,
+  needs no convergence. The household's shared space does. Where its id is not held,
+  `doctor` reports `space "…" is not a space this lore store holds` and that conversation
+  reads nothing, silently, because a turn that cannot read a space degrades that space
+  rather than failing.
 
   Convergence is lore's own sharing, and it has two halves. **Membership is still out of
   band**: `lore space invite` and `lore join` are run by the operator, and nothing in
@@ -3235,8 +3238,10 @@ empty, contains a newline or a null byte, or starts with `-`, which lore's own c
 line would read as a flag — `lore space invite` is the very next thing an operator runs
 against a space kenward made.
 
-Neither lore nor kenward can create a space **at a given id**, which is why a
-self-initialised pod comes up with a working store and spaces that are not there (§8).
+Creating a space **at a given id** is a different call and a different flow:
+`lore.CreateSpaceWithID`, which a pod uses to arrive at the id `kenward.yaml` already
+names (§8). It is idempotent by id where this one refuses by name, and the difference is
+that an id is identity and a display name is not.
 
 ### Exposure
 
