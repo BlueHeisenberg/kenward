@@ -95,6 +95,41 @@ var errNoPassphrase = errors.New("no session passphrase available")
 // member's own message history, which is worse than the problem it would solve — see
 // internal/privacy's isolated-mode statement, which says so to the member.
 func readPassphrase(e *env, ref *config.SecretRef) (*passphrase, error) {
+	p, err := findPassphrase(e, ref)
+	if !errors.Is(err, errNoPassphrase) {
+		return p, err
+	}
+	if isTerminal(e.stdin) {
+		// internal/setup already suppresses echo on every platform kenward runs
+		// on; a second implementation here is a second one to get wrong.
+		console := setup.NewConsoleIO(e.stdin, e.stderr)
+		v, err := console.AskSecret("Passphrase for this node's member keys")
+		switch {
+		case errors.Is(err, setup.ErrInputClosed), errors.Is(err, io.EOF):
+			// Nobody was there after all — see isTerminal for why this is
+			// reachable. Fall through to the refusal, which explains the three
+			// ways to supply a passphrase, rather than reporting the wizard's
+			// "input ended" at somebody who never opted into a prompt.
+		case err != nil:
+			return nil, err
+		case v != "":
+			return &passphrase{b: []byte(v), source: "the terminal"}, nil
+		}
+	}
+	return nil, errNoPassphrase
+}
+
+// findPassphrase is readPassphrase without the prompt: the three mechanisms that
+// need nobody standing at the keyboard, in the same order and with the same
+// meanings. errNoPassphrase means none of them had one.
+//
+// It is split out for `doctor`, which has to answer "would `run` start on this
+// configuration" without stopping to ask a question — a health check that blocked on
+// a prompt would hang a container runtime rather than report to it. The split is what
+// keeps the two commands reading the same sources: doctor asking its own question
+// about a different set of variables is how a report comes back clean on a node that
+// cannot start.
+func findPassphrase(e *env, ref *config.SecretRef) (*passphrase, error) {
 	if ref != nil {
 		sec, err := e.secrets().Resolve(*ref)
 		var se *config.SecretError
@@ -120,23 +155,6 @@ func readPassphrase(e *env, ref *config.SecretRef) (*passphrase, error) {
 	}
 	if v, ok := e.env()(envPassphrase); ok && v != "" {
 		return &passphrase{b: []byte(v), source: envPassphrase}, nil
-	}
-	if isTerminal(e.stdin) {
-		// internal/setup already suppresses echo on every platform kenward runs
-		// on; a second implementation here is a second one to get wrong.
-		console := setup.NewConsoleIO(e.stdin, e.stderr)
-		v, err := console.AskSecret("Passphrase for this node's member keys")
-		switch {
-		case errors.Is(err, setup.ErrInputClosed), errors.Is(err, io.EOF):
-			// Nobody was there after all — see isTerminal for why this is
-			// reachable. Fall through to the refusal, which explains the three
-			// ways to supply a passphrase, rather than reporting the wizard's
-			// "input ended" at somebody who never opted into a prompt.
-		case err != nil:
-			return nil, err
-		case v != "":
-			return &passphrase{b: []byte(v), source: "the terminal"}, nil
-		}
 	}
 	return nil, errNoPassphrase
 }

@@ -231,6 +231,7 @@ func runDoctor(e *env, path, dataDir string, sel unitSelection) doctorReport {
 	rep.Memory = append(rep.Memory, historyResetCheck(cfg.History.ResetEvery.Duration()))
 	rep.Reminders = doctorReminders(e, cfg, scope)
 	rep.Sessions = doctorSessions(ctx, e, cfg, scope)
+	rep.Sessions = append(rep.Sessions, doctorPassphrase(e, cfg, sel, &rep)...)
 	rep.Transport = doctorTransport(ctx, e, cfg, secrets, scope, &rep)
 	rep.Transport = append(rep.Transport, doctorEndpointKeys(cfg, secrets, scope, &rep)...)
 	rep.Endpoints = doctorEndpoints(ctx, e, cfg)
@@ -720,6 +721,104 @@ func lastSyncText(t time.Time) string {
 		return "has not run yet"
 	}
 	return "finished " + t.UTC().Format(time.RFC3339)
+}
+
+// doctorPassphrase reports whether this node can find the session passphrase it
+// would need to unwrap a member key.
+//
+// It is here because the report was clean on a configuration `run` then refused, with
+// exit 2 and noPassphraseHelp, three seconds later. Every line was true, including
+// "every secret the configuration names can be read" — the passphrase was not named in
+// the file, it was supposed to arrive as a systemd credential or KENWARD_PASSPHRASE,
+// and a check that only reads what the file names cannot see an absent one. True, and
+// useless: this command's job is to say whether this node works, and doctorMemory
+// already writes the rule down — unhealthy means "this node would refuse to start on
+// this". A node with no passphrase refuses to start. Same rule, seen from the side
+// where nothing is named.
+//
+// It runs findPassphrase and never readPassphrase, so it cannot prompt: this command
+// is the image's HEALTHCHECK, and one that blocked on a question would hang the
+// runtime rather than report to it.
+//
+// The verdict then follows the same three sources `run` follows, plus one branch that
+// is not a hedge. Where nothing supplied a passphrase but somebody is at a terminal,
+// `run` from that terminal would ask them for it and start — so failing there would
+// mark a working setup unhealthy, which is the exact defect doctorMemory's rule was
+// written after. A container HEALTHCHECK has no terminal and fails, correctly.
+//
+// It never reads the passphrase out. The source is named — a variable, a path — and
+// the bytes are zeroed on the way out, the same promise startSessions makes.
+//
+// The unit whose passphrase this is comes from passphraseRefFor, exactly as `run`
+// derives it, and the group pod is skipped for the reason it holds no key: a node
+// passphrase in a group pod would unwrap nothing and reading one would be reading a
+// secret it has no business holding.
+func doctorPassphrase(e *env, cfg *config.Config, sel unitSelection, rep *doctorReport) []check {
+	if sel.group {
+		return nil
+	}
+	members := cfg.DomainMembers()
+	switch {
+	case sel.member != "":
+		m, ok := cfg.MemberByID(domain.MemberID(sel.member))
+		if !ok {
+			return nil
+		}
+		members = []domain.Member{m}
+	case cfg.Mode == config.ModeIsolated:
+		// The host supervisor unwraps nothing: it starts a pod per member and each
+		// one reads its own member's passphrase inside itself. `run` never calls
+		// startSessions on this path, so there is nothing here for a passphrase to
+		// be missing from — reporting one would fail a host that works.
+		return nil
+	}
+
+	p, err := findPassphrase(e, passphraseRefFor(cfg, members))
+	switch {
+	case err == nil:
+		source := p.source
+		p.zero()
+		return []check{{
+			Status: statusOK,
+			Text:   "a session passphrase is available, so member keys can be unwrapped",
+			Detail: []string{"from " + source + " (the value is never read out, logged or printed)"},
+		}}
+	case !errors.Is(err, errNoPassphrase):
+		// A source was named and could not be read — a credential file with the
+		// wrong mode, say. `run` fails on this too, and not with errNoPassphrase.
+		if rep.Exit == exitOK {
+			rep.Exit = exitUsage
+		}
+		return []check{{
+			Status: statusFail,
+			Text:   "the session passphrase could not be read",
+			Detail: []string{err.Error(), "kenward will not start without one"},
+		}}
+	case isTerminal(e.stdin):
+		return []check{{
+			Status: statusWarn,
+			Text:   "no session passphrase is configured; kenward will ask for one at startup",
+			Detail: []string{
+				"nothing names one and neither the systemd credential nor $" + envPassphrase + " holds one, " +
+					"so `kenward run` will prompt for it — which works from a terminal and nowhere else",
+				"a service or a container has no terminal to prompt into and will refuse to start; " +
+					"run `kenward doctor` the way the node runs to see that verdict",
+			},
+		}}
+	default:
+		if rep.Exit == exitOK {
+			rep.Exit = exitUsage
+		}
+		return []check{{
+			Status: statusFail,
+			Text:   "no session passphrase is available, so no member key can be unwrapped",
+			Detail: []string{
+				"kenward run refuses to start on this; a node that started anyway would answer " +
+					"every private message with the locked notice while the household group looked fine",
+				"run `kenward run` to see the three ways to supply one, named for this configuration",
+			},
+		}}
+	}
 }
 
 // doctorSessions reports key custody: who has a wrapped key, and who is enrolled

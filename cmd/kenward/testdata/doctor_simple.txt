@@ -40,6 +40,8 @@ Sessions
       keys live in the running node's memory and this is a different process
   ✓ 2 members have a wrapped key on disk
   ✓ unlocked keys do not expire on idle (session.idle_timeout is off)
+  ✓ a session passphrase is available, so member keys can be unwrapped
+      from KENWARD_PASSPHRASE (the value is never read out, logged or printed)
 
 Transport
   ✓ household: Telegram authorises as @our_household_bot

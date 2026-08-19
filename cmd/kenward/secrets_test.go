@@ -41,7 +41,10 @@ memory:
 // needed. `doctor` said the configuration was fine and the node would not start.
 func TestDoctorReadsATokenFromAFile(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, fileTokenYAML, map[string]string{})
+	// The passphrase, because doctor now reports a node that cannot unwrap a key and
+	// this test asserts a clean bill. It comes through the environment rather than the
+	// file, which keeps the file source the one thing under test here.
+	h := newHarness(t, fileTokenYAML, map[string]string{envPassphrase: fakeNodePassphrase})
 	h.e.secretOpts = config.SecretOptions{
 		LookupEnv: lookup(nil),
 		FS:        fakeSecretFS{"/etc/kenward/bot-token": {data: fakeBotToken + "\n", mode: 0o600}},
@@ -110,7 +113,9 @@ func TestDoctorReadsATokenFromASystemdCredential(t *testing.T) {
 		"  bot_token_file: /etc/kenward/bot-token\n", "", 1)
 	credYAML = strings.Replace(credYAML, "telegram:\n", "telegram: {}\n", 1)
 
-	h := newHarness(t, credYAML, map[string]string{})
+	// As above: the passphrase is supplied so that the clean bill this asserts is
+	// about the token's source and not about the session gate.
+	h := newHarness(t, credYAML, map[string]string{envPassphrase: fakeNodePassphrase})
 	h.e.secretOpts = config.SecretOptions{
 		LookupEnv:      lookup(nil),
 		CredentialsDir: "/run/credentials/kenward.service",

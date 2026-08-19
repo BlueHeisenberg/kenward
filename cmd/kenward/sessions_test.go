@@ -315,7 +315,12 @@ func TestUnlockSessionsRefusesAWrongPassphrase(t *testing.T) {
 func TestRunRefusesToStartWithoutAPassphrase(t *testing.T) {
 	t.Parallel()
 	// The real supervisor factory, so this exercises the path a container takes.
-	h := newHarness(t, simpleYAML, fullEnvironment())
+	// fullEnvironment holds the node passphrase — `run` refuses without one, so a
+	// "full" environment that lacked it was not full — and this test is the one that
+	// takes it away again.
+	vars := fullEnvironment()
+	delete(vars, envPassphrase)
+	h := newHarness(t, simpleYAML, vars)
 
 	if code := h.run("run"); code != exitUsage {
 		t.Fatalf("exit = %d, want %d\n%s", code, exitUsage, h.both())
@@ -333,6 +338,67 @@ func TestRunRefusesToStartWithoutAPassphrase(t *testing.T) {
 			t.Errorf("the refusal does not say %q:\n%s", want, out)
 		}
 	}
+}
+
+// TestDoctorAndRunAgreeAboutAMissingPassphrase.
+//
+// The defect: on this exact configuration `doctor` printed a clean bill — including
+// "every secret the configuration names can be read" — and `kenward run` then exited 2
+// three seconds later. Both lines were true. The passphrase is not *named* in the file,
+// so a check that reads what the file names cannot see that there is none, and nothing
+// else was looking.
+//
+// True and useless. doctorMemory already writes the rule down for the case where a
+// space is missing — unhealthy means "this node would refuse to start on this" — and
+// this is that rule seen from the side where nothing is named. It is asserted as an
+// agreement between the two commands rather than as a string in a report, for the same
+// reason TestStartupAndHealthAgreeAboutMissingSpaces is: what matters is that the two
+// cannot drift, not what either of them says today.
+func TestDoctorAndRunAgreeAboutAMissingPassphrase(t *testing.T) {
+	t.Parallel()
+	vars := fullEnvironment()
+	delete(vars, envPassphrase)
+
+	hRun := newHarness(t, simpleYAML, vars)
+	runCode := hRun.run("run")
+
+	hDoc := newHarness(t, simpleYAML, vars)
+	docCode := hDoc.run("doctor")
+
+	if runCode == exitOK {
+		t.Fatalf("run started without a passphrase; this test is checking the wrong thing\n%s", hRun.both())
+	}
+	if docCode == exitOK {
+		t.Errorf("doctor exited 0 on a configuration run refuses with %d. A health check that passes a node that cannot start is worse than no health check:\n%s",
+			runCode, hDoc.stdout())
+	}
+	out := hDoc.stdout()
+	for _, want := range []string{
+		"no session passphrase is available",
+		"refuses to start",
+		"locked notice",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the report does not say %q:\n%s", want, out)
+		}
+	}
+	hDoc.assertNoSecrets(t)
+}
+
+// TestDoctorSaysWhereThePassphraseCameFromAndNotWhatItIs. The source is the whole
+// diagnostic value of the line — an operator debugging a pod needs to know whether it
+// read the credential or fell back to the environment — and the value is the one thing
+// that must never be printed.
+func TestDoctorSaysWhereThePassphraseCameFromAndNotWhatItIs(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, simpleYAML, fullEnvironment())
+	if code := h.run("doctor"); code != exitOK {
+		t.Fatalf("exit = %d, want 0\n%s", code, h.both())
+	}
+	if !strings.Contains(h.stdout(), "from "+envPassphrase) {
+		t.Errorf("doctor does not name the passphrase source:\n%s", h.stdout())
+	}
+	h.assertNoSecrets(t)
 }
 
 // TestRunStartsWithAPassphrase: the same path, with the variable set, gets past the
