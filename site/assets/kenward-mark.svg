@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     role="img" aria-label="kenward — a household seen in plan, rooms of its own around a lit hearth">
+  <title>kenward</title>
+
+  <!--
+    A household in plan: walls with a threshold, rooms that stop short of the
+    middle, and one warm thing they all share. Designed for a dark ground; the
+    tile carries its own, so it reads on a light page too.
+  -->
+
+  <defs>
+    <pattern id="km-grid" width="8" height="8" patternUnits="userSpaceOnUse">
+      <path d="M8 0 L0 0 0 8" fill="none" stroke="#1A1A1A" stroke-width="1"/>
+    </pattern>
+    <radialGradient id="km-glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#E8C674" stop-opacity="0.45"/>
+      <stop offset="55%"  stop-color="#E8C674" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#E8C674" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="64" height="64" rx="13" fill="#0A0908"/>
+  <rect width="64" height="64" rx="13" fill="url(#km-grid)" opacity="0.55"/>
+
+  <!-- Firelight, under the walls so the walls stay crisp over it. -->
+  <circle cx="32" cy="32" r="22" fill="url(#km-glow)"/>
+
+  <!-- Outer walls, broken by a threshold in the bottom wall. -->
+  <path d="M18 53 H11 V11 H53 V53 H31"
+        fill="none" stroke="#E8E6E1" stroke-width="4.2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Interior walls: rooms of one's own, stopping short of the shared middle. -->
+  <g stroke="#E8E6E1" stroke-width="3" stroke-linecap="round" opacity="0.9">
+    <path d="M32 11 V23"/>
+    <path d="M42 32 H53"/>
+  </g>
+
+  <!-- The hearth. -->
+  <rect x="25" y="26" width="14" height="12" rx="1.5" fill="#E8C674"/>
+</svg>
