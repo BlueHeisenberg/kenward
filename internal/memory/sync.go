@@ -84,6 +84,12 @@ import (
 // no IPs and a recreated pod gets a new one — so a static peer list would be stale by
 // the first rolling update.
 //
+// LAN is therefore what Serve asks for unless a caller says otherwise, and LoopbackOnly
+// is how it says so. Nothing in kenward passes it; the tests in this package do, because
+// two stores in one process are on each other's loopback already and a 0.0.0.0 bind buys
+// them nothing but a Windows Firewall prompt on every `go test` — a fresh temp binary
+// each run, so no allow-rule ever sticks.
+//
 // # Blocking, stopping, failing
 //
 // It blocks, so callers run it in a goroutine and cancel ctx to stop it. By the time it
@@ -104,24 +110,50 @@ import (
 // interval is how often a sync round runs; zero takes lore's own thirty seconds. A
 // round also runs at start and on every local write, because NewClient opens the store
 // with NotifyOnWrite.
-func (c *Client) Serve(ctx context.Context, interval time.Duration) error {
-	return c.store.Serve(ctx, lore.ServeOptions{
-		LAN:          true,
-		SyncInterval: interval,
-		// The daemon's running diagnostics — a peer that will not answer, a hello
-		// refused, an address forgotten — are the only account of why shared memory
-		// is not moving, and lore discards them if nobody takes them. They went to
-		// the subprocess's stderr before; now they go where the rest of this
-		// process's operational log goes. Warn, because every one of them is
-		// something not working.
-		Logf: func(format string, args ...any) {
-			c.cfg.Logger.Warn("lore: sync", "detail", fmt.Sprintf(format, args...))
-		},
-		Ready: func(info lore.ServeInfo) {
-			c.cfg.Logger.Info("lore: the sync daemon is listening",
-				"device", info.DeviceID, "sync_port", info.SyncPort, "admin_port", info.AdminPort)
-		},
-	})
+func (c *Client) Serve(ctx context.Context, interval time.Duration, opts ...ServeOption) error {
+	o := serveOptions(interval, opts...)
+	// The daemon's running diagnostics — a peer that will not answer, a hello
+	// refused, an address forgotten — are the only account of why shared memory
+	// is not moving, and lore discards them if nobody takes them. They went to
+	// the subprocess's stderr before; now they go where the rest of this
+	// process's operational log goes. Warn, because every one of them is
+	// something not working.
+	o.Logf = func(format string, args ...any) {
+		c.cfg.Logger.Warn("lore: sync", "detail", fmt.Sprintf(format, args...))
+	}
+	o.Ready = func(info lore.ServeInfo) {
+		c.cfg.Logger.Info("lore: the sync daemon is listening",
+			"device", info.DeviceID, "sync_port", info.SyncPort, "admin_port", info.AdminPort)
+	}
+	return c.store.Serve(ctx, o)
+}
+
+// A ServeOption changes what Serve asks lore's daemon for. There is one, and it exists
+// because the answer differs between a pod and a test rather than because anything is
+// configurable: see LoopbackOnly.
+type ServeOption func(*lore.ServeOptions)
+
+// LoopbackOnly keeps the sync daemon off every interface but loopback.
+//
+// It is the right answer for two stores in one process and the wrong one for a pod,
+// whose siblings are reachable only over the pod network — which is why Serve's default
+// is the LAN and this has to be asked for. Discovery still works: lore advertises and
+// browses mDNS on loopback whatever LAN is set to, so two daemons on one machine find
+// each other and converge exactly as they would over a bridge.
+func LoopbackOnly() ServeOption {
+	return func(o *lore.ServeOptions) { o.LAN = false }
+}
+
+// serveOptions is the LAN decision, split out from Serve so it can be asserted without
+// binding anything. Turning the default off here would silently stop every household's
+// pods from seeing each other, and TestServeAsksForTheLANUnlessToldOtherwise is what
+// notices.
+func serveOptions(interval time.Duration, opts ...ServeOption) lore.ServeOptions {
+	o := lore.ServeOptions{LAN: true, SyncInterval: interval}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
 }
 
 // DefaultLoreHome is the lore home this process uses when none is configured:
