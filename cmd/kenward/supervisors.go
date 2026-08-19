@@ -302,6 +302,12 @@ func newClaimer(cfg *config.Config, logger *slog.Logger) (*enrol.Claimer, error)
 		// here, and that answer is the mode's. Sealing against the operator exists
 		// only in isolated mode, so only an isolated household is told about it.
 		enrol.WithPrivacyMode(privacyModeFor(cfg.Mode)),
+		// For the restart sweep, which has a member id and no member. See
+		// enrol.WithSharedOnly: every other path reads the field off the member.
+		enrol.WithSharedOnly(func(id domain.MemberID) bool {
+			m, ok := cfg.MemberByID(id)
+			return ok && m.SharedOnly
+		}),
 	}
 	if cfg.Capture.PrivateWrites == config.PrivateWriteAsk {
 		opts = append(opts, enrol.WithAskPrivateWrites())

@@ -69,6 +69,7 @@ func simpleAnswers() []string {
 		"David",        // member
 		"María",        // member
 		"",             // no more members
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", // endpoint name
 		"http://monster.tail:8000/v1",
@@ -166,6 +167,7 @@ func TestIsolatedModeEndToEnd(t *testing.T) {
 		realToken, // the group chat's bot
 		"y",       // write .env
 		"David", "María", "",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3.6-27b-awq", "n", "local",
 		"n", // no more endpoints
@@ -292,6 +294,7 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, everything local": {
 			"1", "Home", realToken, "n",
 			"David", "",
+			"",             // everyone gets a memory of their own
 			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
@@ -302,6 +305,7 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, several tiers on one endpoint": {
 			"1", "Home", realToken, "n",
 			"David", "",
+			"",             // everyone gets a memory of their own
 			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local, local-slow",
 			"n",
@@ -309,6 +313,7 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, no token given at all": {
 			"1", "Home", "", "y",
 			"David", "",
+			"",             // everyone gets a memory of their own
 			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
@@ -316,6 +321,7 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, names that collide": {
 			"1", "Home", realToken, "n",
 			"David", "David", "",
+			"",             // everyone gets a memory of their own
 			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
@@ -323,6 +329,7 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, a name that is not Latin at all": {
 			"1", "Home", realToken, "n",
 			"あかり", "",
+			"",             // everyone gets a memory of their own
 			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
@@ -330,6 +337,7 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, only a provider, opted into deliberately": {
 			"1", "Home", realToken, "n",
 			"David", "",
+			"",             // everyone gets a memory of their own
 			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud",
 			"n",
@@ -338,6 +346,7 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, endpoint that did not answer": {
 			"1", "Home", realToken, "n",
 			"David", "",
+			"",             // everyone gets a memory of their own
 			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
@@ -345,6 +354,7 @@ func TestEveryPathProducesConfigTheLoaderAccepts(t *testing.T) {
 		"simple, a shared space that had to be slugified": {
 			"1", "Home", realToken, "n",
 			"David", "",
+			"",             // everyone gets a memory of their own
 			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",
@@ -381,6 +391,7 @@ func TestIsolatedPathsAlsoLoad(t *testing.T) {
 	answers := []string{
 		"2", "Home", realToken, "n",
 		"David", "María", "Ana", "",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
@@ -581,6 +592,7 @@ func TestTokenShapeIsQueriedNotEnforced(t *testing.T) {
 		realToken,            // the real one
 		"n",                  // do not write .env
 		"David", "",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
@@ -603,6 +615,7 @@ func TestTokenShapeIsQueriedNotEnforced(t *testing.T) {
 		"some-new-shape", "y", // use it anyway
 		"n",
 		"David", "",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
@@ -620,8 +633,10 @@ func TestCloudIsNeverTheDefault(t *testing.T) {
 	answers := []string{
 		"1", "Home", realToken, "n",
 		"David", "María", "",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local", "y",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud", "n",
 		"", "", "", // Enter at all three tier questions
@@ -669,6 +684,7 @@ func TestNoLocalEndpointsIsAnExplicitDecision(t *testing.T) {
 	base := []string{
 		"1", "Home", realToken, "n",
 		"David", "",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud",
 		"n",
@@ -717,6 +733,7 @@ func TestAtLeastOneMemberAndOneEndpoint(t *testing.T) {
 	answers := []string{
 		"1", "Home", realToken, "n",
 		"", "David", "",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 		"n",
@@ -809,6 +826,7 @@ func TestMistypedURLIsCaughtDuringTheQuestion(t *testing.T) {
 	answers := []string{
 		"1", "Home", realToken, "n",
 		"David", "",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster",
 		"monster.tail:8000", // no scheme: cannot be dialled at all
@@ -842,6 +860,7 @@ func TestAMachineThatIsOffIsRecordedAnyway(t *testing.T) {
 		answers := []string{
 			"1", "Home", realToken, "n",
 			"David", "",
+			"",             // everyone gets a memory of their own
 			"", "", "", "", // identity: one assistant, and kenward as it has always been
 			"monster", "http://monster.tail:8000/v1", "qwen3", "n", "local",
 			"n",

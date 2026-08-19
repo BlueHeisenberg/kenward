@@ -249,6 +249,15 @@ var portuguese = Catalogue{
 		"Mais ninguém na casa pode ler a tua memória privada, nem a pessoa que gere este computador. O limite " +
 		"honesto: quem tiver acesso root a esta máquina consegue chegar à tua chave enquanto o teu assistente " +
 		"estiver a correr.",
+	EnrolSharedOnlyHeading: "Partilhamos uma memória",
+	EnrolSharedOnlyBody: "Fazes parte desta casa, por isso respondo-te aqui e no grupo da família, e " +
+		"podes perguntar-me tudo o que a casa sabe.\n\nO que não tens é uma memória " +
+		"tua. Aqui não há um espaço só para ti e para mim: tudo o que me lembro de ti " +
+		"vai para a memória partilhada da casa, onde toda a gente pode ler. Por isso " +
+		"mostro-te as palavras exactas primeiro e não escrevo nada até dizeres que sim, " +
+		"nesta conversa tal como no grupo, porque é a mesma memória nos dois sítios." +
+		"\n\nSe preferires ter uma tua, diz a quem me instalou. Não passa nada de uma " +
+		"para a outra quando isso muda, porque nunca ficou nada guardado.",
 	EnrolGroupHeading: "A conversa de grupo é partilhada",
 	EnrolGroupBody: "A conversa de grupo da casa é a memória partilhada. Tudo o que eu guardar aí, toda a gente pode ver. " +
 		"Nada passa de um lado para o outro sozinho: se alguma coisa privada tiver de passar a partilhada, pede-me, " +

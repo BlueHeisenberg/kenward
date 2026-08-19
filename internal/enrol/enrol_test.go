@@ -720,7 +720,7 @@ func TestExplanationCopy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			msgs := Explanation(500, lang.For(lang.English), tc.askPrivate, privacy.ModeSimple)
+			msgs := Explanation(500, lang.For(lang.English), tc.askPrivate, privacy.ModeSimple, false)
 			if len(msgs) != 3 {
 				t.Fatalf("explanation is %d messages, want 3", len(msgs))
 			}

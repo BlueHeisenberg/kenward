@@ -47,7 +47,7 @@ func TestSimpleOnboardingClaimsOnlyWhatPrivacySays(t *testing.T) {
 
 	// And what it may not make. This is ownbot_test.go's ban, applied to the messages
 	// a member receives rather than to the paragraph an operator reads.
-	msgs := Explanation(1, en, false, privacy.ModeSimple)
+	msgs := Explanation(1, en, false, privacy.ModeSimple, false)
 	if len(msgs) == 0 {
 		t.Fatal("Explanation sent nothing")
 	}
@@ -90,17 +90,17 @@ func TestSealedClaimIsIsolatedOnly(t *testing.T) {
 			{privacy.ModeUnknown, false},
 		} {
 			var all string
-			for _, m := range Explanation(1, c, false, tc.mode) {
+			for _, m := range Explanation(1, c, false, tc.mode, false) {
 				all += m.Text + "\n"
 			}
 			if got := strings.Contains(all, c.EnrolPrivateSealed); got != tc.want {
-				t.Errorf("%s: Explanation(%v) contains the sealed paragraph = %v, want %v", tag, tc.mode, got, tc.want)
+				t.Errorf("%s: Explanation(%v, false) contains the sealed paragraph = %v, want %v", tag, tc.mode, got, tc.want)
 			}
 			// The both-modes body goes out whatever the mode is. If it ever did
 			// not, a member would be left with only the strong claim and none of
 			// what it is a claim about.
 			if !strings.Contains(all, c.EnrolPrivateBody) {
-				t.Errorf("%s: Explanation(%v) dropped the body every mode owes the member", tag, tc.mode)
+				t.Errorf("%s: Explanation(%v, false) dropped the body every mode owes the member", tag, tc.mode)
 			}
 		}
 	}
@@ -121,7 +121,7 @@ func TestIsolatedOnboardingDoesNotUnderstate(t *testing.T) {
 
 	isolated := flat(privacy.Statement(privacy.ModeIsolated))
 	var all string
-	for _, m := range Explanation(1, lang.For(lang.English), false, privacy.ModeIsolated) {
+	for _, m := range Explanation(1, lang.For(lang.English), false, privacy.ModeIsolated, false) {
 		all += m.Text + "\n"
 	}
 	flatAll := flat(all)

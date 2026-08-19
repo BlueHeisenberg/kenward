@@ -262,6 +262,16 @@ var dutch = Catalogue{
 		"sleutel. Niemand anders in het huishouden kan je persoonlijke geheugen lezen, en degene die deze computer " +
 		"beheert ook niet. De eerlijke grens: wie root-toegang tot deze machine heeft, kan bij je sleutel komen " +
 		"zolang je assistent draait.",
+	EnrolSharedOnlyHeading: "We delen één geheugen",
+	EnrolSharedOnlyBody: "Je hoort bij dit huishouden, dus ik antwoord je hier en in de familiegroep, en " +
+		"je mag me alles vragen wat het huishouden weet.\n\nWat je niet hebt, is een " +
+		"eigen geheugen. Er is hier geen ruimte voor alleen jou en mij: alles wat ik van " +
+		"jou onthoud gaat naar het gedeelde geheugen van het huishouden, waar iedereen " +
+		"het kan lezen. Daarom laat ik je eerst de precieze woorden zien en schrijf ik " +
+		"niets tot je ja zegt — in dit gesprek net zo goed als in de groep, want het is " +
+		"allebei hetzelfde geheugen.\n\nWil je liever een eigen geheugen, zeg het dan " +
+		"tegen degene die mij heeft ingesteld. Er gaat niets mee over als dat verandert, " +
+		"want er is nooit iets opgeslagen.",
 	EnrolGroupHeading: "De groepschat is gedeeld",
 	EnrolGroupBody: "De groepschat van het huishouden is het gedeelde geheugen. Alles wat ik daar onthoud, kan iedereen zien. " +
 		"Er gaat niets vanzelf van de ene kant naar de andere: als iets persoonlijks gedeeld moet worden, vraag het me, " +

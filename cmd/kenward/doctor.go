@@ -248,9 +248,31 @@ func runDoctor(e *env, path, dataDir string, sel unitSelection) doctorReport {
 	if cfg.AgentPerMember() {
 		rep.Statement += "\n\n" + privacy.OwnBotNote(privacyModeFor(cfg.Mode))
 	}
+	// Last, so that it is read after the claim it qualifies rather than before it.
+	// Appended to the statement for the same reason the own-bot note is: an operator
+	// must not be able to read what this household promises without also reading who
+	// it is not promised to.
+	if hasSharedOnly(cfg) {
+		rep.Statement += "\n\n" + privacy.SharedOnlyNote()
+	}
 	rep.Exposure = privacy.DashboardNote(dashboard.ReachFor(cfg.Dashboard), dashboard.URLFor(cfg.Dashboard), cfg.Dashboard.TLS())
 	rep.TierNotes = tierNotes(cfg, scope)
 	return rep
+}
+
+// hasSharedOnly reports whether anybody in this household has no memory of their own.
+//
+// Unscoped by unit on purpose, unlike almost everything else in this report. The
+// privacy statement is the household's claim rather than this pod's status, and a
+// member's pod printing a statement with the qualification missing would be the same
+// text saying two different things depending on which container ran it.
+func hasSharedOnly(cfg *config.Config) bool {
+	for _, m := range cfg.Members {
+		if m.SharedOnly {
+			return true
+		}
+	}
+	return false
 }
 
 // agentsCheck says which conversations this household has, which is household.agents'

@@ -184,6 +184,49 @@ The bot alone would not have bought you the second one. Under simple mode the
 same bot would be a separate contact and nothing more. It is the mode that seals
 your memory; the bot is what makes your assistant yours.`
 
+// sharedOnlyNote is the paragraph for a household that has a member with no memory of
+// their own, and it exists because everything above it is false about that member.
+//
+// Both statements open by promising a private space. The simple-mode one says "every
+// member's memory is separate: what you tell kenward in a private chat is stored in
+// your own space"; the isolated one says a member's assistant runs in a process of its
+// own with a key of its own. A shared_only member has no space, no process and no key,
+// and so has no separation to be told about — what they have is a private conversation
+// whose contents go to a shared memory, which is the one arrangement in this product a
+// reader could most reasonably mistake for the opposite of what it is.
+//
+// Not correcting it here would be the same defect as the sealed-memory language that
+// used to appear under simple mode: a claim that is true of the household as a whole
+// and false about one of the people in it, in the one document written to be checked.
+//
+// It takes no Mode, and that is the content rather than an omission. Sealing is about
+// who can read a member's own memory. This member has none, so there is nothing for
+// isolated mode to seal and nothing for simple mode to expose, and the honest answer
+// is the same sentence in both.
+const sharedOnlyNote = `Not everyone here has a memory of their own. A member marked shared_only in
+kenward.yaml — a teenager, a grandparent, a lodger — is in the household and in
+the group, and kenward answers them in both places. What they do not have is a
+private space, an assistant of their own, or, in isolated mode, a container of
+their own.
+
+Everything kenward remembers from them goes to the household's shared memory,
+where everyone can read it. That includes what they say in a private chat with
+kenward: it is a private conversation, and it is not a private memory. They are
+shown the exact words and nothing is written until they say yes — in that chat
+exactly as in the group, because it is the same memory either way.
+
+So the paragraphs above about a member's own memory are not about them. There
+is nothing of theirs on this disk for either mode to protect and nothing for a
+passphrase to wrap, and neither mode changes that. What they were given instead
+is being told, in the first message kenward ever sends them, that this is how
+it works.`
+
+// SharedOnlyNote states what is and is not true for a member with no memory of their
+// own. The caller renders it when the household has one and never otherwise: a
+// paragraph about a kind of member nobody here is would be noise in the one block a
+// privacy-minded reader actually finishes, which is the same rule OwnBotNote follows.
+func SharedOnlyNote() string { return sharedOnlyNote }
+
 // OwnBotNote states what a per-member bot buys, for a household that chose one
 // assistant each. It is empty for an unknown mode, exactly as Statement is.
 //

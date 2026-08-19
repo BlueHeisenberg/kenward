@@ -24,8 +24,23 @@ type Member struct {
 	Name string
 	// TelegramID is zero until the member has claimed an invite.
 	TelegramID int64
-	// Private is the member's two-member lore space: them and the node.
+	// Private is the member's two-member lore space: them and the node. It is
+	// empty for a member who has none — see SharedOnly, which is the only reason
+	// it may be, and the only thing a reader may take an empty Private to mean.
 	Private SpaceID
+	// SharedOnly marks a member who has no memory of their own: no private space,
+	// no assistant of their own, and in isolated mode no pod. The teenager, the
+	// grandparent, the flatmate — in the household and in the group, talking to
+	// kenward, with nothing stored between just the two of them.
+	//
+	// It is carried rather than inferred from an empty Private, and that is the
+	// whole safety of it. A member who is supposed to have a private space and
+	// whose configuration lost the line must not be quietly downgraded into this:
+	// their next private note would land in the household's shared memory, where
+	// everybody reads it, and nothing would have gone wrong loudly enough to
+	// notice. Absence is a fault; this is a decision, and only the decision
+	// changes what a conversation may touch.
+	SharedOnly bool
 	// Tiers is the ordered chain of endpoint tiers this member's private
 	// conversations may use. A chain that names only local tiers is the mechanism
 	// behind the privacy claim: when none is reachable, kenward refuses rather than
@@ -41,6 +56,18 @@ type Member struct {
 
 // Enrolled reports whether the member has completed the claim flow and can be served.
 func (m Member) Enrolled() bool { return m.TelegramID != 0 }
+
+// HasPrivateMemory reports whether this member has a private space to have a private
+// conversation in.
+//
+// Both halves are load-bearing and neither implies the other. SharedOnly is the
+// household's decision that this member has none; an empty Private with SharedOnly
+// unset is a configuration that lost a line it was required to have, and the two must
+// not be served alike — the first is a member to answer in the household's memory, the
+// second is a member nobody can safely answer at all. Callers get one predicate for
+// "may a private scope be built for this person", and scope.Resolve separates the two
+// reasons it can be false.
+func (m Member) HasPrivateMemory() bool { return !m.SharedOnly && m.Private != "" }
 
 // Household is the group itself: the shared space and the group chat that writes to it.
 type Household struct {
@@ -68,12 +95,19 @@ const (
 	// ScopeHousehold is a private conversation with the household's own agent —
 	// kenward — rather than with the member's own.
 	//
-	// It exists only where a household gave every member an agent of their own, so
-	// that there is something for kenward to be separate from. It reads and writes
-	// the household's shared memory and nothing else, exactly as a group scope
-	// does, and it exists for the two things the group chat makes impossible: adding
-	// to the household's memory without notifying everybody, and asking what the
-	// household knows without asking in front of everybody.
+	// It reads and writes the household's shared memory and nothing else, exactly
+	// as a group scope does, and it exists for the two things the group chat makes
+	// impossible: adding to the household's memory without notifying everybody, and
+	// asking what the household knows without asking in front of everybody.
+	//
+	// It is reached whenever the member speaking has no assistant of their own that
+	// this bot could be, which happens for two unrelated reasons. A household that
+	// gave everybody an agent of their own has something for kenward to be separate
+	// from, so every member's chat on the household bot is this. And a member who has
+	// no memory of their own — domain.Member.SharedOnly — has no such assistant in any
+	// arrangement, so this is the only scope they ever have, in either mode. The
+	// second case is why the condition is a fact about the member rather than about
+	// the household: see scope.Resolve.
 	ScopeHousehold
 )
 

@@ -206,6 +206,18 @@ func (r Revocation) Warning() string {
 		unbound = fmt.Sprintf("%s is NOT unbound yet: the binding lives in their own pod, and this command\n"+
 			"has recorded the revocation rather than performed it.", r.Member.Name)
 	}
+	if r.Member.SharedOnly {
+		// They never had a space of their own, so there is no private key to be
+		// worried about, and exactly one that there is. Saying nothing here would
+		// read as the good news it is not: what this member could read is the
+		// household's shared memory, everybody's, and kenward can no more rotate
+		// that key than a private one.
+		return unbound + "\n" +
+			"They had no private memory. What they could read is the household's shared\n" +
+			"memory, and its key has NOT been rotated: kenward cannot rotate a lore key.\n" +
+			"Anyone still holding the old key can read everything written to the household's\n" +
+			"shared memory, including anything written after this point. Rotate it in lore now."
+	}
 	return fmt.Sprintf(
 		"%s\n"+
 			"Their lore space %q has NOT been re-keyed — kenward cannot rotate a lore key.\n"+
@@ -216,6 +228,15 @@ func (r Revocation) Warning() string {
 
 // Option configures a Claimer.
 type Option func(*Claimer)
+
+// WithSharedOnly supplies the household's answer to "does this member have a memory of
+// their own", for the one path that cannot get it from a domain.Member: the sweep that
+// finishes an onboarding a restart interrupted, which has persona rows and member ids
+// and no configuration. Everywhere else the member is in hand and the field is read
+// from them directly.
+func WithSharedOnly(f func(domain.MemberID) bool) Option {
+	return func(c *Claimer) { c.sharedOnly = f }
+}
 
 // WithClock replaces the clock. For tests.
 func WithClock(now func() time.Time) Option {
@@ -313,8 +334,17 @@ func WithLogger(l *slog.Logger) Option {
 // Claimer mints claim codes and processes messages from senders who are not yet
 // members. It is safe for concurrent use.
 type Claimer struct {
-	store           Store
-	binder          Binder
+	store  Store
+	binder Binder
+	// sharedOnly reports whether a member has no memory of their own. Nil answers no
+	// for everybody, which is the arrangement every household had before this
+	// existed and the safe way round for a caller that forgets to say: a full member
+	// explained as shared_only would be told their private notes are published, and
+	// a member who really is shared_only and is explained as a full one would be
+	// told the opposite. Only one of those two mistakes ends with somebody writing
+	// something into the household's memory believing it private, and the nil
+	// default is the other one.
+	sharedOnly      func(domain.MemberID) bool
 	now             func() time.Time
 	ttl             time.Duration
 	iters           int
@@ -460,7 +490,7 @@ func (c *Claimer) Handle(ctx context.Context, in transport.Inbound) (Result, err
 	return Result{
 		Enrolled: true,
 		Member:   member,
-		Messages: []transport.Outbound{Greeting(in.ChatID, member.Name, textFor(c.language), questionCount(c.oneEach))},
+		Messages: []transport.Outbound{Greeting(in.ChatID, member.Name, textFor(c.language), questionCount(c.oneEach && !member.SharedOnly))},
 	}, nil
 }
 
@@ -477,13 +507,19 @@ func (c *Claimer) Handle(ctx context.Context, in transport.Inbound) (Result, err
 // typed questions into skips.
 func (c *Claimer) Tutorial(a Asker, m domain.Member, chatID int64, answers <-chan transport.Inbound) *Tutorial {
 	return &Tutorial{
-		Member:     m,
-		ChatID:     chatID,
-		Asker:      a,
-		Answers:    answers,
-		Personas:   c.personas,
-		Household:  c.language,
-		OneEach:    c.oneEach,
+		Member:    m,
+		ChatID:    chatID,
+		Asker:     a,
+		Answers:   answers,
+		Personas:  c.personas,
+		Household: c.language,
+		// Never for a member with no assistant of their own, whatever the household
+		// chose. The three questions OneEach adds are what to call their agent, how
+		// it should sound and what it should be like, and there is no agent of
+		// theirs for any of the three to describe: config.PersonaFor gives them the
+		// household's voice however they answer. Asking anyway would be asking
+		// somebody to decorate something they do not have.
+		OneEach:    c.oneEach && !m.SharedOnly,
 		AskPrivate: c.askPrivate,
 		Mode:       c.mode,
 		Timeout:    c.tutorialTimeout,
@@ -495,7 +531,7 @@ func (c *Claimer) Tutorial(a Asker, m domain.Member, chatID int64, answers <-cha
 // before it. See the package-level function of the same name; this is it with the
 // household's settings already filled in.
 func (c *Claimer) FinishInterrupted(ctx context.Context, a Asker) error {
-	return FinishInterrupted(ctx, a, c.personas, c.language, c.askPrivate, c.mode, c.logger)
+	return FinishInterrupted(ctx, a, c.personas, c.language, c.askPrivate, c.mode, c.sharedOnly, c.logger)
 }
 
 // Revoke unbinds a member's Telegram id.

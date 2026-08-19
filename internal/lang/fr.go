@@ -271,6 +271,16 @@ var french = Catalogue{
 		"Personne d'autre dans le foyer ne peut lire ta mémoire privée, ni la personne qui fait tourner cette " +
 		"machine. La limite honnête" + nbsp + ": qui a un accès root à cette machine peut atteindre ta clé pendant que ton " +
 		"assistant tourne.",
+	EnrolSharedOnlyHeading: "Nous partageons une mémoire",
+	EnrolSharedOnlyBody: "Tu fais partie de ce foyer, donc je te réponds ici et dans le groupe familial, " +
+		"et tu peux me demander tout ce que le foyer sait.\n\nCe que tu n'as pas, " +
+		"c'est une mémoire à toi. Il n'y a pas ici d'espace rien qu'à toi et moi" + nbsp +
+		": tout ce que je retiens de toi va dans la mémoire partagée du foyer, où tout le " +
+		"monde peut la lire. Alors je te montre les mots exacts d'abord et je n'écris " +
+		"rien tant que tu n'as pas dit oui, dans cette conversation comme dans le " +
+		"groupe, parce que c'est la même mémoire des deux côtés.\n\nSi tu préfères en " +
+		"avoir une à toi, demande-le à la personne qui m'a installé. Rien n'est repris " +
+		"quand cela change, parce que rien n'a jamais été enregistré.",
 	EnrolGroupHeading: "La conversation de groupe est partagée",
 	EnrolGroupBody: "La conversation de groupe du foyer est la mémoire partagée. Tout ce que j'y retiens est visible par tout le monde. " +
 		"Rien ne passe d'un côté à l'autre tout seul" + nbsp + ": si quelque chose de privé doit devenir partagé, demande-le-moi, " +

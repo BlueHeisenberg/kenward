@@ -69,7 +69,22 @@ func Greeting(chatID int64, member string, t text, questions int) transport.Outb
 // is ModeUnknown, which adds nothing: a caller that forgets to pass a mode understates
 // isolated mode, which is a disappointment, rather than overstating simple mode, which
 // is the lie this product may not tell. The claim can only get louder deliberately.
-func Explanation(chatID int64, c lang.Catalogue, askPrivate bool, mode privacy.Mode) []transport.Outbound {
+// sharedOnly says this member has no memory of their own, which replaces all three
+// messages rather than editing them. Every one of the three describes a private space
+// they do not have, and the first one does it in its opening clause; sending it and
+// then correcting it later would be the product's own onboarding making the claim the
+// product exists not to make. See lang.Catalogue.EnrolSharedOnlyBody.
+//
+// mode is ignored on that path, and deliberately: sealing is about who can read a
+// member's own memory, and there is none. Passing ModeIsolated must not make a
+// stronger claim to somebody who has nothing for the mode to protect.
+func Explanation(chatID int64, c lang.Catalogue, askPrivate bool, mode privacy.Mode, sharedOnly bool) []transport.Outbound {
+	if sharedOnly {
+		return []transport.Outbound{{
+			ChatID: chatID,
+			Text:   transport.Bold(c.EnrolSharedOnlyHeading) + "\n\n" + c.EnrolSharedOnlyBody,
+		}}
+	}
 	third := c.EnrolMemoryBodyDefault
 	if askPrivate {
 		third = c.EnrolMemoryBodyAsk

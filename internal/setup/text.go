@@ -298,7 +298,33 @@ else's numeric Telegram id would be a miserable way to spend the next hour.
 One name per line. Press Enter on an empty line when everyone is in.`
 
 	questionMemberName = "Name"
+
+	// One question for the household, and the per-person one only for a household
+	// that says no. Almost every household gives everybody a memory of their own, and
+	// asking about each person by name would put a question with one answer in front
+	// of everybody for ever to serve the household in ten that has a teenager.
+	questionEveryoneHasMemory = "Does everyone here get a memory of their own?"
+
+	sharedOnlyIntro = `Some people in a household do not need one — a teenager, a grandparent, a
+flatmate who is here for a year. They are still members: kenward answers them
+in the family group and in a chat of their own, and they can ask it anything
+the household knows.
+
+What they do not get is a memory that is only theirs. Anything kenward
+remembers from them goes to the household's shared memory, where everyone can
+read it, and it shows them the exact words and waits for a yes first. In
+isolated mode they have no container of their own either, because there is
+nothing of theirs to seal.
+
+You can change your mind later either way. Nothing carries over when you do,
+because nothing was ever stored.`
 )
+
+// questionOwnMemory asks about one person by name. Asked only of a household that
+// answered no above.
+func questionOwnMemory(name string) string {
+	return fmt.Sprintf("Does %s get a memory of their own?", name)
+}
 
 // The Telegram step. The walkthrough is short and numbered because it is the only
 // part of setup that happens in another application, and the reader has to be able
@@ -625,7 +651,13 @@ func memberSummary(members []config.MemberConfig) string {
 		}
 	}
 	var b strings.Builder
+	shared := false
 	for _, m := range members {
+		if m.SharedOnly {
+			shared = true
+			fmt.Fprintf(&b, "  %s  id %s, no memory of their own — the household's shared memory\n", pad(m.Name, width), m.ID)
+			continue
+		}
 		fmt.Fprintf(&b, "  %s  id %s, private memory %s\n", pad(m.Name, width), m.ID, m.PrivateSpace)
 	}
 	// Was "Nobody else in the household can read a private memory", which is isolated
@@ -634,6 +666,14 @@ func memberSummary(members []config.MemberConfig) string {
 	// privacyBlock's, and it is a few screens away.
 	b.WriteString("\n  The group chat never reads a private memory, and kenward will not bring\n")
 	b.WriteString("  one up there.")
+	if shared {
+		// Said here as well as in the intro, because this list is the last thing an
+		// operator sees before the file is written, and so the last chance for
+		// somebody who answered the wrong way to notice.
+		b.WriteString("\n\n  For the people with no memory of their own, everything kenward remembers\n")
+		b.WriteString("  goes to the household's shared memory, where everyone can read it — and it\n")
+		b.WriteString("  shows them the words and waits for a yes before it writes any of it.")
+	}
 	return b.String()
 }
 
@@ -649,6 +689,11 @@ func memberTokenNote(members []config.MemberConfig) string {
 	b.WriteString("  they enrol, and kenward reads each token from its own variable — and a\n")
 	b.WriteString("  passphrase of their own, which wraps their key and nobody else's:\n\n")
 	for _, m := range members {
+		if m.SharedOnly {
+			// No pod, so no variables, so nothing to list. They are not missing
+			// from this note by oversight; they have nothing for it to name.
+			continue
+		}
 		fmt.Fprintf(&b, "      %s\n", m.BotTokenEnv)
 		fmt.Fprintf(&b, "      %s\n", m.PassphraseEnv)
 	}
@@ -675,7 +720,20 @@ func memberTokenNote(members []config.MemberConfig) string {
 // not the wizard's, for the same reason the statement is: this is the paragraph that
 // stops somebody believing their own bot sealed their memory, and a copy of it here
 // would be a copy that could be softened without the golden test noticing.
-func privacyBlock(mode config.Mode, agents config.Agents) string {
+// anySharedOnly reports whether anybody in this household has no memory of their own.
+func anySharedOnly(members []config.MemberConfig) bool {
+	for _, m := range members {
+		if m.SharedOnly {
+			return true
+		}
+	}
+	return false
+}
+
+// sharedOnly says at least one member has no memory of their own, which adds
+// internal/privacy's paragraph about what that means. Passed in rather than derived,
+// because the wizard has answers and not a Config at this point.
+func privacyBlock(mode config.Mode, agents config.Agents, sharedOnly bool) string {
 	heading := "Privacy, in simple mode"
 	if mode == config.ModeIsolated {
 		heading = "Privacy, in isolated mode"
@@ -687,6 +745,9 @@ func privacyBlock(mode config.Mode, agents config.Agents) string {
 	// for a loaded configuration; the wizard has no Config yet.
 	if agents == config.AgentsPerMember && mode == config.ModeIsolated {
 		block += "\n\n" + privacy.OwnBotNote(privacyMode(mode))
+	}
+	if sharedOnly {
+		block += "\n\n" + privacy.SharedOnlyNote()
 	}
 	return block + "\n\n" + privacyTrailer
 }

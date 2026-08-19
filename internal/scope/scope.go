@@ -12,6 +12,11 @@
 //     in the one place it is easier to get wrong: a private chat with kenward carries
 //     the member who is speaking and still reads and writes the shared space alone.
 //     Knowing who is asking is not a route to what is theirs.
+//   - A member with no private space never reaches a scope that names one. A
+//     shared_only member has none by the household's decision and gets the household
+//     scope everywhere; a member missing one by accident gets nothing at all. Neither
+//     is served a private scope with an empty space in it, and neither is served
+//     somebody else's.
 //   - Anything unrecognised resolves to ErrNotEnrolled and nothing else. The caller
 //     drops the message in silence, because replying at all — even to refuse — confirms
 //     to a stranger that this bot is a kenward node serving a real household.
@@ -39,8 +44,9 @@ var ErrNotEnrolled = errors.New("scope: sender is not enrolled in this household
 
 // Resolve decides who is speaking and what the resulting conversation may touch.
 //
-// A direct message from an enrolled member resolves to a direct scope: it writes to
-// their private space and reads their private space first, then the household's. A
+// A direct message from an enrolled member who has a private space resolves to a
+// direct scope: it writes to their private space and reads their private space first,
+// then the household's. A
 // message in the configured group chat, from an enrolled member, resolves to a group
 // scope, which reads and writes the shared space only — a member speaking in the group
 // is speaking to the household, and their private space is not in the conversation at
@@ -115,6 +121,36 @@ func Resolve(cfg *config.Config, bot domain.MemberID, in transport.Inbound) (dom
 
 	member, ok := cfg.MemberByTelegramID(in.UserID)
 	if !ok || !member.Enrolled() {
+		return domain.Scope{}, ErrNotEnrolled
+	}
+
+	// A member with no memory of their own has no private conversation to be had,
+	// on any bot, in either mode. Every conversation they have is the household's,
+	// so this is the household's scope: the shared space, read and written, and
+	// their name attached so kenward knows who it is answering.
+	//
+	// It is decided before the bot is considered because the bot cannot change it.
+	// Under one agent each, the household's bot is kenward and a member's own bot is
+	// their assistant; this member has no assistant, so there is no second answer for
+	// a bot to select between. What the bot still decides is whether this process
+	// should be answering at all — a shared_only member has no pod and no bot of
+	// their own, so a message from them arriving on somebody else's is refused
+	// exactly as a message from anybody else on somebody else's bot is.
+	if member.SharedOnly {
+		if bot != "" {
+			return domain.Scope{}, ErrNotEnrolled
+		}
+		return householdScope(member, household, in.ChatID), nil
+	}
+
+	// A member who is supposed to have a private space and has not got one is a
+	// configuration fault, and both readings of it are wrong. Building a direct scope
+	// would write their private notes to the empty space id; falling through to the
+	// household's would publish them to everybody, which is the silent downgrade
+	// shared_only exists to be the loud alternative to. So this is the third answer,
+	// and it is the one this package gives to everything it cannot resolve: nobody is
+	// served, and validation reports the missing line.
+	if member.Private == "" {
 		return domain.Scope{}, ErrNotEnrolled
 	}
 

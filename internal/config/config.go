@@ -347,11 +347,21 @@ func (c *Config) PersonaFor(memberID string) PersonaConfig {
 		if m.ID != memberID {
 			continue
 		}
-		if !c.AgentPerMember() {
+		if !c.AgentPerMember() || m.SharedOnly {
 			// The language, and nothing else. Written onto the household's persona
 			// rather than assembled fresh so that a field added to PersonaConfig
 			// later joins the household's voice by default, which is the answer
 			// that cannot accidentally split the assistant in two.
+			//
+			// A shared_only member takes this branch whatever the household chose,
+			// for the same reason and one step further along: there is no agent of
+			// theirs anywhere for a name, a tone or a character to belong to, so
+			// AgentPerMember answering true about the household says nothing about
+			// them. Their language still applies, because kenward answers them and
+			// has to answer them in something. Carried and ignored rather than
+			// refused, exactly as the other three are under one shared agent: a
+			// household that makes a full member shared_only should not have to
+			// delete what they wrote in their tutorial before the file will load.
 			household.Language = orElse(m.Persona.Language, household.Language)
 			return household
 		}
@@ -419,7 +429,21 @@ type MemberConfig struct {
 	// sit at zero at once, which is the normal state of a freshly created household.
 	TelegramID int64 `yaml:"telegram_id"`
 	// PrivateSpace is the member's two-member lore space: them and the node.
+	// Required, except for a shared_only member, who by definition has none.
 	PrivateSpace string `yaml:"private_space"`
+	// SharedOnly declares a member who has no memory of their own: no private
+	// space, no assistant of their own, and in isolated mode no pod. They are in
+	// the household and in the group, and kenward answers them — in the group chat
+	// and in a private chat with the household's bot — out of the household's
+	// shared memory alone. The teenager, the grandparent, the flatmate.
+	//
+	// It is stated rather than inferred from an absent private_space, and that is
+	// the point of it. Absence is how a file loses a line, and a member silently
+	// downgraded from private memory to shared memory would have their next note
+	// published to the household with nothing having visibly failed. So private_space
+	// stays required for everybody who has not said this, and saying this while also
+	// naming a private space is a contradiction rather than a precedence.
+	SharedOnly bool `yaml:"shared_only"`
 	// Persona is this member's own: their agent's name, and the language, tone and
 	// character it writes their private conversation in. It is written by the member
 	// in the Telegram tutorial rather than by the admin in the wizard, which is the

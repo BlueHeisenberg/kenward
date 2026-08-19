@@ -259,6 +259,15 @@ var catalan = Catalogue{
 		"Ningú més de la llar no pot llegir la teva memòria privada, ni tampoc la persona que fa anar aquest " +
 		"ordinador. El límit honest: qui tingui accés root a aquesta màquina pot arribar a la teva clau mentre " +
 		"el teu assistent s'estigui executant.",
+	EnrolSharedOnlyHeading: "Compartim una memòria",
+	EnrolSharedOnlyBody: "Formes part d'aquesta casa, així que et responc aquí i al grup familiar, i em " +
+		"pots preguntar qualsevol cosa que la casa sàpiga.\n\nEl que no tens és una " +
+		"memòria pròpia. Aquí no hi ha un espai només per a tu i per a mi: tot el que " +
+		"recordo de tu va a la memòria compartida de la casa, on tothom ho pot llegir. " +
+		"Per això et mostro les paraules exactes abans i no escric res fins que diguis " +
+		"que sí, en aquest xat igual que al grup, perquè és la mateixa memòria als dos " +
+		"llocs.\n\nSi prefereixes tenir-ne una de pròpia, digues-ho a qui m'hagi " +
+		"instal·lat. No es trasllada res quan això canvia, perquè mai no es va desar res.",
 	EnrolGroupHeading: "El xat de grup és compartit",
 	EnrolGroupBody: "El xat de grup de la llar és la memòria compartida. Tot el que hi recordi ho pot veure tothom. " +
 		"No passa res d'un costat a l'altre tot sol: si alguna cosa privada ha de passar a compartida, demana-m'ho " +

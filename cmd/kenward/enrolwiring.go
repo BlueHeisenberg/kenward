@@ -264,6 +264,13 @@ func undeclaredMemberHelp(cfg *config.Config, path, name string) string {
 		fmt.Fprintf(&b, "\nIn isolated mode they also need their own bot_token_env, distinct from every\n")
 		fmt.Fprintf(&b, "other member's, and a container of their own.\n")
 	}
+	// The other kind of member, said here because this is where somebody finds out
+	// what a member is. Left out, the only documented way to add a teenager to the
+	// household would be to give them a private space they were never meant to have.
+	fmt.Fprintf(&b, "\nSomebody who needs no memory of their own — a teenager, a grandparent, a lodger\n")
+	fmt.Fprintf(&b, "— is two fields and shared_only: true instead, with no private_space and no\n")
+	fmt.Fprintf(&b, "tiers. kenward answers them in the group and in a chat of their own, out of the\n")
+	fmt.Fprintf(&b, "household's shared memory, and they get no bot and no container in either mode.\n")
 	return b.String()
 }
 

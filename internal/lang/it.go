@@ -275,6 +275,16 @@ var italian = Catalogue{
 		"Nessun altro in casa può leggere la tua memoria privata, e nemmeno la persona che gestisce questo " +
 		"computer. Il limite onesto: chi ha accesso root a questa macchina può arrivare alla tua chiave mentre " +
 		"il tuo assistente è in funzione.",
+	EnrolSharedOnlyHeading: "Condividiamo una memoria",
+	EnrolSharedOnlyBody: "Fai parte di questa casa, quindi ti rispondo qui e nel gruppo di famiglia, e " +
+		"puoi chiedermi tutto quello che la casa sa.\n\nQuello che non hai è una " +
+		"memoria tua. Qui non c'è uno spazio solo per te e per me: tutto quello che " +
+		"ricordo di te finisce nella memoria condivisa della casa, dove tutti possono " +
+		"leggerlo. Per questo ti mostro prima le parole esatte e non scrivo niente " +
+		"finché non dici di sì, in questa chat come nel gruppo, perché è la stessa " +
+		"memoria in entrambi i casi.\n\nSe preferisci averne una tua, dillo a chi mi " +
+		"ha installato. Non passa niente da una all'altra, perché non è mai stato " +
+		"salvato niente.",
 	EnrolGroupHeading: "La chat di gruppo è condivisa",
 	EnrolGroupBody: "La chat di gruppo di casa è la memoria condivisa. Tutto quello che ricordo lì lo possono vedere tutti. " +
 		"Niente passa da una parte all'altra da solo: se qualcosa di privato deve diventare condiviso, chiedimelo, " +

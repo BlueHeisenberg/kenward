@@ -232,6 +232,16 @@ func unlockSessions(ctx context.Context, mgr *session.Manager, store session.Sto
 			// who has not claimed their invite has no unit either.
 			continue
 		}
+		if m.SharedOnly {
+			// A key wraps a member's own memory, and this member has none. Their
+			// conversations read and write the household's shared space, which is
+			// the node's own and is not wrapped per member. Provisioning one here
+			// would leave a wrapped key in the store for a space that does not
+			// exist — which `kenward sessions` and `doctor` would then both report
+			// as this member's private memory, in a household that has told them
+			// they have none.
+			continue
+		}
 		_, err := store.Load(ctx, m.ID)
 		switch {
 		case errors.Is(err, session.ErrUnknownMember):
@@ -304,7 +314,11 @@ func probeSessions(ctx context.Context, cfg *config.Config) sessionsResult {
 		have[id] = true
 	}
 	for _, m := range cfg.DomainMembers() {
-		if m.Enrolled() && !have[m.ID] {
+		// A shared_only member has no private memory, so no key: an absent one is
+		// the design working. Reporting it would be doctor warning, at every run and
+		// for ever, that a member cannot read something they were told they do not
+		// have.
+		if m.Enrolled() && !m.SharedOnly && !have[m.ID] {
 			out.MissingKey = append(out.MissingKey, m.ID)
 		}
 	}

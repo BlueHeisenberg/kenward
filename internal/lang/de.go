@@ -269,6 +269,17 @@ var german = Catalogue{
 		"eigenen Schlüssel. Niemand sonst im Haushalt kann dein privates Gedächtnis lesen, und die Person, die " +
 		"diesen Rechner betreibt, auch nicht. Die ehrliche Grenze: Wer Root-Zugriff auf diesen Rechner hat, kommt " +
 		"an deinen Schlüssel, solange dein Assistent läuft.",
+	EnrolSharedOnlyHeading: "Wir teilen ein Gedächtnis",
+	EnrolSharedOnlyBody: "Du gehörst zu diesem Haushalt, also antworte ich dir hier und in der " +
+		"Familiengruppe, und du kannst mich alles fragen, was der Haushalt weiß." +
+		"\n\nWas du nicht hast, ist ein eigenes Gedächtnis. Hier gibt es keinen Raum " +
+		"nur für dich und mich: alles, was ich mir von dir merke, geht in das gemeinsame " +
+		"Gedächtnis des Haushalts, wo es alle lesen können. Deshalb zeige ich dir vorher " +
+		"den genauen Wortlaut und schreibe nichts, bevor du ja sagst — in diesem Chat " +
+		"genauso wie in der Gruppe, denn es ist beide Male dasselbe Gedächtnis." +
+		"\n\nWenn du lieber ein eigenes hättest, sag es der Person, die mich " +
+		"eingerichtet hat. Dabei wird nichts übernommen, denn es wurde nie etwas " +
+		"gespeichert.",
 	EnrolGroupHeading: "Der Gruppenchat ist gemeinsam",
 	EnrolGroupBody: "Der Gruppenchat des Haushalts ist das gemeinsame Gedächtnis. Was ich mir dort merke, können alle sehen. " +
 		"Nichts wechselt von allein hinüber: Wenn etwas Privates gemeinsam werden soll, sag es mir, und ich zeige dir " +

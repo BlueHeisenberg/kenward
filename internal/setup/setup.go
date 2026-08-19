@@ -212,7 +212,20 @@ type Answers struct {
 	// MemberSpaces is the id of each member's private lore space, keyed by the id
 	// derived from their name. One is required per member: a private space holds
 	// that person and this machine, so it cannot be derived or created here.
+	//
+	// A member named in SharedOnlyMembers has none and must not appear here.
 	MemberSpaces map[string]string
+	// SharedOnlyMembers names the members who have no memory of their own, by the id
+	// derived from their name. They get no private space, no persona, no bot and no
+	// pod; kenward answers them in the group and in a chat of their own, out of the
+	// household's shared memory alone.
+	//
+	// A set rather than a field on a member struct because MemberNames is a list of
+	// strings and this is the one thing a caller ever needs to say about one of them.
+	// It is keyed on the derived id rather than the name for the same reason
+	// MemberSpaces is: two people called Sam produce two ids, and a map keyed on
+	// "Sam" could only ever mean both of them.
+	SharedOnlyMembers map[string]bool
 	// Endpoints are the machines that run the model.
 	Endpoints []EndpointAnswer
 	// MemberBotTokens and MemberPassphrases are each member's own two secrets in
@@ -465,7 +478,7 @@ func (w *Wizard) finish() (*config.Config, error) {
 	}
 
 	w.blank()
-	w.io.Print(privacyBlock(cfg.Mode, cfg.Household.Agents))
+	w.io.Print(privacyBlock(cfg.Mode, cfg.Household.Agents, anySharedOnly(cfg.Members)))
 	w.blank()
 	w.io.Print(w.tierSummary())
 	w.blank()

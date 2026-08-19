@@ -272,6 +272,15 @@ var spanish = Catalogue{
 		"Nadie más del hogar puede leer tu memoria privada, ni tampoco la persona que gestiona este ordenador. " +
 		"El límite honesto: quien tenga acceso root a esta máquina puede alcanzar tu clave mientras tu asistente " +
 		"esté en marcha.",
+	EnrolSharedOnlyHeading: "Compartimos una memoria",
+	EnrolSharedOnlyBody: "Formas parte de esta casa, así que te respondo aquí y en el grupo familiar, y " +
+		"puedes preguntarme cualquier cosa que la casa sepa.\n\nLo que no tienes es " +
+		"una memoria propia. Aquí no hay un espacio solo para ti y para mí: todo lo que " +
+		"recuerdo de ti va a la memoria compartida de la casa, donde todo el mundo puede " +
+		"leerlo. Por eso te enseño las palabras exactas antes y no escribo nada hasta que " +
+		"digas que sí, en este chat igual que en el grupo, porque es la misma memoria en " +
+		"los dos sitios.\n\nSi prefieres tener una propia, díselo a quien me haya " +
+		"instalado. No se traslada nada cuando eso cambia, porque nunca se guardó nada.",
 	EnrolGroupHeading: "El chat de grupo es compartido",
 	EnrolGroupBody: "El chat de grupo del hogar es la memoria compartida. Todo lo que recuerde ahí lo puede ver todo el mundo. " +
 		"Nada pasa de un lado a otro por sí solo: si algo privado tiene que hacerse compartido, pídemelo y te enseñaré " +
