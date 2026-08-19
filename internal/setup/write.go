@@ -138,12 +138,18 @@ type telegramDoc struct {
 }
 
 type memberDoc struct {
-	ID           string   `yaml:"id"`
-	Name         string   `yaml:"name"`
-	TelegramID   int64    `yaml:"telegram_id,omitempty"`
-	PrivateSpace string   `yaml:"private_space"`
-	Tiers        []string `yaml:"tiers,flow"`
-	BotTokenEnv  string   `yaml:"bot_token_env,omitempty"`
+	ID         string `yaml:"id"`
+	Name       string `yaml:"name"`
+	TelegramID int64  `yaml:"telegram_id,omitempty"`
+	// PrivateSpace is omitted rather than written empty for a shared_only member,
+	// who has none: `private_space: ""` beside `shared_only: true` is the exact pair
+	// validation refuses, so writing it would generate a file that will not load.
+	PrivateSpace string `yaml:"private_space,omitempty"`
+	// SharedOnly marks a member with no memory of their own. Written before the
+	// tiers because it is the line that explains every absent line above it.
+	SharedOnly  bool     `yaml:"shared_only,omitempty"`
+	Tiers       []string `yaml:"tiers,flow,omitempty"`
+	BotTokenEnv string   `yaml:"bot_token_env,omitempty"`
 	// Persona is a member's own, and the wizard never sets it: it is written in the
 	// Telegram tutorial by the member themselves. It is carried here so that a
 	// configuration rewritten from the dashboard's settings page keeps what a member
@@ -243,6 +249,7 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 			Name:          m.Name,
 			TelegramID:    m.TelegramID,
 			PrivateSpace:  m.PrivateSpace,
+			SharedOnly:    m.SharedOnly,
 			Tiers:         m.Tiers,
 			BotTokenEnv:   m.BotTokenEnv,
 			Persona:       personaDocFor(m.Persona),

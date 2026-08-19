@@ -173,6 +173,15 @@ func NewSingle(cfg *config.Config, opts SingleOptions) (*Single, error) {
 		if !ok {
 			return nil, fmt.Errorf("supervisor: no member %q in this household", opts.Member)
 		}
+		if m.SharedOnly {
+			// There is no pod for this member to be. They hold no bot token and no
+			// passphrase, so the process would have nothing to poll and nothing to
+			// unwrap, and their conversations belong to the group pod. Refused here
+			// rather than started empty: a pod that runs and serves nobody is the
+			// health check that stays green over a member nobody is answering.
+			return nil, fmt.Errorf("supervisor: member %q is shared_only: they have no memory of their own, "+
+				"no bot and no pod, and both their conversations run in the group pod", opts.Member)
+		}
 		// The member's own token, never the household's, resolved through the
 		// Secrets API from whichever source this member's row states. A pod
 		// holding another unit's credentials would undo the mode.

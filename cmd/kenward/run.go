@@ -886,6 +886,12 @@ func startupSummary(cfg *config.Config, sel unitSelection) [][]any {
 		if sel.group {
 			continue
 		}
+		if m.SharedOnly {
+			// No space of theirs to name, and no chain of theirs to report as
+			// reaching a provider or not. Their conversation is the household's
+			// and is covered by the shared space's own line below.
+			continue
+		}
 		lines = append(lines, []any{
 			"event", "space",
 			"mode", mode,

@@ -247,10 +247,38 @@ func newRunner(cfg *config.Config, rc runnerConfig) (*runner, error) {
 		r.tracker.addNotEnrolled(id)
 	}
 	for _, m := range rc.members {
+		if m.SharedOnly {
+			// No memory of their own, so no conversation of their own: their
+			// unit is built below, with the household's, because that is what
+			// scope.Resolve says their private chat is.
+			continue
+		}
 		if err := r.buildMemberUnit(m); err != nil {
 			turnCancel()
 			r.closeOwned()
 			return nil, err
+		}
+	}
+	// A member with no memory of their own is answered by whoever holds the
+	// household's bot, and that is the whole of where they live: this process in
+	// simple mode, the group pod in isolated mode, and no pod of their own in either.
+	// Keyed on the bot rather than on rc.members because those two processes populate
+	// rc.members differently — simple mode with the whole roster, the group pod with
+	// nobody — and the member is the same member in both.
+	//
+	// Outside the rc.group branch below on purpose. A household with no Telegram group
+	// still has a shared memory and still has a household bot, and a member whose only
+	// conversation is on it must not go unanswered because nobody made a group chat.
+	if rc.bot == "" {
+		for _, m := range r.cfg.DomainMembers() {
+			if !m.Enrolled() || !m.SharedOnly {
+				continue
+			}
+			if err := r.buildHouseholdUnit(m); err != nil {
+				turnCancel()
+				r.closeOwned()
+				return nil, err
+			}
 		}
 	}
 	if rc.group {
@@ -267,7 +295,9 @@ func newRunner(cfg *config.Config, rc runnerConfig) (*runner, error) {
 		// prompt is assembled from.
 		if r.cfg.AgentPerMember() {
 			for _, m := range r.cfg.DomainMembers() {
-				if !m.Enrolled() {
+				if !m.Enrolled() || m.SharedOnly {
+					// Already built above, and for a reason that does not
+					// depend on how many agents the household has.
 					continue
 				}
 				if err := r.buildHouseholdUnit(m); err != nil {
@@ -1214,7 +1244,11 @@ func (r *runner) enrolled(m domain.Member) {
 	}
 	r.tracker.promote(m.ID)
 
-	if r.rc.unlockOnEnrol != nil {
+	// A member with no memory of their own has no key: nothing of theirs is stored
+	// anywhere for one to wrap. Provisioning one anyway would put a wrapped key in the
+	// session store for a private space that does not exist, which `kenward sessions`
+	// and `doctor` would then both report as a member's memory.
+	if r.rc.unlockOnEnrol != nil && !m.SharedOnly {
 		// Failing here is not a reason to withhold the unit: the member is
 		// enrolled either way, their group conversation works, and a unit that
 		// says it is locked is better than a member the node treats as a
@@ -1226,7 +1260,14 @@ func (r *runner) enrolled(m domain.Member) {
 		}
 	}
 
-	if err := r.buildMemberUnit(m); err != nil {
+	// The same fork newRunner makes at startup: a member with no memory of their own
+	// has no private conversation of their own to build one for, and their chat with
+	// kenward is the household's.
+	build := r.buildMemberUnit
+	if m.SharedOnly {
+		build = r.buildHouseholdUnit
+	}
+	if err := build(m); err != nil {
 		r.logger.Error("supervisor: building unit for new member", "member", string(m.ID), "error", err)
 		return
 	}

@@ -189,7 +189,7 @@ func (t *Tutorial) Run(ctx context.Context) error {
 		_ = t.send(ctx, t.cur.abandoned)
 	}
 
-	for _, out := range Explanation(t.ChatID, lang.For(cmp.Or(p.Language, t.Household)), t.AskPrivate, t.Mode) {
+	for _, out := range Explanation(t.ChatID, lang.For(cmp.Or(p.Language, t.Household)), t.AskPrivate, t.Mode, t.Member.SharedOnly) {
 		if err := t.Asker.Send(ctx, out); err != nil {
 			// The member has part of the explanation and the rest is not coming.
 			// Explained stays false, so the next start finishes the job.
@@ -543,7 +543,13 @@ type keyboardRetirer interface {
 // language question, which is exactly the member this sweep exists for. Their
 // persona's language is empty because empty means "the household's", and reading it
 // as English would explain the memory model in a language nobody here asked for.
-func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, household string, askPrivate bool, mode privacy.Mode, log *slog.Logger) error {
+// sharedOnly reports whether a member has no memory of their own, and may be nil,
+// which answers no for everybody. It is a lookup rather than a field on the stored
+// persona because it is a fact about the household's configuration and not about
+// this member's tutorial: a row written before somebody was made shared_only would
+// otherwise be explained under the arrangement that has since been changed, which is
+// exactly the sweep this function exists to be — the one that runs after a restart.
+func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, household string, askPrivate bool, mode privacy.Mode, sharedOnly func(domain.MemberID) bool, log *slog.Logger) error {
 	if a == nil || ps == nil {
 		return nil
 	}
@@ -580,7 +586,7 @@ func FinishInterrupted(ctx context.Context, a Asker, ps PersonaStore, household 
 		// Said first, as Run says it: a member coming back to three messages of memory
 		// model is owed the reason the questions stopped.
 		msgs := append([]transport.Outbound{{ChatID: p.ChatID, Text: cur.abandoned}},
-			Explanation(p.ChatID, lang.For(spoken), askPrivate, mode)...)
+			Explanation(p.ChatID, lang.For(spoken), askPrivate, mode, sharedOnly != nil && sharedOnly(id))...)
 		for _, out := range msgs {
 			if err := a.Send(ctx, out); err != nil {
 				errs = append(errs, err)

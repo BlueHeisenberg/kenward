@@ -59,8 +59,16 @@ func TestExampleParsesAndValidates(t *testing.T) {
 	if cfg.Mode != config.ModeSimple {
 		t.Errorf("Mode = %q, want %q", cfg.Mode, config.ModeSimple)
 	}
-	if len(cfg.Members) != 2 {
-		t.Fatalf("len(Members) = %d, want 2", len(cfg.Members))
+	if len(cfg.Members) != 3 {
+		t.Fatalf("len(Members) = %d, want 3", len(cfg.Members))
+	}
+	// The third is the point of being three: a household with only full members
+	// would document shared_only nowhere, in the one file every household copies.
+	if !cfg.Members[2].SharedOnly {
+		t.Errorf("members[2] (%s) is not shared_only; the example must demonstrate the member with no memory of their own", cfg.Members[2].ID)
+	}
+	if cfg.Members[2].PrivateSpace != "" {
+		t.Errorf("members[2].private_space = %q, want empty: a shared_only member has none", cfg.Members[2].PrivateSpace)
 	}
 	if len(cfg.Endpoints) != 3 {
 		t.Fatalf("len(Endpoints) = %d, want 3", len(cfg.Endpoints))
@@ -229,6 +237,29 @@ var allowedZeroFields = map[string]string{
 	// binding on this machine yet."
 	"Members[0].EnrolledAt": "yaml:\"-\"; only MergeState from state.json sets it, and this example has none",
 	"Members[1].EnrolledAt": "yaml:\"-\"; only MergeState from state.json sets it, and this example has none",
+	"Members[2].EnrolledAt": "yaml:\"-\"; only MergeState from state.json sets it, and this example has none",
+
+	// david and jordan are full members, which is what shared_only's zero value
+	// means and what almost every row in almost every household will be. leo is the
+	// example of the other kind, and demonstrating it on a member who also has a
+	// private space is not possible: the two together are a validation error, and
+	// deliberately, because it is the pair that would otherwise decide somebody's
+	// privacy by which line the loader read last.
+	"Members[0].SharedOnly": "david has a private space; shared_only and private_space together are a validation error",
+	"Members[1].SharedOnly": "jordan has a private space; shared_only and private_space together are a validation error",
+
+	// Everything leo does not have, which is the whole content of the example. Each
+	// of these is a validation error beside shared_only rather than an omission, so
+	// there is no value that could be put here instead — see validateMembers.
+	"Members[2].PrivateSpace":      "leo is shared_only: they have no private memory, and naming one here is a validation error",
+	"Members[2].Tiers":             "leo is shared_only: their conversations are the household's and run on household.tiers",
+	"Members[2].BotTokenEnv":       "leo is shared_only: no assistant of their own, so no bot and no pod",
+	"Members[2].BotTokenFile":      "leo is shared_only: no assistant of their own, so no bot and no pod",
+	"Members[2].PassphraseEnv":     "leo is shared_only: nothing of theirs is stored anywhere, so there is no key to wrap",
+	"Members[2].PassphraseFile":    "leo is shared_only: nothing of theirs is stored anywhere, so there is no key to wrap",
+	"Members[2].Persona.AgentName": "leo has no agent of their own to name; config.PersonaFor gives them the household's voice",
+	"Members[2].Persona.Tone":      "leo has no agent of their own; the household's tone is the one that answers them",
+	"Members[2].Persona.Character": "leo has no agent of their own; the household's character is the one that answers them",
 
 	// kenward's own name is not a setting, and household.persona.agent_name is the
 	// one persona field that is a validation error rather than a choice: the name is

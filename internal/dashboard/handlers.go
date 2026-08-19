@@ -653,6 +653,21 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, sess *se
 
 	local := setup.LocalTiers(cfg.Endpoints)
 	for _, m := range cfg.DomainMembers() {
+		if m.SharedOnly {
+			// The statement above promises a private memory, and this member has
+			// none. Appended once, on the first one found, for the same reason
+			// doctor appends it: the claim and the exception belong in one block
+			// or a reader can finish the claim without meeting the exception.
+			d.Statement += "\n\n" + privacy.SharedOnlyNote()
+			break
+		}
+	}
+	for _, m := range cfg.DomainMembers() {
+		if m.SharedOnly {
+			// privacy.MemberNote is about a member's own tier chain, and this
+			// member has none. The household's own line, below, is theirs.
+			continue
+		}
 		d.TierNotes = append(d.TierNotes, privacy.MemberNote(m, setup.StaysHome(local, m.Tiers)))
 	}
 	if cfg.Household.Name != "" {
@@ -730,9 +745,17 @@ func (s *Server) membersData(cfg *config.Config, sess *session) membersData {
 			Tiers:    strings.Join(m.Tiers, ", "),
 			Enrolled: m.TelegramID != 0,
 		}
-		if setup.StaysHome(local, m.Tiers) {
+		switch {
+		case m.SharedOnly:
+			// Neither of the two notes below is about them: both describe where a
+			// member's own conversations may travel, and every conversation this
+			// member has is the household's and travels on the household's chain.
+			row.Space = "none — the household's shared memory"
+			row.Tiers = strings.Join(cfg.Household.Tiers, ", ")
+			row.Note = "no memory of their own; everything they say that is remembered is the household's"
+		case setup.StaysHome(local, m.Tiers):
 			row.Note = "will refuse rather than use a provider"
-		} else {
+		default:
 			row.Note = "may use a provider"
 		}
 		d.Members = append(d.Members, row)
@@ -758,8 +781,16 @@ func (s *Server) handleMemberAdd(w http.ResponseWriter, r *http.Request, sess *s
 		s.membersError(w, sess, cfg, "A name, as they are known in the household.")
 		return
 	}
+	// A member with no memory of their own: no private space, no tier chain of their
+	// own, no bot and no pod. Read before the tier check, because the tier check does
+	// not apply to them — they have no private conversations to have a policy about,
+	// and their conversations run on the household's chain.
+	sharedOnly := r.PostFormValue("shared_only") != ""
 	tiers := r.PostForm["tiers"]
-	if len(tiers) == 0 {
+	if sharedOnly {
+		tiers = nil
+	}
+	if len(tiers) == 0 && !sharedOnly {
 		// No default, ever. A tier chain is that member's privacy policy and
 		// nothing here chooses one on their behalf — the same rule the terminal
 		// wizard and `kenward invite`'s help text both hold to.
@@ -779,27 +810,34 @@ func (s *Server) handleMemberAdd(w http.ResponseWriter, r *http.Request, sess *s
 		}
 	}
 
-	lore, err := s.openLore(r)
-	if err != nil {
-		s.membersError(w, sess, cfg, "lore could not be reached, and a private space has to be made in it: "+err.Error())
-		return
-	}
-	defer lore.Close()
+	member := config.MemberConfig{ID: id, Name: name, Tiers: tiers}
+	if sharedOnly {
+		// lore is not opened at all. There is no space to make, and opening the
+		// store to make nothing would fail this action on a lore outage for a
+		// member who does not need lore to exist.
+		member.SharedOnly = true
+	} else {
+		lore, err := s.openLore(r)
+		if err != nil {
+			s.membersError(w, sess, cfg, "lore could not be reached, and a private space has to be made in it: "+err.Error())
+			return
+		}
+		defer lore.Close()
 
-	label := name
-	if cfg.Household.Name != "" {
-		label = cfg.Household.Name + " — " + name
-	}
-	space, err := lore.CreateSpace(r.Context(), label)
-	if err != nil {
-		s.membersError(w, sess, cfg, "creating their private memory: "+spaceExistsHint(err))
-		return
-	}
-
-	member := config.MemberConfig{ID: id, Name: name, PrivateSpace: space.ID, Tiers: tiers}
-	if cfg.Mode == config.ModeIsolated {
-		member.BotTokenEnv = envVarFor(setup.MemberBotTokenPrefix, id)
-		member.PassphraseEnv = envVarFor(setup.MemberPassphrasePrefix, id)
+		label := name
+		if cfg.Household.Name != "" {
+			label = cfg.Household.Name + " — " + name
+		}
+		space, err := lore.CreateSpace(r.Context(), label)
+		if err != nil {
+			s.membersError(w, sess, cfg, "creating their private memory: "+spaceExistsHint(err))
+			return
+		}
+		member.PrivateSpace = space.ID
+		if cfg.Mode == config.ModeIsolated {
+			member.BotTokenEnv = envVarFor(setup.MemberBotTokenPrefix, id)
+			member.PassphraseEnv = envVarFor(setup.MemberPassphrasePrefix, id)
+		}
 	}
 	cfg.Members = append(cfg.Members, member)
 

@@ -24,6 +24,10 @@ const (
 	mariaID   = int64(1002)
 	adjacentA = int64(5000)
 	adjacentB = int64(5001)
+
+	// leo has no memory of their own: no private space, no assistant, no pod. Every
+	// conversation they have is the household's.
+	leoID = int64(1003)
 )
 
 func household() *config.Config {
@@ -42,6 +46,7 @@ func household() *config.Config {
 			{ID: "sam", Name: "Sam", TelegramID: 0, PrivateSpace: "sam-private", Tiers: []string{"local"}},
 			{ID: "ann", Name: "Ann", TelegramID: adjacentA, PrivateSpace: "ann-private", Tiers: []string{"local"}},
 			{ID: "bea", Name: "Bea", TelegramID: adjacentB, PrivateSpace: "bea-private", Tiers: []string{"cloud"}},
+			{ID: "leo", Name: "Leo", TelegramID: leoID, SharedOnly: true},
 		},
 	}
 }
@@ -128,6 +133,12 @@ func TestResolve(t *testing.T) {
 	perMemberSimple := household()
 	perMemberSimple.Household.Agents = config.AgentsPerMember
 
+	// A member who is supposed to have a private space and has not got one. Refused
+	// by config validation; Resolve is the last line of defence and is documented as
+	// being called with configurations it did not validate.
+	missingSpace := household()
+	missingSpace.Members[0].PrivateSpace = ""
+
 	tests := []struct {
 		name string
 		cfg  *config.Config
@@ -188,6 +199,114 @@ func TestResolve(t *testing.T) {
 				read:     []domain.SpaceID{"maria-private", "household"},
 				tiers:    []string{"local", "cloud"},
 				chatID:   mariaID,
+			},
+		},
+		{
+			// The whole feature, in simple mode: a member with no memory of their
+			// own, in a private chat, on the household's bot. Today this household
+			// has one agent, so every other member here resolves to ScopeDirect on
+			// this exact input; leo cannot, because there is no space for a direct
+			// scope to name.
+			name: "shared_only member in a direct chat, simple mode: the household scope",
+			cfg:  household(),
+			in:   direct(leoID),
+			want: want{
+				kind:     domain.ScopeHousehold,
+				memberID: "leo",
+				write:    "household",
+				read:     []domain.SpaceID{"household"},
+				tiers:    []string{"local", "cloud"},
+				chatID:   leoID,
+			},
+		},
+		{
+			// And the same answer under one agent each, where it is the answer
+			// every member gets. The point is that it did not change: this scope
+			// is a fact about the member, not about the household's arrangement.
+			name: "shared_only member in a direct chat, one agent each: the same scope",
+			cfg:  perMember,
+			in:   direct(leoID),
+			want: want{
+				kind:     domain.ScopeHousehold,
+				memberID: "leo",
+				write:    "household",
+				read:     []domain.SpaceID{"household"},
+				tiers:    []string{"local", "cloud"},
+				chatID:   leoID,
+			},
+		},
+		{
+			name: "shared_only member in the household group is admitted",
+			cfg:  household(),
+			in:   inGroup(groupChatID, leoID),
+			want: want{
+				kind:   domain.ScopeGroup,
+				write:  "household",
+				read:   []domain.SpaceID{"household"},
+				tiers:  []string{"local", "cloud"},
+				chatID: groupChatID,
+			},
+		},
+		{
+			name: "shared_only member in the household group, one agent each",
+			cfg:  perMember,
+			in:   inGroup(groupChatID, leoID),
+			want: want{
+				kind:   domain.ScopeGroup,
+				write:  "household",
+				read:   []domain.SpaceID{"household"},
+				tiers:  []string{"local", "cloud"},
+				chatID: groupChatID,
+			},
+		},
+		{
+			// They have no bot of their own, so a message from them on somebody
+			// else's is a message on a bot that is not theirs, and gets what
+			// anybody else gets on a bot that is not theirs.
+			name:    "shared_only member on another member's bot",
+			cfg:     perMember,
+			bot:     "david",
+			in:      direct(leoID),
+			wantErr: true,
+		},
+		{
+			// A pod that somehow came up claiming to be theirs. There is no such
+			// pod — the supervisor skips them and NewSingle refuses the selection —
+			// and if there were, it would hold no token and no key. Refused at the
+			// boundary as well, so that the answer does not depend on the wiring
+			// having got it right.
+			name:    "shared_only member on a bot bearing their own id",
+			cfg:     perMember,
+			bot:     "leo",
+			in:      direct(leoID),
+			wantErr: true,
+		},
+		{
+			// The failure the explicit flag exists to prevent, at the boundary.
+			// This member is not shared_only: the household believes they have a
+			// private space and the line is missing. Neither reading is safe —
+			// ScopeDirect would write their private notes to the empty space id,
+			// and the household scope would publish them to everybody — so this
+			// is the third answer.
+			name:    "a member with no private space who is not shared_only is served nothing",
+			cfg:     missingSpace,
+			in:      direct(davidID),
+			wantErr: true,
+		},
+		{
+			// And the same member in the group, where the fault costs nothing: a
+			// group scope names no private space for anyone, so there is nothing
+			// for a missing one to break. Refusing here would take a member out of
+			// the household chat over a line that has no bearing on it.
+			name: "the same member is still admitted to the group",
+			cfg:  missingSpace,
+			in:   inGroup(groupChatID, davidID),
+			want: want{
+				kind:   domain.ScopeGroup,
+				write:  "household",
+				read:   []domain.SpaceID{"household"},
+				tiers:  []string{"local", "cloud"},
+				chatID: groupChatID,
 			},
 		},
 		{
@@ -595,12 +714,26 @@ func assertNoPrivateSpace(t *testing.T, s domain.Scope, private []domain.SpaceID
 func TestGroupScopeNeverExposesAPrivateSpaceOverGeneratedConfigs(t *testing.T) {
 	rng := rand.New(rand.NewSource(20260815))
 
+	// A property nothing generated is a property nothing proved. These count the
+	// three arrangements this test exists to cover, and the assertions after the
+	// loop fail if the generator stopped producing one of them — which is how a
+	// property test quietly becomes decoration.
+	var (
+		sawSharedOnlyHousehold int // shared_only member, one shared agent
+		sawSharedOnlyPerMember int // shared_only member, one agent each
+		sawBrokenRefused       int // missing private space, served nothing
+	)
+
 	const configs = 200
 	for i := 0; i < configs; i++ {
 		cfg := generateHousehold(rng)
 		private := privateSpaces(cfg)
 		enrolled := enrolledIDs(cfg)
+		sharedOnly := sharedOnlyIDs(cfg)
+		broken := brokenIDs(cfg)
 		shared := domain.SpaceID(cfg.Household.SharedSpace)
+
+		sawBrokenRefused += countBrokenRefusals(t, cfg, broken)
 
 		for _, in := range generateInbounds(rng, cfg) {
 			for _, bot := range generateBots(cfg) {
@@ -613,6 +746,14 @@ func TestGroupScopeNeverExposesAPrivateSpaceOverGeneratedConfigs(t *testing.T) {
 				}
 				where := fmt.Sprintf("config %d, bot %q, inbound %+v", i, bot, in)
 
+				// A member whose private space went missing is served no private
+				// conversation. In the group they are a member like any other —
+				// nothing there names a private space for anybody — so the rule is
+				// about the chats that would have had to name one.
+				if broken[in.UserID] && !in.IsGroup && got.Kind != domain.ScopeGroup {
+					t.Fatalf("%s: a member with a missing private space was served a %s scope; the safe answer is none", where, got.Kind)
+				}
+
 				// Anything at all that resolved: the sender is an enrolled member.
 				// Being in the household's Telegram group is not enrolment, and
 				// neither is knowing a bot's name.
@@ -620,10 +761,28 @@ func TestGroupScopeNeverExposesAPrivateSpaceOverGeneratedConfigs(t *testing.T) {
 					t.Fatalf("%s: %s scope served to a sender who is not an enrolled member", where, got.Kind)
 				}
 
+				// The narrow statement of the new member's whole guarantee, asserted
+				// before anything else is looked at and against the sender rather
+				// than against the scope's own kind: whatever Resolve decided this
+				// is, if the person who sent it has no memory of their own then it
+				// must not be a scope that touches one. Asked this way round because
+				// a bug that produced a direct scope for them would answer the
+				// kind-based questions below quite happily.
+				if sharedOnly[in.UserID] && got.TouchesPrivateMemory() {
+					t.Fatalf("%s: a shared_only member was given a %s scope, which touches a private space", where, got.Kind)
+				}
+
 				if got.TouchesPrivateMemory() {
 					// Direct scopes may name exactly one private space: the sender's own.
 					if got.Member == nil {
 						t.Fatalf("%s: direct scope with nil Member", where)
+					}
+					// A direct scope with no space to write to is the failure the
+					// explicit flag exists to make impossible. It would either
+					// error at the store or, worse, be defaulted somewhere
+					// downstream into a space that belongs to somebody.
+					if got.Member.Private == "" || got.Write == "" {
+						t.Fatalf("%s: direct scope for %q names no private space (Write = %q)", where, got.Member.ID, got.Write)
 					}
 					// And they are only ever reached on that member's own bot, or on
 					// the household's while it is also serving as everybody's.
@@ -681,11 +840,18 @@ func TestGroupScopeNeverExposesAPrivateSpaceOverGeneratedConfigs(t *testing.T) {
 						t.Fatalf("%s: a message that is not a group message resolved to a group scope", where)
 					}
 				case domain.ScopeHousehold:
-					// It exists only where the household chose one agent each. Under
-					// one agent this chat is the member's own and must resolve as it
-					// always has.
-					if !cfg.AgentPerMember() {
-						t.Fatalf("%s: a household scope was resolved for a household that has one agent", where)
+					if got.Member == nil {
+						t.Fatalf("%s: household scope with nil Member; kenward must know who is asking", where)
+					}
+					// Two disjoint reasons, and no third. Under one agent each,
+					// this is every member's chat with kenward. For a member with
+					// no assistant of their own it is their only conversation, in
+					// either arrangement. Anything else reaching this kind means a
+					// member who does have an agent of their own has quietly lost
+					// their private chat to the household's memory, which is the
+					// downgrade this scope must never be the result of.
+					if !cfg.AgentPerMember() && !got.Member.SharedOnly {
+						t.Fatalf("%s: a household scope was resolved for %q, who has an agent of their own in a household with one agent", where, got.Member.ID)
 					}
 					if in.IsGroup {
 						t.Fatalf("%s: a group message resolved to a private conversation with kenward", where)
@@ -693,17 +859,81 @@ func TestGroupScopeNeverExposesAPrivateSpaceOverGeneratedConfigs(t *testing.T) {
 					// It carries the member — that is the whole difference from a
 					// group scope, and the assertions above have already established
 					// that carrying one buys no access to anything of theirs.
-					if got.Member == nil {
-						t.Fatalf("%s: household scope with nil Member; kenward must know who is asking", where)
-					}
 					if got.Member.TelegramID != in.UserID {
 						t.Fatalf("%s: household scope names member %q, who is not the sender", where, got.Member.ID)
+					}
+					if got.Member.SharedOnly {
+						if cfg.AgentPerMember() {
+							sawSharedOnlyPerMember++
+						} else {
+							sawSharedOnlyHousehold++
+						}
 					}
 				default:
 					t.Fatalf("%s: unexpected scope kind %v", where, got.Kind)
 				}
 			}
 		}
+	}
+
+	// The one that is easy to lose. The household scope existed only under one agent
+	// each until a member with no assistant of their own needed it, and it is now
+	// reached in simple mode too; a generator that stopped producing simple-mode
+	// households with such a member would leave the whole of that path unasserted
+	// while the test still passed.
+	coverage(t, "shared_only member under one shared agent", sawSharedOnlyHousehold)
+	coverage(t, "shared_only member under one agent each", sawSharedOnlyPerMember)
+	coverage(t, "member with a missing private space refused", sawBrokenRefused)
+}
+
+// countBrokenRefusals is how many direct messages from members with a missing private
+// space were refused, which is the only way to observe that rule: it produces an error
+// rather than a scope, so the loop above sees nothing to assert against.
+func countBrokenRefusals(t *testing.T, cfg *config.Config, broken map[int64]bool) int {
+	t.Helper()
+	n := 0
+	for id := range broken {
+		if _, err := scope.Resolve(cfg, "", direct(id)); errors.Is(err, scope.ErrNotEnrolled) {
+			n++
+		}
+	}
+	return n
+}
+
+// sharedOnlyIDs is the set of Telegram accounts belonging to members with no memory of
+// their own. Zero is never in it, for the same reason it is never in enrolledIDs.
+func sharedOnlyIDs(cfg *config.Config) map[int64]bool {
+	out := make(map[int64]bool, len(cfg.Members))
+	for _, m := range cfg.Members {
+		if m.TelegramID != 0 && m.SharedOnly {
+			out[m.TelegramID] = true
+		}
+	}
+	return out
+}
+
+// brokenIDs is the set of Telegram accounts belonging to members who are supposed to
+// have a private space and have not got one. They are the configuration fault that
+// shared_only exists to be distinguishable from, and the property is that they are
+// served no private conversation at all rather than either of the two answers that
+// would look reasonable.
+func brokenIDs(cfg *config.Config) map[int64]bool {
+	out := make(map[int64]bool, len(cfg.Members))
+	for _, m := range cfg.Members {
+		if m.TelegramID != 0 && !m.SharedOnly && m.PrivateSpace == "" {
+			out[m.TelegramID] = true
+		}
+	}
+	return out
+}
+
+// coverage is the guard that the loop above tested what it claims to. Split out so the
+// three counts read as one statement rather than as three anonymous integers at the
+// bottom of a two-hundred-iteration loop.
+func coverage(t *testing.T, name string, n int) {
+	t.Helper()
+	if n == 0 {
+		t.Errorf("the generated households produced no %s; this property was not exercised", name)
 	}
 }
 
@@ -739,17 +969,42 @@ func generateHousehold(rng *rand.Rand) *config.Config {
 			// Adjacent ids are the interesting case for a lookup bug.
 			tg = base + int64(i)
 		}
-		cfg.Members = append(cfg.Members, config.MemberConfig{
+		m := config.MemberConfig{
 			ID:           fmt.Sprintf("m%d", i),
 			Name:         fmt.Sprintf("Member %d", i),
 			TelegramID:   tg,
 			PrivateSpace: fmt.Sprintf("private-%d-%d", rng.Intn(1000), i),
 			Tiers:        []string{"local"},
-		})
+		}
+		switch rng.Intn(8) {
+		case 0:
+			// A member with no memory of their own, as the household declared
+			// them: shared_only, and everything a private conversation needs
+			// absent. The generator produces them beside full members in the same
+			// household on purpose — the property that matters is not that they
+			// are served the shared space, which is easy, but that the member
+			// sitting next to them in the file is unaffected.
+			m.SharedOnly = true
+			m.PrivateSpace = ""
+			m.Tiers = nil
+		case 1:
+			// And the fault the flag exists to be distinguishable from: a member
+			// nobody marked shared_only whose private space is missing. Validation
+			// rejects it; Resolve must not turn it into either of the two answers
+			// that look plausible.
+			m.PrivateSpace = ""
+		}
+		cfg.Members = append(cfg.Members, m)
 	}
 	if rng.Intn(5) == 0 {
 		// A configuration validation would reject. Resolve must still hold the line.
-		cfg.Household.SharedSpace = cfg.Members[rng.Intn(n)].PrivateSpace
+		// Skipped when the member drawn has no private space at all: setting the
+		// household's shared space to "" would make every scope in the household
+		// nameless, which is a different fault and one the generator has no way to
+		// say anything useful about.
+		if p := cfg.Members[rng.Intn(n)].PrivateSpace; p != "" {
+			cfg.Household.SharedSpace = p
+		}
 	}
 	if rng.Intn(5) == 0 {
 		// A group_chat_id that is really a member's own chat — a misconfiguration

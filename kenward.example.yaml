@@ -316,6 +316,34 @@ members:
     tiers: [local, cloud]
     bot_token_env: KENWARD_BOT_TOKEN_JORDAN
     passphrase_env: KENWARD_PASSPHRASE_JORDAN
+  - # shared_only marks a member of the household who has no assistant of their own:
+    # a teenager, a grandparent, a flatmate. They are in the family group and kenward
+    # answers them there, and they can talk to kenward privately too — but everything
+    # kenward remembers about that conversation goes to household.shared_space, where
+    # everyone can read it, and nothing is written there without them being shown the
+    # exact words and saying yes first.
+    #
+    # What they do not have is a private_space, a persona, a tiers chain of their own,
+    # a bot of their own, or, in isolated mode, a pod. Every one of those lines is a
+    # validation error next to shared_only rather than a leftover:
+    # setting one means somebody meant this person to be a full member, and the file
+    # says which of the two it is instead of quietly picking. Their conversations run
+    # on household.tiers, in the household's voice, wherever the household bot runs:
+    # this process in simple mode, the group pod in isolated.
+    #
+    # To give them private memory later, delete shared_only and give them the four
+    # lines david has above. Nothing carries over, because nothing was ever stored.
+    id: leo
+    name: Leo
+    telegram_id: 100200303
+    shared_only: true
+    # The one persona field that still means something for them. kenward answers
+    # them, so it answers them in a language, and it is theirs to choose in the
+    # tutorial exactly as everybody else's is. agent_name, tone and character are the
+    # household's here whatever this block says: there is no agent of theirs for the
+    # other three to describe. See config.PersonaFor.
+    persona:
+      language: "English"
 
 # endpoints lists every OpenAI-compatible backend kenward may route to, and the tier
 # tags each one answers for. A tier named in a tiers: chain above but not present as a

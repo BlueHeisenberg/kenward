@@ -28,6 +28,11 @@ func TestIsolatedRealPodman(t *testing.T) {
 		},
 		Members: []config.MemberConfig{
 			{ID: "it-member", Name: "IT", TelegramID: 1, PrivateSpace: "p", Tiers: []string{"local"}, BotTokenEnv: "KENWARD_IT_TOKEN"},
+			// A member with no memory of their own. Two members are declared and
+			// one container must exist, which is the whole of "no pod in isolated
+			// mode" stated where a real Podman can be asked: the unit test asserts
+			// what the supervisor intends, and this asserts what the machine did.
+			{ID: "it-shared", Name: "Shared", TelegramID: 2, SharedOnly: true},
 		},
 	}
 	sup, err := NewIsolated(cfg, IsolatedOptions{
@@ -53,7 +58,13 @@ func TestIsolatedRealPodman(t *testing.T) {
 		if herr != nil {
 			t.Fatalf("Health: %v", herr)
 		}
+		if len(hs) > 1 {
+			t.Fatalf("Health reports %d units for a household of one full member and one shared_only member; the second has no pod", len(hs))
+		}
 		if len(hs) == 1 && hs[0].State == StateReady {
+			if hs[0].Member != "it-member" {
+				t.Fatalf("the one running pod is %q, want it-member", hs[0].Member)
+			}
 			break
 		}
 		time.Sleep(time.Second)

@@ -271,11 +271,21 @@ func (w *Wizard) askMembers(ctx context.Context) error {
 		w.addMember(name, taken)
 	}
 
+	if err := w.askOwnMemory(); err != nil {
+		return err
+	}
+	w.derivePodEnv()
+
 	// The spaces are made after every name is in, so that a household abandoned
 	// half way through the list leaves no spaces behind for the people who were
-	// never entered.
+	// never entered. And after the question above, so that a household with a
+	// shared_only member in it leaves no space behind for somebody who was never
+	// going to have one.
 	for i := range w.members {
 		m := &w.members[i]
+		if m.SharedOnly {
+			continue
+		}
 		id, err := w.makeSpace(ctx,
 			w.privateSpaceLabelFor(*m),
 			m.Name+"'s private memory")
@@ -294,21 +304,69 @@ func (w *Wizard) askMembers(ctx context.Context) error {
 	return nil
 }
 
-// addMember derives a member's id and — in isolated mode — their own bot token
-// variable, from their name. The private space is not derived: it is a lore space,
-// made once every name is in, and its id is whatever lore mints.
+// askOwnMemory settles which members have a memory of their own.
+//
+// One question for the household first, defaulting to yes, because that is the answer
+// almost every household gives and a wizard that asks about each person by name would
+// be charging everybody for the household in ten that has a teenager in it. Only a
+// household that says no is then asked person by person.
+//
+// The per-person question also defaults to yes, so that a household that said no
+// meaning one person does not have to say yes about everybody else to get back to
+// where it started.
+func (w *Wizard) askOwnMemory() error {
+	all, err := w.io.AskYesNo(questionEveryoneHasMemory, true)
+	if err != nil {
+		return err
+	}
+	if all {
+		return nil
+	}
+	w.blank()
+	w.io.Print(sharedOnlyIntro)
+	w.blank()
+	for i := range w.members {
+		own, err := w.io.AskYesNo(questionOwnMemory(w.members[i].Name), true)
+		if err != nil {
+			return err
+		}
+		if own {
+			continue
+		}
+		w.members[i].SharedOnly = true
+	}
+	return nil
+}
+
+// addMember derives a member's id from their name. Neither the private space nor the
+// pod's variables are derived here: the space is a lore space whose id is whatever
+// lore mints, and the variables belong to a pod that a member with no memory of their
+// own never gets. Both wait until the whole list is in and askOwnMemory has run.
 func (w *Wizard) addMember(name string, taken map[string]bool) {
 	id := uniqueSlug(name, taken, fmt.Sprintf("member-%d", len(w.members)+1))
-	m := config.MemberConfig{ID: id, Name: name}
-	if w.mode == config.ModeIsolated {
-		m.BotTokenEnv = envVarFor(MemberBotTokenPrefix, id)
-		w.recordEnv(m.BotTokenEnv, fmt.Sprintf("members[%d].bot_token_env", len(w.members)),
-			fmt.Sprintf("created when %s enrols", name), "")
-		m.PassphraseEnv = envVarFor(MemberPassphrasePrefix, id)
-		w.recordEnv(m.PassphraseEnv, fmt.Sprintf("members[%d].passphrase_env", len(w.members)),
-			fmt.Sprintf("chosen by whoever runs %s's pod; it wraps %s's key and nobody else's", name, name), "")
+	w.members = append(w.members, config.MemberConfig{ID: id, Name: name})
+}
+
+// derivePodEnv names each pod's two variables, in isolated mode, for the members who
+// have a pod. A shared_only member has no bot and no key, so naming variables for them
+// would print two lines telling an operator to create secrets for a container that is
+// never started, and then refuse to start the household until they did.
+func (w *Wizard) derivePodEnv() {
+	if w.mode != config.ModeIsolated {
+		return
 	}
-	w.members = append(w.members, m)
+	for i := range w.members {
+		m := &w.members[i]
+		if m.SharedOnly {
+			continue
+		}
+		m.BotTokenEnv = envVarFor(MemberBotTokenPrefix, m.ID)
+		w.recordEnv(m.BotTokenEnv, fmt.Sprintf("members[%d].bot_token_env", i),
+			fmt.Sprintf("created when %s enrols", m.Name), "")
+		m.PassphraseEnv = envVarFor(MemberPassphrasePrefix, m.ID)
+		w.recordEnv(m.PassphraseEnv, fmt.Sprintf("members[%d].passphrase_env", i),
+			fmt.Sprintf("chosen by whoever runs %s's pod; it wraps %s's key and nobody else's", m.Name, m.Name), "")
+	}
 }
 
 // askIdentity asks how many assistants the household has, and then what kenward's own
@@ -843,7 +901,25 @@ func (w *Wizard) collectScripted(ctx context.Context, a *Answers) error {
 		w.addMember(name, taken)
 	}
 	for i := range w.members {
+		if a.SharedOnlyMembers[w.members[i].ID] {
+			w.members[i].SharedOnly = true
+		}
+	}
+	// After the marking, so that a shared_only member never has a pod's variables
+	// named for them, and before the loop below, which records the values that
+	// arrived against those names.
+	w.derivePodEnv()
+	for i := range w.members {
 		m := &w.members[i]
+		if m.SharedOnly {
+			// Nothing to make and nothing to check. A space id supplied for them is
+			// a caller contradicting itself, and saying so is better than making a
+			// space that the file may not name.
+			if strings.TrimSpace(a.MemberSpaces[m.ID]) != "" {
+				return fmt.Errorf("setup: member %q is in SharedOnlyMembers and also has a private space in MemberSpaces; they have no memory of their own, so one of the two is wrong", m.ID)
+			}
+			continue
+		}
 		space := strings.TrimSpace(a.MemberSpaces[m.ID])
 		if space == "" {
 			made, err := w.makeSpace(ctx, w.privateSpaceLabelFor(*m), m.Name+"'s private memory")

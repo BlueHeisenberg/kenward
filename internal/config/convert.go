@@ -58,6 +58,7 @@ func (m MemberConfig) Domain() domain.Member {
 		Name:        m.Name,
 		TelegramID:  m.TelegramID,
 		Private:     domain.SpaceID(m.PrivateSpace),
+		SharedOnly:  m.SharedOnly,
 		Tiers:       copyStrings(m.Tiers),
 		BotTokenEnv: m.BotTokenEnv,
 		EnrolledAt:  m.EnrolledAt,

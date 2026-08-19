@@ -332,6 +332,15 @@ var english = Catalogue{
 		"of its own. Nobody else in the household can read your private memory, and neither can the person who " +
 		"runs this machine. The honest limit: someone with root access to this machine, while your assistant is " +
 		"running, could reach your key.",
+	EnrolSharedOnlyHeading: "We share one memory",
+	EnrolSharedOnlyBody: "You're part of this household, so I answer you here and in the family group, " +
+		"and you can ask me anything the household knows.\n\nWhat you don't have is a " +
+		"memory of your own. There is no space here for just you and me: everything I " +
+		"remember from you goes to the household's shared memory, where everyone can " +
+		"read it. So I show you the exact words first and write nothing until you say " +
+		"yes — in this chat as much as in the group, because it is the same memory " +
+		"either way.\n\nIf you would rather have one of your own, ask whoever set me " +
+		"up. Nothing carries over when that changes, because nothing was ever stored.",
 	EnrolGroupHeading: "The group chat is shared",
 	EnrolGroupBody: "The household group chat is the shared memory. Whatever I remember there, everyone can see. " +
 		"Nothing crosses over on its own: if something private should become shared, ask me, and I'll show you " +

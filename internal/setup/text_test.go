@@ -103,7 +103,7 @@ func TestPrivacyBlockPrintsTheSharedStatementVerbatim(t *testing.T) {
 		{config.ModeSimple, privacy.ModeSimple, "Privacy, in simple mode"},
 		{config.ModeIsolated, privacy.ModeIsolated, "Privacy, in isolated mode"},
 	} {
-		block := privacyBlock(tc.mode, config.AgentsShared)
+		block := privacyBlock(tc.mode, config.AgentsShared, false)
 		// A household with one shared assistant has no per-member bots, so the note
 		// about what one buys is not printed at it: a paragraph about bots nobody has
 		// is noise in the one block somebody actually reads to the end.
@@ -118,7 +118,7 @@ func TestPrivacyBlockPrintsTheSharedStatementVerbatim(t *testing.T) {
 		// and the wizard declines it at the question. A simple-mode household never
 		// has per-member bots, whatever it wrote in the file, and telling one what
 		// their own bot did not buy them would be describing a bot they do not have.
-		withBots := privacyBlock(tc.mode, config.AgentsPerMember)
+		withBots := privacyBlock(tc.mode, config.AgentsPerMember, false)
 		printed := strings.Contains(withBots, privacy.OwnBotNote(tc.want))
 		if want := tc.mode == config.ModeIsolated; printed != want {
 			t.Errorf("the %s block under one agent each prints the own-bot note = %v, want %v:\n%s",

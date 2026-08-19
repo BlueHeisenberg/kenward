@@ -450,7 +450,24 @@ type Catalogue struct {
 	// language is allowed to live here and nowhere else, and enrol.Explanation renders
 	// this on one path. A mode nobody set renders nothing, so the failure of the
 	// plumbing understates isolated mode rather than overstating simple mode.
-	EnrolPrivateSealed     string
+	EnrolPrivateSealed string
+	// EnrolSharedOnlyHeading and EnrolSharedOnlyBody replace all three messages for a
+	// member who has no memory of their own — domain.Member.SharedOnly.
+	//
+	// Replace, not append. Every one of the three says something that is false for
+	// them, and the first one says it in its first six words: "this chat is private,
+	// just you and me, is your private memory". There is no space of theirs for it to
+	// be. This is the one text in the catalogue whose reason for existing is that the
+	// text beside it would be a lie if it were sent to the wrong person, so it is one
+	// message rather than three edited ones — an onboarding assembled by deleting
+	// clauses from three paragraphs is an onboarding one clause away from lying again.
+	//
+	// It is mode-blind, and that is a fact about the member rather than an omission.
+	// Sealing is about who can read a member's own memory, and this member has none:
+	// there is nothing for isolated mode to seal and nothing for simple mode to
+	// expose. The household's shared memory is everybody's in both modes.
+	EnrolSharedOnlyHeading string
+	EnrolSharedOnlyBody    string
 	EnrolGroupHeading      string
 	EnrolGroupBody         string
 	EnrolMemoryHeading     string

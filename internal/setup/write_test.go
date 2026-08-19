@@ -121,6 +121,7 @@ func TestTheWizardWritesTheEnvFormOfEverySecret(t *testing.T) {
 	answers := []string{
 		"2", "Home", realToken, "n",
 		"David", "",
+		"",             // everyone gets a memory of their own
 		"", "", "", "", // identity: one assistant, and kenward as it has always been
 		"monster", "http://monster.tail:8000/v1", "q", "n", "local", "y",
 		"openrouter", "https://openrouter.ai/api/v1", "sonnet", "y", "OPENROUTER_API_KEY", "sk-x", "cloud", "n",

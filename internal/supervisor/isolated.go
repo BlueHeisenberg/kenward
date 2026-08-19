@@ -483,6 +483,20 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 	var missing []string
 	for _, mc := range i.cfg.Members {
 		m := mc.Domain()
+		if m.SharedOnly {
+			// No pod, and this is the only place that decides so. A pod is a
+			// member's own bot, their own key and their own lore volume, and this
+			// member has none of the three: there is nothing for a container to
+			// hold and nothing for it to serve. Their conversations — the group's
+			// and their own chat with kenward — both run in the group pod, on the
+			// household's bot, which is where the household's memory already is.
+			//
+			// Skipped without a health record on purpose, unlike an unenrolled
+			// member, who has a pod that is waiting for them. This member is not
+			// waiting for anything; a permanently absent unit reported every time
+			// `doctor` runs would be a fault nobody can clear.
+			continue
+		}
 		// A member who has not claimed their invite gets a pod like everybody else,
 		// and that is D-023 rather than a convenience: in this mode a member's bot
 		// exists *before* they claim, the operator hands over a code, and the member

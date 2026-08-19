@@ -500,6 +500,35 @@ func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 		space := strings.TrimSpace(m.PrivateSpace)
 		shared := strings.TrimSpace(c.Household.SharedSpace)
 		switch {
+		case m.SharedOnly:
+			// Everything a private conversation of their own would need is a
+			// contradiction here rather than a leftover, and each is named
+			// separately because each is a different thing the operator believed.
+			// Silence would be worse than pedantry: a private_space written beside
+			// shared_only is somebody who meant the member to have one, and a
+			// bot_token_env is somebody expecting a pod that will never be started.
+			// Reporting the pair is the only way either of them finds out which of
+			// the two lines the file is actually obeying.
+			for _, f := range [...]struct{ field, value string }{
+				{"private_space", m.PrivateSpace},
+				{"bot_token_env", m.BotTokenEnv},
+				{"bot_token_file", m.BotTokenFile},
+				{"passphrase_env", m.PassphraseEnv},
+				{"passphrase_file", m.PassphraseFile},
+			} {
+				if strings.TrimSpace(f.value) == "" {
+					continue
+				}
+				p.addf("%s.%s: %q is set on a shared_only member, who has no private memory, no assistant of their own and no pod; remove it, or remove shared_only", where, f.field, f.value)
+			}
+			// The chain is the privacy policy for a member's own material, and this
+			// member has none: every conversation they have is the household's and
+			// travels on household.tiers. A chain written here would be read by
+			// nothing, which is the quiet way for somebody to believe they have
+			// confined a teenager's conversations to the house.
+			if len(m.Tiers) > 0 {
+				p.addf("%s.tiers: a shared_only member's conversations are the household's and use household.tiers; a chain here would be read by nothing", where)
+			}
 		case space == "":
 			p.addf("%s.private_space: required", where)
 		default:
@@ -531,14 +560,16 @@ func (c *Config) validateMembers(p *problems, tags map[string]bool) {
 			}
 		}
 
-		c.validateTiers(p, where+".tiers", m.Tiers, tags)
+		if !m.SharedOnly {
+			c.validateTiers(p, where+".tiers", m.Tiers, tags)
+		}
 
 		// Whether each member has a token at all is settled in validateSecrets,
 		// which knows about files and systemd credentials as well as variables.
 		// What is settled here is that no two pods share one: two pods on one bot
 		// is not isolation, whichever form the token arrives in and whether the
 		// other pod is a member's or the household group's.
-		if c.Mode == ModeIsolated {
+		if c.Mode == ModeIsolated && !m.SharedOnly {
 			c.checkTokenSource(p, where, "bot_token_env", "variable", strings.TrimSpace(m.BotTokenEnv), tokens, i)
 			c.checkTokenSource(p, where, "bot_token_file", "file", strings.TrimSpace(m.BotTokenFile), tokenFiles, i)
 			// And the same rule for the passphrase, which is the other half of what
@@ -726,6 +757,12 @@ func (c *Config) secretRefs(scope UnitScope) []secretRef {
 	if c.Mode == ModeIsolated {
 		for i, m := range c.Members {
 			if !scope.Serves(m.ID) {
+				continue
+			}
+			if m.SharedOnly {
+				// No pod, so no bot and no key: there is no process to hand
+				// either to. Demanding them would make the household unstartable
+				// over credentials for a container nobody starts.
 				continue
 			}
 			ref := m.BotTokenRef()
