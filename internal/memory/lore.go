@@ -398,27 +398,64 @@ func (c *Client) Spaces(ctx context.Context) ([]Space, error) {
 // different name.
 func (c *Client) CreateSpace(ctx context.Context, name string) (Space, error) {
 	name = strings.TrimSpace(name)
-	switch {
-	case name == "":
-		return Space{}, fmt.Errorf("memory: a space needs a name: %w", ErrInvalidArgument)
-	case strings.ContainsAny(name, "\x00\n\r"):
-		// The name comes from a web form, and this is the trust boundary. A
-		// newline is not a lore problem — lore would store it — it is a name
-		// that cannot be shown on the one line every listing gives it, here and
-		// in `lore spaces`.
-		return Space{}, fmt.Errorf("memory: a space name cannot contain a newline or a null byte: %w", ErrInvalidArgument)
-	case strings.HasPrefix(name, "-"):
-		// No longer argv from here — lore is called in-process — but `lore space
-		// invite <name>` is the very next command an operator runs against a
-		// space kenward made, and lore's flag parser reads a leading dash as a
-		// flag.
-		return Space{}, fmt.Errorf("memory: a space name cannot start with %q, which lore's own command line would read as a flag: %w", "-", ErrInvalidArgument)
+	if err := checkSpaceName(name); err != nil {
+		return Space{}, err
 	}
 	sp, err := c.store.CreateSpace(ctx, name, lore.Shared)
 	if err != nil {
 		return Space{}, fmt.Errorf("memory: creating lore space %q: %w", name, mapErr(err))
 	}
 	return Space{ID: sp.ID, Name: sp.Name, Kind: string(sp.Kind)}, nil
+}
+
+// CreateSpaceWithID makes a shared lore space at an id kenward.yaml already
+// names, and returns the space that is there when it already exists.
+//
+// This is how a pod comes to hold the space it is configured for. In isolated
+// mode the wizard runs on the host and the store that has to hold a member's
+// private space is inside that member's container, on a volume the wizard
+// cannot reach. CreateSpace above would mint a second id there, which is why
+// the recipe this replaces ended with an operator pasting one id over the
+// other; here the configured id is the only id, and no one has to copy
+// anything anywhere.
+//
+// It is idempotent, which is what lets `run` call it on every boot without
+// keeping any state to tell a first boot from a fifth. So unlike CreateSpace
+// it may return a space it did not create — and that is not the get-or-create
+// CreateSpace refuses to be, because the match is on the configured id and
+// never on a name two members could share.
+func (c *Client) CreateSpaceWithID(ctx context.Context, id, name string) (Space, error) {
+	name = strings.TrimSpace(name)
+	if err := checkSpaceName(name); err != nil {
+		return Space{}, err
+	}
+	sp, err := c.store.CreateSpaceWithID(ctx, strings.TrimSpace(id), name, lore.Shared)
+	if err != nil {
+		return Space{}, fmt.Errorf("memory: creating lore space %s: %w", id, mapErr(err))
+	}
+	return Space{ID: sp.ID, Name: sp.Name, Kind: string(sp.Kind)}, nil
+}
+
+// checkSpaceName is the trust boundary for a name kenward is about to give a
+// lore space. Both creators run it, so neither can be the lenient one.
+func checkSpaceName(name string) error {
+	switch {
+	case name == "":
+		return fmt.Errorf("memory: a space needs a name: %w", ErrInvalidArgument)
+	case strings.ContainsAny(name, "\x00\n\r"):
+		// The name comes from a web form or a configuration file, and this is
+		// the trust boundary. A newline is not a lore problem — lore would store it — it is a name
+		// that cannot be shown on the one line every listing gives it, here and
+		// in `lore spaces`.
+		return fmt.Errorf("memory: a space name cannot contain a newline or a null byte: %w", ErrInvalidArgument)
+	case strings.HasPrefix(name, "-"):
+		// No longer argv from here — lore is called in-process — but `lore space
+		// invite <name>` is the very next command an operator runs against a
+		// space kenward made, and lore's flag parser reads a leading dash as a
+		// flag.
+		return fmt.Errorf("memory: a space name cannot start with %q, which lore's own command line would read as a flag: %w", "-", ErrInvalidArgument)
+	}
+	return nil
 }
 
 // requireSpace fails unless this lore home holds the named space.

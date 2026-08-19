@@ -133,9 +133,11 @@ of these constrain the design:
   origin, timestamps and version. This was not true of `lore mcp`, which rendered the
   snippet and discarded the entry, and kenward carried an excerpt doctrine to stay
   honest about it. That doctrine is gone; see PROMPT.md.
-- **Space creation and init are on the API** (`lore.Init`, `Store.CreateSpace`) but
-  neither can make a space *at a chosen id*. A pod can therefore create its own store
-  and not the spaces `kenward.yaml` names.
+- **Space creation and init are on the API** (`lore.Init`, `Store.CreateSpace`), and so
+  is creating a space *at a chosen id* (`Store.CreateSpaceWithID`, idempotent). A pod
+  therefore creates its own store AND the spaces `kenward.yaml` names for it, at those
+  ids. Granting membership of a shared space is deliberately not on the API: that one is
+  a person's decision, and stays `lore space invite` / `lore join`.
 - **Sync is last-writer-wins per entry, not a CRDT.** The losing version is discarded
   silently, with no conflict record, and a machine with a fast clock wins every conflict.
   Household clocks should be synced, and nothing in kenward may assume a write it made is

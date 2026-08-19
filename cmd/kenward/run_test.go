@@ -409,41 +409,109 @@ func TestRunRefusesAStoreHoldingNoneOfItsSpaces(t *testing.T) {
 	}
 }
 
-// TestRunStartsAPodThatHasNotBeenProvisionedYet is the case the refusal above must not
-// catch, and it is why the discriminator cannot be "kenward created the store".
+// TestAPodMakesItsOwnSpaceOnFirstBoot is the whole of the isolated-mode fix, against a
+// real lore store rather than a probe that says yes.
 //
-// A pod's first boot is legitimately a store kenward just made holding none of the
-// configured spaces. Every step that puts one there — `lore space create`, `lore space
-// invite`, `lore join` — is `docker compose exec` INSIDE a running pod, so a pod that
-// refused to start until its spaces existed could never be given them. It would not be
-// a stricter policy, it would be an unprovisionable mode.
-func TestRunStartsAPodThatHasNotBeenProvisionedYet(t *testing.T) {
-	t.Parallel()
-	for _, args := range [][]string{{"run", "--member", "david"}, {"run", "--group"}} {
-		t.Run(strings.Join(args[1:], " "), func(t *testing.T) {
-			t.Parallel()
+// A pod's first boot is an empty volume: no lore home, no account, and none of the
+// spaces kenward.yaml names, because the wizard that named them ran on the host and a
+// pod's store is somewhere the host cannot reach. Until lore could create a space at a
+// chosen id, the only way out was an operator running `lore space create` inside the
+// container and pasting the new id over the wizard's — two ids for one space, per
+// member, before the household worked at all. Now the pod makes the space at the
+// configured id itself, and it is that id that has to come back out of the store here.
+//
+// Nothing is stubbed below the config: a real home is initialised, a real space is
+// created and the real startup handshake reads it back. That is deliberate — the defect
+// this replaces was invisible to every probe-level test, because a probe that answers
+// "the space is missing" cannot notice that nothing was going to create it.
+func TestAPodMakesItsOwnSpaceOnFirstBoot(t *testing.T) {
+	for _, tc := range []struct {
+		args  []string
+		space func(cfg *config.Config) string
+		// other is a space this unit is configured for and does NOT create: the
+		// household's shared space in a member's pod, which arrives by invitation.
+		other func(cfg *config.Config) string
+	}{
+		{
+			args:  []string{"run", "--member", "david"},
+			space: func(cfg *config.Config) string { return cfg.Members[0].PrivateSpace },
+			other: func(cfg *config.Config) string { return cfg.Household.SharedSpace },
+		},
+		{
+			args:  []string{"run", "--group"},
+			space: func(cfg *config.Config) string { return cfg.Household.SharedSpace },
+		},
+	} {
+		t.Run(strings.Join(tc.args[1:], " "), func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), "lore")
+			// Both seams, because they are two: the process environment is what
+			// internal/memory reads, and vars is what kenward's own env seam reads.
+			// Never the developer's own store — this is a real lore home and a real
+			// account, and nothing removes one.
+			t.Setenv("LORE_HOME", home)
 			vars := fullEnvironment()
-			vars["LORE_HOME"] = filepath.Join(t.TempDir(), "lore")
+			vars["LORE_HOME"] = home
 
 			h := newHarness(t, isolatedYAML, vars)
 			h.e.probes = healthyProbes()
-			h.e.probes.loreInit = func(context.Context, string, string) (bool, error) { return true, nil }
-			h.e.probes.lore = func(_ context.Context, cfg *config.Config, scope config.UnitScope) loreResult {
-				var res loreResult
-				for _, s := range configuredSpaces(cfg, scope) {
-					res.Spaces = append(res.Spaces, spaceResult{Space: s, Err: unknownSpaceErr(s)})
-				}
-				return res
-			}
+			// The real ones: initialise the home, create this unit's spaces, and ask
+			// the store what it holds.
+			h.e.probes.loreInit = nil
+			h.e.probes.loreMake = nil
+			h.e.probes.lore = nil
 			built := false
 			h.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
 				built = true
 				return stubSupervisor{}, nil
 			}
 
-			if code := h.run(args...); code != exitOK || !built {
-				t.Fatalf("exit = %d, supervisor built = %v; a pod that cannot start cannot be provisioned\n%s",
+			if code := h.run(tc.args...); code != exitOK || !built {
+				t.Fatalf("exit = %d, supervisor built = %v; a pod must come up on an empty volume\n%s",
 					code, built, h.both())
+			}
+
+			cfg := mustLoad(t, isolatedYAML)
+			client, err := memory.NewClient(memory.Config{LoreHome: home})
+			if err != nil {
+				t.Fatalf("opening the store the pod made: %v", err)
+			}
+			defer client.Close()
+			spaces, err := client.Spaces(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			held := map[string]bool{}
+			for _, sp := range spaces {
+				held[sp.ID] = true
+			}
+			if want := tc.space(cfg); !held[want] {
+				t.Errorf("the store holds %+v; the configured space %s is not among them — "+
+					"a pod that mints its own id is the defect this closes", spaces, want)
+			}
+			if tc.other != nil && held[tc.other(cfg)] {
+				t.Errorf("the pod created the household's shared space %s; that one is joined, "+
+					"not created here, and a second space at that id could never be joined into "+
+					"the household's", tc.other(cfg))
+			}
+
+			// And it is idempotent: the second boot finds the space it made rather
+			// than refusing, which is what lets it run unconditionally.
+			h2 := newHarness(t, isolatedYAML, vars)
+			h2.e.probes = healthyProbes()
+			h2.e.probes.loreInit, h2.e.probes.loreMake, h2.e.probes.lore = nil, nil, nil
+			h2.e.supervisors = func(*env, *config.Config, runOptions, *slog.Logger) (supervisor.Supervisor, error) {
+				return stubSupervisor{}, nil
+			}
+			if code := h2.run(tc.args...); code != exitOK {
+				t.Fatalf("second boot exit = %d, want 0\n%s", code, h2.both())
+			}
+			after, err := client.Spaces(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after) != len(spaces) {
+				t.Errorf("the second boot took the store from %d spaces to %d; it must create nothing",
+					len(spaces), len(after))
 			}
 		})
 	}

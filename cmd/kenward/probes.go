@@ -22,6 +22,7 @@ import (
 type probes struct {
 	lore     func(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult
 	loreInit func(ctx context.Context, home, device string) (bool, error)
+	loreMake func(ctx context.Context, cfg *config.Config, scope config.UnitScope) error
 	sync     func(ctx context.Context) syncResult
 	telegram func(ctx context.Context, token string) telegramResult
 	endpoint func(ctx context.Context, ep routing.Endpoint) endpointResult
@@ -54,6 +55,13 @@ func (p probes) loreInitProbe() func(context.Context, string, string) (bool, err
 		return p.loreInit
 	}
 	return memory.InitHome
+}
+
+func (p probes) loreMakeProbe() func(context.Context, *config.Config, config.UnitScope) error {
+	if p.loreMake != nil {
+		return p.loreMake
+	}
+	return makeOwnSpaces
 }
 
 func (p probes) telegramProbe() func(context.Context, string) telegramResult {
@@ -118,16 +126,28 @@ type memoryVerdict struct {
 // Refusing a whole household its assistant over one member's typo would be a second,
 // larger outage than the one being prevented, so it is reported and served through.
 //
-// # The isolated pod is the exception, and it is not an arbitrary one
+// # The isolated pod used to be excused this, and no longer needs to be
 //
-// A pod legitimately holds none of its spaces before it is provisioned, and every step
-// that provisions one — `lore space create`, `lore space invite`, `lore join` — is run
-// with `docker compose exec` INSIDE a running pod. A pod that refused to start until its
-// spaces existed could never be given them, which makes the refusal not a stricter
-// policy but an unprovisionable mode. The residual is real and worth naming: a pod whose
-// volume is wiped after provisioning comes back looking exactly like a first boot, and
-// nothing inside the pod can tell the two apart. It closes the day lore can create a
-// space at a chosen id — see deploy/compose.isolated.yml step 4c.
+// A pod was excused outright, because every step that provisioned one of its spaces —
+// `lore space create`, `lore space invite`, `lore join` — was run with `podman exec`
+// INSIDE a running pod, and a pod that refused to start until its spaces existed could
+// never be given them. That made the refusal an unprovisionable mode rather than a
+// stricter policy.
+//
+// Creation is no longer one of those steps: a pod makes its own spaces at the
+// configured ids on the way up (ownSpaces, makeOwnSpaces), and every member has a
+// private space — internal/config requires one — so every pod holds at least one space
+// of its own by the time this runs. A pod that holds NONE of them is therefore a pod
+// whose own creation did not happen, which is a fault and not a stage. The exception is
+// gone rather than narrowed, and nothing it protected has been lost: the invite
+// handshake that is still somebody's to run happens in a pod that holds its private
+// space and is missing only the household's, which is the "some of them" case, which
+// serves.
+//
+// The residual is unchanged and worth naming: a pod whose volume is wiped after
+// provisioning comes back looking exactly like a first boot, and nothing inside the pod
+// can tell the two apart. It now recreates its own space, empty, rather than reporting
+// it missing — the memory went with the volume either way.
 func judgeMemory(cfg *config.Config, scope config.UnitScope, res loreResult) memoryVerdict {
 	var v memoryVerdict
 	for _, s := range res.Spaces {
@@ -135,20 +155,8 @@ func judgeMemory(cfg *config.Config, scope config.UnitScope, res loreResult) mem
 			v.Missing = append(v.Missing, s.Space)
 		}
 	}
-	v.Fatal = len(res.Spaces) > 0 &&
-		len(v.Missing) == len(res.Spaces) &&
-		!provisionedByHand(cfg, scope)
+	v.Fatal = len(res.Spaces) > 0 && len(v.Missing) == len(res.Spaces)
 	return v
-}
-
-// provisionedByHand reports whether this unit's spaces arrive by an operator running
-// commands inside it, rather than from the wizard that wrote kenward.yaml.
-//
-// Both halves are checked. `run` refuses a unit selector in simple mode, but `doctor`
-// accepts one from anybody at a terminal, and a simple-mode household must not be
-// excused the refusal because somebody typed `--member david`.
-func provisionedByHand(cfg *config.Config, scope config.UnitScope) bool {
-	return cfg.Mode == config.ModeIsolated && isPod(scope)
 }
 
 // probeLore opens this machine's lore home and asks each configured space one
@@ -236,6 +244,74 @@ func configuredSpaces(cfg *config.Config, scope config.UnitScope) []domain.Space
 		}
 	}
 	return spaces
+}
+
+// ownSpace is a configured space this unit creates for itself, with the
+// display name to create it under.
+type ownSpace struct {
+	ID   domain.SpaceID
+	Name string
+}
+
+// ownSpaces lists the spaces this unit makes rather than waits for.
+//
+// It is empty for everything except an isolated pod, and that asymmetry is the
+// whole rule. A simple-mode node shares one store with the wizard that made
+// its spaces, so a space missing there means the store is wrong — and a node
+// that answered "missing" by creating it would serve happily on somebody
+// else's home with an empty memory, which is the silent amnesia checkLore
+// exists to refuse. A pod's store is on a volume the wizard could never reach,
+// so a space missing there on first boot is not a fault at all; it is what a
+// fresh volume looks like.
+//
+// Which spaces are its own follows from who else needs them. A member's
+// private space lives in exactly one store and is shared with nobody, so the
+// pod that serves that member is the only place it can be made. The
+// household's shared space is made once, by the group's pod, and reaches the
+// members through the invite handshake — so a member's pod does not create it,
+// and must not: a second space at that id, with a key of its own, is a space
+// that could never be joined into the household's.
+func ownSpaces(cfg *config.Config, scope config.UnitScope) []ownSpace {
+	if cfg.Mode != config.ModeIsolated || !isPod(scope) {
+		return nil
+	}
+	if scope.Group {
+		if cfg.Household.SharedSpace == "" {
+			return nil
+		}
+		return []ownSpace{{ID: domain.SpaceID(cfg.Household.SharedSpace), Name: cfg.Household.Name}}
+	}
+	for _, m := range cfg.Members {
+		if scope.Serves(m.ID) && m.PrivateSpace != "" {
+			return []ownSpace{{ID: domain.SpaceID(m.PrivateSpace), Name: m.Name}}
+		}
+	}
+	return nil
+}
+
+// makeOwnSpaces creates this unit's own spaces at the ids kenward.yaml names,
+// and does nothing at all when they are already there.
+//
+// The name is a local label in one pod's own store — lore does not make names
+// unique and never compares them — so it is the plainest one available: the
+// member's name in the member's pod, the household's in the group's. The id is
+// the only thing that has to match, and it is the one the wizard wrote.
+func makeOwnSpaces(ctx context.Context, cfg *config.Config, scope config.UnitScope) error {
+	spaces := ownSpaces(cfg, scope)
+	if len(spaces) == 0 {
+		return nil
+	}
+	client, err := memory.NewClient(memory.Config{})
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	for _, sp := range spaces {
+		if _, err := client.CreateSpaceWithID(ctx, string(sp.ID), sp.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // telegramResult is what the transport check found.

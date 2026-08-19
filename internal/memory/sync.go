@@ -34,16 +34,17 @@ import (
 // memory was never affected — that is the property the mode exists for — but shared
 // memory did not work at all, in either deployment path, and neither said so.
 //
-// What kenward supplies here is the running daemon and nothing else. The space itself
-// is kenward's now — both wizards call lore.CreateSpace, and a pod initialises its own
-// home with lore.Init — but *membership* across accounts is not: carrying one space
-// into a second pod's store is `lore space invite` there and `lore join` here, and
-// lore's Go API exposes neither. A household assistant minting its own memberships
-// would in any case be kenward taking a decision that is not its to take. So an
-// isolated household of pods has one out-of-band step left, and it is the last one:
-// the operator runs those two commands inside the pods, which is the sole reason the
-// image carries the `lore` binary at all. kenward itself executes nothing. See
-// docs/IMPLEMENTATION.md §8 for the recipe.
+// What kenward supplies here is the running daemon and nothing else. The spaces
+// themselves are kenward's now — both wizards call lore.CreateSpace, a pod initialises
+// its own home with lore.Init, and a pod creates the spaces it is configured for at
+// the configured ids with lore.CreateSpaceWithID — but *membership* across accounts is
+// not: carrying one space into a second pod's store is `lore space invite` there and
+// `lore join` here, and lore's Go API exposes neither. A household assistant minting
+// its own memberships would in any case be kenward taking a decision that is not its
+// to take. So an isolated household of pods has one out-of-band step left, and it is
+// the last one and the right one: a person runs those two commands inside the pods,
+// which is the sole reason the image carries the `lore` binary at all. kenward itself
+// executes nothing. See docs/IMPLEMENTATION.md §8 for the recipe.
 //
 // The isolation boundary is lore's, not kenward's, and it does not depend on kenward
 // getting this right. A sync exchange begins with a blinded space-id intersection —

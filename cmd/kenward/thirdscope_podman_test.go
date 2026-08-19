@@ -888,15 +888,19 @@ type spaces struct {
 	shared, david, jordan string
 }
 
-// provision performs the operator's out-of-band step and nothing kenward could do for
-// itself: it creates the household's shared space in the group's pod and each member's
-// private space in that member's own pod, then rewrites the configuration with the ids
-// the stores actually chose.
+// provision runs the operator recipe this rig was written against: it creates the
+// household's shared space in the group's pod and each member's private space in that
+// member's own pod, then rewrites the configuration with the ids the stores chose.
 //
-// This is docs/IMPLEMENTATION.md §8's recipe, run against the pods keel named. It has to
-// be a recipe rather than a fixture because lore cannot create a space at an id somebody
-// picked in advance — which is exactly why every earlier podman run could use fixed uuids
-// in kenward.yaml and never notice: those runs died before any turn asked for a space.
+// That recipe is no longer how a household is brought up. Each pod now creates the
+// spaces it owns at the ids kenward.yaml already names (`lore.CreateSpaceWithID`,
+// cmd/kenward's makeLoreSpaces), so the ids in perMemberYAML would be real without any
+// of this and `lore space create` is a thing an operator may still do rather than a
+// thing they must. This function should collapse into those fixed ids, and has not,
+// because the image it drives cannot be built until lore v0.6.0 is tagged — a rig that
+// cannot be run is not a rig to rewrite. What it exercises meanwhile is still a
+// supported path: `lore space create` inside a pod, and a configuration pointed at what
+// it made.
 //
 // It returns the ids and leaves the household stopped, with the new configuration on
 // disk and every pod's volume holding its own space.

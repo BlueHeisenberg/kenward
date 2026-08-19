@@ -362,9 +362,9 @@ func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog
 // inside them.
 //
 // The published image does carry the `lore` CLI, and that is not a contradiction. It is
-// there for the one step that has no Go API — the `lore space invite` / `lore join`
-// membership handshake, which an operator runs by hand inside a pod (see
-// internal/memory/sync.go and docs/IMPLEMENTATION.md §8). kenward execs none of it.
+// there for the one step that has no Go API and is not meant to have one — the `lore
+// space invite` / `lore join` membership handshake, which a person runs inside a pod
+// (see internal/memory/sync.go and docs/IMPLEMENTATION.md §8). kenward execs none of it.
 //
 // # Why a PATH lookup was never enough anyway
 //
@@ -399,11 +399,12 @@ func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog
 // refusing a household its assistant over one member's typo would be a second, larger
 // outage than the one being prevented.
 //
-// The one unit that is allowed to hold none of them is an isolated pod, because that
-// is what a pod looks like before it is provisioned and provisioning happens INSIDE a
-// running pod — `lore space create`, `lore space invite`, `lore join`, all of them
-// `docker compose exec` (deploy/compose.isolated.yml steps 4b and 4c). A pod that
-// refused to start until its spaces existed could never be given them.
+// The unit that may still hold none of them is an isolated pod with nothing of its own
+// to make: a pod creates its own spaces on the way up (makeLoreSpaces), but it cannot
+// join itself to the household's shared space, and that handshake happens INSIDE a
+// running pod. A pod that refused to start until it had been invited could never be
+// invited. judgeMemory draws that line and it is narrower than it was: a pod that does
+// have a space of its own to make and holds none is no longer excused anything.
 func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 	if cfg.Mode == config.ModeIsolated && !sel.single() {
 		return exitOK
@@ -412,6 +413,12 @@ func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 	// way kenward makes its own; see initLoreHome.
 	created, code := initLoreHome(e, cfg, sel)
 	if code != exitOK {
+		return code
+	}
+	// And then the spaces that home is supposed to hold, for the units that make
+	// their own; see makeOwnSpaces. Before the handshake below, so that a first
+	// boot answers it the same way a fifth one does.
+	if code := makeLoreSpaces(e, cfg, sel); code != exitOK {
 		return code
 	}
 
@@ -570,14 +577,12 @@ const loreDeviceName = "kenward"
 // # What it does not do
 //
 // It does not create the spaces kenward.yaml names. Init makes an account, a device and
-// one personal space, all with ids it chooses, and lore.CreateSpace mints a fresh id
-// too; household.shared_space and members[].private_space are ids that were written into
-// the file when the spaces were made, and nothing in lore can create a space *at a given
-// id*. Both wizards make them with lore.CreateSpace on the machine they run on, which
-// settles simple mode entirely; a self-initialised *pod* still comes up with a store that
-// answers and spaces that are not in it, which `kenward doctor` reports per space. That
-// remaining gap is the one deploy/compose.isolated.yml documents at length in steps 4b
-// and 4c, and it closes with `lore space create`, `lore space invite` and `lore join`.
+// one personal space, all with ids it chooses; household.shared_space and
+// members[].private_space are ids that were written into the file when the household was
+// set up. Both wizards make those with lore.CreateSpace on the machine they run on, which
+// settles simple mode entirely. A pod's own volume is a store no wizard could ever reach,
+// so a pod makes them for itself immediately after this — see makeLoreSpaces — at the
+// configured ids rather than at ids of its own.
 //
 // # created is load-bearing, not bookkeeping
 //
@@ -629,10 +634,60 @@ func initLoreHome(e *env, cfg *config.Config, sel unitSelection) (created bool, 
 		who = "this household"
 	}
 	e.printf("kenward: initialised a new lore store at %s for %s. It has an account, a device\n"+
-		"and a personal space; the spaces kenward.yaml names are not in it and no lore can\n"+
-		"create a space at a chosen id — `kenward doctor` reports which ones are missing.\n",
+		"and a personal space; the spaces kenward.yaml names come next, at the ids it names —\n"+
+		"`kenward doctor` reports any that are still missing.\n",
 		home, who)
 	return true, exitOK
+}
+
+// makeLoreSpaces gives an isolated pod the spaces kenward.yaml configures it with, at
+// the ids kenward.yaml configures them at, on every boot and only the first time it
+// matters.
+//
+// # The step this replaces
+//
+// A pod's store was born holding an account, a device and a personal space, and none of
+// the spaces the household had been told it had. The wizard runs on the host; a member's
+// private space has to live in that member's own pod, on a volume the host cannot open,
+// which is the whole claim of the mode. So the id in kenward.yaml named a space in the
+// host's store and the pod's store held nothing by that name, `doctor` said `space "…"
+// is not a space this lore store holds`, and the container sat unhealthy until an
+// operator ran `lore space create` inside it, read the new id out of `lore spaces`, and
+// pasted it over the one the wizard had written. Two ids for one space, a household that
+// did not work until somebody did that per member, and no way for a member to be given
+// their own memory without the operator handling their pod by hand.
+//
+// It was lore's half that was missing, not a decision anybody had taken: CreateSpace
+// minted an id rather than accepting one. lore.CreateSpaceWithID accepts one and is
+// idempotent, so the pod makes its own space at the id it was configured with, and the
+// wizard's id is the only id there has ever been.
+//
+// # What is still not this function's
+//
+// Membership. The household's shared space is one space in several stores, and a store
+// joins one through the invite handshake, which is a person deciding to share their
+// memory with another person; lore exposes no API for it deliberately, and kenward would
+// not use one if it did. So the group's pod creates the shared space and each member's
+// pod joins it, and it is exactly the private space — one member's, in one pod, shared
+// with nobody, with no membership decision in it at all — that no longer needs anyone.
+//
+// # Why it may refuse to start
+//
+// Because a pod that cannot make its own memory has none, and the node above will not
+// serve without memory whatever the reason. The realistic failures are a store that is
+// not writable and a configured id that is not a UUID; both are worth stopping on, and
+// both say which it was.
+func makeLoreSpaces(e *env, cfg *config.Config, sel unitSelection) int {
+	ctx, cancel := context.WithTimeout(e.context(), loreInitTimeout)
+	defer cancel()
+	if err := e.probes.loreMakeProbe()(ctx, cfg, sel.scope()); err != nil {
+		e.errorf("this unit's own lore spaces could not be created: %v\n\n"+
+			"They are the ids kenward.yaml names for this unit, and this pod is the only\n"+
+			"place they can be made — nothing outside it can reach its store. kenward will\n"+
+			"not serve without memory, so fix what the error above says and restart.", err)
+		return exitFailure
+	}
+	return exitOK
 }
 
 // loreInitTimeout bounds the one-off store creation above. It generates two key pairs and

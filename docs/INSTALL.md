@@ -302,7 +302,9 @@ process and creates it on the data directory the first time the container starts
 The one thing to get right is *which* directory. Run the setup wizard with its
 `--data-dir` and `LORE_HOME` pointed at the directory the compose file mounts, because
 the wizard is what creates this household's lore spaces and writes their ids into
-`kenward.yaml`, and nothing anywhere can create a space at an id chosen somewhere else.
+`kenward.yaml`, and a simple-mode node deliberately will not create them for itself — a
+node that answered a missing space by making one would serve happily on somebody else's
+store with an empty memory, which is the failure the refusal below exists to prevent.
 A wizard that made them in one store and a container that opens another gives you a
 node whose every configured space is missing — it will tell you so and refuse to start
 rather than serve with no memory, but the fix is at setup time.
