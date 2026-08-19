@@ -123,11 +123,17 @@ func initHome(t *testing.T, name string) *Client {
 // serving runs c.Serve in a goroutine and blocks until the daemon has published
 // itself, which is exactly what `kenward doctor` looks for. It returns the function
 // that cancels and waits, and fails the test if Serve reported a startup error.
+//
+// LoopbackOnly, always. Every daemon this package starts is talking to another one in
+// the same process, which is on its loopback by definition; binding 0.0.0.0 to reach it
+// would make the result depend on the developer's network and, on Windows, raise a
+// firewall prompt that can never be answered permanently — `go test` links a new binary
+// to a new temp path every run, so each one is a new program to the firewall.
 func serving(t *testing.T, c *Client, interval time.Duration) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- c.Serve(ctx, interval) }()
+	go func() { done <- c.Serve(ctx, interval, LoopbackOnly()) }()
 
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -161,6 +167,29 @@ func serving(t *testing.T, c *Client, interval time.Duration) func() {
 				t.Error("Serve did not return within 30s of cancellation")
 			}
 		})
+	}
+}
+
+// TestServeAsksForTheLANUnlessToldOtherwise guards the half of this that nothing else
+// can observe.
+//
+// The tests above pass LoopbackOnly, and the temptation the next time a firewall prompt
+// annoys somebody is to move that into Serve and be done. It would work, every test
+// here would still pass, and every isolated household would quietly stop syncing: a
+// pod's siblings are on the pod network and never on its loopback, so a daemon without
+// the LAN reaches nobody and says nothing about it. There is no test that could catch
+// that from the outside — it needs real pods on a real bridge — so it is caught here,
+// at the one line that decides.
+func TestServeAsksForTheLANUnlessToldOtherwise(t *testing.T) {
+	if !serveOptions(0).LAN {
+		t.Error("Serve's default is loopback-only; a pod's siblings are not on its " +
+			"loopback, so every isolated household's shared memory would reach nobody")
+	}
+	if serveOptions(0, LoopbackOnly()).LAN {
+		t.Error("LoopbackOnly left the LAN on")
+	}
+	if got := serveOptions(200 * time.Millisecond); got.SyncInterval != 200*time.Millisecond {
+		t.Errorf("interval %v, want 200ms", got.SyncInterval)
 	}
 }
 
