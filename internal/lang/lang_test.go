@@ -791,3 +791,110 @@ func TestUndoAndCancelAreDifferentWords(t *testing.T) {
 		}
 	}
 }
+
+// TestUnmistakableClaimsAreASubsetOfTheClaims. The ungated list fires with nothing in
+// front of it, and the gated one is what the eval counts narration with — so a phrase
+// the first holds and the second cannot see is a claim production corrects and no
+// measurement ever knows about.
+//
+// Matched rather than compared element by element: "in your memory now" is not an entry
+// of SaveClaims and does not need to be, because "in your memory" already matches it.
+// What has to hold is that ClaimsASave sees everything ClaimsASaveUnmistakably does.
+func TestUnmistakableClaimsAreASubsetOfTheClaims(t *testing.T) {
+	for _, tag := range Tags() {
+		c := For(tag)
+		if len(c.UnmistakableSaveClaims) == 0 {
+			t.Errorf("%s: nothing is unconditional, so \"I've added that to your private memory\" in this language is corrected only when the member happened to ask", tag)
+		}
+		for _, p := range c.UnmistakableSaveClaims {
+			if !c.ClaimsASaveUnmistakably(p) {
+				t.Errorf("%s: %q is in the table and does not match itself", tag, p)
+			}
+			if !c.ClaimsASave(p) {
+				t.Errorf("%s: %q fires with no gate in front of it and SaveClaims does not hold it — production corrects a reply the eval scores as making no claim", tag, p)
+			}
+			if c.IsBareAcknowledgement(p) {
+				t.Errorf("%s: %q is also how this language says \"done\", and it is on the arm with no gate — a member who says \"thanks\" and is answered with it would be told to repeat a request they never made", tag, p)
+			}
+		}
+	}
+	if For("").ClaimsASaveUnmistakably("") {
+		t.Error("an empty reply claimed a save; nothing was said, so nothing was claimed")
+	}
+}
+
+// TestARecalledEntryIsNotAClaim is the defect the ungated arm was found to have, at the
+// table rather than at the guard.
+//
+// Every sentence below answers a question out of memory and is true. Each says a thing
+// is stored without saying who stored it or when, which is the only way a recall can
+// say it — and each was on the unconditional arm, so each earned a member "I didn't
+// record anything just then" under a correct answer. They are claims, so ClaimsASave
+// still holds them and a member who asked for a write is still told the truth; what
+// they are not is claims about this turn.
+func TestARecalledEntryIsNotAClaim(t *testing.T) {
+	for tag, recalls := range map[string][]string{
+		English: {
+			"It's heron-ashfield-42, at least as of the last time it was written down.",
+			"Yes, it's in your memory: heron-ashfield-42.",
+			"I have it, but it was recorded a while ago — 555 0182.",
+			"That's in the household memory — under the stairs.",
+			"Added to your private memory back in March: under the third plant pot.",
+			"There's a note jotted down from April — the vet is on Mill Lane.",
+			// Off a real model, answering a real question, and the reason a
+			// first-person past is not enough: it says a write happened and not when.
+			"The only thing I've noted down about you is that you're dairy-free.",
+			"Yes, I saved it earlier — the plumber's number is in your private memory.",
+		},
+		Spanish:    {"Sí, está en tu memoria: heron-ashfield-42.", "Ya lo tengo apuntado de antes: 555 0182.", "Lo único que he anotado sobre ti es que no tomas lácteos."},
+		Catalan:    {"Ja ho tinc: heron-ashfield-42.", "L'única cosa que he anotat sobre tu és que no prens lactis."},
+		Portuguese: {"Já tenho isso: heron-ashfield-42.", "Está na tua memória desde março: 4471.", "A única coisa que guardei sobre ti é que não comes lacticínios."},
+		French:     {"C'est gardé en mémoire : 4471.", "C'est déjà ajouté à ta mémoire depuis mars.", "La seule chose que j'ai notée sur toi, c'est que tu ne manges pas de laitages."},
+		Italian:    {"Ce l'ho: 555 0182.", "È nella tua memoria da marzo: 4471.", "L'unica cosa che ho annotato su di te è che non mangi latticini."},
+		Dutch:      {"Ik heb het: 555 0182.", "Dat is sinds maart toegevoegd aan je geheugen.", "Het enige wat ik heb genoteerd over jou is dat je geen zuivel eet."},
+		German:     {"Steht in deinem Gedächtnis: 4471.", "Das wurde im März aufgeschrieben.", "Das Einzige, was ich über dich notiert habe, ist dass du keine Milchprodukte isst."},
+		Chinese:    {"在你的记忆里有：4471。", "这个已经记在household memory里了。", "我已记住的只有你不吃乳制品。"},
+		Arabic:     {"هو في ذاكرتك: 4471.", "تم التسجيل في مارس: 4471.", "الشيء الوحيد الذي حفظته عنك هو أنك لا تتناول الألبان."},
+	} {
+		c := For(tag)
+		for _, s := range recalls {
+			if c.ClaimsASaveUnmistakably(s) {
+				t.Errorf("%s: %q read as a claim that this turn wrote something, and that arm has no gate — it is a correct answer out of memory, and the member reads a notice denying it", tag, s)
+			}
+		}
+	}
+}
+
+// TestNarrationOfThisTurnsWriteIsStillUnconditional is what the split above must not
+// cost.
+//
+// A model that names the memory on a turn where nobody asked is the specific, checkable
+// false belief the ungated arm exists for — worse than the vague kind, because a member
+// told where something is will not go and look. Every sentence here puts the write at
+// this moment, by the tense, by an explicit "now", or by naming the destination it has
+// just added something to, so none of them can be about an entry that was already there.
+func TestNarrationOfThisTurnsWriteIsStillUnconditional(t *testing.T) {
+	for tag, claims := range map[string][]string{
+		English: {
+			"I've added that to your private memory so you don't lose it.",
+			"That's in your memory now — third plant pot.",
+			"I made a note of the boiler code for you.",
+		},
+		Spanish:    {"Ya lo he añadido a tu memoria, no te preocupes.", "Lo apunto: 555 0182."},
+		Catalan:    {"Ho apunto ara mateix: 555 0182."},
+		Portuguese: {"Adicionei isso à tua memória: 555 0182."},
+		French:     {"Je le note : 555 0182.", "C'est maintenant dans ta mémoire."},
+		Italian:    {"Prendo nota: 555 0182."},
+		Dutch:      {"Ik noteer het: 555 0182.", "Dat staat nu in je geheugen."},
+		German:     {"Ich merke mir das: 4471.", "Das steht jetzt in deinem Gedächtnis."},
+		Chinese:    {"帮你记下了：4471。", "现在在你的记忆里了。"},
+		Arabic:     {"أضفت إلى ذاكرتك: 4471."},
+	} {
+		c := For(tag)
+		for _, s := range claims {
+			if !c.ClaimsASaveUnmistakably(s) {
+				t.Errorf("%s: %q says this node wrote something just now and no gate caught it; on a turn where the member asked for nothing, they are left believing a specific thing is stored", tag, s)
+			}
+		}
+	}
+}

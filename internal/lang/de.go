@@ -61,6 +61,20 @@ var german = Catalogue{
 		"in deinem gedächtnis",
 	},
 
+	// This turn and no other — see the English table. "Aufgeschrieben", "festgehalten"
+	// and "in deinem Gedächtnis" are what a recall answers with, and so is a bare
+	// perfect: "das Einzige, was ich über dich notiert habe". The present tense and the
+	// reflexive dative with its "das" can only be now.
+	//
+	// German pays twice for the split. Its perfect splits around the object, so "Ich
+	// habe das zu deinem Gedächtnis hinzugefügt" matches nothing here and is caught
+	// only behind the gate; "hinzugefügt" without a subject is exactly the dating
+	// phrase this list must not hold.
+	UnmistakableSaveClaims: []string{
+		"ich notiere", "ich schreibe das auf", "ich merke mir",
+		"hab ich mir gemerkt", "habe ich mir gemerkt", "steht jetzt in deinem",
+	},
+
 	SavePromises: []string{
 		"ich werde mir merken", "ich werde mir das merken", "ich vergesse das nicht",
 		"ich vergesse es nicht", "ich werde es notieren", "ich werde es speichern",

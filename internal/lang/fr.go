@@ -52,8 +52,17 @@ var french = Catalogue{
 		"enregistré", "enregistrée", "noté", "notée", "c'est noté", "j'ai noté",
 		"j'ai enregistré", "j'ai gardé", "je note", "je le note", "je prends note",
 		"bien reçu",
-		"j'ai pris note", "je retiens",
+		"j'ai pris note", "je retiens", "j'ai ajouté",
 		"ajouté à ta", "ajouté à la mémoire", "gardé en mémoire",
+		"est maintenant dans ta",
+	},
+
+	// This turn and no other — see the English table. "Gardé en mémoire" and "ajouté à
+	// ta" have no subject and no date; "j'ai noté" has a subject and still no date, and
+	// "la seule chose que j'ai notée sur toi" is a recall. The present tense can only
+	// be now, and "j'ai ajouté" is the narration's own verb.
+	UnmistakableSaveClaims: []string{
+		"j'ai ajouté", "je note", "je le note", "je prends note", "je retiens",
 		"est maintenant dans ta",
 	},
 

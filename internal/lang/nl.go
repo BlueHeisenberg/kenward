@@ -49,8 +49,16 @@ var dutch = Catalogue{
 		"opgeslagen", "genoteerd", "vastgelegd", "opgeschreven", "bewaard",
 		"ik heb genoteerd", "ik heb opgeslagen", "ik heb opgeschreven",
 		"ik noteer", "ik schrijf het op", "ik onthoud",
-		"ik heb het",
+		"ik heb het", "ik heb toegevoegd",
 		"toegevoegd aan je", "toegevoegd aan het geheugen", "staat nu in je",
+	},
+
+	// This turn and no other — see the English table. "Toegevoegd aan je", "ik heb het"
+	// and the bare perfects ("ik heb genoteerd") are what a recall answers with; the
+	// present tense can only be now.
+	UnmistakableSaveClaims: []string{
+		"ik heb toegevoegd", "ik noteer", "ik schrijf het op", "ik onthoud",
+		"staat nu in je",
 	},
 
 	SavePromises: []string{

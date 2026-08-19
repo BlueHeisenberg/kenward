@@ -50,8 +50,14 @@ var portuguese = Catalogue{
 	SaveClaims: []string{
 		"guardado", "guardada", "anotado", "anotada", "registado", "registrado",
 		"guardei", "anotei", "apontei", "tomei nota", "tomo nota", "fica anotado",
-		"já tenho", "fica guardado",
+		"já tenho", "fica guardado", "adicionei",
 		"adicionado à tua", "adicionado à memória", "está na tua memória",
+	},
+
+	// This turn and no other — see the English table. "Está na tua memória", "já tenho"
+	// and the bare preterites ("guardei", "anotei") are what a recall answers with.
+	UnmistakableSaveClaims: []string{
+		"adicionei", "tomo nota", "fica anotado", "fica guardado",
 	},
 
 	SavePromises: []string{

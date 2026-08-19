@@ -70,7 +70,16 @@ var spanish = Catalogue{
 		"registrado", "he guardado", "he anotado", "he apuntado", "queda anotado",
 		"lo tengo", "ya lo tengo",
 		"tomo nota", "he tomado nota", "lo apunto", "lo anoto", "lo guardo",
-		"añadido a tu", "añadido a la memoria", "está en tu memoria",
+		"he añadido", "añadido a tu", "añadido a la memoria", "está en tu memoria",
+	},
+
+	// This turn and no other — see the English table for the argument. The present
+	// tense can only be now; "he guardado" and "he anotado" cannot say when, and "lo
+	// único que he anotado sobre ti" is a recall. "He añadido" stays because adding is
+	// what the narration this arm exists for does, not what a description of the store
+	// says.
+	UnmistakableSaveClaims: []string{
+		"he añadido", "tomo nota", "lo apunto", "lo anoto", "lo guardo", "queda anotado",
 	},
 
 	SavePromises: []string{

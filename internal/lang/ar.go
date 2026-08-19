@@ -144,7 +144,16 @@ var arabic = Catalogue{
 		"تم الحفظ", "حفظت", "سجلت", "دونت", "تم التسجيل", "تم تسجيل",
 		"احتفظت", "محفوظ", "مسجل",
 		"استلمت", "تم الاستلام",
-		"أضفت إلى", "في ذاكرتك",
+		"أضفت إلى", "في ذاكرتك", "في ذاكرتك الآن",
+	},
+
+	// This turn and no other — see the English table. Undiacriticized for the same
+	// reason as SaveClaims above. The passives (تم التسجيل, تم الاستلام) and the
+	// adjectives (محفوظ, مسجل) name no agent and no time, في ذاكرتك names only a place,
+	// and the bare first-person past (حفظت, دونت) names no time either — "الشيء الوحيد
+	// الذي حفظته عنك" is a recall. Each of those waits for the gate.
+	UnmistakableSaveClaims: []string{
+		"أضفت إلى", "في ذاكرتك الآن",
 	},
 
 	// Undiacriticized for the same reason as SaveClaims above.

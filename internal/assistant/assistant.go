@@ -715,19 +715,20 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// The model answers, always; this adds an accounting line under the answer when the
 	// answer would otherwise mislead.
 	//
-	// One rule, three shapes: a reply that says a save has *already happened*, in words
-	// that can only mean that, is a lie whatever prompted it; a reply that acknowledges
-	// or promises one, or claims one in words that double as an acknowledgement, is a
-	// lie only when it is answering a request to keep something. So the first is checked
-	// unconditionally and the rest are gated on the member's own message. Which half a
-	// word falls in is decided by whether BareAcknowledgements also holds it, and
+	// One rule, three shapes: a reply that says *this node wrote something just now*, in
+	// words that can only mean that, is a lie whatever prompted it; a reply that
+	// acknowledges or promises one, or says a thing is stored without saying who put it
+	// there or when, is a lie only when it is answering a request to keep something. So
+	// the first is checked unconditionally and the rest are gated on the member's own
+	// message. Which half a word falls in is lang.Catalogue.UnmistakableSaveClaims, and
 	// falseSave is where that is argued.
 	//
 	// The unconditional arm reads nothing but the reply. Chasing the shape of that
 	// sentence is what fails — the phrasing space is unbounded and the model varies it
-	// freely — so it matches vocabulary instead. lang.Catalogue.SaveClaims holds the
-	// words that can only be about a write already made, in the member's language, and
-	// it is the same list the eval scores runs with: one
+	// freely — so it matches vocabulary instead. lang.Catalogue.UnmistakableSaveClaims
+	// holds the words that can only be about a write this node made on this turn, in the
+	// member's language, and the wider lang.Catalogue.SaveClaims behind it is
+	// the same list the eval scores runs with: one
 	// implementation, because two would disagree inside a month and the eval's copy is
 	// what says whether this one works. A live run of seventeen "remember this for me:
 	// …" turns produced twelve cards and three replies — "Saved — plumber number is 555
@@ -739,8 +740,17 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// Which leaves "Done — <the fact>" uncaught, deliberately rather than missed.
 	// "Done" claims an errand finished and says nothing about memory, so "Done — the
 	// boiler service code is 4471." is an answer and gets no notice. "Got it" is in the
-	// table and "done" is not, on that line: got it claims to be holding what the member
-	// just handed over. Only the prompt can reach the rest.
+	// wider table and "done" is not, on that line: got it claims to be holding what the
+	// member just handed over. Only the prompt can reach the rest.
+	//
+	// The same argument moved a second family of words off the unconditional arm, and a
+	// member found it: "written down", "in your memory", "added to your", "I have it"
+	// say a thing is stored and say nothing about when, which is precisely how a
+	// *correct* recall answers. They earned "I didn't record anything just then" under a
+	// right answer, on the one competency the product exists for. A first-person past
+	// went with them — "the only thing I've noted down about you" is a recall too. What
+	// is left unconditional is the present tense, the destination pinned to now, and
+	// "I've added", none of which can be about an entry that was already there.
 	//
 	// The two gated arms are the acknowledgement and the promise, and both are gated
 	// because both are only false in context.
@@ -769,8 +779,9 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 	// the risk inverts. As the *primary* detector it would decide whether anyone is
 	// corrected at all, and a phrasing it missed would be a member silently believing
 	// something was kept — the dangerous side. As a filter on these two arms, a miss
-	// costs a bare "Done." or an unkept promise going out uncorrected while the
-	// unconditional arm still catches every reply that says a save has happened, and
+	// costs a bare "Done.", an unkept promise or an unattributed "it's in your memory"
+	// going out uncorrected while the unconditional arm still catches every reply in
+	// which the node says it wrote something just now, and
 	// what it buys back is the false positive a household actually meets. Nothing else
 	// is lost either: a promise is dangerous precisely on the turn the member asked,
 	// and that is the turn the gate matches.
@@ -990,9 +1001,34 @@ func (u *Unit) turn(ctx context.Context, sc domain.Scope, in transport.Inbound) 
 // memory" — on a turn where the member asked for nothing. That sentence is a specific,
 // checkable false belief and it is worse than the vague kind, precisely because a member
 // told where something is will not go and look. It is also a breach of the prompt's
-// never-narrate rule whoever prompted it. Keeping the unambiguous half unconditional
-// costs nothing, because there is no turn on which "in your memory" is an
-// acknowledgement.
+// never-narrate rule whoever prompted it.
+//
+// What that argument does not license is the vocabulary the unconditional arm was left
+// holding, and the second live defect is where it broke. "There is no turn on which 'in
+// your memory' is an acknowledgement" was true and beside the point: there is a turn on
+// which it is *an answer*. A member asked for the wifi password, the household entry
+// existed, the reply said "at least as of the last time it was written down" — and got
+// "I didn't record anything just then" under it. So did "Yes, it's in your memory:
+// heron-ashfield-42.", "I have it, but it was recorded a while ago", "added to your
+// private memory back in March". Each is a correct recall being told it is a lie, which
+// is the guard misfiring on the one thing kenward is for.
+//
+// The distinction that survives both defects is not register and not strength. It is
+// *when*. "Making a note", "in your memory now", "I've added that to your private
+// memory" put this turn on the clock and cannot describe an entry that was already
+// there — those stay ungated. "Written down", "in your memory", "added to your", "I have
+// it" describe a state, and a state is what retrieval reports.
+//
+// So does a first-person past tense, which is the part that took a second live run to
+// see: "the only thing I've noted down about you is that you're dairy-free" is a correct
+// recall and was earning the notice. It is the same sentence as "Yes, I saved it
+// earlier", the false positive TestATrueClaimAboutAnEarlierTurnKeepsItsAnswer used to
+// price rather than fix — and no tense rule separates a true claim about an earlier turn
+// from a false one about this turn, in any of the ten languages. So they are gated too,
+// and the member who asked for a write is still told the truth by the gate. What that
+// costs is unmeasured and probably nothing: every false claim a live run has produced
+// arrived as a bare participle — "Saved — …", "Noted — …" — on a turn where the member
+// had asked.
 //
 // The bare arm is checked first and does not fall through, which matters: "Noted!" is
 // both a bare acknowledgement and a save claim, and outside a save request it is

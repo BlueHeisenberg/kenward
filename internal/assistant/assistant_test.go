@@ -1150,8 +1150,16 @@ func TestAnAcknowledgementInsideAnOrdinaryReplyIsLeftAlone(t *testing.T) {
 //
 // The line the fix draws is therefore about the words and not about the arm: vocabulary
 // that is also how the language says "done" is a claim only in context; vocabulary that
-// names the act or the destination is a claim whatever prompted it. Each message below
-// asks for nothing and each reply is corrected anyway.
+// says this node made the write, on this turn, is a claim whatever prompted it. Each
+// message below asks for nothing and each reply is corrected anyway.
+//
+// The line moved once since, and these are the cases that survived it. Naming the
+// destination is not enough on its own — "it's in your memory" is what a correct recall
+// answers with — and neither is a first-person past: "the only thing I've noted down
+// about you" is a recall too. TestARecalledEntryIsNotCorrected is the member who read a
+// notice under one. What is left unconditional is the present tense, the destination
+// pinned to now ("in your memory now"), and "added", which is the verb of the sentence
+// this arm was written for and not one a description of the store reaches for.
 func TestAReplyThatNamesTheMemoryIsCorrectedWhoeverPromptedIt(t *testing.T) {
 	for _, c := range []struct{ tag, said, reply string }{
 		{"en", "the plumber's coming tomorrow at nine",
@@ -1161,7 +1169,7 @@ func TestAReplyThatNamesTheMemoryIsCorrectedWhoeverPromptedIt(t *testing.T) {
 		{"en", "the boiler code is 4471",
 			"I made a note of the boiler code for you."},
 		{"es", "el fontanero viene mañana a las nueve",
-			"Ya está en tu memoria, no te preocupes."},
+			"Ya lo he añadido a tu memoria, no te preocupes."},
 	} {
 		t.Run(c.tag+"/"+c.reply[:min(len(c.reply), 24)], func(t *testing.T) {
 			opts := testOptions()
@@ -1420,26 +1428,37 @@ func TestTheLiveResidueRepliesAreAllCorrected(t *testing.T) {
 	}
 }
 
-// TestATrueClaimAboutAnEarlierTurnKeepsItsAnswer is the false positive, named and
-// priced rather than fixed.
+// TestATrueClaimAboutAnEarlierTurnKeepsItsAnswer was the false positive, named and
+// priced rather than fixed. It is now fixed, and this is the same case asserting the
+// other way.
 //
 // A member asks "did you save the plumber number?" and the model answers "Yes, I saved
-// it earlier." No capture happened this turn and the reply claims one, so the check
-// fires — and the claim is true, about a turn that is not this one.
+// it earlier." No capture happened this turn and the reply says one happened at some
+// point, which is true. It used to earn the notice anyway, because "i saved" was on the
+// arm that runs with no gate in front of it, and the cost was argued down: the reply
+// survives whole, and "I didn't record anything just then" speaks only for this turn, so
+// what the member reads is a redundant sentence rather than a contradiction.
 //
-// The trade, stated: every rule that could tell the two apart costs a false negative,
-// and the false negative is the release blocker. Reading tense means a list of
-// past-reference words per language, which then swallows "I've already noted that"
-// said about a note that never existed — a live-plausible failure and exactly the lie
-// being fixed. Gating on whether this turn retrieved anything is worse still:
-// retrieval runs on every turn and a household with a dozen entries will surface
-// something for most save requests, which would switch the guard off on the turns it
-// exists for.
+// What that argument missed is that the sentence is not rare and not always redundant.
+// The same shape is how a *recall* answers — "the only thing I've noted down about you
+// is that you're dairy-free", off a real model, on a real question — and there the
+// notice sits under a right answer and reads as a malfunction. A first-person past says
+// that a write happened and says nothing about when, in every one of the ten languages,
+// so no tense rule separates the true claim from the false one and the vocabulary had to
+// move instead.
 //
-// So the false positive is accepted and made cheap instead. The reply survives intact
-// — the member reads the answer they asked for — and the notice speaks only for this
-// turn ("I didn't record anything just then"), so it is a redundant sentence and never
-// a contradiction of the true claim above it.
+// The old reasoning against the alternatives still stands and is why only the vocabulary
+// moved. A per-language list of past-reference words would swallow "I've already noted
+// that" said about a note that never existed. Gating on whether the turn retrieved
+// anything is worse: retrieval runs on every turn, and a household with a dozen entries
+// surfaces something for most save requests, which would switch the guard off exactly
+// where it exists.
+//
+// What is given up is the same sentence said falsely — "Yes, I saved it earlier" about a
+// save that never happened, on a turn where the member did not ask. It is unmeasured:
+// every false claim a live run has produced arrived as a bare participle on a turn where
+// the member had asked, and the gate catches those. It reappears here the moment
+// AsksForASave matches, which this member's question does not.
 func TestATrueClaimAboutAnEarlierTurnKeepsItsAnswer(t *testing.T) {
 	const body = "Yes, I saved it earlier — the plumber's number is in your private memory."
 	rig, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
@@ -1460,8 +1479,25 @@ func TestATrueClaimAboutAnEarlierTurnKeepsItsAnswer(t *testing.T) {
 	if !strings.Contains(texts[0], body) {
 		t.Errorf("the member was sent %q; a true answer about an earlier turn must reach them whole", texts[0])
 	}
-	if !strings.Contains(texts[0], lang.For("").NothingSaved) {
-		t.Errorf("the member was sent %q; the accepted cost of this check is that the turn-scoped notice rides along here too, and losing it would mean the check had stopped firing", texts[0])
+	if strings.Contains(texts[0], lang.For("").NothingSaved) {
+		t.Errorf("the member was sent %q: they asked whether something was saved, were told truthfully that it was, and the node contradicted the answer it had just given", texts[0])
+	}
+	// The same words on a turn where the member handed something over are still
+	// corrected, which is what keeps the vocabulary in SaveClaims rather than out of
+	// the tables altogether.
+	rig2, err := newTestRig(fixedResolver(testDirectScope()), testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig2.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+		return routing.Completion{Text: body, FinishReason: routing.FinishStop}, nil
+	}
+	if err := rig2.unit.Handle(context.Background(), directInbound("remember this for me: the plumber's number is 555 0182")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	asked := rig2.tr.sentTexts()
+	if len(asked) != 1 || !strings.Contains(asked[0], lang.For("").NothingSaved) {
+		t.Errorf("the member asked for a write, none happened, the reply said one had, and they were sent %v", asked)
 	}
 }
 
@@ -2239,5 +2275,97 @@ func TestReplyMarkdownReachesTheMemberAsFormatting(t *testing.T) {
 	}
 	if strings.Contains(got, "**") || strings.Contains(got, "```") {
 		t.Errorf("the member was shown Markdown they never asked for:\n%s", got)
+	}
+}
+
+// TestARecalledEntryIsNotCorrected is the defect a member reported from a real
+// Telegram chat, and the reason the unconditional arm is narrowed the way the gated
+// one already was.
+//
+// They asked for the wifi password. The household entry existed, the search found it,
+// the answer was right, and under it they read that nothing had been recorded:
+//
+//	🔍 searched your private memory (nothing), the household memory (1 entry)
+//	It's heron-ashfield-42, at least as of the last time it was written down —
+//	worth double-checking if it doesn't connect, since passwords change.
+//	⚠️ I didn't record anything just then. Say it again if you want me to remember it.
+//
+// Nothing about that turn is a lie. The member asked a question, the node answered it
+// out of memory, and "written down" is dating the entry it just read rather than
+// claiming to have made one. The notice contradicts the only thing kenward is for.
+//
+// The vocabulary is what fires, so the vocabulary is what splits. A phrase that names
+// the act in the first person — "I saved", "I've added" — or pins it to this moment —
+// "in your memory now" — cannot be about an entry that was already there. A phrase
+// that names where something is, or that it was written at some point — "in your
+// memory", "written down", "added to your", "I have it" — is exactly what a correct
+// recall says, and it goes behind AsksForASave with the bare acknowledgements and the
+// promises. TestAReplyThatNamesTheMemoryIsCorrectedWhoeverPromptedIt is the other side
+// of the same line and still holds.
+//
+// Every message below asks a question about something the household has recorded, and
+// every reply answers it truthfully. None may carry the notice, in any language.
+func TestARecalledEntryIsNotCorrected(t *testing.T) {
+	for _, c := range []struct{ tag, said, reply string }{
+		{"en", "what's the wifi password?",
+			"It's heron-ashfield-42, at least as of the last time it was written down — " +
+				"worth double-checking if it doesn't connect, since passwords change."},
+		{"en", "what's the wifi password?", "Yes, it's in your memory: heron-ashfield-42."},
+		{"en", "do we have the boiler service code anywhere?", "It was written down last spring: 4471."},
+		{"en", "have you got the plumber's number?", "I have it, but it was recorded a while ago — 555 0182."},
+		{"en", "where's the stopcock?", "That's in the household memory — under the stairs."},
+		{"en", "what did I say about the spare key?",
+			"Added to your private memory back in March: under the third plant pot."},
+		{"en", "is there anything about the vet?", "There's a note jotted down from April — the vet is on Mill Lane."},
+		// The three below came off a real model answering recall_eval_test.go's
+		// questions, over 140 samples, and each one was annotated. The last is the
+		// first-person past that the first cut of this fix left ungated.
+		{"en", "is the wifi password still the same one as before?",
+			"As far as I have it on record, yes — the wifi password is heron-ashfield-42. " +
+				"That entry is marked validated, so it hasn't been flagged as changed."},
+		{"en", "do we have the boiler service code anywhere?",
+			"Yes, it's in the household memory. The boiler service code is 4471."},
+		{"en", "can I have the carbonara recipe you mentioned?",
+			"I don't have a record of it — the only thing I've noted down about you is that " +
+				"you're dairy-free, so I've built this fresh."},
+		{"es", "¿cuál es la contraseña del wifi?", "Sí, está en tu memoria: heron-ashfield-42."},
+		{"ca", "quina és la contrasenya del wifi?", "Ja ho tinc: heron-ashfield-42."},
+		{"pt", "qual é a palavra-passe do wifi?", "Já tenho isso: heron-ashfield-42."},
+		{"fr", "c'est quoi le code de la chaudière ?", "C'est gardé en mémoire : 4471."},
+		{"it", "hai il numero dell'idraulico?", "Ce l'ho: 555 0182."},
+		{"nl", "heb je het nummer van de loodgieter?", "Ik heb het: 555 0182."},
+		{"de", "was ist der Code für die Heizung?", "Steht in deinem Gedächtnis: 4471."},
+		{"zh", "热水器的服务代码是多少？", "在你的记忆里有：4471。"},
+		{"ar", "ما هو رمز خدمة السخان؟", "هو في ذاكرتك: 4471."},
+	} {
+		t.Run(c.tag+"/"+c.reply[:min(len(c.reply), 24)], func(t *testing.T) {
+			opts := testOptions()
+			opts.Persona = Persona{Language: c.tag}
+			rig, err := newTestRig(fixedResolver(testDirectScope()), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rig.mem.bySpace["household"] = []memory.Entry{
+				entry("household", "Wifi password", "The wifi password is heron-ashfield-42.", "validated"),
+			}
+			rig.router.fn = func(ctx context.Context, chain []string, req routing.Request) (routing.Completion, error) {
+				return routing.Completion{Text: c.reply, FinishReason: routing.FinishStop}, nil
+			}
+
+			if err := rig.unit.Handle(context.Background(), directInbound(c.said)); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			texts := rig.tr.sentTexts()
+			if len(texts) != 1 || !strings.Contains(texts[0], c.reply) {
+				t.Fatalf("member asked %q and was sent %v; the model's answer must reach them whole", c.said, texts)
+			}
+			// The read notice above the answer is allowed and is part of the report:
+			// the member saw "searched your private memory (nothing), the household
+			// memory (1 entry)" over a right answer and a line calling it a lie.
+			if strings.Contains(texts[0], lang.For(c.tag).NothingSaved) {
+				t.Errorf("member asked %q and was sent %q — they asked a question, the answer came out of memory, and the notice says the one thing that is not true about the turn",
+					c.said, texts[0])
+			}
+		})
 	}
 }
