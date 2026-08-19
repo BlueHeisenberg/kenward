@@ -728,12 +728,23 @@ one comes from, saying what the listener means. "Whoever runs the machine" stopp
 the whole truth the moment a port could be open.
 
 `doctor` exits non-zero only on configuration faults, an unreachable lore, a store that
-holds none of this unit's spaces, or a Telegram authorisation failure — which is exactly
-the list of things `run` refuses to start on, and that is the rule rather than a
-coincidence. This matters beyond tidiness: the container's `HEALTHCHECK` runs `doctor`,
-so treating a sleeping GPU box as unhealthy would put a perfectly good household into a
-restart loop, and so would failing on anything the node itself is content to serve
-through.
+holds none of this unit's spaces, no session passphrase for a unit that needs one, or a
+Telegram authorisation failure — which is exactly the list of things `run` refuses to
+start on, and that is the rule rather than a coincidence. This matters beyond tidiness:
+the container's `HEALTHCHECK` runs `doctor`, so treating a sleeping GPU box as unhealthy
+would put a perfectly good household into a restart loop, and so would failing on
+anything the node itself is content to serve through.
+
+The passphrase is the entry that had to be added after the fact, and it is the rule seen
+from its awkward side. It need not be named in `kenward.yaml` at all — a systemd
+credential and `KENWARD_PASSPHRASE` are both legitimate — so the secrets check, which
+reads what the file names, reported "every secret the configuration names can be read"
+on a node `run` then refused with exit 2. True, and no use to anybody. `doctor` now looks
+for one the same way `run` does and never prompts for it, since a health check that
+stopped to ask a question would hang the runtime rather than report to it. Where nothing
+supplied one *and* the command is attached to a terminal it is a warning rather than a
+failure: `run` from that terminal would ask and start. A container has no terminal, and
+fails.
 
 It takes `--member ID` and `--group`, and reads `KENWARD_MEMBER` / `KENWARD_GROUP` when
 neither is given, exactly as `run` does — the container's `HEALTHCHECK` is a separate

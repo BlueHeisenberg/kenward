@@ -123,6 +123,7 @@ const (
 
 	fakeDavidPassphrase  = "correct horse battery staple david"
 	fakeJordanPassphrase = "correct horse battery staple jordan"
+	fakeNodePassphrase   = "correct horse battery staple node"
 	fakeLinkKey          = "not-a-real-household-link-key-000000000000"
 
 	versionPlacehold = "<VERSION>"
@@ -139,6 +140,10 @@ func fullEnvironment() map[string]string {
 		// member's key and nobody else's.
 		"KENWARD_PASSPHRASE_DAVID":  fakeDavidPassphrase,
 		"KENWARD_PASSPHRASE_JORDAN": fakeJordanPassphrase,
+		// Simple mode's one node passphrase, which wraps every member's key. It
+		// belongs in "the full environment" because `run` refuses to start without
+		// it, and doctor now says so — see doctorPassphrase.
+		"KENWARD_PASSPHRASE": fakeNodePassphrase,
 		// The household link key: one value for every unit, which is what makes it
 		// able to authenticate them to each other. Only linkedIsolatedYAML names it.
 		"KENWARD_LINK_KEY": fakeLinkKey,
@@ -149,7 +154,7 @@ func fullEnvironment() map[string]string {
 func allSecrets() []string {
 	return []string{
 		fakeBotToken, fakeAPIKey, fakeDavidToken, fakeJordanToken, fakeGroupToken,
-		fakeDavidPassphrase, fakeJordanPassphrase,
+		fakeDavidPassphrase, fakeJordanPassphrase, fakeNodePassphrase,
 	}
 }
 
