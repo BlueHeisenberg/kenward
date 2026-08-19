@@ -360,13 +360,15 @@ and the published image carries the lore CLI anyway for the one operator step be
 Everything else is handled: the volumes, the per-member secrets, each pod's own lore
 store, and rolling every pod onto a new image after an update.
 
-The one manual step left is membership. Each pod creates its own store, so the id in
-`household.shared_space` is one space per pod rather than one space across them until an
-operator joins them up — `lore space invite` in the pod that holds it and `lore join` in
-each of the others, run inside the pods with the CLI the image carries. lore exposes no
-Go API for either, deliberately: who may read a household's memory is a person's
-decision. `kenward doctor` prints the remediation, and once the pods share a space their
-sync daemons converge it without further help.
+There is no manual step left, provided `household.link_key` is set — which `kenward setup`
+does for you. Each pod creates its own store, so the id in `household.shared_space` starts
+as one space in the group's pod only; each member's pod then asks the group's to admit it,
+both prove they hold the link key, and the sync daemons converge from there. Adding a
+member to a household that is already running needs nothing but the member's pod.
+
+Leave the link key out and the old step comes back: `lore space invite` in the pod that
+holds the space and `lore join` in each of the others, run inside the pods with the CLI
+the image carries. `kenward doctor` says which of the two states a pod is in.
 
 **Two things to know before you point it at a household.** A member whose `tiers:` reach
 a cloud endpoint gets that endpoint's API key in their pod — they need it to route there

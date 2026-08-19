@@ -496,13 +496,18 @@ func doctorMemory(ctx context.Context, e *env, cfg *config.Config, scope config.
 // offering one would send somebody to create a second space beside the one that is
 // coming.
 //
-// The household's shared space in a MEMBER's pod is the other answer, and it is a
-// person's: one space held by several stores, created once by the group's pod and
-// reached from here through the invite handshake. lore exposes no API for that on
-// purpose, so it stays two commands typed by somebody who decided to share.
+// The household's shared space in a MEMBER's pod is the other answer, and it is no
+// longer a person's either. It is one space held by several stores, created once by
+// the group's pod and carried here by the link handshake — the group's pod answers,
+// this one asks, both prove they hold household.link_key, and nobody runs anything.
+// So a missing one is one of two states: the handshake has not succeeded yet, or the
+// household has no link key configured and is still on the manual recipe. Only the
+// second has a command in it, and it is a line in kenward.yaml rather than something
+// typed into a container.
 //
 // Both used to end with an id pasted back into kenward.yaml, and that was lore's
-// missing half rather than a design choice. lore.CreateSpaceWithID closed it.
+// missing half rather than a design choice. lore.CreateSpaceWithID closed one and
+// lore.GrantMembership closed the other.
 func podSpaceRemedy(cfg *config.Config, scope config.UnitScope, space domain.SpaceID) string {
 	for _, own := range ownSpaces(cfg, scope) {
 		if own.ID != space {
@@ -514,12 +519,21 @@ func podSpaceRemedy(cfg *config.Config, scope config.UnitScope, space domain.Spa
 			"or the configured id is not a UUID; the startup error says which"
 	}
 	if string(space) == cfg.Household.SharedSpace {
-		return "this pod holds its own lore store, so the household's shared space is " +
-			"here only once this store has been invited into it: `lore space invite " +
-			"<space> --lan --yes` in the group's pod, which created it, then `lore join " +
-			"<code> --yes` in this one (deploy/compose.isolated.yml step 4b). That one " +
-			"stays a person's decision: sharing memory between two people is not " +
-			"something an assistant grants itself"
+		if cfg.Household.LinkKeyEnv == "" && cfg.Household.LinkKeyFile == "" {
+			return "this pod holds its own lore store, so the household's shared space " +
+				"reaches it only once the group's pod has admitted it — and this household " +
+				"has no `household.link_key_env` (or `link_key_file`), so that never " +
+				"happens by itself. Set one in kenward.yaml, give every unit the same " +
+				"value, and restart: the group's pod will answer and this one will ask. " +
+				"Until then the old recipe still works — `lore space invite <space> --lan " +
+				"--yes` in the group's pod, then `lore join <code> --yes` in this one"
+		}
+		return "this pod holds its own lore store, so the household's shared space " +
+			"reaches it only once the group's pod has admitted it, which this pod asks " +
+			"for by itself and keeps asking for. Nothing here is an operator's to run. " +
+			"If it persists: the group's pod is not up, the two cannot see each other on " +
+			"the pod network, or the link key differs between them — this pod's log says " +
+			"which, under event=link"
 	}
 	whose := "this member's"
 	for _, m := range cfg.Members {

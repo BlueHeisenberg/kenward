@@ -147,6 +147,29 @@ household:
   # first-run wizard is the one thing that does create spaces, for the household and
   # for each member it adds, and it writes their ids here for you.
   shared_space: 7d5047bb-d939-4539-b3db-8b6221a2e245
+  # link_key_env names the variable holding the household link key: the one secret every
+  # unit of an ISOLATED household shares. It is ignored in simple mode, where one lore
+  # home holds every space and there is nothing to link, and it is shown here because
+  # this file documents the whole schema.
+  #
+  # What it is for: in isolated mode each pod has its own lore store, so the one
+  # shared_space above exists in the group's pod and has to be carried into each
+  # member's. The group's pod answers that request; the link key is what tells it the
+  # asker is a pod of this household rather than something else on the container bridge.
+  # With it, an admin adds a member and nothing else is ever run. Without it, somebody
+  # has to run `lore space invite` and `lore join` inside two containers, once per
+  # member, before that member's assistant can see the household's memory at all.
+  #
+  # The value carries no meaning: any random string of at least sixteen characters,
+  # identical in every pod, which one variable already guarantees. `kenward setup`
+  # generates one and writes it into .env; a hand-written configuration supplies its
+  # own. It buys admission to the household's shared space and nothing else — never a
+  # member's private space, whose key is generated inside that member's pod and never
+  # leaves it.
+  #
+  # link_key_file is the alternative source, as everywhere else here. Naming both is a
+  # validation error rather than a precedence.
+  link_key_env: KENWARD_LINK_KEY
   # group_chat_id is the Telegram chat id kenward maps to shared_space. It is the
   # negative id Telegram assigns a supergroup, found by adding the bot to the group and
   # checking kenward doctor or the bot API. Zero means no group is configured yet, which

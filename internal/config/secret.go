@@ -62,6 +62,10 @@ const (
 	// CredentialBotToken supplies telegram.bot_token — the household bot in simple
 	// mode.
 	CredentialBotToken = "bot_token"
+	// CredentialLinkKey supplies household.link_key — the shared secret every unit
+	// of an isolated household proves it holds before the group's pod will admit it
+	// to the household's shared lore space.
+	CredentialLinkKey = "link_key"
 	// credentialBotTokenPrefix is followed by the member's id.
 	credentialBotTokenPrefix = "bot_token."
 	// credentialAPIKeyPrefix is followed by the endpoint's name.
@@ -474,6 +478,39 @@ func (c *Config) BotTokenRef() SecretRef {
 // BotToken resolves the household bot's token. It is an error for it to be absent: a
 // household in simple mode without its bot serves nobody.
 func (c *Config) BotToken(s *Secrets) (Secret, error) { return s.orDefault().Resolve(c.BotTokenRef()) }
+
+// LinkKeyRef describes the household link key: the one secret every unit of an isolated
+// household holds, used to authenticate the shared-space link handshake between a
+// member's pod and the group's.
+//
+// It is household-wide on purpose, which is the opposite of every other secret here, and
+// the reason is what it protects. A member's bot token and passphrase are per-member
+// because holding one must not give a sibling anything; the link key gives a holder
+// exactly one thing — admission to the household's shared space — which every unit of
+// the household already has by configuration. So the blast radius of the shared secret is
+// the set of things it is shared among, which is the definition of it not being a
+// widening. It does not reach a member's private space, whose key is generated inside
+// that member's pod and never leaves it.
+func (c *Config) LinkKeyRef() SecretRef {
+	return SecretRef{
+		Where:      "household.link_key",
+		File:       strings.TrimSpace(c.Household.LinkKeyFile),
+		Env:        strings.TrimSpace(c.Household.LinkKeyEnv),
+		Credential: CredentialLinkKey,
+	}
+}
+
+// LinkKey resolves the household link key. Absence is not an error here — a
+// configuration written before the key existed is still a working household, with the
+// manual invite recipe — so callers check IsSet.
+func (c *Config) LinkKey(s *Secrets) (Secret, error) {
+	sec, err := s.orDefault().Resolve(c.LinkKeyRef())
+	var se *SecretError
+	if errors.As(err, &se) && se.NotFound {
+		return Secret{}, nil
+	}
+	return sec, err
+}
 
 // BotTokenRef describes this member's own bot token, used in isolated mode where the
 // member's pod carries it alone. The reference names the member by id rather than by

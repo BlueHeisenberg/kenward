@@ -34,17 +34,15 @@ import (
 // memory was never affected — that is the property the mode exists for — but shared
 // memory did not work at all, in either deployment path, and neither said so.
 //
-// What kenward supplies here is the running daemon and nothing else. The spaces
-// themselves are kenward's now — both wizards call lore.CreateSpace, a pod initialises
-// its own home with lore.Init, and a pod creates the spaces it is configured for at
-// the configured ids with lore.CreateSpaceWithID — but *membership* across accounts is
-// not: carrying one space into a second pod's store is `lore space invite` there and
-// `lore join` here, and lore's Go API exposes neither. A household assistant minting
-// its own memberships would in any case be kenward taking a decision that is not its
-// to take. So an isolated household of pods has one out-of-band step left, and it is
-// the last one and the right one: a person runs those two commands inside the pods,
-// which is the sole reason the image carries the `lore` binary at all. kenward itself
-// executes nothing. See docs/IMPLEMENTATION.md §8 for the recipe.
+// What kenward supplies here is the running daemon. Membership is the other half and
+// it is supplied too, one package over: internal/link carries the household's shared
+// space from the group's pod into each member's, over lore's GrantMembership and
+// AcceptMembership, with nobody running anything. That used to be `lore space invite`
+// in one container and `lore join` in the other, typed by a person, once per member —
+// the last out-of-band step in the mode, and the reason the image carries a `lore`
+// binary at all. It is now a fallback for a household that configures no
+// `household.link_key`. kenward itself still executes nothing: every one of those calls
+// is a Go call on a store this process has open. See docs/IMPLEMENTATION.md §8.
 //
 // The isolation boundary is lore's, not kenward's, and it does not depend on kenward
 // getting this right. A sync exchange begins with a blinded space-id intersection —
@@ -53,7 +51,8 @@ import (
 // member's private space is a space of its own with a key of its own, generated in
 // that member's pod; a sibling pod cannot compute its blinded id, cannot name it, and
 // is refused if it asks. Running a daemon in every pod therefore adds one reachable
-// space — the household's — and no others.
+// space — the household's — and no others, and that stays true however the household's
+// space got there: a grant carries one space's key and never a store's other spaces.
 
 // Serve runs lore's sync daemon on this client's own store until ctx is cancelled.
 //

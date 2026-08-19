@@ -1843,9 +1843,10 @@ convenience. Neither was needed in the end; the library did it.
 answered by building it in the image rather than downloading it — `go build
 github.com/BlueHeisenberg/lore/cmd/lore` resolves through this module's own `go.mod`, kept
 buildable by the `tool` directive there — so the CLI is exactly the lore kenward's library
-half is compiled against. It is there for one step: the `lore space invite` / `lore join`
-membership handshake below, which an operator runs *inside* a distroless pod that has no
-other way to run anything. kenward execs none of it, in any mode.
+half is compiled against. It is there for one fallback: the `lore space invite` / `lore
+join` membership handshake below, which an operator runs *inside* a distroless pod that
+has no other way to run anything, and which a household needs only when it configures no
+`household.link_key`. kenward execs none of it, in any mode.
 
 **Memory failing to answer still refuses the start, and that is the load-bearing part.**
 Nothing downstream fails on unusable memory: a turn that cannot read a space degrades that
@@ -1887,8 +1888,8 @@ Nothing is left of the lookup. There was one last holdout, `checkSyncBinary`, wh
 refused an isolated pod with no binary to run `lore serve --lan` with; it deleted along
 with `memory.Config.Command` and the subprocess itself when lore v0.5.0 exported `Serve`.
 **No mode looks for a `lore` binary now.** The image still carries the CLI, for the
-`lore space invite` / `lore join` handshake an operator runs inside a pod — see §8 — and
-kenward execs none of it.
+`lore space invite` / `lore join` fallback an operator runs inside a pod when no link key
+is configured — see §8 — and kenward execs none of it.
 
 Two lines are drawn deliberately. **Memory failing to answer is fatal, and so is a store
 holding none of this unit's spaces** — the second half was added once `run` began creating
@@ -1990,12 +1991,13 @@ and it holds because a private space lives in that member's own store — but th
 group's memory reached exactly one container, and a member's pod could neither read the
 household's knowledge nor publish anything to it.
 
-Two things are needed and lore has both. Membership: a store joins a space through the
-invite handshake, which gives it the space's row and its key. And a sync daemon: `lore
-mcp` reads and writes the local store and never syncs, so `lore serve` is what carries an
-entry from one lore home to another. Nothing in kenward ran one.
+Two things are needed and lore has both. Membership: a store comes to hold a space only
+by being given its row and its key, which the invite handshake does and — since lore
+v0.7.0 — `Store.GrantMembership` also does. And a sync daemon: `lore mcp` reads and writes
+the local store and never syncs, so `lore serve` is what carries an entry from one lore
+home to another. Nothing in kenward ran either.
 
-**kenward runs the daemon; membership stays the operator's.** `run` runs lore's own sync
+**kenward runs the daemon.** `run` runs lore's own sync
 daemon in this process for the life of an isolated unit — `lore.(*Store).Serve`, reached
 through `internal/memory`'s `Client.Serve` and started by `cmd/kenward`'s
 `startSyncDaemon`. It runs on the same `*lore.Store` the unit reads and writes through, so
@@ -2016,19 +2018,71 @@ and per-peer failures go to the logger instead, at `warn`. The backoff that used
 here existed to babysit a process that could exit for a hundred reasons, and there is no
 longer a process to babysit.
 
-Membership is provisioned out of band, and that is a decision rather than an omission —
-and it is now the *only* thing that is. (`lore init` is not beside it: a pod initialises
-its own store, per the previous section. Nor is space creation any more: a pod creates
-the spaces it owns at the ids `kenward.yaml` names, per the previous section. Creating an
-account, and creating a space at an id somebody already wrote down, are both plumbing
-with no decision in them. Granting membership is a decision.) lore's API exposes
-creation — `Store.CreateSpace` for a wizard that has just named a household or a member,
-`Store.CreateSpaceWithID` for a pod arriving at an id chosen before its store existed —
-and exposes no way to grant membership at all. So a pod cannot join itself to the
-household's space, and an assistant that minted its own household memberships would be
-taking a decision that is not its to take. The recipe, once per member, is in
-`deploy/compose.isolated.yml` §4b for the compose path; through the supervisor it is the
-same two commands against the pods keel named `sbx-kenward-group` and
+**Membership is the other half, and nothing runs it either.** It was the last
+out-of-band step and the argument for it looked solid: granting one store access to
+another's space is a person choosing to share their memory, so lore's API withheld it and
+an assistant minting its own memberships would be taking a decision that is not its to
+take. The premise that changed is who the person is. **An administrator adding a member
+to `kenward.yaml` IS the decision**, and it is recorded in the one file every unit of the
+household reads. Making that member prove it again by typing into a container was not a
+safety property; it was an unfinished implementation. (The same move `lore init` and
+space creation each made before it, and for the same reason: the decision had already
+been taken somewhere a human took it.)
+
+lore's API now exposes the two halves of an admission that a store's own owner can
+perform on its own space — `Store.GrantMembership` on the owner's home,
+`Store.AcceptMembership` on the grantee's, with `Store.PublicIdentity` as what travels
+between them. They compose in one direction only: to grant you must hold the owner's home
+AND own the space, to accept you must hold the grantee's home AND be named in the signed
+chain, so there is no pair of calls that joins an arbitrary space to an arbitrary account.
+lore's `grant.go` makes that argument in full.
+
+`internal/link` is what puts two pods in touch. **The group's pod runs a desk; each
+member's pod asks it.** The desk listens on the pod network and advertises over mDNS —
+the same mechanism the sync daemon already uses on the same network, because a pod's
+address is not knowable when its spec is built and changes on every recreation. A
+member's pod checks whether it holds the shared space, asks if it does not, applies what
+it is given, and stops; it retries on an interval for as long as the unit serves, with no
+attempt limit, because "the group's pod is not up yet" is the ordinary reason to fail and
+a member whose assistant quietly stopped trying is the whole defect coming back.
+
+**The one secret.** The desk must not admit anybody who asks: podman's default network is
+shared with every other container the same user runs, and a compose project's network is
+joinable. So both sides prove they hold `household.link_key` — provisioned exactly like a
+bot token (`link_key_env` / `link_key_file` / the `link_key` systemd credential), the same
+value in every unit, generated by `kenward setup`, and handed to every pod by
+`supervisor/isolated`. It is the only deliberately shared secret in the household, and
+the reason that is not a widening is that what it buys — admission to the household's
+shared space — every unit already has by configuration. It reaches no member's private
+space, whose key is generated inside that member's pod and appears in no grant.
+
+**Both directions are authenticated, and the response direction is the one that would
+hurt.** The request MAC tells the desk the asker is one of this household's. The response
+MAC stops an impostor handing a member's pod a grant into a space of its own creation at
+the household's configured id — `AcceptMembership` overwrites a space it is given, so
+that would be a member's assistant quietly reading and writing a stranger's memory in
+place of the household's. Nothing confidential travels either way, so there is no TLS: a
+request carries public keys, a response carries a grant sealed to the asker's encryption
+key and inert to everybody else.
+
+**Idempotent at both ends**, which is what makes re-provisioning and a member added to a
+running household the same case as a first boot. A pod recreated against its own volume
+already holds the space and asks nothing. A pod whose volume was replaced comes up with a
+new account and is admitted afresh. Admitting an account already in the member list
+re-seals the current chain and writes no new version.
+
+**Revocation is not offered and cannot be.** lore has no local revocation: every store
+that holds a space holds its key, and a key cannot be un-learned. Removing a member from
+`kenward.yaml` stops their pod existing and stops the desk being asked, but their old
+account stays in the member document and their volume, if it survives, still holds the
+key. Retiring a member's access to the household's memory means retiring the space.
+`kenward revoke` is about the Telegram binding and has never been about this.
+
+**A household with no link key is unchanged**, and that is deliberate: every deployment
+made before this existed is already linked by hand and must keep working. The handshake
+does not run, `doctor` says so in each member's pod, and the two commands are still the
+way to do it —`deploy/compose.isolated.yml` §4b for the compose path, and through the
+supervisor the same two against the pods keel named `sbx-kenward-group` and
 `sbx-kenward-member-<id>`:
 
 ```
@@ -2055,14 +2109,17 @@ It existed because `CreateSpace` minted an id instead of accepting one, so the w
 id and the pod's id were two ids for one space and a person had to reconcile them.
 `CreateSpaceWithID` accepts one and is idempotent — and the same function removed the
 `lore space create` from the shared-space recipe above, where the group's pod now creates
-the household space at the configured id. The invite and the join stay, because
-membership of a shared space is a person's decision and lore withholds it for that
-reason. A private space has no membership decision in it at all, which is exactly why it
-was the half that could be automated.
+the household space at the configured id. The invite and the join went next, for the
+reason the membership section gives. A private space never had a membership decision in
+it at all, which is why it was the half that could be automated first.
 
 **And a pod that holds none of its spaces is now a refusal.** It used to start anyway,
 because every step that provisioned one was an `exec` against a *running* pod and a pod
-that refused could never be given them. Creation is no longer one of those steps, and
+that refused could never be given them. The narrower exception survives for the same
+reason it always did: a member's pod that holds its own private space and is still
+waiting to be admitted to the household's is the "some of them" case, which serves and
+says so — and it has to, because the pod that refused to start would be the pod that
+never asks. Creation is no longer one of those steps, and
 every member has a private space (`internal/config` requires one), so a pod that holds
 nothing is a pod whose own creation did not happen — which is `judgeMemory`'s fatal case
 now, in a pod as everywhere else. The state the exception protected is untouched: a pod
@@ -2933,12 +2990,15 @@ unproved. This section is only the part that binds: the tests a change may not r
   it caught what it caught.
 
 Tests needing equipment — real Podman, a real lore, a real model — are tagged
-`//go:build integration` and excluded from the default `go test ./...`. There are seven:
+`//go:build integration` and excluded from the default `go test ./...`. There are eight:
 `internal/e2e/live_test.go` (a real lore store **and** a real endpoint, faking only
-Telegram), `internal/assistant/judgement_eval_test.go` (a real model), and five that also
+Telegram), `internal/assistant/judgement_eval_test.go` (a real model), and six that also
 carry `&& linux` because they need Podman — `internal/supervisor/isolated_integration_test.go`,
 `cmd/kenward/isolated_podman_test.go`, `cmd/kenward/livetelegram_podman_test.go`,
-`cmd/kenward/podconfigstale_podman_test.go` and `cmd/kenward/thirdscope_podman_test.go`.
+`cmd/kenward/podconfigstale_podman_test.go`, `cmd/kenward/thirdscope_podman_test.go` and
+`cmd/kenward/autolink_podman_test.go` — the last being the acceptance test for the
+shared-space link handshake, which also needs root and a podman whose containers reach
+the host.
 Each skips when its equipment is absent, so a green integration run on a bare machine
 proves nothing.
 
@@ -3005,10 +3065,12 @@ design and several of them contradict what the architecture originally supposed.
   reads nothing, silently, because a turn that cannot read a space degrades that space
   rather than failing.
 
-  Convergence is lore's own sharing, and it has two halves. **Membership is still out of
-  band**: `lore space invite` and `lore join` are run by the operator, and nothing in
-  kenward calls either — they are the last thing in this story that wants the `lore`
-  command, and it is a person's step. **The daemon is not** — `internal/memory/sync.go`
+  Convergence is lore's own sharing, and it has two halves, and neither is out of band
+  any more. **Membership** is `lore.(*Store).GrantMembership` in the group's pod and
+  `AcceptMembership` in each member's, brokered over the pod network by
+  `internal/link`; `lore space invite` and `lore join` survive as the fallback for a
+  household with no `household.link_key`, and are the last thing in this story that
+  wants the `lore` command. **The daemon** — `internal/memory/sync.go`
   runs lore's daemon in kenward's own process, on the store the unit already has open,
   and `cmd/kenward/run.go`'s `startSyncDaemon` starts one, so an isolated pod's copy of
   the shared space reaches the other pods without anybody keeping a process alive by
@@ -3040,10 +3102,12 @@ design and several of them contradict what the architecture originally supposed.
   the wire exchange is over *blinded* space ids, so a store cannot even name a space it
   is not in. That is what makes one lore per pod safe, and it is lore's guarantee rather
   than kenward's.
-- **Space invites are not on the Go API**, and kenward does not drive the CLI for them
-  either. Adding a second account to a lore space is `lore space invite` and `lore join`,
-  run by an operator; nothing in kenward shells out to do it. This is not kenward's own
-  enrolment, which is claim codes in `internal/enrol` and touches lore not at all.
+- **Adding a second account to a lore space is on the Go API as of lore v0.7.0**, in a
+  shape only a caller holding both homes can use: `GrantMembership` on the owner's store,
+  `AcceptMembership` on the grantee's. kenward calls both, from `internal/link`, and
+  shells out for neither; `lore space invite` and `lore join` remain for a household that
+  configures no link key. This is not kenward's own enrolment, which is claim codes in
+  `internal/enrol` and touches lore not at all.
 - **Delete exists, by tombstone, and only by id.** It writes a signed tombstone that
   propagates to every synced device; the entry then stops coming back from search and
   from get, and a tombstone is never returned to a reader on any path. Deleting an
@@ -3235,8 +3299,8 @@ deliberately no get-or-create: that id becomes a member's private space, and qui
 handing back an existing space because the names matched is how one member's memory
 becomes another's. The form asks for a different name. The name is also refused if it is
 empty, contains a newline or a null byte, or starts with `-`, which lore's own command
-line would read as a flag — `lore space invite` is the very next thing an operator runs
-against a space kenward made.
+line would read as a flag — the fallback `lore space invite` is still a thing an operator
+may run against a space kenward made.
 
 Creating a space **at a given id** is a different call and a different flow:
 `lore.CreateSpaceWithID`, which a pod uses to arrive at the id `kenward.yaml` already

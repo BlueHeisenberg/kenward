@@ -60,9 +60,10 @@ carries the lore CLI at `/usr/local/bin/lore`, built from the same lore version
 kenward is compiled against and statically linked because the base image has no
 dynamic loader — the Dockerfile's own note says why it is there at all, and it
 is a narrower reason than it looks: kenward reaches lore as a Go library and
-executes nothing, so the CLI is in the image purely so an **operator** can run
-the one step lore exposes no Go API for, the `space invite` / `join` membership
-handshake that makes a shared space span two pods.
+executes nothing, so the CLI is in the image purely so an **operator** can fall
+back to the `space invite` / `join` membership handshake by hand. That is only
+needed by a household that sets no `household.link_key`; with one, each pod is
+admitted to the shared space by itself and nothing is run inside a container.
 
 The store still has to be **initialised**, once per `LORE_HOME`. That half has
 not changed: a home with no account in it cannot be opened, and kenward refuses

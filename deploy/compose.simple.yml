@@ -84,12 +84,13 @@
 # that reason — there, a member's store on a host path the operator can read
 # would defeat the mode. See compose.isolated.yml.)
 #
-# compose.isolated.yml has one operator step this file does not, and it is not a
-# binary to supply either — the image carries the lore CLI. It is the membership
-# handshake: each pod there has its own store, and one space is made to span them
-# by `lore space invite` in one pod and `lore join` in the others, which lore
-# exposes no Go API for. Simple mode has one store holding every space, nothing to
-# converge with and nobody to invite, so it needs none of it.
+# compose.isolated.yml has one thing this file does not, and it is a line of
+# configuration rather than a step: `household.link_key`, the one secret every pod
+# of an isolated household shares. Each pod there has its own store, so one space
+# is made to span them by the group's pod admitting each member's, and the link key
+# is what tells it they belong to the household. Simple mode has one store holding
+# every space, nothing to converge with and nobody to admit, so it needs none of
+# it — the key is ignored here even if a file carries one.
 #
 # Secrets never appear in this file: every token/key is named by environment
 # variable only, sourced from `.env`, exactly as kenward.yaml itself only ever

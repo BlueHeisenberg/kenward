@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	fyne.io/systray v1.12.2
 	github.com/BlueHeisenberg/keel v0.5.6
-	github.com/BlueHeisenberg/lore v0.6.0
+	github.com/BlueHeisenberg/lore v0.7.0
 	github.com/go-telegram/bot v1.23.0
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/google/uuid v1.6.0

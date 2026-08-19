@@ -132,7 +132,10 @@ type memoryVerdict struct {
 // `lore space create`, `lore space invite`, `lore join` — was run with `podman exec`
 // INSIDE a running pod, and a pod that refused to start until its spaces existed could
 // never be given them. That made the refusal an unprovisionable mode rather than a
-// stricter policy.
+// stricter policy. Nothing is run with `podman exec` any more, but the shape of the
+// problem survives for the household's shared space: this pod asks to be admitted to it
+// while it is running, so a pod that refused to start without it could still never
+// ask.
 //
 // Creation is no longer one of those steps: a pod makes its own spaces at the
 // configured ids on the way up (ownSpaces, makeOwnSpaces), and every member has a
@@ -268,9 +271,11 @@ type ownSpace struct {
 // private space lives in exactly one store and is shared with nobody, so the
 // pod that serves that member is the only place it can be made. The
 // household's shared space is made once, by the group's pod, and reaches the
-// members through the invite handshake — so a member's pod does not create it,
-// and must not: a second space at that id, with a key of its own, is a space
-// that could never be joined into the household's.
+// members through the link handshake (internal/link) — so a member's pod does
+// not create it, and must not: a second space at that id, with a key of its
+// own, is a space that could never converge with the household's, because
+// peers intersect blinded ids computed from the key and two keys are two
+// blinded ids.
 func ownSpaces(cfg *config.Config, scope config.UnitScope) []ownSpace {
 	if cfg.Mode != config.ModeIsolated || !isPod(scope) {
 		return nil

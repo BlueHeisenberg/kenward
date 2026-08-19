@@ -20,7 +20,7 @@
 #
 # Before running:
 #   1. Write kenward.yaml next to this file (mode: isolated) — see
-#      docs/IMPLEMENTATION.md §4 for the schema. Do NOT commit it. Three
+#      docs/IMPLEMENTATION.md §4 for the schema. Do NOT commit it. Four
 #      secrets are named in it, and WHICH BLOCK each one goes in matters:
 #
 #        members:                      # one entry per person
@@ -34,6 +34,12 @@
 #        telegram:                     # the household group's bot, ONCE
 #          bot_token_env: KENWARD_BOT_TOKEN_HOUSEHOLD
 #
+#        household:                    # the link key, ONCE, shared by every service
+#          link_key_env: KENWARD_LINK_KEY
+#
+#      The link key is the one that goes under `household:` — it is the only
+#      household-wide secret there is, and step 4b is what it is for.
+#
 #      The group's token goes under the top-level `telegram:` block and NOT under
 #      `household:`, which has no bot_token_env and never had one — put it there
 #      and kenward answers `field bot_token_env not found in type
@@ -43,8 +49,8 @@
 #   2. Create a `.env` file next to this compose file (NOT committed — see
 #      deploy/README.md) defining every bot token and provider key below.
 #   3. Nothing to supply. The image carries the lore CLI at /usr/local/bin/lore,
-#      so every service already has the one it needs for step 5's invite and
-#      join, and there is no per-service bind mount to get wrong. kenward itself
+#      so every service still has one for the manual fallback in step 4b, and
+#      there is no per-service bind mount to get wrong. kenward itself
 #      never runs it — the store, the sync daemon and every read and write are
 #      in-process Go calls. Note what is and is not shared: sharing the BINARY
 #      was always fine, sharing the INSTANCE — the same LORE_HOME — never is,
@@ -93,8 +99,8 @@
 #      `up`. `docker compose exec kenward-david /usr/local/bin/lore peer list`
 #      shows what it has found.
 #
-#      The other is membership, and unlike `lore init` above it stays yours.
-#      That is the line, and it moved once: creating an account is plumbing with
+#      The other is membership, and it used to be the one thing here that stayed
+#      yours. That line has moved twice now. Creating an account is plumbing with
 #      no decision in it, so the container does it — and so is creating a space
 #      at an id kenward.yaml already names, so the container does that too. The
 #      household service creates the shared space itself, at
@@ -102,24 +108,56 @@
 #      run and no id to copy back; the id the wizard wrote is the only id there
 #      ever is.
 #
-#      Handing out MEMBERSHIP is a decision, and it stays yours. Sharing one
-#      space between two people's stores is a person choosing to share their
-#      memory, so lore's embeddable API declines to expose it and kenward would
-#      not call it if it did. ONCE PER MEMBER, run these two in two terminals.
-#      The first prints a code and waits; the second redeems it:
+#      MEMBERSHIP is the other half, and there is nothing here for you to run
+#      either. It used to be two commands per member, in two terminals, forever:
 #
 #        docker compose exec kenward-household \
 #          /usr/local/bin/lore space invite <space-id> --lan --yes
 #        docker compose exec kenward-david \
 #          /usr/local/bin/lore join <code> --yes
 #
-#      The joiner finds the inviter over mDNS on the compose network. If it
-#      answers "no inviting device found via mDNS", the inviter's own output
-#      prints the address to pass instead — `lore join <code> --addr <host>:<port>
-#      --yes` — where <host> is the household container's address (`docker
-#      compose exec kenward-household hostname -i`, or `podman inspect`).
+#      Those still work and are the fallback below. They are no longer the
+#      recipe, because the decision they stood for had already been taken before
+#      either was typed: you added that person to `members:`. Sharing one
+#      person's memory with another is a decision and a program must not take it
+#      — which is why lore's own API still refuses to — but carrying out a
+#      decision an administrator has already written into kenward.yaml is
+#      plumbing, exactly as `lore init` and space creation both turned out to be.
 #
-#      What that grants and what it does not. The invitee's store receives the
+#      So: the household service answers, each member's service asks, and both
+#      prove they hold `household.link_key`. Set KENWARD_LINK_KEY in .env — any
+#      random string of at least 16 characters, `openssl rand -base64 32` will
+#      do, and `kenward setup` generates one for you — name it in kenward.yaml:
+#
+#        household:
+#          link_key_env: KENWARD_LINK_KEY
+#
+#      and give it to every service in this file, which the blocks below already
+#      do. A member's service then joins the household's shared space by itself,
+#      the first time it starts and every later time it finds it is not in it. So
+#      a member added to a household that is ALREADY RUNNING needs nothing beyond
+#      `docker compose up -d`, and a service whose volume was replaced re-joins
+#      on its own. Admitting the same store twice adds no second membership.
+#
+#      The key buys admission to the household's shared space and nothing else.
+#      It is not a bot token and not a passphrase, and it cannot reach a member's
+#      private space — see the next paragraph, which is a property of lore
+#      rather than a promise of kenward's. It is also the only secret in this
+#      file that is deliberately the same in every service, for the same reason:
+#      what it grants, every service already has by configuration.
+#
+#      Leave it out and nothing breaks. The handshake does not run, each member's
+#      `kenward doctor` says so, and the two commands above are how you link them
+#      by hand — which is what every household deployed before this existed is
+#      already doing, and it keeps working untouched.
+#
+#      If the handshake does not complete: the household service is not up, the
+#      services cannot see each other on the compose network, or the key differs
+#      between them. Each member's log says which, under `event=link`. The joiner
+#      finds the desk over mDNS on the compose network, the same way the sync
+#      daemons find each other, and keeps trying for as long as it runs.
+#
+#      What membership grants and what it does not. The member's store receives the
 #      household space's key and nothing else. lore begins every sync by
 #      exchanging BLINDED space ids — HMAC(space_key, …) — so two stores exchange
 #      a space only when both already hold its key, and a member's private space,
@@ -156,8 +194,9 @@
 #      start rather than a state to be provisioned out of, which is the same
 #      change seen from the other side: there is nothing left for you to run
 #      inside one that it does not do for itself. A member's service missing only
-#      the HOUSEHOLD's space — because 4b has not been done yet — starts normally
-#      and says so, which is what keeps 4b possible.
+#      the HOUSEHOLD's space — because the link handshake has not completed yet,
+#      or because no link key is configured — starts normally and says so, which
+#      is what keeps both routes through 4b possible.
 #
 #   5. Mint each member's claim code BEFORE bringing their service up:
 #      `kenward invite --name Jordan --data-dir .`, run from this directory.
@@ -294,6 +333,18 @@ services:
       # from .env reaches this container — see the note at the top of this
       # file on why `env_file:` is not used here.
       KENWARD_BOT_TOKEN_DAVID: ${KENWARD_BOT_TOKEN_DAVID}
+      # The household link key. The SAME value in every service here, which is
+      # what makes it able to authenticate them to each other: it is how this
+      # service proves to the household's that it belongs to this household when
+      # it asks to be admitted to the shared space. Must match
+      # `household.link_key_env` in kenward.yaml. See step 4b.
+      #
+      # This is the one variable in this file that is deliberately shared. What
+      # it grants — the household's shared memory — every service already has by
+      # configuration, and it reaches no member's private space. Omit it from all
+      # of them together, never from some, or the ones without it are silently
+      # the only ones left out of the household's memory.
+      KENWARD_LINK_KEY: ${KENWARD_LINK_KEY}
       # The passphrase that wraps DAVID'S key and nobody else's. Must match this
       # member's `passphrase_env` in kenward.yaml, and must be a different
       # variable holding a different value from every other service here — see
@@ -402,6 +453,18 @@ services:
       # As with david, above: only this member's own token, nothing else
       # from .env.
       KENWARD_BOT_TOKEN_JORDAN: ${KENWARD_BOT_TOKEN_JORDAN}
+      # The household link key. The SAME value in every service here, which is
+      # what makes it able to authenticate them to each other: it is how this
+      # service proves to the household's that it belongs to this household when
+      # it asks to be admitted to the shared space. Must match
+      # `household.link_key_env` in kenward.yaml. See step 4b.
+      #
+      # This is the one variable in this file that is deliberately shared. What
+      # it grants — the household's shared memory — every service already has by
+      # configuration, and it reaches no member's private space. Omit it from all
+      # of them together, never from some, or the ones without it are silently
+      # the only ones left out of the household's memory.
+      KENWARD_LINK_KEY: ${KENWARD_LINK_KEY}
       # Jordan's own passphrase, a different variable holding a different value
       # from david's. See david's block above for why that is not a style
       # preference.
@@ -464,6 +527,18 @@ services:
       # that opens a member's memory, sitting in the one container every member
       # talks to, is precisely what isolated mode exists to keep out of it.
       KENWARD_BOT_TOKEN_HOUSEHOLD: ${KENWARD_BOT_TOKEN_HOUSEHOLD}
+      # The household link key. The SAME value in every service here, which is
+      # what makes it able to authenticate them to each other: it is how this
+      # service proves to the household's that it belongs to this household when
+      # it asks to be admitted to the shared space. Must match
+      # `household.link_key_env` in kenward.yaml. See step 4b.
+      #
+      # This is the one variable in this file that is deliberately shared. What
+      # it grants — the household's shared memory — every service already has by
+      # configuration, and it reaches no member's private space. Omit it from all
+      # of them together, never from some, or the ones without it are silently
+      # the only ones left out of the household's memory.
+      KENWARD_LINK_KEY: ${KENWARD_LINK_KEY}
       # The group pod's unit, for the HEALTHCHECK. "1" is the only true value;
       # must match the `--group` in command: below.
       KENWARD_GROUP: "1"
@@ -509,11 +584,18 @@ services:
   #    members[].bot_token_env and to .env — never reuse another member's token
   #    variable). If the two disagree, kenward refuses to start and says so
   #    rather than quietly serving the wrong member.
+  # 3a. Keep the KENWARD_LINK_KEY line exactly as it is in the block you copied.
+  #    It is the one variable here that is the same in every service, and it is
+  #    what lets sam's container be admitted to the household's shared space
+  #    without anybody running anything — see step 4b. A copied block that drops
+  #    it produces a container that starts, serves sam, and silently has no
+  #    household memory at all; `kenward doctor` inside it is what says so.
   # 3c. Run `kenward invite --name Sam --data-dir .` on the host BEFORE `up` (the
-  #    override is required — see step 5 in the header), initialise sam's own lore
-  #    store the same way step 4 does, join it to the household space the way step
-  #    4b does — a member's pod that never joins reads no household memory and
-  #    writes none — and mount the file invite writes:
+  #    override is required — see step 5 in the header). Sam's lore store, sam's
+  #    private space and sam's membership of the household space all happen
+  #    inside the container on first start; nothing about adding a member to a
+  #    household that is already running needs a command in a container. Mount
+  #    the file invite writes:
   #    `./invites/sam.json:/etc/kenward/invites.json:ro,Z` — `Z`, not `z`, for
   #    the reason in the header: this file has exactly one reader. Sam's
   #    own file — never david's, never the shared `invites.json`. Without it

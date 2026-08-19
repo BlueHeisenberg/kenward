@@ -724,6 +724,11 @@ func (c *Config) secretRefs(scope UnitScope) []secretRef {
 		add(c.BotTokenRef(), "required in isolated mode when household.group_chat_id is set; the group pod runs on the household bot")
 	}
 	if c.Mode == ModeIsolated {
+		// Not required: a household configured before the link key existed still
+		// works, with the manual invite recipe, and refusing to load it would turn a
+		// missing convenience into an outage. A source that is *stated* and cannot be
+		// read is a fault like any other, which is what this registers.
+		add(c.LinkKeyRef(), "")
 		for i, m := range c.Members {
 			if !scope.Serves(m.ID) {
 				continue
@@ -818,7 +823,7 @@ func (c *Config) validateSecrets(p *problems, s *Secrets, scope UnitScope) {
 // use, the file validates clean and fails the day somebody changes one line at the top
 // of it.
 func (c *Config) validateSecretSources(p *problems) {
-	refs := []SecretRef{c.BotTokenRef(), c.SessionPassphraseRef()}
+	refs := []SecretRef{c.BotTokenRef(), c.SessionPassphraseRef(), c.LinkKeyRef()}
 	for i, m := range c.Members {
 		ref := m.BotTokenRef()
 		ref.Where = fmt.Sprintf("members[%d].bot_token", i)

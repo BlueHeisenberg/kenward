@@ -118,10 +118,12 @@ privacy and having it.
   directly as a Go module (`github.com/BlueHeisenberg/lore`), so kenward opens the store
   in process rather than talking to a server, and creates it, and makes the household's
   spaces in it, and runs lore's sync daemon in its own process. Nothing needs installing
-  and kenward owns no knowledge model. (The published image does carry lore's CLI, for
-  one thing only: the `lore space invite` / `lore join` handshake that makes an
-  *isolated* household's shared space span its pods, which an operator runs by hand
-  inside a pod because lore exposes no Go API for it. kenward never invokes it.)
+  and kenward owns no knowledge model — including membership: an *isolated* household's
+  shared space is carried into each member's pod by lore's own grant calls, brokered
+  between the pods by kenward, with nothing run inside a container. (The published image
+  still carries lore's CLI, for the fallback: a household that sets no
+  `household.link_key` links its pods by hand with `lore space invite` / `lore join`.
+  kenward never invokes it.)
 - **[keel](https://github.com/BlueHeisenberg/keel)** — domain-free mechanisms: sandbox
   isolation, sealed vault, model client, self-update.
 

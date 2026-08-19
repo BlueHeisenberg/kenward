@@ -392,6 +392,24 @@ type HouseholdConfig struct {
 	// GroupChatID is the one Telegram group mapped to the shared space. Zero means no
 	// group is configured yet; in that case no chat resolves to a group scope.
 	GroupChatID int64 `yaml:"group_chat_id"`
+	// LinkKeyEnv names the environment variable holding the household link key: the
+	// one secret every unit of an isolated household shares, and the only thing that
+	// tells the group's pod that a store asking to be admitted to the shared space is
+	// a pod of THIS household rather than a stranger on the container bridge.
+	//
+	// It is isolated mode's, and only where there is more than one store to link. In
+	// simple mode there is one lore home holding every space and nothing to link at
+	// all, and the field is ignored. See internal/link.
+	//
+	// Absent, the link handshake does not run and the shared space reaches a member's
+	// pod only by the manual invite recipe. `kenward setup` writes one, so a
+	// household made by the wizard never sees that state; a hand-written
+	// configuration that omits it is told by `kenward doctor`.
+	LinkKeyEnv string `yaml:"link_key_env"`
+	// LinkKeyFile names a file holding the link key, for the deployments where an
+	// environment variable is the wrong place for one. Stating it as well as
+	// LinkKeyEnv is an error, not a precedence.
+	LinkKeyFile string `yaml:"link_key_file"`
 	// Tiers is the ordered endpoint tier chain for group conversations.
 	Tiers []string `yaml:"tiers"`
 }
@@ -539,7 +557,7 @@ func (c *Config) ChainLimits(chain []string) (contextWindow, maxTokens int) {
 // simple mode — runs in this process too, on the store already open. See
 // cmd/kenward's startSyncDaemon and internal/memory/sync.go.
 //
-// The published image still carries the lore CLI, for the `space invite` / `join`
+// The published image still carries the lore CLI, for the fallback `space invite` / `join`
 // handshake an operator runs by hand inside a pod. That is a program a person types,
 // not one kenward looks up, and it needs no key in a file kenward validates.
 type MemoryConfig struct {

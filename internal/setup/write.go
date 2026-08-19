@@ -107,7 +107,13 @@ type householdDoc struct {
 	Agents      config.Agents `yaml:"agents"`
 	SharedSpace string        `yaml:"shared_space"`
 	GroupChatID int64         `yaml:"group_chat_id,omitempty"`
-	Tiers       []string      `yaml:"tiers,flow"`
+	// LinkKeyEnv is isolated mode's only. Omitted rather than written empty, so a
+	// simple-mode file does not carry a key for a handshake that mode never runs.
+	LinkKeyEnv string `yaml:"link_key_env,omitempty"`
+	// LinkKeyFile is the alternative source, written only when a scripted install
+	// named one. Setup's own default is always the variable — see addLinkKey.
+	LinkKeyFile string   `yaml:"link_key_file,omitempty"`
+	Tiers       []string `yaml:"tiers,flow"`
 	// Persona is omitted entirely from a household that chose the default, because
 	// every field's empty value is a meaning — English, the flat register, no
 	// character — and three empty strings in the file say that less clearly than
@@ -210,6 +216,8 @@ func documentFor(cfg *config.Config, writeDataDir bool) document {
 			Agents:      cfg.Household.Agents,
 			SharedSpace: cfg.Household.SharedSpace,
 			GroupChatID: cfg.Household.GroupChatID,
+			LinkKeyEnv:  cfg.Household.LinkKeyEnv,
+			LinkKeyFile: cfg.Household.LinkKeyFile,
 			Tiers:       cfg.Household.Tiers,
 			Persona:     personaDocFor(cfg.Household.Persona),
 		},

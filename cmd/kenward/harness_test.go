@@ -65,6 +65,15 @@ var claimedYAML = strings.NewReplacer(
 	"    telegram_id: 87654321\n", "",
 ).Replace(simpleYAML)
 
+// linkedIsolatedYAML is isolatedYAML with a household link key, which is what
+// `kenward setup` writes and what makes the shared-space handshake automatic. The two
+// exist side by side because the difference between them changes what `doctor` tells an
+// operator to do, and both states are real: a household configured before the key
+// existed keeps working on the manual recipe.
+var linkedIsolatedYAML = strings.Replace(isolatedYAML,
+	"  shared_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8\n",
+	"  shared_space: dac31e70-72e4-4b10-9cef-a6276c4a87b8\n  link_key_env: KENWARD_LINK_KEY\n", 1)
+
 const isolatedYAML = `mode: isolated
 household:
   name: Casa
@@ -114,6 +123,7 @@ const (
 
 	fakeDavidPassphrase  = "correct horse battery staple david"
 	fakeJordanPassphrase = "correct horse battery staple jordan"
+	fakeLinkKey          = "not-a-real-household-link-key-000000000000"
 
 	versionPlacehold = "<VERSION>"
 )
@@ -129,6 +139,9 @@ func fullEnvironment() map[string]string {
 		// member's key and nobody else's.
 		"KENWARD_PASSPHRASE_DAVID":  fakeDavidPassphrase,
 		"KENWARD_PASSPHRASE_JORDAN": fakeJordanPassphrase,
+		// The household link key: one value for every unit, which is what makes it
+		// able to authenticate them to each other. Only linkedIsolatedYAML names it.
+		"KENWARD_LINK_KEY": fakeLinkKey,
 	}
 }
 
