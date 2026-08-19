@@ -480,6 +480,30 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 		return newPodSecret(what, ref, get)
 	}
 
+	// The household link key, resolved once and given to every pod. It is the only
+	// secret in this file that is deliberately the same in all of them: it buys
+	// admission to the household's shared space, which every unit of the household
+	// already has by configuration, and it reaches no member's private space —
+	// that key is generated inside that member's pod and never leaves it. See
+	// internal/link.
+	//
+	// Optional. A household configured before it existed is linked by the manual
+	// invite recipe and must keep starting; a *stated* source that cannot be read is
+	// a fault like any other, and LinkKey returns it.
+	var linkSecret []podSecret
+	cfgForLink := i.cfg
+	switch sec, err := cfgForLink.LinkKey(secrets); {
+	case err != nil:
+		return nil, fmt.Errorf("supervisor: the household link key: %w", err)
+	case sec.IsSet():
+		s, err := newPodSecret("the household link key", cfgForLink.LinkKeyRef(),
+			func() (config.Secret, error) { return cfgForLink.LinkKey(secrets) })
+		if err != nil {
+			return nil, fmt.Errorf("supervisor: the household link key: %w", err)
+		}
+		linkSecret = []podSecret{s}
+	}
+
 	var missing []string
 	for _, mc := range i.cfg.Members {
 		m := mc.Domain()
@@ -544,7 +568,7 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 			key:        k,
 			name:       name,
 			enrolled:   m.Enrolled(),
-			secrets:    append([]podSecret{token, pass}, keys...),
+			secrets:    append(append([]podSecret{token, pass}, linkSecret...), keys...),
 			inviteSeed: perMemberPath(opts.InviteSeedDir, m.ID),
 			revocation: perMemberPath(opts.RevocationDir, m.ID),
 			configFile: opts.ConfigFile,
@@ -586,7 +610,7 @@ func newIsolated(cfg *config.Config, opts IsolatedOptions, goos string) (*Isolat
 				name: name,
 				// The group has nobody to enrol; its pod is ready when it runs.
 				enrolled:   true,
-				secrets:    append([]podSecret{token}, keys...),
+				secrets:    append(append([]podSecret{token}, linkSecret...), keys...),
 				configFile: opts.ConfigFile,
 				base: i.podSpec(name, map[string]string{
 					EnvGroup:    "1",

@@ -78,6 +78,7 @@ Most households are fine with that. The ones that are not have the other mode.
 
 **Isolated mode:**
 
+<<<<<<< HEAD
 > Your assistant runs in its own process, with its own key and its own Telegram bot.
 > Nobody else in the household can read your private memory, and neither can the person
 > who runs this machine —
@@ -121,8 +122,14 @@ both modes end to end, including the one BotFather setting whose omission has no
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the reasoning behind all of it.
 
 Built on [lore](https://github.com/BlueHeisenberg/lore) for memory — spaces, entries,
-confidence, origin and multi-device sync, so kenward owns no knowledge model of its own —
-and on [keel](https://github.com/BlueHeisenberg/keel) for domain-free mechanisms: sandbox
+confidence, origin and multi-device sync, imported as a Go module rather than run as a
+server, so kenward opens the store in its own process, creates it, makes the household's
+spaces in it and runs lore's sync daemon there too. Nothing to install, and kenward owns
+no knowledge model of its own — including membership: in an isolated household each
+member's pod is admitted to the shared space by lore's own grant calls, brokered between
+pods that kenward already runs, with nothing typed inside a container.
+
+And on [keel](https://github.com/BlueHeisenberg/keel) for domain-free mechanisms: sandbox
 isolation, sealed vault, model client, self-update.
 
 ## Licence

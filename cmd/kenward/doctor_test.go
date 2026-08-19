@@ -266,27 +266,34 @@ func TestDoctorReportsBrokenSharedMemory(t *testing.T) {
 // was perfectly correct. In a pod the cause is that this store never received the space,
 // and the report has to say how it can.
 //
-// The two remedies are different, and only one of them is an operator's. The shared
-// space is one space held by several stores, so it is invited and joined by a person
-// who decided to share. A member's PRIVATE space crosses nothing and is created by that
-// member's own pod at the configured id — so the remedy for it is that there is no
-// remedy: `run` makes it, and offering a command here would send somebody to create a
-// second space beside the one that is coming.
+// The remedies are different and none of them is a command typed into a container any
+// more. A member's PRIVATE space crosses nothing and is created by that member's own pod
+// at the configured id, so the remedy for it is that there is no remedy: `run` makes it,
+// and offering a command here would send somebody to create a second space beside the
+// one that is coming. The household's SHARED space is carried in by the link handshake,
+// which nobody runs — unless the household has no link key configured, in which case the
+// remedy is a line in kenward.yaml and the old recipe as a fallback.
 func TestDoctorPodSpaceMissingNamesTheRealCause(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name  string
+		yaml  string
 		space string
 		want  []string
 	}{
-		{"the household's shared space", "dac31e70-72e4-4b10-9cef-a6276c4a87b8",
-			[]string{"lore space invite", "lore join"}},
-		{"david's private space", "7d5047bb-d939-4539-b3db-8b6221a2e245",
+		{"the household's shared space, linked", linkedIsolatedYAML,
+			"dac31e70-72e4-4b10-9cef-a6276c4a87b8",
+			[]string{"asks for by itself", "Nothing here is an operator's to run"}},
+		{"the household's shared space, no link key", isolatedYAML,
+			"dac31e70-72e4-4b10-9cef-a6276c4a87b8",
+			[]string{"household.link_key_env", "lore space invite", "lore join"}},
+		{"david's private space", isolatedYAML,
+			"7d5047bb-d939-4539-b3db-8b6221a2e245",
 			[]string{"this unit creates this space itself", "kenward run"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			h := newHarness(t, isolatedYAML, fullEnvironment())
+			h := newHarness(t, tc.yaml, fullEnvironment())
 			base := healthyProbes()
 			inner := base.lore
 			base.lore = func(ctx context.Context, cfg *config.Config, scope config.UnitScope) loreResult {

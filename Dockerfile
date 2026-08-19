@@ -17,28 +17,38 @@
 # the sync daemon — (*Store).Serve runs it in-process on a store kenward already
 # has open. kenward execs nothing.
 #
-# What has no Go API is the one step that makes a shared space SHARED across two
-# stores: the membership handshake. (*Store).CreateSpace mints a fresh id in the
-# store that calls it, so two pods each creating "household" end up with two
-# different spaces that will never converge. Making one space span pods is
+# THE REASON IS NOW A FALLBACK RATHER THAN THE ONLY ROUTE, and if you are here to
+# decide whether lore can leave this image, that is the change to weigh.
+#
+# The one step with no Go API used to be the one that makes a shared space SHARED
+# across two stores: the membership handshake. (*Store).CreateSpace mints a fresh
+# id in the store that calls it, so two pods each creating "household" end up with
+# two different spaces that will never converge, and making one space span pods was
 #
 #     lore space invite <space-id> --lan --yes     # in the pod that has it
 #     lore join <code> --yes                       # in each of the others
 #
-# and lore exports neither: v0.6.0's public API is Init, Open, CreateSpace,
-# CreateSpaceWithID, Spaces, entries, search and Serve, and no Invite or Join. lore's position is
-# that membership is granted out of band by a person, not minted by an embedding
-# program, and kenward agrees with it — a household assistant granting itself
-# membership of a space is kenward taking a decision that is not its to take.
+# with lore exporting neither. lore v0.7.0 exports GrantMembership,
+# AcceptMembership and PublicIdentity — the same admission with the part that
+# authenticates a stranger removed, usable only by a caller that already holds the
+# owner's home or the grantee's — and kenward's internal/link uses them: the
+# group's pod answers, each member's pod asks, both prove they hold
+# household.link_key, and no command is run inside any container. lore's position
+# is unchanged and kenward still agrees with it: a program must not decide to share
+# one person's memory with another. Carrying out a decision an administrator
+# already wrote into kenward.yaml is a different act.
 #
-# So the invite and the join are operator commands, they run inside a pod, and
-# this image is distroless: no shell, no coreutils, nothing to run them with. The
-# only way `docker compose exec kenward-david /usr/local/bin/lore space invite …`
-# — which is verbatim what deploy/compose.isolated.yml step 5 tells an operator to
-# type — can work is if this image carries lore. Without it, an isolated household
-# of more than one pod cannot be provisioned at all: every pod initialises its own
-# store, every pod reports the household space missing, and shared memory is
-# unreachable by any route.
+# So the invite and the join are the fallback for a household that configures no
+# link key — every household deployed before v0.7.0, which must keep working — and
+# they still run inside a pod, and this image is still distroless: no shell, no
+# coreutils, nothing to run them with. The only way `docker compose exec
+# kenward-david /usr/local/bin/lore space invite …` can work is if this image
+# carries lore.
+#
+# When lore may leave: when no supported household is still on the manual recipe.
+# Not before. A household that upgrades into an image without lore, having never
+# set a link key, has no route to shared memory at all and no way to get one from
+# inside the container.
 #
 # It used to be left to the operator, bind-mounted from the host, on the reasoning
 # that lore is a sibling project with its own release cadence and baking a copy in
@@ -57,7 +67,7 @@
 # tool directive `go mod tidy` drops their go.sum entries and this build fails with
 # "missing go.sum entry". Delete that directive and this stage fails loudly rather
 # than silently shipping something stale — which is the point, and is the switch to
-# pull the day lore exports Invite and Join and this whole block can go.
+# pull the day the fallback above is retired and this whole block can go.
 #
 # CGO_ENABLED=0 for the lore build is not optional and is not belt-and-braces. The
 # final stage below is gcr.io/distroless/static-debian12, which has no dynamic

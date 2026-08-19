@@ -1937,3 +1937,63 @@ func envKeys(spec sandbox.Spec) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestIsolatedGivesEveryPodTheHouseholdLinkKey.
+//
+// It is the one secret in this file that is deliberately identical in every pod, and
+// that is worth a test on its own because the rule everywhere else here is the
+// opposite: a member's token and passphrase are theirs alone, and a sibling holding
+// one is the failure isolated mode exists to prevent.
+//
+// What the link key buys is admission to the household's SHARED space, which every
+// unit of the household already has by configuration — so sharing it adds nothing
+// any of them did not have. What it does not buy is a member's private space: that
+// key is generated inside that member's own pod and appears in no grant. See
+// internal/link.
+//
+// The group's pod gets it too, and must: it is the pod that answers.
+func TestIsolatedGivesEveryPodTheHouseholdLinkKey(t *testing.T) {
+	cfg := isolatedTestConfig()
+	cfg.Household.LinkKeyEnv = "LINK_KEY"
+	sup, err := newIsolated(cfg, isolatedTestOptions(newFakeBackend()), "linux")
+	if err != nil {
+		t.Fatalf("newIsolated: %v", err)
+	}
+	seen := 0
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		seen++
+		if got := spec.Env["LINK_KEY"]; got != testLookupEnvValue("LINK_KEY") {
+			t.Errorf("pod %s was not given the household link key (env %v)", p.name, spec.Env)
+		}
+	}
+	if seen != 4 {
+		t.Fatalf("inspected %d pods, want three members and the group", seen)
+	}
+}
+
+// TestIsolatedStartsWithoutAHouseholdLinkKey.
+//
+// A household configured before the key existed is already linked by the manual
+// invite recipe and must keep starting. Refusing here would turn a missing
+// convenience into an outage for every deployment that upgraded.
+func TestIsolatedStartsWithoutAHouseholdLinkKey(t *testing.T) {
+	sup, err := newIsolated(isolatedTestConfig(), isolatedTestOptions(newFakeBackend()), "linux")
+	if err != nil {
+		t.Fatalf("newIsolated without a link key: %v", err)
+	}
+	for _, p := range sup.pods {
+		spec, err := sup.specFor(p)
+		if err != nil {
+			t.Fatalf("specFor(%s): %v", p.name, err)
+		}
+		for k := range spec.Env {
+			if k == "LINK_KEY" {
+				t.Errorf("pod %s was given a link key nothing configured", p.name)
+			}
+		}
+	}
+}

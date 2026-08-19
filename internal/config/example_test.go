@@ -299,6 +299,7 @@ var allowedZeroFields = map[string]string{
 	// the file form on its own either, because the path would have to exist, with mode
 	// 0600, on whatever machine runs the tests. The example shows the variable form
 	// and documents the other two in comments.
+	"Household.LinkKeyFile":     "link_key_env is the source here; stating both is a validation error",
 	"Telegram.BotTokenFile":     "bot_token_env is the source here; stating both is a validation error",
 	"Members[0].BotTokenFile":   "the file form is an alternative to bot_token_env, not an addition to it",
 	"Members[1].BotTokenFile":   "the file form is an alternative to bot_token_env, not an addition to it",

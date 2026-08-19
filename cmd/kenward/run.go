@@ -131,6 +131,13 @@ func cmdRun(e *env, args []string) int {
 	loreClient, stopSync := startSyncDaemon(e, cfg, sel, logger)
 	defer stopSync()
 
+	// And the half of shared memory the daemon cannot supply: membership. Started
+	// after the daemon so that a space admitted here begins syncing on the round
+	// that follows, and stopped before it for the same reason a pod drains before
+	// it closes its store.
+	stopLink := startLink(e, cfg, sel, loreClient, logger)
+	defer stopLink()
+
 	factory := e.supervisors
 	if factory == nil {
 		factory = defaultSupervisor
@@ -265,9 +272,9 @@ func stopDashboard(e *env, srv *dashboard.Server, logger *slog.Logger) {
 // one `household.shared_space` in kenward.yaml is one space held by several accounts,
 // and opening a store carries nothing between them. Until this existed, a member's pod
 // reported the shared space missing and the household group conversation had memory in
-// exactly one container; both deployment paths had it and neither said so. Membership
-// in that space is still provisioned out of band, by the operator — see internal/memory's
-// sync.go and docs/IMPLEMENTATION.md §8.
+// exactly one container; both deployment paths had it and neither said so. Membership in
+// that space is startLink's half — see link.go, internal/link and
+// docs/IMPLEMENTATION.md §8.
 //
 // # Which units get one
 //
@@ -362,9 +369,10 @@ func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog
 // inside them.
 //
 // The published image does carry the `lore` CLI, and that is not a contradiction. It is
-// there for the one step that has no Go API and is not meant to have one — the `lore
-// space invite` / `lore join` membership handshake, which a person runs inside a pod
-// (see internal/memory/sync.go and docs/IMPLEMENTATION.md §8). kenward execs none of it.
+// there for the fallback: a household that configures no `household.link_key` still links
+// its pods with `lore space invite` / `lore join` by hand, as every household deployed
+// before that key existed already has (see internal/link and docs/IMPLEMENTATION.md §8).
+// kenward execs none of it.
 //
 // # Why a PATH lookup was never enough anyway
 //
@@ -400,11 +408,12 @@ func startSyncDaemon(e *env, cfg *config.Config, sel unitSelection, logger *slog
 // outage than the one being prevented.
 //
 // The unit that may still hold none of them is an isolated pod with nothing of its own
-// to make: a pod creates its own spaces on the way up (makeLoreSpaces), but it cannot
-// join itself to the household's shared space, and that handshake happens INSIDE a
-// running pod. A pod that refused to start until it had been invited could never be
-// invited. judgeMemory draws that line and it is narrower than it was: a pod that does
-// have a space of its own to make and holds none is no longer excused anything.
+// to make: a pod creates its own spaces on the way up (makeLoreSpaces), but the
+// household's shared space reaches it only once the group's pod has admitted it, and
+// that happens INSIDE a running pod — startLink asks for it from this same process. A
+// pod that refused to start until it had been admitted could never ask. judgeMemory
+// draws that line and it is narrower than it was: a pod that does have a space of its
+// own to make and holds none is no longer excused anything.
 func checkLore(e *env, cfg *config.Config, sel unitSelection) int {
 	if cfg.Mode == config.ModeIsolated && !sel.single() {
 		return exitOK

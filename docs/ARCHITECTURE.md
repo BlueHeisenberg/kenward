@@ -136,8 +136,13 @@ of these constrain the design:
 - **Space creation and init are on the API** (`lore.Init`, `Store.CreateSpace`), and so
   is creating a space *at a chosen id* (`Store.CreateSpaceWithID`, idempotent). A pod
   therefore creates its own store AND the spaces `kenward.yaml` names for it, at those
-  ids. Granting membership of a shared space is deliberately not on the API: that one is
-  a person's decision, and stays `lore space invite` / `lore join`.
+  ids. Granting membership of a shared space is on the API too, as of lore v0.7.0, but
+  only in a shape a caller that holds both homes can use: `Store.GrantMembership` on the
+  owner's, `Store.AcceptMembership` on the grantee's, and no composition of the two that
+  joins an arbitrary space to an arbitrary account. Deciding to share one person's memory
+  with another is still a person's; kenward's `internal/link` carries out the decision an
+  administrator already wrote into `kenward.yaml`, and `lore space invite` / `lore join`
+  remain for the households that configure no link key.
 - **Sync is last-writer-wins per entry, not a CRDT.** The losing version is discarded
   silently, with no conflict record, and a machine with a fast clock wins every conflict.
   Household clocks should be synced, and nothing in kenward may assume a write it made is
@@ -188,12 +193,17 @@ read nothing — silently, because a turn that cannot read a space degrades that
 than failing. The cause was that **nothing ran `lore serve`**; opening a store, then or
 now, does not sync it.
 
-**Membership is still an operator step, and deliberately.** Carrying an entry between homes
-needs the daemon *and* a shared space: `lore space invite` on the owning store and `lore
-join` on the others. lore's embeddable API declines to expose membership changes, and an
-assistant minting its own memberships would be taking a decision that is not its to take. `doctor` reports what it can see — whether this store holds the space, whether a
-daemon is running, when it last synced, how many instances it reached — and prints the
-invite and join commands as remediation rather than failing the report.
+**Membership is no longer an operator step.** Carrying an entry between homes needs the
+daemon *and* a shared space, and the second half used to be `lore space invite` on the
+owning store and `lore join` on the others, typed inside two containers, once per member.
+`internal/link` does it: the group's pod answers, each member's pod asks, both prove they
+hold `household.link_key`, and nobody runs anything. What made that legitimate is not a
+change of position on whose decision sharing memory is — it is still a person's — but the
+observation that the person had already made it when they added the member to
+`kenward.yaml`. A household that configures no link key keeps the manual recipe and keeps
+working. `doctor` reports what it can see — whether this store holds the space, whether a
+daemon is running, when it last synced, how many instances it reached — and says which of
+the two states a missing space is in rather than failing the report.
 
 The isolation guarantee is lore's and structural rather than something kenward configures
 correctly. A sync exchange opens with a blinded space-id intersection over
@@ -235,9 +245,9 @@ model, reimplements nothing.
 What still shells out: nothing. `lore serve` was the last of it, and lore v0.5.0's
 `(*Store).Serve` runs the same daemon in kenward's process on the store it already has
 open, so **no mode of kenward needs a `lore` binary**. The command survives in the wider
-story only as a person's tool: `lore space invite` and `lore join` grant membership of a
-shared space, lore's API exposes neither on purpose, and that is an operator's decision
-rather than an assistant's.
+story as a fallback: `lore space invite` and `lore join` still grant membership of a
+shared space by hand, for a household that configures no `household.link_key`. The
+automatic route is a Go call like everything else (`internal/link`).
 
 ## Identity and enrolment
 

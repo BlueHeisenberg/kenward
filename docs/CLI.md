@@ -329,9 +329,11 @@ pod used to be allowed to hold **none** of them, because a pod was provisioned b
 operator running `lore space create`, `lore space invite` and `lore join` *inside a
 running pod* and one that refused to start could never be given them. A pod now creates
 the spaces it owns itself, at the configured ids, so holding none of them is a fault like
-anywhere else. What is still somebody's to run is the invitation into the household's
-shared space — and a pod waiting for that holds its own private space, which is the
-"some" case, which serves (`deploy/compose.isolated.yml`, step 4b).
+anywhere else. The household's shared space is the one a pod still waits for rather than
+makes — the group's pod owns it and this one is admitted to it, which happens while both
+are running — so a pod holding only its own private space is the "some" case, which
+serves and says so. That is what keeps the admission possible: a pod that refused to
+start until it had been admitted could never ask.
 
 **No lore binary is looked for, in any mode, and there is no longer a key naming one.**
 `run` used to check `memory.lore_command[0]` against `$PATH` and refuse without it, on
@@ -344,8 +346,9 @@ measured converging its shared space with no `lore` on `$PATH` anywhere inside t
 is refused with a line saying to delete it.
 
 The published image does still carry the lore CLI, and that is not a contradiction. It is
-there for the one step with no Go API — the `lore space invite` / `lore join` membership
-handshake an operator runs by hand inside a pod. `run` never invokes it.
+there for the fallback: a household that configures no `household.link_key` links its pods
+with `lore space invite` / `lore join` by hand, as every household deployed before lore
+v0.7.0 already has. `run` never invokes it.
 
 `--member` and `--group` exist for **isolated mode only**, where each pod runs exactly
 one unit: a member's pod is started with `--member david`, the household's with
