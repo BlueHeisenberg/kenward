@@ -455,13 +455,35 @@ has already declined.`
 // "May store it immediately" is hedged on purpose. capture.private_writes can be set
 // back to ask, and a prompt asserting either behaviour flatly would be false in half
 // the households; the model does not get to find out which, and does not need to.
+//
+// The last two sentences name the target, as a default with two exceptions rather than
+// as a menu, and that shape is a correction with a measurement behind it. The version
+// that first documented the field here opened with "All three targets are open here"
+// and listed the three as equals. It was true, and a 27B read it as an invitation:
+// told that shared was available in a private chat, it took it, and the direct-scope
+// personal rate fell from 23/28 to 16/28 while shared rose from 4 to 12 (5 samples ×
+// 2 runs per arm, TestRequestedCapture's three direct cases). A boiler code the member
+// dictated in their own conversation went to the household's memory seven times in ten.
+//
+// Nothing leaked — a shared target in a direct scope asks first — and that is exactly
+// why nothing caught it. What it cost is capture.Engine.writesPrivateDirectly, which
+// needs TargetPersonal: every one of those proposals became a question instead of the
+// announce-with-Undo D-038 promises at enrolment, so the paragraph written to document
+// the field switched off the behaviour the field exists for. The wording here reads
+// 30/30 personal over the same two runs.
+//
+// It is a lean and not a rule, deliberately. A household fact stated in a private chat
+// should still go to shared and still be asked about, so the value stays named and the
+// condition is stated — "unless they say the household needs the thing". The eval has
+// no case of that shape, so that half is reasoned and not measured; the cost of getting
+// it wrong is one entry in the member's own memory, announced, with an Undo under it.
 const captureDirectText = `Proposing something for {{.MemberName}}'s private memory may store it immediately.
 They are shown exactly what was written and can undo it, but they were not asked
 first, so propose only what you would be comfortable having written. Nothing reaches
-the household's shared memory until they say yes to it. All three targets are open
-here: personal for what is {{.MemberName}}'s alone, shared for what the household
-needs, and unsure when you genuinely cannot tell — they are asked either way, so unsure
-is for when you do not know and not for when you would rather not choose.`
+the household's shared memory until they say yes to it. This is {{.MemberName}}'s own
+conversation, so target is personal unless they say the household needs the thing —
+shared when they do, and unsure only when you genuinely cannot tell. Both of those are
+put to them as a question instead, so neither is a way of not choosing.`
 
 // publishText is what a direct scope adds, verbatim. It is the member-facing half of
 // the id-provenance rule: the model may only name a title it can see, because the id

@@ -58,7 +58,13 @@ var catalan = Catalogue{
 		"registrat", "he desat", "he anotat", "he apuntat", "queda anotat",
 		"ho tinc", "ja ho tinc",
 		"prenc nota", "he pres nota", "ho apunto", "ho anoto", "ho deso",
-		"afegit a la teva", "afegit a la memòria", "és a la teva memòria",
+		"he afegit", "afegit a la teva", "afegit a la memòria", "és a la teva memòria",
+	},
+
+	// This turn and no other — see the English table. "És a la teva memòria", "ja ho
+	// tinc" and the bare perfects are what a recall answers with.
+	UnmistakableSaveClaims: []string{
+		"he afegit", "prenc nota", "ho apunto", "ho anoto", "ho deso", "queda anotat",
 	},
 
 	SavePromises: []string{

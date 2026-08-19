@@ -2846,11 +2846,12 @@ Matching the shape of that sentence cannot work. The phrasing space is unbounded
 model varies it freely; `Done — the boiler service code is 4471.` is the same shape and is
 an answer that must reach the member untouched. So the second guard matches **vocabulary**
 instead. `lang.Catalogue.SaveClaims` is the second field the member never reads: the words
-that can only be about a write that has already happened — *saved*, *noted*, *stored*, and
+that can only be about a write rather than an errand — *saved*, *noted*, *stored*, and
 *got it*, which claims to be holding the thing the member just handed over — in each of
 the ten languages, matched as substrings anywhere in the reply, because that is where the
 claim sits in Chinese and Arabic and in any sentence that answers something else first.
-The future tense of the same words lives in `SavePromises` and is gated; see above.
+The future tense of the same words lives in `SavePromises` and is gated; the subset that
+runs with no gate at all is `UnmistakableSaveClaims`, two sections down.
 
 **The line between the two tables is possession against completion.** *Got it* is a save
 claim and *done* is not. `Done — the boiler service code is 4471.` is an answer and must
@@ -2871,9 +2872,9 @@ win. Nothing here reaches it; only the prompt can.
 any more: the first replaced its reply and no longer does. Every reply goes out first and
 whole — `Saved — plumber number is 555 0182` has the number in it, which is the thing the
 member wanted kept, and `Done.` is an answer to somebody — and the notice goes out under
-it. What separates the two arms now is not what they do with the reply but what they read
-to decide: the vocabulary arm reads the reply alone, the bare arm also reads the member's
-message.
+it. What separates the arms now is not what they do with the reply but what they read to
+decide: only `UnmistakableSaveClaims` reads the reply alone; the bare arm, the promise
+arm and the rest of the claim vocabulary also read the member's message.
 
 **The same code scores the eval.** `claimsASave` in `judgement_eval_test.go` used to be a
 private phrase list on the argument that nothing like it belonged in production; that
@@ -2912,6 +2913,36 @@ just then. Say it again if you want me to remember it."*, in place of the reply,
 member who had asked for nothing. It reads as a malfunction, and it fires on the commonest
 turn a household has. `TestAnAcknowledgementInOrdinaryConversationIsLeftAlone` pins it in
 five languages, and the second live population below measures it.
+
+**The same correction had to be made a second time, one arm over, and a member found it
+there too.** Splitting the vocabulary by register left the unconditional arm holding
+everything that was not also a way of saying "done" — which included *written down*, *in
+your memory*, *added to your*, *I have it*. Those are not acknowledgements. They are what
+a **correct recall** sounds like. A member asked for the wifi password, the household
+entry existed, the answer was right, and under it they read *"I didn't record anything
+just then."* The guard was loudest on the one thing the product is for.
+
+So the split is now by **agent and tense** rather than by register, and it is a table
+rather than a derivation: `lang.Catalogue.UnmistakableSaveClaims` holds the phrases that
+put this node in the subject and this turn on the clock — *I saved*, *I've added*, *he
+guardado*, *in your memory now*, *steht jetzt in deinem* — and nothing else runs
+ungated. A phrase that says only where a thing is, or that it was written at some point,
+stays in `SaveClaims` behind `AsksForASave` with the acknowledgements and the promises,
+where it still catches the member who did ask. The catch the ungated arm exists for is
+unchanged: *"I've added that to your private memory"* on a turn where nobody asked is
+still corrected, because the first person is what is left there.
+
+No derivation could have found that line — *he guardado* and *está en tu memoria* are
+the same word family and only one of them is about this turn — so it costs one list per
+language, and German pays for it: its perfect tense splits around the object, so *Ich
+habe das zu deinem Gedächtnis hinzugefügt* is caught only behind the gate.
+`internal/assistant/recall_eval_test.go` is the fourth live population, twenty turns
+where the member asks about an entry that exists. On a 27B it printed both columns from
+one run: over 80 samples the derived guard would have spoken over two correct answers,
+and the table over none. Every sentence it caught on the way — including "the only thing
+I've noted down about you is that you're dairy-free", which is what moved the
+first-person past behind the gate — is pinned in
+`TestARecalledEntryIsNotCorrected`.
 
 The generic notice is the last resort, not the mechanism. A turn that ends in a capture
 question — a remember proposal or a publish request — hands the rest of the turn to
@@ -2990,9 +3021,10 @@ unproved. This section is only the part that binds: the tests a change may not r
   it caught what it caught.
 
 Tests needing equipment — real Podman, a real lore, a real model — are tagged
-`//go:build integration` and excluded from the default `go test ./...`. There are eight:
+`//go:build integration` and excluded from the default `go test ./...`. There are nine:
 `internal/e2e/live_test.go` (a real lore store **and** a real endpoint, faking only
-Telegram), `internal/assistant/judgement_eval_test.go` (a real model), and six that also
+Telegram), `internal/assistant/judgement_eval_test.go` and
+`internal/assistant/recall_eval_test.go` (a real model), and six that also
 carry `&& linux` because they need Podman — `internal/supervisor/isolated_integration_test.go`,
 `cmd/kenward/isolated_podman_test.go`, `cmd/kenward/livetelegram_podman_test.go`,
 `cmd/kenward/podconfigstale_podman_test.go`, `cmd/kenward/thirdscope_podman_test.go` and

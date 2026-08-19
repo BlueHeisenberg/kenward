@@ -160,10 +160,11 @@ type Catalogue struct {
 	// them. Those are worse than "Done.": they tell the member exactly what was
 	// stored, so the false belief is specific and checkable and will not be checked.
 	//
-	// What belongs here: vocabulary that can only be about a write that has already
-	// happened. "Saved", "noted", "stored", "got it". These are false the moment they
-	// are written on a turn that stored nothing, whatever the member asked for, so
-	// this is the one list consulted unconditionally.
+	// What belongs here: vocabulary that can only be about a write, as against an
+	// errand finished. "Saved", "noted", "stored", "got it", "written down", "in your
+	// memory". Whether a phrase here is false on this turn depends on the turn —
+	// UnmistakableSaveClaims is the subset that does not, and the caller gates the
+	// rest on the member having asked.
 	//
 	// What belongs in SavePromises instead: the future tense. "I'll remember" is a
 	// promise and not a claim, and the difference showed up live — see that field.
@@ -187,6 +188,60 @@ type Catalogue struct {
 	// SavePromises is what came out of it.
 	SaveClaims []string
 
+	// UnmistakableSaveClaims is the subset of SaveClaims that can only mean "I wrote
+	// this, on this turn". It is the one list consulted with no gate in front of it.
+	//
+	// It used to be derived — SaveClaims less every entry BareAcknowledgements also
+	// held — on the theory that the only ambiguity worth fearing was the one between
+	// a claimed save and an ordinary "done". A member asked for the wifi password,
+	// the household entry existed, the answer was right, and they read:
+	//
+	//	It's heron-ashfield-42, at least as of the last time it was written down …
+	//	⚠️ I didn't record anything just then. Say it again if you want me to remember it.
+	//
+	// "written down" is not an acknowledgement, so the derivation left it here and it
+	// fired. It was dating an entry that already existed. So was "it's in your memory",
+	// "I have it", "added to your private memory back in March" — every one of them a
+	// correct recall, annotated with a notice denying it, on the one thing kenward is
+	// for. The guard was misfiring precisely when the product worked.
+	//
+	// The second ambiguity is therefore *when*, and no derivation can see it: "he
+	// guardado" and "está en tu memoria" are the same word family and only one of them
+	// is about this turn. So this is a table.
+	//
+	// A first-person subject is not enough either, which a second live run had to say
+	// out loud. "I've noted", "j'ai noté", "ho salvato" state that something happened
+	// and say nothing about when — "the only thing I've noted down about you is that
+	// you're dairy-free" is a recall, and it earned the notice. That is also the false
+	// positive this repository used to price rather than fix, in
+	// TestATrueClaimAboutAnEarlierTurnKeepsItsAnswer.
+	//
+	// What belongs here is a phrase that cannot be about an entry that was already
+	// there: the present tense, which can only be now ("making a note", "lo apunto",
+	// "je note", "ich notiere"); a destination pinned to now ("is now in your", "steht
+	// jetzt in deinem", "现在在你的记忆里"); and the verb of the sentence this arm exists
+	// for, "add" — "I've added that to your private memory" — which a description of
+	// the store does not reach for.
+	//
+	// What must never be put here: a bare participle ("written down", "aufgeschrieben",
+	// "registado"), a location ("in your memory", "in deinem gedächtnis", "在你的记忆里"),
+	// possession ("I have it", "ce l'ho", "já tenho"), an agentless past ("added to
+	// your", "تم التسجيل") or a first-person past with no time in it ("I saved", "he
+	// anotado"). Each is what a truthful answer out of memory says, and each stays in
+	// SaveClaims, where AsksForASave decides. Little is lost by that: the live D-059
+	// residue has only ever arrived as a bare participle — "Saved — …", "Noted — …" —
+	// on a turn where the member had asked, which is the turn the gate matches.
+	//
+	// Every entry here must also match SaveClaims, so the gated arm sees everything the
+	// ungated one does — TestUnmistakableClaimsAreASubsetOfTheClaims.
+	//
+	// ponytail: one list per language rather than a rule, because "is this sentence
+	// about this turn" is not answerable by string matching in ten languages. German
+	// pays for it: its perfect tense splits around the object, so "Ich habe das zu
+	// deinem Gedächtnis hinzugefügt" is caught only behind the gate. Add the phrasing,
+	// not a parser, when a live run produces one.
+	UnmistakableSaveClaims []string
+
 	// SavePromises is every way this language says "I will keep that" — the future
 	// tense of SaveClaims, and the negated future with it: "I'll remember", "I won't
 	// forget", "I'll note that down".
@@ -204,8 +259,9 @@ type Catalogue struct {
 	//
 	// So this list is gated on SaveRequests exactly as BareAcknowledgements is, and for
 	// the same reason: a promise is false when it answers a request to keep something
-	// and is merely a promise otherwise. SaveClaims stays unconditional, because a
-	// completed claim is false whatever prompted it.
+	// and is merely a promise otherwise. UnmistakableSaveClaims is the only list that
+	// stays unconditional, because a first-person completed write is false whatever
+	// prompted it.
 	//
 	// Nothing is lost by the gate. A promise is dangerous precisely on the turn where
 	// the member asked, and that is the turn AsksForASave matches.
@@ -219,14 +275,15 @@ type Catalogue struct {
 	// the same ten-language problem as the two above and there is no second place to
 	// put it.
 	//
-	// It exists to narrow the two guards whose replies are false only in context —
-	// BareAcknowledgements and SavePromises — and must never be widened into a
+	// It exists to narrow the three guards whose replies are false only in context —
+	// BareAcknowledgements, SavePromises, and SaveClaims less the unmistakable subset
+	// of it — and must never be widened into a
 	// detector of its own. Deciding "the member asked for a write" from free text is
 	// exactly the primary detector internal/assistant refuses to build: a phrasing this
 	// table missed would be a member left believing something was stored, silently. As
 	// a filter the risk runs the other way — a miss leaves a bare "Done." or an unkept
-	// promise uncorrected, and SaveClaims still catches every reply saying a save has
-	// happened — which is what makes an admittedly incomplete list of phrases
+	// promise uncorrected, and UnmistakableSaveClaims still catches every reply saying
+	// the node wrote something just now — which is what makes an admittedly incomplete list of phrases
 	// acceptable here and unacceptable as the thing the guard rests on.
 	//
 	// What belongs here: the verbs and the imperatives a member uses when they hand
@@ -541,59 +598,31 @@ func (c Catalogue) ClaimsASave(reply string) bool {
 	return containsAny(reply, c.SaveClaims)
 }
 
-// ClaimsASaveUnmistakably reports whether a reply claims a save in words that cannot
-// also be an ordinary acknowledgement — SaveClaims, less every entry BareAcknowledgements
-// also holds.
+// ClaimsASaveUnmistakably reports whether a reply says a write happened on this turn,
+// in words that can mean nothing else — see UnmistakableSaveClaims.
 //
-// The two tables overlap by design and the overlap is exactly the ambiguous vocabulary:
-// "saved", "noted", "got it", "anotado", "apuntado" are what this language says when it
-// has kept something and also what it says when it is simply answering. That was
-// harmless while the overlap was only read whole — IsBareAcknowledgement needs the
-// acknowledgement to be the entire reply, and a reply that is nothing but "Noted." means
-// only what the message before it meant. It stopped being harmless once the same words
-// were matched as substrings, because then "Perfecto, anotado. El fontanero vendrá
-// mañana a las nueve." is a claimed save, and a member who reported the plumber's visit
-// was told "No he guardado nada ahora mismo" for their trouble.
+// Two ambiguities have to be out of the way before a phrase earns the ungated arm, and
+// they were found a fix apart.
 //
-// So the difference between the two lists is the difference between the two arms. What
-// is left here is vocabulary that names the act or the destination and nothing else —
-// "written down", "made a note", "added to your", "in your memory", "queda anotado",
-// "está en tu memoria" — and that is false the moment it is written on a turn that
-// stored nothing, whatever the member asked for. The rest is a claim only in the
-// context of a request, exactly as a bare acknowledgement and a promise are, and the
-// caller gates all three the same way.
+// The first is register. "saved", "noted", "got it", "anotado", "apuntado" are what a
+// language says when it has kept something and also what it says when it is simply
+// answering, so "Perfecto, anotado. El fontanero vendrá mañana a las nueve." read as a
+// claimed save and the member who reported the plumber's visit was told "No he guardado
+// nada ahora mismo" for their trouble.
 //
-// The derivation is deliberate rather than a fourth table. A fourth table is a fourth
-// thing to keep in step across ten languages, and the fact this needs — "is this word
-// also how the language says done?" — is already written down, once, in the table whose
-// documentation says that is what it holds.
+// The second is time, and it is the one a derivation could never see. "It was written
+// down last spring", "it's in your memory", "I have it", "the only thing I've noted down
+// about you" are none of them acknowledgements — they survived the first fix untouched —
+// and every one of them is what a correct answer out of memory sounds like. The guard
+// fired hardest on the turns where kenward had done its job.
+//
+// So the table says which phrases are safe here rather than a rule deriving them, and
+// what is left is the present tense, a destination pinned to now, and the verb of the
+// one sentence this arm exists for. Everything else is a claim only in the context of a
+// request, exactly as a bare acknowledgement and a promise are, and the caller gates all
+// three the same way.
 func (c Catalogue) ClaimsASaveUnmistakably(reply string) bool {
-	got := letters(reply)
-	if got == "" {
-		return false
-	}
-	for _, p := range c.SaveClaims {
-		if c.alsoAnAcknowledgement(p) {
-			continue
-		}
-		if strings.Contains(got, letters(p)) {
-			return true
-		}
-	}
-	return false
-}
-
-// alsoAnAcknowledgement reports whether a save-claim phrase is one of this language's
-// bare acknowledgements. Compared whole, the way IsBareAcknowledgement compares a
-// reply: "noted" and "noted" are the same word, and "made a note" is not "noted".
-func (c Catalogue) alsoAnAcknowledgement(phrase string) bool {
-	p := letters(phrase)
-	for _, ack := range c.BareAcknowledgements {
-		if p == letters(ack) {
-			return true
-		}
-	}
-	return false
+	return containsAny(reply, c.UnmistakableSaveClaims)
 }
 
 // PromisesASave reports whether a reply promises to keep something in future — see

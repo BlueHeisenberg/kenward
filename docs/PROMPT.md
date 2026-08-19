@@ -783,10 +783,10 @@ the only one where what happens next depends on which the model names:
 Proposing something for {{.MemberName}}'s private memory may store it immediately.
 They are shown exactly what was written and can undo it, but they were not asked
 first, so propose only what you would be comfortable having written. Nothing reaches
-the household's shared memory until they say yes to it. All three targets are open
-here: personal for what is {{.MemberName}}'s alone, shared for what the household
-needs, and unsure when you genuinely cannot tell — they are asked either way, so unsure
-is for when you do not know and not for when you would rather not choose.
+the household's shared memory until they say yes to it. This is {{.MemberName}}'s own
+conversation, so target is personal unless they say the household needs the thing —
+shared when they do, and unsure only when you genuinely cannot tell. Both of those are
+put to them as a question instead, so neither is a way of not choosing.
 ```
 
 This paragraph carries the asymmetry the product is built on, and it is stated to the
@@ -796,6 +796,40 @@ rather than the mechanism — *propose only what you would be comfortable having
 — because "the member confirms" was doing real work in the old prompt and something has
 to replace it. A model that believes a button stands between its proposal and the store
 proposes more loosely than one that knows it does not.
+
+The last two sentences say which target to use, and they say it as a default with two
+exceptions rather than as a menu. That is a correction, and it is measured. The version
+before them opened with *"All three targets are open here"* and listed the three as
+equals — accurate, and read by a 27B as an invitation. Told in a private chat that
+`shared` was available, it took it: a boiler service code the member dictated in their
+own conversation went to the household's memory seven times in ten. `shared` in a direct
+scope asks first, so nothing leaked; what it did instead was suppress D-038's
+announce-with-Undo, because `capture.Engine.writesPrivateDirectly` needs
+`TargetPersonal` — which is to say the paragraph that documented the field switched off
+the behaviour every member is promised at enrolment.
+
+Measured on qwen3.8-27b-dflash2 over `TestRequestedCapture`'s three direct-scope cases,
+5 samples × 2 runs per arm, counting the destination each surviving call named:
+
+| direct-scope requested writes | personal | shared | unsure |
+|---|---|---|---|
+| before the field was documented at all | 23/28 (82%) | 4 | 1 |
+| "all three targets are open here" | 16/28 (57%) | 12 | 0 |
+| a default with two exceptions | **30/30 (100%)** | 0 | 0 |
+
+Both runs of the third arm read 15/15, a third run on the finished branch read 14/14, and
+the group scope stayed on `shared` in all of
+them, which is the check that matters against a default written this way: leaning
+`personal` must not follow the model into the scope that has no such value. It does not,
+because `captureGroupText` says `target is always shared` in that scope and this
+paragraph is not rendered there.
+
+What the numbers do not settle is the case this population contains none of: a household
+fact stated in a private chat, where `shared` is the right answer and a question is the
+right behaviour. The wording leaves it available and names the condition — *unless they
+say the household needs the thing* — and the cost of getting it wrong is bounded by what
+the member is shown: a private write is announced with an Undo under it. A population of
+household facts arriving in a direct scope is the measurement that would close it.
 
 It says *may* store it immediately, and the hedge is deliberate: `capture.private_writes`
 can be set back to `ask`, and a prompt asserting either behaviour flatly would be false

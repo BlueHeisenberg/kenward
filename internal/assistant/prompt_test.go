@@ -511,14 +511,27 @@ func TestThePromptTeachesTheTargetField(t *testing.T) {
 			t.Errorf("the %s prompt has one destination and never says what to put in target", name)
 		}
 	}
-	// And the direct scope, which is the only one with a choice, offers all three
-	// rather than naming only the one that asks a question.
+	// And the direct scope, which is the only one with a choice, states a default and
+	// names the exceptions — rather than naming only the value that asks a question,
+	// and rather than presenting the three as a menu.
+	//
+	// Both halves are failures that happened, in that order. Naming only "unsure" made
+	// hedging the whole of what the prompt said about the field. Replacing it with "All
+	// three targets are open here" fixed that and bought a second defect at 4:1 odds:
+	// told in a private chat that shared was available, a 27B took it, and the
+	// direct-scope personal rate went 23/28 → 16/28 with shared 4 → 12 over 5 samples ×
+	// 2 runs per arm. personal is the value capture.Engine.writesPrivateDirectly needs,
+	// so that is D-038's announce-with-Undo switched off by the paragraph documenting
+	// the field. Stating the default reads 30/30. See captureDirectText.
 	direct := flattened(everyScopeShape(t)["direct"])
-	if !strings.Contains(direct, "All three targets are open here") {
-		t.Error("the direct prompt does not tell the model all three targets are available to it; it is the only scope where the choice exists")
+	if !strings.Contains(direct, "target is personal unless") {
+		t.Error("the direct prompt does not say which target this scope defaults to; it is the only scope with a choice, and a model given three equal options in a private chat takes the household's memory often enough to switch announce-with-Undo off")
 	}
 	if strings.Contains(direct, "say unsure rather than guessing") {
 		t.Error("the direct prompt still names unsure as the only value it mentions, which is what made hedging the one instruction the model had about the field")
+	}
+	if strings.Contains(direct, "All three targets are open here") {
+		t.Error("the direct prompt offers the three targets as equals again; that wording is measured to move a private chat's writes to the household's memory, which asks instead of announcing and takes D-038 with it")
 	}
 
 	// The schema's own half. It is not what teaches the field — summary had a

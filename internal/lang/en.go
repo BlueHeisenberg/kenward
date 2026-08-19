@@ -65,6 +65,7 @@ var english = Catalogue{
 		"saved", "stored", "recorded", "noted", "jotted", "written down",
 		"i saved", "i've saved", "i have saved", "i noted", "i've noted",
 		"i have noted", "i stored", "i've stored", "i recorded", "i've recorded",
+		"i added", "i've added", "i have added",
 		"got it", "got that", "i have it", "i've got it",
 		"made a note", "make a note", "making a note", "got it down",
 		"added to your", "added to the household", "is now in your",
@@ -80,6 +81,43 @@ var english = Catalogue{
 		// says the assistant cannot see one — and a table holding it would annotate a
 		// model correctly repeating a scope rule.
 		"to your memory", "to your private memory",
+	},
+
+	// The part of the list above that cannot be about an entry that was already there,
+	// so it needs nothing behind it.
+	//
+	// "Written down", "jotted", "in your memory", "added to your", "I have it" all can:
+	// each is how a *correct* recall answers, and a member who asked for the wifi
+	// password read a notice saying nothing had been recorded because the answer said
+	// "the last time it was written down". Those stay in SaveClaims and wait for
+	// AsksForASave.
+	//
+	// A first-person past tense does not settle it either, and that is the second
+	// thing a live run had to teach. "I saved", "I've noted", "I've recorded" were here
+	// on the argument that a subject and a past tense state a thing that happened —
+	// true, and silent about *when*. A recall says them: "the only thing I've noted
+	// down about you is that you're dairy-free" came off a real model answering a real
+	// question, and earned the notice. The same shape is the false positive
+	// TestATrueClaimAboutAnEarlierTurnKeepsItsAnswer used to price rather than fix
+	// ("Yes, I saved it earlier"), and there is no tense rule that separates the two —
+	// in this language or in the nine below it.
+	//
+	// So they are gated, and what stays is narrower: the present tense, which can only
+	// be now ("making a note"); the destination pinned to now ("is now in your"); and
+	// "added", which is the verb of the sentence this arm exists for — "I've added that
+	// to your private memory" — and not a verb a store description reaches for.
+	//
+	// Nothing measured was given up. The live D-059 residue has never once used a
+	// first-person past: it was "Saved — …", "Noted — …", "Got it — …", bare
+	// participles that are also this language's acknowledgements, on turns where the
+	// member had asked — which is exactly where the gate still catches them.
+	//
+	// "make a note" is in SaveClaims and not here for the same reason in the other
+	// tense: "I'll make a note of that" is a promise, and the promises are gated.
+	UnmistakableSaveClaims: []string{
+		"i added", "i've added", "i have added",
+		"made a note", "making a note", "got it down",
+		"is now in your", "is now in the household", "in your memory now",
 	},
 
 	// The future tense of the same lie, and only a lie when it answers a request.

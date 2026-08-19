@@ -58,9 +58,16 @@ var italian = Catalogue{
 	SaveClaims: []string{
 		"salvato", "salvata", "annotato", "annotata", "registrato", "segnato",
 		"ho salvato", "ho annotato", "ho segnato", "ho preso nota", "prendo nota",
-		"ce l'ho",
+		"ce l'ho", "ho aggiunto",
 		"aggiunto alla tua", "aggiunto alla memoria",
 		"è nella tua memoria",
+	},
+
+	// This turn and no other — see the English table. "È nella tua memoria", "ce l'ho"
+	// and the bare perfects ("ho salvato", "ho annotato") are what a recall answers
+	// with.
+	UnmistakableSaveClaims: []string{
+		"ho aggiunto", "prendo nota",
 	},
 
 	SavePromises: []string{

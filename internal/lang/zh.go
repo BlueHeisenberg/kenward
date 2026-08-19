@@ -61,6 +61,16 @@ var chinese = Catalogue{
 		"已记录", "已保存", "已记下", "已记住", "记下了", "记住了",
 		"记录下来了", "保存好了", "收到了", "存好了", "已经记",
 		"帮你记下了", "帮你记住了", "添加到你的", "在你的记忆里",
+		"已添加到你的", "现在在你的记忆里",
+	},
+
+	// This turn, and not an entry that was already there — see the English table. 已 is
+	// "already" and 了 is only completion, so 已记下 and 记住了 date nothing; 添加到你的 has
+	// no subject and 在你的记忆里 says only where a thing is. All of those are what a
+	// correct recall answers with and all of them wait for the member to have asked.
+	// What is left is 帮你, which is this turn's service, and the two now-marked forms.
+	UnmistakableSaveClaims: []string{
+		"帮你记下了", "帮你记住了", "已添加到你的", "现在在你的记忆里",
 	},
 
 	SavePromises: []string{
