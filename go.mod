@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	fyne.io/systray v1.12.2
+	github.com/BlueHeisenberg/agentmesh v0.7.0
 	github.com/BlueHeisenberg/keel v0.5.6
 	github.com/BlueHeisenberg/lore v0.7.0
 	github.com/go-telegram/bot v1.23.0
@@ -14,7 +15,6 @@ require (
 )
 
 require (
-	github.com/BlueHeisenberg/agentmesh v0.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/libp2p/zeroconf/v2 v2.2.0 // indirect

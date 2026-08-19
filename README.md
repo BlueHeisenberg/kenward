@@ -78,7 +78,6 @@ Most households are fine with that. The ones that are not have the other mode.
 
 **Isolated mode:**
 
-<<<<<<< HEAD
 > Your assistant runs in its own process, with its own key and its own Telegram bot.
 > Nobody else in the household can read your private memory, and neither can the person
 > who runs this machine —
