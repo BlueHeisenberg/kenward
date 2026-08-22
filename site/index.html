@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>kenward — a household AI assistant where each person's memory is actually their own</title>
-<meta name="description" content="A self-hosted household assistant. Everyone talks to it through Telegram, privately or in the group. Per-person memory held in separate stores, separate keys and separate processes. One binary, on a machine you already own.">
+<title>kenward — an assistant for your family or your friends</title>
+<meta name="description" content="A self-hosted assistant for your family or your friends. Everyone talks to it through Telegram, privately or in the group. Each person's memory is held in its own store, with its own key, in its own process.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0A0908">
 
 <meta property="og:title" content="kenward">
-<meta property="og:description" content="A household AI assistant where each person's memory is actually their own.">
+<meta property="og:description" content="An assistant for your family or your friends, where each person's memory is actually their own.">
 <meta property="og:image" content="https://kenward.io/assets/header.svg">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
@@ -642,21 +642,23 @@ footer.site .row {
       </h1>
 
       <p class="tagline reveal r2">
-        A household AI assistant where each person&rsquo;s memory is
+        For your family, or your friends. Each person&rsquo;s memory is
         <span class="warm">actually their own.</span>
       </p>
 
       <p class="lead reveal r3">
-        kenward is a self-hosted assistant for a family or a group of friends. Everyone talks to
-        it through Telegram &mdash; privately, or in the household group. What it remembers about
-        you privately stays private; what the group teaches it is shared with the group. That
-        boundary is separate stores, separate keys and separate processes &mdash; not a
+        Self-hosted, on a machine you already own. Everyone talks to it through Telegram &mdash;
+        privately, or in the group you all share.
+      </p>
+
+      <p class="lead reveal r3">
+        What you tell it privately stays private. What the group teaches it, the group shares.
+        That boundary is separate stores, separate keys and separate processes &mdash; not a
         <code>WHERE user_id =</code> clause you have to take on faith.
       </p>
 
       <p class="muted reveal r3">
-        It runs on hardware you already own, routing each request to whichever of your machines is
-        awake, and falling back to a cloud provider only where you allow it.
+        It uses whichever of your machines is awake. A cloud provider only if you add one.
       </p>
 
       <div class="actions reveal r4">
@@ -672,21 +674,16 @@ footer.site .row {
   <section id="why" aria-labelledby="why-h">
     <div class="wrap">
       <p class="section-label"><span class="num">// 00</span>the gap it fills</p>
-      <h2 id="why-h">Add a second person and it breaks.</h2>
+      <h2 id="why-h">Most assistants are built for one person.</h2>
       <p class="lead">
-        Personal-assistant projects are built for one person on one box. Add a second human and
-        you get one of two bad outcomes: a single shared brain that leaks everyone&rsquo;s private
-        context into everyone else&rsquo;s conversations, or separate installs with no shared
-        knowledge at all.
+        Add a second person to one of those and you get one of two bad outcomes: a single shared
+        brain that leaks everyone&rsquo;s private context into everyone else&rsquo;s conversations,
+        or separate installs that share nothing at all.
       </p>
       <p class="muted">
-        Neither is what a household wants. A family wants the assistant to know that Tuesday is
-        bin day and that the boiler code is 4471, while <em>not</em> telling your brother what you
-        asked about last night. Doing that properly means per-person identity, cryptographic
-        separation, invites and multi-device sync &mdash; the boring, expensive half of the
-        problem. That half already exists in
-        <a href="https://github.com/BlueHeisenberg/lore">lore</a>, so kenward is the assistant loop
-        on top of it rather than a memory system built from scratch.
+        A household wants both halves. It wants the assistant to know that Tuesday is bin day and
+        that the boiler code is 4471 &mdash; and not to tell your brother what you asked it last
+        night. kenward is built for that case from the start.
       </p>
     </div>
   </section>
@@ -695,16 +692,15 @@ footer.site .row {
   <section id="memory" aria-labelledby="memory-h">
     <div class="wrap">
       <p class="section-label"><span class="num">// 01</span>the memory model</p>
-      <h2 id="memory-h">Two kinds of memory, and one asymmetry.</h2>
+      <h2 id="memory-h">Two kinds of memory, and one direction between them.</h2>
       <p>
         <strong>Private memory</strong> is what the assistant knows about you: preferences,
-        ongoing concerns, the shape of your week. A lore space with exactly two members &mdash;
-        you and the node.
+        ongoing concerns, the shape of your week. A lore space with two members &mdash; you and
+        the node.
       </p>
       <p>
-        <strong>Shared memory</strong> is what the household knows collectively: house logistics,
-        recurring plans, decisions everyone should be able to recall. A lore space with every
-        member in it.
+        <strong>Shared memory</strong> is what the household knows together: logistics, plans,
+        decisions anybody should be able to recall. A lore space with everyone in it.
       </p>
 
       <figure class="diagram">
@@ -778,10 +774,9 @@ footer.site .row {
       </figure>
 
       <p style="margin-top:26px">
-        Private conversations can read shared memory, because that is useful &mdash; you should be
-        able to ask when the bins go out. Group conversations can never read private memory,
-        because that is the entire point. Copying something out of a private space into the shared
-        one is an explicit, reviewed act that shows you the full text before it is published.
+        Private conversations can read shared memory &mdash; you should be able to ask when the
+        bins go out. Group conversations can never read private memory. Moving something from a
+        private space to the shared one shows you the full text first.
       </p>
 
       <blockquote class="honest">
@@ -803,11 +798,10 @@ footer.site .row {
       <p class="section-label"><span class="num">// 02</span>two modes, one binary</p>
       <h2 id="modes-h">The setup question is about trust, not topology.</h2>
       <p class="lead">
-        Which mode you run is chosen once, during setup, by answering one question:
-        <em>does everyone here trust whoever runs this machine to be able to read their private
-        conversations?</em> A non-technical installer can answer that. They cannot answer
-        &ldquo;do you want per-user pods?&rdquo;, and the pods are a consequence rather than the
-        decision.
+        You pick a mode once, during setup, by answering one question: <em>does everyone here trust
+        whoever runs this machine to be able to read their private conversations?</em> A
+        non-technical installer can answer that. Nobody can answer &ldquo;do you want per-user
+        pods?&rdquo;, and the pods are a consequence of the answer rather than the decision.
       </p>
 
       <ul class="modes">
@@ -898,12 +892,9 @@ footer.site .row {
       </div>
 
       <p style="margin-top:26px">
-        The assistant loop, the memory policy, the routing and the capture flow are identical in
-        both. Only the supervisor differs. <strong>Simple mode is honest about being simple</strong>
-        &mdash; separation between members is real, sealing against the machine&rsquo;s owner is
-        not, and <code>kenward doctor</code> says so out loud. Isolated mode is not a paid tier: it
-        is the mode that makes the privacy claim true, and charging for that would be gating the
-        wrong feature.
+        The assistant, the memory policy and the routing are identical in both modes. Only the
+        supervisor differs. Isolated mode is not a paid tier &mdash; it is the mode that makes the
+        privacy claim true.
       </p>
     </div>
   </section>
@@ -912,7 +903,7 @@ footer.site .row {
   <section id="does" aria-labelledby="does-h">
     <div class="wrap">
       <p class="section-label"><span class="num">// 03</span>what it does</p>
-      <h2 id="does-h">Six things, and no dashboard to live in.</h2>
+      <h2 id="does-h">Six things, and nothing for members to install.</h2>
       <p class="muted">
         Members need no client software beyond Telegram, which they already have.
       </p>
@@ -921,50 +912,46 @@ footer.site .row {
         <li>
           <h3 data-n="01">Ten languages</h3>
           <p>
-            English, Spanish, Catalan, Portuguese, French, Italian, Dutch, German, Chinese and
-            Modern Standard Arabic &mdash; each written out by hand rather than run through a
-            template, down to Arabic&rsquo;s bidirectional isolates and Catalan&rsquo;s elisions.
+            Arabic, Catalan, Chinese, Dutch, English, French, German, Italian, Portuguese and
+            Spanish. Each written out by hand, down to Arabic&rsquo;s bidirectional isolates.
           </p>
         </li>
         <li>
           <h3 data-n="02">Remembers, and says so</h3>
           <p>
-            Every write is announced in your own language, with the exact words and the space they
-            went to, and an <strong>Undo</strong> button behind a real delete. There is no setting
-            that makes a write silent.
+            Every write is announced in your own language, with the exact words and where they
+            went, and an <strong>Undo</strong> button behind a real delete. No setting makes a
+            write silent.
           </p>
         </li>
         <li>
           <h3 data-n="03">Reminders</h3>
           <p>
-            A reminder is a piece of text and a time to send it. When the time comes the text is
-            sent, verbatim: nothing generated, nothing retrieved, no model consulted. A node that
-            was asleep delivers late and says it was late.
+            A reminder is text and a time to send it. At the time, you get exactly that text:
+            nothing generated, no model consulted. A node that was asleep delivers late and says
+            it was late.
           </p>
         </li>
         <li>
           <h3 data-n="04">A group chat that stays quiet</h3>
           <p>
-            In the household group kenward answers only when it is addressed, and records the rest
-            of the conversation without speaking into it. Reminders are the one exception, and
-            they are kenward speaking without being addressed on purpose.
+            In the household group, kenward answers only when addressed. It records the rest of
+            the conversation without speaking into it.
           </p>
         </li>
         <li>
           <h3 data-n="05">Runs on whatever is awake</h3>
           <p>
-            Endpoints carry tier tags; each space declares the tiers it may use, in order.
-            A machine that is powered off is skipped in about two seconds. When the chain is
-            exhausted kenward <strong>refuses</strong> rather than reaching further, and there is
-            no setting that changes that.
+            Each conversation declares which machines it may use, in order. One that is powered
+            off is skipped in about two seconds. When the list runs out kenward
+            <strong>refuses</strong> rather than reaching further, and no setting changes that.
           </p>
         </li>
         <li>
           <h3 data-n="06">A wizard in the browser</h3>
           <p>
-            An admin dashboard with a first-run wizard that sets the whole household up without a
-            terminal: install, account, Telegram, endpoints, trust. One HTTP server, one account,
-            bound to loopback unless you say otherwise.
+            An admin dashboard that sets the household up without a terminal: install, account,
+            Telegram, endpoints, trust. Bound to loopback unless you say otherwise.
           </p>
         </li>
       </ul>
@@ -977,9 +964,9 @@ footer.site .row {
       <p class="section-label"><span class="num">// 04</span>install</p>
       <h2 id="install-h">One binary, then two questions.</h2>
       <p class="lead">
-        The script picks the right build for your machine, checks it against the SHA-256 published
-        with the release, installs it, and offers to set up the systemd unit. macOS runs the same
-        line. Windows downloads the <code>.exe</code> and runs it from a terminal.
+        The script picks the right build for your machine, checks it against the published
+        SHA-256, installs it, and offers to set up the systemd unit. macOS runs the same line.
+        Windows downloads the <code>.exe</code>.
       </p>
 
       <div class="code">
@@ -989,13 +976,9 @@ footer.site .row {
       </div>
 
       <p style="margin-top:26px">
-        <strong>Setup asks two questions that shape the household.</strong> The first is the one
-        above, about security, and it chooses the mode. The second only looks similar: <em>one
-        assistant for the whole household, or one each?</em> That one is about presentation. A
-        member&rsquo;s own bot is a separate <strong>contact</strong>, not a separate
-        <strong>secret</strong> &mdash; and because one bot is one contact is one agent, one each
-        needs Isolated mode&rsquo;s per-member bots. Setup says so rather than quietly handing
-        everybody the same assistant under several names.
+        <strong>Setup asks two questions.</strong> The trust question above, which chooses the
+        mode; and whether the household wants one assistant or one each. The second is about
+        presentation, not security.
       </p>
 
       <div class="code">
@@ -1006,12 +989,11 @@ footer.site .row {
       </div>
 
       <p style="margin-top:26px" class="muted">
-        Until an invited member sends their code the bot will not reply to them at all &mdash; not
+        Until an invited member sends their code, the bot does not reply to them at all &mdash; not
         an error, not a prompt, silence. A bot username is publicly discoverable, and any reply
-        would confirm to a stranger that there is something here.
+        would tell a stranger something is here.
         <a href="https://github.com/BlueHeisenberg/kenward/blob/main/docs/INSTALL.md">INSTALL.md</a>
-        has the full procedure, including the Telegram <code>/setprivacy</code> step whose omission
-        has no symptom.
+        has the full procedure.
       </p>
     </div>
   </section>
@@ -1036,11 +1018,9 @@ footer.site .row {
 
       <ul class="limits">
         <li>
-          <strong>Your key stays unwrapped while your process runs.</strong> Your passphrase is
-          given to your own process when it starts and never travels over Telegram &mdash; sending
-          it in a chat message would hand it to Telegram&rsquo;s servers and leave it in your
-          message history. The consequence is that once your assistant is unlocked and running,
-          your key stays in that process&rsquo;s memory until it stops or you lock it.
+          <strong>Your key stays unwrapped while your process runs.</strong> Your passphrase goes to
+          your own process at startup and never travels over Telegram. Once unlocked, the key
+          stays in that process&rsquo;s memory until it stops or you lock it.
         </li>
         <li>
           <strong>In Simple mode the operator can read everything</strong> &mdash; every
@@ -1048,10 +1028,9 @@ footer.site .row {
           limitation, not a bug.
         </li>
         <li>
-          <strong>A delete is a tombstone, not a shred.</strong> Undo really does remove an entry:
-          it stops coming back from search and from get, here and on every synced device. The row
-          is still on the disk. That is why publishing something into the shared space shows you
-          the full text first &mdash; unpublishing is not the same as never having published.
+          <strong>A delete is a tombstone, not a shred.</strong> Undo stops an entry coming back from
+          search and from get, here and on every synced device. The row is still on the disk.
+          Unpublishing is not the same as never having published.
         </li>
         <li>
           <strong>The privacy differentiator is a property of self-hosting.</strong> Isolated mode
@@ -1070,7 +1049,7 @@ footer.site .row {
       <li>
         <a href="https://github.com/BlueHeisenberg/lore"><strong>lore</strong></a> &mdash; the
         memory layer, imported as a Go module and opened in process. kenward owns no knowledge
-        model and does not fork this one.
+        model of its own.
       </li>
       <li>
         <a href="https://github.com/BlueHeisenberg/keel"><strong>keel</strong></a> &mdash;
@@ -1079,22 +1058,21 @@ footer.site .row {
       </li>
       <li>
         <a href="https://github.com/BlueHeisenberg/kenward/blob/main/LICENSE"><strong>Business Source License 1.1</strong></a>
-        &mdash; run it for yourself, your household, or inside a single organization. Offering it
-        to third parties as a hosted service needs a separate licence. Each version converts to
-        Apache 2.0 on 14 August 2030. Source-available rather than OSI open source, deliberately.
+        &mdash; run it for yourself, your household, or inside one organisation. Offering it to
+        third parties as a hosted service needs a separate licence. Converts to Apache 2.0 on
+        14 August 2030.
       </li>
       <li>
         <a href="https://github.com/BlueHeisenberg/kenward/blob/main/CONTRIBUTING.md"><strong>Contributing</strong></a>
-        &mdash; issues welcome. Pull requests are closed unmerged until a CLA exists, because sole
+        &mdash; issues welcome. Pull requests stay closed until a CLA exists, because sole
         copyright is what keeps relicensing possible.
       </li>
     </ul>
 
     <p class="note">
-      This page loads no fonts, no scripts, no analytics and nothing from anywhere else &mdash;
-      for a project about privacy, anything else would be self-defeating, and people check. The
-      background is four fixed layers of CSS gradient and it stops if you have asked your system
-      for reduced motion.
+      This page loads no fonts, no scripts, no analytics and nothing from anywhere else. For a
+      project about privacy, anything else would be self-defeating. The background is four fixed
+      layers of CSS gradient, and it stops if you have asked your system for reduced motion.
     </p>
 
     <div class="row">

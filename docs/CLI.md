@@ -57,7 +57,7 @@ It asks, in order:
    receives *nothing* sent in a group chat — not plain messages, not a reply to it, not
    an @mention; only `/start@thebot` is delivered. A household adds the bot to their
    family group and it ignores everyone, with no error, no warning and no log line
-   anywhere, because nothing arrives to log. It is the worst failure shape this product
+   anywhere, because nothing arrives to log. It is the worst failure shape a Telegram bot
    has, and it is the default state of every bot BotFather hands out.
 
    So it is in the walkthrough *before* the token is pasted, and setup asks Telegram

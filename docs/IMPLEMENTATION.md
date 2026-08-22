@@ -1975,7 +1975,7 @@ The compose path gets this too — its services are `kenward run --member …` w
 
 ### How the household's shared memory works in isolated mode
 
-**It did not.** Every pod resolves `household.shared_space` against its own lore store,
+**It did not, until the link handshake below.** Every pod resolves `household.shared_space` against its own lore store,
 and lore isolates instances by `LORE_HOME`, not by machine — so a household of three pods
 is three lore *accounts* with three id spaces, and the one space id in `kenward.yaml`
 could only ever be real in whichever store created it. Both deployment paths had it and
@@ -2071,7 +2071,7 @@ already holds the space and asks nothing. A pod whose volume was replaced comes 
 new account and is admitted afresh. Admitting an account already in the member list
 re-seals the current chain and writes no new version.
 
-**Revocation is not offered and cannot be.** lore has no local revocation: every store
+**lore has no revocation of space membership, and cannot have one.** lore has no local revocation: every store
 that holds a space holds its key, and a key cannot be un-learned. Removing a member from
 `kenward.yaml` stops their pod existing and stops the desk being asked, but their old
 account stays in the member document and their volume, if it survives, still holds the

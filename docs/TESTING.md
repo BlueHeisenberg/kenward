@@ -352,7 +352,7 @@ What remains unproved is narrower than it was, and worth naming precisely:
   invisible to every sibling. `internal/memory/sync_test.go` asserts the daemon starts and
   stops with its context, that two stores converge through it, and that its status is read
   from the daemon's own answer. What no test asserts is
-  the convergence itself, because it needs more than one container.
+  convergence across pods, because that needs more than one container.
 - **An SELinux-enforcing host.** The `z` and `Z` labels on every bind mount were verified
   to be a no-op where SELinux is off. The enforcing host they exist for was not available.
 
