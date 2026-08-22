@@ -8,10 +8,10 @@
 # becoming a published web page nobody proofread for a public audience.
 #
 # The page ships no root-absolute references, so it works unchanged at
-# https://blueheisenberg.github.io/kenward/ and at a custom domain later. There is
-# deliberately no site/CNAME: adding one before the domain's DNS exists makes GitHub
-# redirect the working github.io URL to a hostname that does not resolve. Add it
-# (or set the domain in Settings -> Pages) once kenward.io points at GitHub.
+# https://blueheisenberg.github.io/kenward/ and at the custom domain. site/CNAME
+# names kenward.io and is uploaded with the rest of site/, which is what sets the
+# custom domain -- so it must not be removed, and the apex A/AAAA records at the
+# registrar must keep pointing at GitHub or the published URL stops resolving.
 name: Pages
 
 on:

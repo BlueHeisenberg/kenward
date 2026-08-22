@@ -117,7 +117,7 @@ No cloud provider is configured out of the box; adding one is a yes/no question 
 A Telegram bot token from [@BotFather](https://t.me/BotFather), one OpenAI-compatible
 inference endpoint, and about ten minutes. **[docs/INSTALL.md](docs/INSTALL.md)** walks
 both modes end to end, including the one BotFather setting whose omission has no symptom;
-[the site](https://blueheisenberg.github.io/kenward/) is the shorter version and
+[the site](https://kenward.io) is the shorter version and
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the reasoning behind all of it.
 
 Built on [lore](https://github.com/BlueHeisenberg/lore) for memory — spaces, entries,
